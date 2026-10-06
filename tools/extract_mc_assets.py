@@ -122,10 +122,42 @@ def build_steve_parts(skin_texture: Image.Image) -> list[dict]:
 
 
 def build_cube_block(texture: Image.Image, size_cm: float = 100.0) -> dict:
-    half = size_cm * 0.5
-    # Standard 1x1x1m cube centered at origin
-    faces = cuboid((-half, -half, -half), (size_cm, size_cm, size_cm), (0, 0), inflate=0.0)
-    return mesh_from_faces(faces, texture)
+    h = size_cm * 0.5
+    # 6 outward facing quads for standard game engine cube
+    face_defs = [
+        # South (-Y)
+        ([(h, -h, -h), (-h, -h, -h), (-h, -h, h), (h, -h, h)], (0.0, -1.0, 0.0)),
+        # North (+Y)
+        ([(-h, h, -h), (h, h, -h), (h, h, h), (-h, h, h)], (0.0, 1.0, 0.0)),
+        # East (+X)
+        ([(h, h, -h), (h, -h, -h), (h, -h, h), (h, h, h)], (1.0, 0.0, 0.0)),
+        # West (-X)
+        ([(-h, -h, -h), (-h, h, -h), (-h, h, h), (-h, -h, h)], (-1.0, 0.0, 0.0)),
+        # Top (+Z)
+        ([(-h, -h, h), (h, -h, h), (h, h, h), (-h, h, h)], (0.0, 0.0, 1.0)),
+        # Bottom (-Z)
+        ([(-h, h, -h), (h, h, -h), (h, -h, -h), (-h, -h, -h)], (0.0, 0.0, -1.0)),
+    ]
+
+    positions, normals, uvs, colors, triangles = [], [], [], [], []
+    quad_uv = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+
+    for verts, norm in face_defs:
+        base = len(positions)
+        for i, pos in enumerate(verts):
+            positions.append([float(pos[0]), float(pos[1]), float(pos[2])])
+            normals.append([float(norm[0]), float(norm[1]), float(norm[2])])
+            uvs.append(list(quad_uv[i]))
+            colors.append([1.0, 1.0, 1.0, 1.0])
+        triangles.extend([base, base + 1, base + 2, base, base + 2, base + 3])
+
+    return {
+        "positions": positions,
+        "normals": normals,
+        "uv": uvs,
+        "colors": colors,
+        "triangles": triangles,
+    }
 
 
 def main():

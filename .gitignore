@@ -5,6 +5,7 @@ bin/
 lib/
 out/
 dist/
+assets/cooked/
 
 # CMake artifacts
 CMakeCache.txt

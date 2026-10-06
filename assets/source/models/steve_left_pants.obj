@@ -1,0 +1,4 @@
+mtllib steve.mtl
+usemtl steve_mat
+# Model: steve_left_pants
+o steve_left_pants
