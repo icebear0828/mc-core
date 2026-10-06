@@ -2,7 +2,9 @@
 #include "mc/ballistics.hpp"
 #include "mc/contracts/physics_adapter.hpp"
 
-class MockPhysicsAdapter : public mc::IPhysicsAdapter {
+namespace {
+
+class MockBallisticsPhysics : public mc::IPhysicsAdapter {
 public:
     mc::RaycastResult raycastWorld(const mc::Vec3&, const mc::Vec3&, uint64_t) override {
         // No obstacle hit in this test
@@ -13,8 +15,10 @@ public:
     void applyLinearImpulse(uint64_t, const mc::Vec3&) override {}
 };
 
+} // namespace
+
 TEST(BallisticsEngineTest, ArrowTrajectoryDropsWithGravity) {
-    MockPhysicsAdapter physics;
+    MockBallisticsPhysics physics;
     mc::BallisticsEngine engine(physics);
 
     const mc::Vec3 origin{0.f, 0.f, 200.f};

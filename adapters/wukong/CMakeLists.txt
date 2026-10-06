@@ -7,7 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Compiler Warnings
 if(MSVC)
-    add_compile_options(/W4 /WX /permissive-)
+    add_compile_options(/W4 /WX /permissive- /utf-8)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic -Werror)
 endif()
@@ -42,5 +42,6 @@ if(WIN32)
     set_target_properties(wukong_adapter PROPERTIES
         PREFIX ""
         SUFFIX ".dll"
+        WINDOWS_EXPORT_ALL_SYMBOLS ON
     )
 endif()

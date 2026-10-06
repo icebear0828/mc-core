@@ -13,6 +13,7 @@ add_executable(mc_tests
     test_combat.cpp
     test_ballistics.cpp
     test_wukong_adapter.cpp
+    test_sekiro_adapter.cpp
     test_consumables.cpp
     test_elytra.cpp
 )
@@ -21,6 +22,7 @@ target_link_libraries(mc_tests
     PRIVATE
         mc_core
         wukong_adapter
+        sekiro_adapter
         GTest::gtest_main
 )
 
