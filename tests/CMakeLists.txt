@@ -13,6 +13,7 @@ add_executable(mc_tests
     test_combat.cpp
     test_ballistics.cpp
     test_wukong_adapter.cpp
+    test_consumables.cpp
 )
 
 target_link_libraries(mc_tests

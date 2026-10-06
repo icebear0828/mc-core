@@ -76,10 +76,26 @@ enum class ItemId : uint16_t {
     FlintAndSteel,
     EnderPearl,
     GoldenApple,
+    EnchantedGoldenApple,
+    Bread,
+    CookedBeef,
     TotemOfUndying,
     BlockDirt,
     BlockStone,
     BlockTnt
+};
+
+enum class EffectType : uint8_t {
+    Regeneration,
+    Absorption,
+    Resistance,
+    FireResistance
+};
+
+struct ActiveEffect {
+    EffectType type{EffectType::Regeneration};
+    int level{1};
+    float duration{0.f}; // seconds
 };
 
 struct RaycastResult {

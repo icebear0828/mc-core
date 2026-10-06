@@ -96,6 +96,9 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                     yaw = -0.1f + head_yaw;
                 } else if (input.trident_charge > 0.0f) {
                     pitch = pitch * 0.5f - kPi;
+                } else if (input.eating_progress > 0.0f) {
+                    pitch = -1.7f + std::abs(std::sin(age_ * 1.5f)) * 0.15f;
+                    yaw = -0.3f;
                 } else if (input.swing_progress > 0.0f) {
                     const float ease = 1.0f - std::pow(1.0f - input.swing_progress, 4.0f);
                     pitch -= std::sin(ease * kPi) * 1.2f;

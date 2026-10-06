@@ -31,6 +31,7 @@ struct SteveAnimInput {
     bool is_blocking{false};
     float bow_charge{0.f};    // [0, 1]
     float trident_charge{0.f};// [0, 1]
+    float eating_progress{0.f}; // [0, 1] 0 = not eating, >0 = chewing vibration
 };
 
 class SteveAnimator {
