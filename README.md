@@ -77,12 +77,30 @@ mc-core/
 │   └── test_extract_assets.py
 ├── tools/                         # 资产提取与转换工具
 │   └── extract_mc_assets.py
-├── docs/                          # 架构与规格文档
-│   └── ARCHITECTURE.md
+├── docs/                          # 架构、烘焙与安装使用指南
+│   ├── ARCHITECTURE.md            # 跨引擎架构与接口规格
+│   ├── BAKING_GUIDE.md            # 各引擎模型一键封包实操
+│   └── INSTALL.md                 # 玩家安装目录与按键指南
 ├── CMakeLists.txt                 # CMake 构建脚本 (C++20, 零警告策略)
 ├── CONTRIBUTING.md                # 代码风格与 Conventional Commits 规范
 └── README.md
 ```
+
+---
+
+## 📦 玩家安装与模组放置指南 (Quick Start)
+
+> 详细安装与按键说明请查阅 👉 [**玩家安装与使用完整指南 (INSTALL.md)**](docs/INSTALL.md)
+
+任意游戏安装均只需两步：**放置插件库** + **放置资产包**。
+
+| 目标游戏 | 插件文件 (.dll / .asi) 放置目录 | 资产包 (.pak / .archive / .rpf) 放置目录 | 默认按键 |
+|---|---|---|---|
+| **黑神话 / 虚幻5** | `游戏根目录/b1/Binaries/Win64/ue4ss/Mods/mc_core/` | `游戏根目录/b1/Content/Paks/~mods/mc_assets_P.pak` | **F4** 变身 Steve<br>左键 攻击/挖掘<br>右键 放置方块<br>1~9 切物品 |
+| **赛博朋克 2077** | `游戏根目录/bin/x64/plugins/cyber_engine_tweaks/mods/mc_core/` | `游戏根目录/archive/pc/mod/mc_assets.archive` |
+| **GTA V** | `游戏根目录/gta5_adapter.asi` (直接放根目录) | OpenIV 导入 `mods/update/x64/dlcpacks/mc_assets/` |
+| **艾尔登法环** | `modengine2/mod/dll/elden_adapter.dll` | `modengine2/mod/parts/` |
+| **生化危机系列** | `游戏根目录/reframework/plugins/re_adapter.dll` | Fluffy Mod Manager 拖入一键安装 |
 
 ---
 
