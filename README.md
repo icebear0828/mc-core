@@ -11,7 +11,7 @@
 
 ## 📖 项目背景 (Background)
 
-在《黑神话：悟空》史蒂夫模组（[`wukong-steve`](https://github.com/nicedoctors/wukong-steve)）中，Minecraft 的经典要素（方块建造、挖掘、钻石剑战斗、TNT 爆破、末影珍珠传送与 12 部位方块人动作）得到了高度保真的还原。然而该模组深度依赖虚幻引擎（UE5）特有的 `UProceduralMeshComponent`、`UBoxComponent` 与 UObject 反射树。
+在以往的沙盒移植中，将 Minecraft 经典要素（方块建造、挖掘、钻石剑战斗、TNT 爆破、末影珍珠传送与 12 部位方块人动作）引入其他 3D 游戏时，往往深度绑定商业引擎特定的程序化网格组件与对象反射树。
 
 当我们将目光投向各大采用**私有自研引擎**的 3A 大作（如《赛博朋克2077》REDengine 4、《GTA V》RAGE 引擎、《生化危机》RE Engine 以及《艾尔登法环》Dantelion 引擎）时，缺乏统一的运行时程序化网格与反射接口。
 
