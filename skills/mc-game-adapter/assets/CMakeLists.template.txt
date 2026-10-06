@@ -1,0 +1,30 @@
+cmake_minimum_required(VERSION 3.24)
+project({{GAME_NAME_LOWER}}_mc_adapter VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# mc-core dependency path
+set(MC_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../" CACHE PATH "Path to mc-core root")
+
+add_library({{GAME_NAME_LOWER}}_adapter SHARED
+    src/{{GAME_NAME_LOWER}}_adapter.cpp
+    src/plugin_entry.cpp
+)
+
+target_include_directories({{GAME_NAME_LOWER}}_adapter
+    PRIVATE
+        include
+        "${MC_CORE_DIR}/include"
+)
+
+target_link_libraries({{GAME_NAME_LOWER}}_adapter
+    PRIVATE
+        mc_core
+)
+
+# Output as ASI or DLL depending on target
+set_target_properties({{GAME_NAME_LOWER}}_adapter PROPERTIES
+    PREFIX ""
+    SUFFIX ".dll"
+)
