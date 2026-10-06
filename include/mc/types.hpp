@@ -80,6 +80,8 @@ enum class ItemId : uint16_t {
     Bread,
     CookedBeef,
     TotemOfUndying,
+    Elytra,
+    FireworkRocket,
     BlockDirt,
     BlockStone,
     BlockTnt

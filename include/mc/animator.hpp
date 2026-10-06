@@ -32,6 +32,8 @@ struct SteveAnimInput {
     float bow_charge{0.f};    // [0, 1]
     float trident_charge{0.f};// [0, 1]
     float eating_progress{0.f}; // [0, 1] 0 = not eating, >0 = chewing vibration
+    bool is_gliding{false};
+    float roll_angle{0.f};    // radians (banking roll when turning during flight)
 };
 
 class SteveAnimator {

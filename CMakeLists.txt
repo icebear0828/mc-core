@@ -21,6 +21,7 @@ add_library(mc_core STATIC
     include/mc/ballistics.hpp
     include/mc/combat.hpp
     include/mc/consumables.hpp
+    include/mc/elytra.hpp
     include/mc/contracts/physics_adapter.hpp
     include/mc/contracts/render_adapter.hpp
     include/mc/contracts/combat_adapter.hpp
@@ -30,6 +31,7 @@ add_library(mc_core STATIC
     src/ballistics.cpp
     src/combat.cpp
     src/consumables.cpp
+    src/elytra.cpp
 )
 
 target_include_directories(mc_core

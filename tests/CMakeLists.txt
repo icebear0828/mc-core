@@ -14,6 +14,7 @@ add_executable(mc_tests
     test_ballistics.cpp
     test_wukong_adapter.cpp
     test_consumables.cpp
+    test_elytra.cpp
 )
 
 target_link_libraries(mc_tests
