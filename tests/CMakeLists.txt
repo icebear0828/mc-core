@@ -12,11 +12,13 @@ add_executable(mc_tests
     test_voxel_world.cpp
     test_combat.cpp
     test_ballistics.cpp
+    test_wukong_adapter.cpp
 )
 
 target_link_libraries(mc_tests
     PRIVATE
         mc_core
+        wukong_adapter
         GTest::gtest_main
 )
 

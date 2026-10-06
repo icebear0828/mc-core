@@ -36,9 +36,16 @@ target_include_directories(mc_core
         $<INSTALL_INTERFACE:include>
 )
 
+# Adapters
+option(BUILD_ADAPTERS "Build game adapters." ON)
+if(BUILD_ADAPTERS AND CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+    add_subdirectory(adapters/wukong)
+endif()
+
 # Testing
 option(BUILD_TESTING "Build the testing tree." ON)
 if(BUILD_TESTING)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
