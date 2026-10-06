@@ -105,6 +105,10 @@ sekiro::native::ChrIns* SekiroAdapter::getRegisteredEntity(uint64_t entity_id) c
     return (it != registered_entities_.end()) ? it->second : nullptr;
 }
 
+void SekiroAdapter::setCustomRaycastHandler(sekiro::native::DantelionEngineContext::RaycastHandler handler) {
+    custom_raycast_ = std::move(handler);
+}
+
 const sekiro::native::SekiroVisualMeshComponent* SekiroAdapter::getStevePartVisual(StevePart part) const {
     size_t idx = static_cast<size_t>(part);
     if (idx < steve_parts_.size()) {
@@ -122,12 +126,17 @@ RaycastResult SekiroAdapter::raycastWorld(const Vec3& start, const Vec3& end, ui
     sekiro::native::FVector3 native_end = toNative(end);
     sekiro::native::HavokHitResult hit{};
 
-    bool bEngineHit = sekiro::native::DantelionEngineContext::RaycastWorld(
-        native_start,
-        native_end,
-        hit,
-        ignore_entity
-    );
+    bool bEngineHit = false;
+    if (custom_raycast_) {
+        bEngineHit = custom_raycast_(native_start, native_end, hit, ignore_entity);
+    } else {
+        bEngineHit = sekiro::native::DantelionEngineContext::RaycastWorld(
+            native_start,
+            native_end,
+            hit,
+            ignore_entity
+        );
+    }
 
     if (bEngineHit && hit.bHit) {
         RaycastResult res{};
@@ -437,7 +446,7 @@ bool SekiroAdapter::processHit(const HitIntent& intent) {
     victim->Health = std::max(0.0f, victim->Health - damage_to_apply);
 
     // Sekiro specific: Accumulate Posture (躯干值) based on attack force & damage
-    float posture_damage = std::max(10.0f, damage_to_apply * 0.25f + intent.knockback_force * 5.0f);
+    float posture_damage = std::max(5.0f, damage_to_apply * 1.5f + intent.knockback_force * 0.01f);
     victim->Posture = std::min(victim->MaxPosture, victim->Posture + posture_damage);
 
     // If Posture breaks (>= MaxPosture) or Health reaches 0, trigger Deathblow readiness (忍杀就绪)

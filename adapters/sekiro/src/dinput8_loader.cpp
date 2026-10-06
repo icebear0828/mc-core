@@ -1,6 +1,7 @@
 #define NOMINMAX
 #define DIRECTINPUT_VERSION 0x0800
 #include <windows.h>
+#include <psapi.h>
 #include <unknwn.h>
 #include <dinput.h>
 #include <d3d11.h>
@@ -10,6 +11,14 @@
 #include <imgui.h>
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx11.h>
+
+#include "baked_textures.hpp"
+#include "sekiro_native.hpp"
+#include "sekiro_adapter.hpp"
+#include "mc/animator.hpp"
+#include "mc/voxel_world.hpp"
+#include "mc/combat.hpp"
+#include "mc/ballistics.hpp"
 
 #include <chrono>
 #include <string>
@@ -22,11 +31,19 @@
 
 // Declare external plugin entry lifecycle functions
 extern "C" {
-void SekiroMod_Initialize(void* player, void* camera);
+void SekiroMod_Initialize(sekiro::native::ChrIns* player, sekiro::native::ChrCam* camera);
 void SekiroMod_Shutdown();
 void SekiroMod_SetSteveMode(bool active);
 bool SekiroMod_IsSteveModeActive();
 void SekiroMod_Tick(float delta_time);
+}
+
+namespace mc::adapter {
+SekiroAdapter* GetGlobalSekiroAdapter();
+VoxelWorld* GetGlobalVoxelWorld();
+CombatEngine* GetGlobalCombatEngine();
+BallisticsEngine* GetGlobalBallisticsEngine();
+SteveAnimator* GetGlobalSteveAnimator();
 }
 
 // Forward declare ImGui Win32 handler
@@ -69,22 +86,70 @@ ID3D11DeviceContext* g_d3d_context = nullptr;
 HWND g_game_hwnd = nullptr;
 WNDPROC g_original_wndproc = nullptr;
 
+// Texture SRVs for pixel-perfect 16x16 Minecraft GUI
+ID3D11ShaderResourceView* g_srv_diamond_sword = nullptr;
+ID3D11ShaderResourceView* g_srv_diamond_pickaxe = nullptr;
+ID3D11ShaderResourceView* g_srv_dirt = nullptr;
+ID3D11ShaderResourceView* g_srv_stone = nullptr;
+ID3D11ShaderResourceView* g_srv_tnt = nullptr;
+ID3D11ShaderResourceView* g_srv_heart = nullptr;
+ID3D11ShaderResourceView* g_srv_drumstick = nullptr;
+
+// Game memory addresses
+uintptr_t g_sekiro_base = 0;
+uintptr_t g_world_chr_man = 0;
+uintptr_t g_player_ins = 0;
+
+// Sekiro native wrapper instances
+sekiro::native::ChrIns g_native_player{};
+sekiro::native::ChrCam g_native_camera{};
+
 int g_frame_log_count = 0;
 int g_selected_slot = 0; // 0..8
+bool g_is_first_person = true; // true = First-Person, false = Third-Person Steve
 float g_anim_timer = 0.0f;
 float g_attack_anim = 0.0f; // 0..1 swing progress
+float g_mining_timer = 0.0f;
 
-const char* kHotbarItems[9] = {
-    "Diamond Sword",
-    "Diamond Pickaxe",
-    "Dirt Block",
-    "Stone Block",
-    "TNT Block",
-    "Golden Apple",
-    "Bow",
-    "Elytra",
-    "Totem of Undying"
-};
+ID3D11ShaderResourceView* CreatePixelTexture(ID3D11Device* device, const uint32_t* pixels, uint32_t w, uint32_t h) {
+    if (!device || !pixels) return nullptr;
+
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = w;
+    desc.Height = h;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA sub{};
+    sub.pSysMem = pixels;
+    sub.SysMemPitch = w * sizeof(uint32_t);
+
+    ID3D11Texture2D* tex = nullptr;
+    if (FAILED(device->CreateTexture2D(&desc, &sub, &tex)) || !tex) {
+        return nullptr;
+    }
+
+    ID3D11ShaderResourceView* srv = nullptr;
+    device->CreateShaderResourceView(tex, nullptr, &srv);
+    tex->Release();
+    return srv;
+}
+
+void InitTextures(ID3D11Device* device) {
+    if (!device) return;
+    g_srv_diamond_sword = CreatePixelTexture(device, mc::ui::k_diamond_sword_pixels, mc::ui::k_diamond_sword_w, mc::ui::k_diamond_sword_h);
+    g_srv_diamond_pickaxe = CreatePixelTexture(device, mc::ui::k_diamond_pickaxe_pixels, mc::ui::k_diamond_pickaxe_w, mc::ui::k_diamond_pickaxe_h);
+    g_srv_dirt = CreatePixelTexture(device, mc::ui::k_dirt_pixels, mc::ui::k_dirt_w, mc::ui::k_dirt_h);
+    g_srv_stone = CreatePixelTexture(device, mc::ui::k_stone_pixels, mc::ui::k_stone_w, mc::ui::k_stone_h);
+    g_srv_tnt = CreatePixelTexture(device, mc::ui::k_tnt_pixels, mc::ui::k_tnt_w, mc::ui::k_tnt_h);
+    g_srv_heart = CreatePixelTexture(device, mc::ui::k_heart_pixels, mc::ui::k_heart_w, mc::ui::k_heart_h);
+    g_srv_drumstick = CreatePixelTexture(device, mc::ui::k_drumstick_pixels, mc::ui::k_drumstick_w, mc::ui::k_drumstick_h);
+    Log("Initialized authentic 16x16 Minecraft pixel textures in D3D11.");
+}
 
 LRESULT CALLBACK DetourWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     if (g_imgui_initialized.load()) {
@@ -114,6 +179,9 @@ void InitImGui(IDXGISwapChain* pSwapChain) {
 
     g_d3d_device->GetImmediateContext(&g_d3d_context);
 
+    // Initialize point-sampled Minecraft pixel textures
+    InitTextures(g_d3d_device);
+
     // Hook WndProc for input
     if (g_game_hwnd) {
         g_original_wndproc = reinterpret_cast<WNDPROC>(SetWindowLongPtrA(g_game_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(DetourWndProc)));
@@ -136,17 +204,16 @@ void InitImGui(IDXGISwapChain* pSwapChain) {
 struct Vec3F { float x, y, z; };
 
 Vec3F RotateVertex(const Vec3F& v, float pitch, float yaw, float roll) {
-    // Yaw (around Y)
     float cy = cosf(yaw), sy = sinf(yaw);
     float x1 = v.x * cy + v.z * sy;
     float z1 = -v.x * sy + v.z * cy;
     float y1 = v.y;
-    // Pitch (around X)
+
     float cp = cosf(pitch), sp = sinf(pitch);
     float y2 = y1 * cp - z1 * sp;
     float z2 = y1 * sp + z1 * cp;
     float x2 = x1;
-    // Roll (around Z)
+
     float cr = cosf(roll), sr = sinf(roll);
     return { x2 * cr - y2 * sr, x2 * sr + y2 * cr, z2 };
 }
@@ -188,8 +255,8 @@ void DrawVoxelBox(
     float hz = half_extents.z;
 
     Vec3F local_pts[8] = {
-        {-hx,  hy, -hz}, { hx,  hy, -hz}, { hx, -hy, -hz}, {-hx, -hy, -hz}, // Front 0,1,2,3
-        {-hx,  hy,  hz}, { hx,  hy,  hz}, { hx, -hy,  hz}, {-hx, -hy,  hz}  // Back  4,5,6,7
+        {-hx,  hy, -hz}, { hx,  hy, -hz}, { hx, -hy, -hz}, {-hx, -hy, -hz},
+        {-hx,  hy,  hz}, { hx,  hy,  hz}, { hx, -hy,  hz}, {-hx, -hy,  hz}
     };
 
     Vec3F world_pts[8];
@@ -201,12 +268,7 @@ void DrawVoxelBox(
     }
 
     const int face_indices[6][4] = {
-        {0, 1, 2, 3}, // Front
-        {5, 4, 7, 6}, // Back
-        {4, 5, 1, 0}, // Top
-        {3, 2, 6, 7}, // Bottom
-        {4, 0, 3, 7}, // Left
-        {1, 5, 6, 2}  // Right
+        {0, 1, 2, 3}, {5, 4, 7, 6}, {4, 5, 1, 0}, {3, 2, 6, 7}, {4, 0, 3, 7}, {1, 5, 6, 2}
     };
     const float shade_factors[6] = {1.0f, 0.65f, 1.35f, 0.45f, 0.8f, 0.85f};
 
@@ -224,165 +286,230 @@ void DrawVoxelBox(
     }
 }
 
-void RenderMinecraftHUD(float screen_w, float screen_h, bool is_steve_mode) {
+void RenderPixelMinecraftGUI(float screen_w, float screen_h) {
     ImDrawList* draw = ImGui::GetForegroundDrawList();
 
     // 1. Crosshair in screen center
-    if (is_steve_mode) {
-        float cx = screen_w * 0.5f;
-        float cy = screen_h * 0.5f;
-        ImU32 ch_col = IM_COL32(255, 255, 255, 220);
-        ImU32 ch_bg = IM_COL32(0, 0, 0, 180);
+    float cx = screen_w * 0.5f;
+    float cy = screen_h * 0.5f;
+    ImU32 ch_col = IM_COL32(255, 255, 255, 220);
+    ImU32 ch_bg = IM_COL32(0, 0, 0, 180);
 
-        // Black outline cross
-        draw->AddRectFilled(ImVec2(cx - 9, cy - 2), ImVec2(cx + 9, cy + 2), ch_bg);
-        draw->AddRectFilled(ImVec2(cx - 2, cy - 9), ImVec2(cx + 2, cy + 9), ch_bg);
-        // White cross
-        draw->AddRectFilled(ImVec2(cx - 8, cy - 1), ImVec2(cx + 8, cy + 1), ch_col);
-        draw->AddRectFilled(ImVec2(cx - 1, cy - 8), ImVec2(cx + 1, cy + 8), ch_col);
-    }
+    draw->AddRectFilled(ImVec2(cx - 9, cy - 2), ImVec2(cx + 9, cy + 2), ch_bg);
+    draw->AddRectFilled(ImVec2(cx - 2, cy - 9), ImVec2(cx + 2, cy + 9), ch_bg);
+    draw->AddRectFilled(ImVec2(cx - 8, cy - 1), ImVec2(cx + 8, cy + 1), ch_col);
+    draw->AddRectFilled(ImVec2(cx - 1, cy - 8), ImVec2(cx + 1, cy + 8), ch_col);
 
-    // 2. Hotbar at bottom center
-    if (is_steve_mode) {
-        float slot_size = 46.0f;
-        float bar_w = slot_size * 9.0f;
-        float bar_h = slot_size;
-        float start_x = (screen_w - bar_w) * 0.5f;
-        float start_y = screen_h - 70.0f;
+    // 2. Authentic Minecraft Hotbar (9 slots)
+    float slot_size = 48.0f;
+    float bar_w = slot_size * 9.0f;
+    float bar_h = slot_size;
+    float start_x = (screen_w - bar_w) * 0.5f;
+    float start_y = screen_h - 68.0f;
 
-        // Hotbar background
-        draw->AddRectFilled(ImVec2(start_x - 4, start_y - 4), ImVec2(start_x + bar_w + 4, start_y + bar_h + 4), IM_COL32(30, 30, 30, 220), 4.0f);
-        draw->AddRect(ImVec2(start_x - 4, start_y - 4), ImVec2(start_x + bar_w + 4, start_y + bar_h + 4), IM_COL32(80, 80, 80, 255), 4.0f, 0, 2.0f);
+    // Stone-textured beveled Hotbar background
+    draw->AddRectFilled(ImVec2(start_x - 4, start_y - 4), ImVec2(start_x + bar_w + 4, start_y + bar_h + 4), IM_COL32(40, 40, 40, 240), 2.0f);
+    draw->AddRect(ImVec2(start_x - 4, start_y - 4), ImVec2(start_x + bar_w + 4, start_y + bar_h + 4), IM_COL32(90, 90, 90, 255), 2.0f, 0, 2.0f);
 
-        for (int i = 0; i < 9; ++i) {
-            float sx = start_x + i * slot_size;
-            float sy = start_y;
-            bool selected = (i == g_selected_slot);
+    ID3D11ShaderResourceView* item_srvs[9] = {
+        g_srv_diamond_sword,
+        g_srv_diamond_pickaxe,
+        g_srv_dirt,
+        g_srv_stone,
+        g_srv_tnt,
+        g_srv_heart, // Golden Apple / food
+        nullptr,
+        nullptr,
+        nullptr
+    };
 
-            // Slot background
-            ImU32 bg_col = selected ? IM_COL32(70, 70, 70, 240) : IM_COL32(45, 45, 45, 200);
-            draw->AddRectFilled(ImVec2(sx + 2, sy + 2), ImVec2(sx + slot_size - 2, sy + slot_size - 2), bg_col, 2.0f);
+    for (int i = 0; i < 9; ++i) {
+        float sx = start_x + i * slot_size;
+        float sy = start_y;
+        bool selected = (i == g_selected_slot);
 
-            // Slot border
-            if (selected) {
-                draw->AddRect(ImVec2(sx, sy), ImVec2(sx + slot_size, sy + slot_size), IM_COL32(255, 255, 255, 255), 2.0f, 0, 3.5f);
-            } else {
-                draw->AddRect(ImVec2(sx + 2, sy + 2), ImVec2(sx + slot_size - 2, sy + slot_size - 2), IM_COL32(100, 100, 100, 255), 2.0f, 0, 1.0f);
-            }
+        // Beveled slot background
+        ImU32 slot_bg = selected ? IM_COL32(75, 75, 75, 255) : IM_COL32(50, 50, 50, 230);
+        draw->AddRectFilled(ImVec2(sx + 2, sy + 2), ImVec2(sx + slot_size - 2, sy + slot_size - 2), slot_bg);
 
-            // Key number
-            char key_str[4];
-            snprintf(key_str, sizeof(key_str), "%d", i + 1);
-            draw->AddText(ImVec2(sx + 5, sy + 4), IM_COL32(200, 200, 200, 255), key_str);
+        // Slot borders (outer dark, inner highlight)
+        draw->AddLine(ImVec2(sx + 2, sy + 2), ImVec2(sx + slot_size - 2, sy + 2), IM_COL32(25, 25, 25, 255), 1.5f);
+        draw->AddLine(ImVec2(sx + 2, sy + 2), ImVec2(sx + 2, sy + slot_size - 2), IM_COL32(25, 25, 25, 255), 1.5f);
+        draw->AddLine(ImVec2(sx + slot_size - 2, sy + 2), ImVec2(sx + slot_size - 2, sy + slot_size - 2), IM_COL32(110, 110, 110, 255), 1.5f);
+        draw->AddLine(ImVec2(sx + 2, sy + slot_size - 2), ImVec2(sx + slot_size - 2, sy + slot_size - 2), IM_COL32(110, 110, 110, 255), 1.5f);
 
-            // Item abbreviation
-            char abbr[8];
-            if (i == 0) snprintf(abbr, sizeof(abbr), "Sword");
-            else if (i == 1) snprintf(abbr, sizeof(abbr), "Pick");
-            else if (i == 2) snprintf(abbr, sizeof(abbr), "Dirt");
-            else if (i == 3) snprintf(abbr, sizeof(abbr), "Stone");
-            else if (i == 4) snprintf(abbr, sizeof(abbr), "TNT");
-            else if (i == 5) snprintf(abbr, sizeof(abbr), "Apple");
-            else if (i == 6) snprintf(abbr, sizeof(abbr), "Bow");
-            else if (i == 7) snprintf(abbr, sizeof(abbr), "Wing");
-            else snprintf(abbr, sizeof(abbr), "Totem");
-
-            ImU32 txt_col = selected ? IM_COL32(0, 255, 255, 255) : IM_COL32(220, 220, 220, 255);
-            draw->AddText(ImVec2(sx + 6, sy + 24), txt_col, abbr);
+        // Draw authentic 16x16 pixel icon
+        if (item_srvs[i]) {
+            draw->AddImage(
+                item_srvs[i],
+                ImVec2(sx + 8, sy + 8),
+                ImVec2(sx + slot_size - 8, sy + slot_size - 8)
+            );
         }
 
-        // Active item label above hotbar
-        char active_info[128];
-        snprintf(active_info, sizeof(active_info), "Selected: [%d] %s", g_selected_slot + 1, kHotbarItems[g_selected_slot]);
-        float info_w = ImGui::CalcTextSize(active_info).x;
-        draw->AddText(ImVec2((screen_w - info_w) * 0.5f, start_y - 24.0f), IM_COL32(255, 255, 80, 255), active_info);
+        // Active slot selection box (thick white bracket)
+        if (selected) {
+            draw->AddRect(ImVec2(sx - 2, sy - 2), ImVec2(sx + slot_size + 2, sy + slot_size + 2), IM_COL32(255, 255, 255, 255), 2.0f, 0, 3.5f);
+        }
 
-        // 10 Red Hearts (Health)
-        float heart_start_x = start_x;
-        float heart_start_y = start_y - 42.0f;
+        // Slot number key
+        char key_str[4];
+        snprintf(key_str, sizeof(key_str), "%d", i + 1);
+        draw->AddText(ImVec2(sx + 4, sy + 4), IM_COL32(180, 180, 180, 200), key_str);
+    }
+
+    // 3. 10 Authentic Pixel Hearts (Health)
+    float heart_x = start_x;
+    float heart_y = start_y - 30.0f;
+    if (g_srv_heart) {
         for (int h = 0; h < 10; ++h) {
-            draw->AddText(ImVec2(heart_start_x + h * 16.0f, heart_start_y), IM_COL32(255, 40, 40, 255), "<3");
-        }
-
-        // 10 Food drumsticks (Hunger)
-        float food_start_x = start_x + bar_w - 160.0f;
-        for (int fd = 0; fd < 10; ++fd) {
-            draw->AddText(ImVec2(food_start_x + fd * 16.0f, heart_start_y), IM_COL32(230, 160, 40, 255), "()");
+            draw->AddImage(
+                g_srv_heart,
+                ImVec2(heart_x + h * 18.0f, heart_y),
+                ImVec2(heart_x + h * 18.0f + 16.0f, heart_y + 16.0f)
+            );
         }
     }
 
-    // 3. 3D Steve Paperdoll in Top-Left
-    if (is_steve_mode) {
-        float doll_cx = 100.0f;
-        float doll_cy = 240.0f;
-
-        // Paperdoll background box
-        draw->AddRectFilled(ImVec2(20, 140), ImVec2(180, 340), IM_COL32(20, 20, 25, 210), 6.0f);
-        draw->AddRect(ImVec2(20, 140), ImVec2(180, 340), IM_COL32(0, 255, 255, 200), 6.0f, 0, 2.0f);
-        draw->AddText(ImVec2(40, 148), IM_COL32(0, 255, 255, 255), "Steve 3D Rig");
-
-        std::vector<ProjectedFace> doll_faces;
-        float leg_swing = sinf(g_anim_timer * 6.0f) * 0.5f;
-        float arm_swing = sinf(g_anim_timer * 6.0f) * 0.5f;
-
-        ImU32 col_head = IM_COL32(219, 176, 140, 255); // Steve skin
-        ImU32 col_shirt = IM_COL32(0, 168, 168, 255);  // Steve cyan shirt
-        ImU32 col_pants = IM_COL32(43, 53, 143, 255);  // Steve blue jeans
-
-        // Head
-        DrawVoxelBox(doll_faces, {0.0f, 42.0f, 0.0f}, {12.0f, 12.0f, 12.0f}, 0.0f, 0.2f, 0.0f, col_head, doll_cx, doll_cy, 220.0f, 200.0f);
-        // Torso
-        DrawVoxelBox(doll_faces, {0.0f, 16.0f, 0.0f}, {12.0f, 14.0f, 6.0f}, 0.0f, 0.2f, 0.0f, col_shirt, doll_cx, doll_cy, 220.0f, 200.0f);
-        // Left Arm
-        DrawVoxelBox(doll_faces, {-17.0f, 16.0f, 0.0f}, {5.0f, 14.0f, 5.0f}, arm_swing, 0.2f, 0.0f, col_shirt, doll_cx, doll_cy, 220.0f, 200.0f);
-        // Right Arm
-        DrawVoxelBox(doll_faces, {17.0f, 16.0f, 0.0f}, {5.0f, 14.0f, 5.0f}, -arm_swing, 0.2f, 0.0f, col_shirt, doll_cx, doll_cy, 220.0f, 200.0f);
-        // Left Leg
-        DrawVoxelBox(doll_faces, {-6.0f, -14.0f, 0.0f}, {5.5f, 16.0f, 5.5f}, -leg_swing, 0.2f, 0.0f, col_pants, doll_cx, doll_cy, 220.0f, 200.0f);
-        // Right Leg
-        DrawVoxelBox(doll_faces, {6.0f, -14.0f, 0.0f}, {5.5f, 16.0f, 5.5f}, leg_swing, 0.2f, 0.0f, col_pants, doll_cx, doll_cy, 220.0f, 200.0f);
-
-        // Sort back-to-front
-        std::sort(doll_faces.begin(), doll_faces.end(), [](const ProjectedFace& a, const ProjectedFace& b) {
-            return a.avg_z > b.avg_z;
-        });
-
-        for (const auto& f : doll_faces) {
-            draw->AddConvexPolyFilled(f.pts, 4, f.color);
-            draw->AddPolyline(f.pts, 4, IM_COL32(20, 20, 20, 160), ImDrawFlags_Closed, 1.0f);
+    // 4. 10 Authentic Pixel Drumsticks (Hunger)
+    float drum_x = start_x + bar_w - 180.0f;
+    if (g_srv_drumstick) {
+        for (int d = 0; d < 10; ++d) {
+            draw->AddImage(
+                g_srv_drumstick,
+                ImVec2(drum_x + d * 18.0f, heart_y),
+                ImVec2(drum_x + d * 18.0f + 16.0f, heart_y + 16.0f)
+            );
         }
     }
 
-    // 4. First-Person Viewmodel (Steve Arm & Diamond Sword at Bottom-Right)
-    if (is_steve_mode) {
-        float hand_cx = screen_w - 180.0f;
-        float hand_cy = screen_h - 100.0f;
+    // 5. Perspective Indicator & Active Info
+    char info_buf[128];
+    snprintf(info_buf, sizeof(info_buf), "[%s View]  Slot %d: %s  |  [F5] Toggle View",
+        g_is_first_person ? "First-Person" : "Third-Person Steve",
+        g_selected_slot + 1,
+        (g_selected_slot == 0) ? "Diamond Sword" :
+        (g_selected_slot == 1) ? "Diamond Pickaxe" :
+        (g_selected_slot == 2) ? "Dirt Block" :
+        (g_selected_slot == 3) ? "Stone Block" :
+        (g_selected_slot == 4) ? "TNT Block" : "Item"
+    );
+    float tw = ImGui::CalcTextSize(info_buf).x;
+    draw->AddText(ImVec2((screen_w - tw) * 0.5f, start_y - 48.0f), IM_COL32(255, 255, 80, 255), info_buf);
+}
 
-        // Bobbing & Attack swing
-        float bob = sinf(g_anim_timer * 6.0f) * 8.0f;
-        float swing_rot = g_attack_anim * 1.2f;
+void RenderFirstPersonViewmodel(float screen_w, float screen_h) {
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
 
-        std::vector<ProjectedFace> hand_faces;
-        ImU32 col_arm = IM_COL32(0, 168, 168, 255);    // Cyan sleeve
-        ImU32 col_blade = IM_COL32(43, 219, 219, 255); // Diamond cyan
-        ImU32 col_hilt = IM_COL32(139, 90, 43, 255);   // Wooden brown hilt
+    float hand_cx = screen_w - 180.0f;
+    float hand_cy = screen_h - 100.0f;
 
-        // Steve Forearm
-        DrawVoxelBox(hand_faces, {0.0f, -bob, 0.0f}, {14.0f, 40.0f, 14.0f}, -0.6f + swing_rot, 0.4f, 0.2f, col_arm, hand_cx, hand_cy, 350.0f, 300.0f);
+    // Authentic Minecraft swing easing: 1 - (1 - swing)^4
+    float swing_ease = 1.0f - powf(1.0f - g_attack_anim, 4.0f);
+    float swing_angle = swing_ease * 1.3f;
+    float bob = sinf(g_anim_timer * 6.0f) * 6.0f;
 
-        // Diamond Sword (Blade & Hilt)
-        DrawVoxelBox(hand_faces, {-10.0f, 35.0f - bob, 15.0f}, {6.0f, 45.0f, 2.0f}, -0.7f + swing_rot, 0.4f, 0.2f, col_blade, hand_cx, hand_cy, 350.0f, 300.0f);
-        DrawVoxelBox(hand_faces, {-10.0f, -5.0f - bob, 15.0f}, {16.0f, 4.0f, 4.0f}, -0.7f + swing_rot, 0.4f, 0.2f, col_hilt, hand_cx, hand_cy, 350.0f, 300.0f);
+    std::vector<ProjectedFace> hand_faces;
+    ImU32 col_arm = IM_COL32(0, 168, 168, 255);    // Steve cyan sleeve
+    ImU32 col_skin = IM_COL32(219, 176, 140, 255); // Steve skin
+    ImU32 col_blade = IM_COL32(43, 219, 219, 255); // Diamond cyan
+    ImU32 col_wood = IM_COL32(139, 90, 43, 255);   // Wooden hilt/tool
+    ImU32 col_dirt = IM_COL32(134, 96, 67, 255);   // Dirt block
+    ImU32 col_stone = IM_COL32(128, 128, 128, 255); // Stone block
 
-        std::sort(hand_faces.begin(), hand_faces.end(), [](const ProjectedFace& a, const ProjectedFace& b) {
-            return a.avg_z > b.avg_z;
-        });
+    // Steve Forearm
+    DrawVoxelBox(hand_faces, {0.0f, -bob, 0.0f}, {14.0f, 38.0f, 14.0f}, -0.6f + swing_angle, 0.35f, 0.15f, col_arm, hand_cx, hand_cy, 360.0f, 300.0f);
+    // Steve Hand
+    DrawVoxelBox(hand_faces, {0.0f, 30.0f - bob, 0.0f}, {13.0f, 10.0f, 13.0f}, -0.6f + swing_angle, 0.35f, 0.15f, col_skin, hand_cx, hand_cy, 360.0f, 300.0f);
 
-        for (const auto& f : hand_faces) {
-            draw->AddConvexPolyFilled(f.pts, 4, f.color);
-            draw->AddPolyline(f.pts, 4, IM_COL32(20, 20, 20, 180), ImDrawFlags_Closed, 1.2f);
-        }
+    // Held item based on selected slot
+    if (g_selected_slot == 0) {
+        // Diamond Sword
+        DrawVoxelBox(hand_faces, {-10.0f, 40.0f - bob, 15.0f}, {6.0f, 48.0f, 2.5f}, -0.7f + swing_angle, 0.35f, 0.15f, col_blade, hand_cx, hand_cy, 360.0f, 300.0f);
+        DrawVoxelBox(hand_faces, {-10.0f, -4.0f - bob, 15.0f}, {16.0f, 4.0f, 4.0f}, -0.7f + swing_angle, 0.35f, 0.15f, col_wood, hand_cx, hand_cy, 360.0f, 300.0f);
+    } else if (g_selected_slot == 1) {
+        // Diamond Pickaxe
+        DrawVoxelBox(hand_faces, {-10.0f, 30.0f - bob, 15.0f}, {4.0f, 40.0f, 4.0f}, -0.7f + swing_angle, 0.35f, 0.15f, col_wood, hand_cx, hand_cy, 360.0f, 300.0f);
+        DrawVoxelBox(hand_faces, {-10.0f, 68.0f - bob, 15.0f}, {22.0f, 6.0f, 5.0f}, -0.7f + swing_angle, 0.35f, 0.15f, col_blade, hand_cx, hand_cy, 360.0f, 300.0f);
+    } else if (g_selected_slot == 2) {
+        // Dirt Block held in hand
+        DrawVoxelBox(hand_faces, {-12.0f, 35.0f - bob, 15.0f}, {16.0f, 16.0f, 16.0f}, -0.5f + swing_angle, 0.4f, 0.1f, col_dirt, hand_cx, hand_cy, 360.0f, 300.0f);
+    } else if (g_selected_slot == 3) {
+        // Stone Block held in hand
+        DrawVoxelBox(hand_faces, {-12.0f, 35.0f - bob, 15.0f}, {16.0f, 16.0f, 16.0f}, -0.5f + swing_angle, 0.4f, 0.1f, col_stone, hand_cx, hand_cy, 360.0f, 300.0f);
     }
+
+    std::sort(hand_faces.begin(), hand_faces.end(), [](const ProjectedFace& a, const ProjectedFace& b) {
+        return a.avg_z > b.avg_z;
+    });
+
+    for (const auto& f : hand_faces) {
+        draw->AddConvexPolyFilled(f.pts, 4, f.color);
+        draw->AddPolyline(f.pts, 4, IM_COL32(20, 20, 20, 180), ImDrawFlags_Closed, 1.2f);
+    }
+}
+
+void RenderThirdPersonSteve(float screen_w, float screen_h) {
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+
+    float doll_cx = screen_w * 0.5f;
+    float doll_cy = screen_h * 0.65f;
+
+    std::vector<ProjectedFace> doll_faces;
+    float leg_swing = sinf(g_anim_timer * 5.0f) * 0.55f;
+    float arm_swing = sinf(g_anim_timer * 5.0f) * 0.55f;
+
+    ImU32 col_head = IM_COL32(219, 176, 140, 255); // Steve skin
+    ImU32 col_shirt = IM_COL32(0, 168, 168, 255);  // Steve cyan shirt
+    ImU32 col_pants = IM_COL32(43, 53, 143, 255);  // Steve blue jeans
+
+    // Head
+    DrawVoxelBox(doll_faces, {0.0f, 65.0f, 0.0f}, {18.0f, 18.0f, 18.0f}, 0.0f, 0.0f, 0.0f, col_head, doll_cx, doll_cy, 380.0f, 250.0f);
+    // Torso
+    DrawVoxelBox(doll_faces, {0.0f, 26.0f, 0.0f}, {18.0f, 22.0f, 9.0f}, 0.0f, 0.0f, 0.0f, col_shirt, doll_cx, doll_cy, 380.0f, 250.0f);
+    // Left Arm
+    DrawVoxelBox(doll_faces, {-26.0f, 26.0f, 0.0f}, {8.0f, 22.0f, 8.0f}, arm_swing, 0.0f, 0.0f, col_shirt, doll_cx, doll_cy, 380.0f, 250.0f);
+    // Right Arm
+    DrawVoxelBox(doll_faces, {26.0f, 26.0f, 0.0f}, {8.0f, 22.0f, 8.0f}, -arm_swing, 0.0f, 0.0f, col_shirt, doll_cx, doll_cy, 380.0f, 250.0f);
+    // Left Leg
+    DrawVoxelBox(doll_faces, {-9.0f, -22.0f, 0.0f}, {8.5f, 26.0f, 8.5f}, -leg_swing, 0.0f, 0.0f, col_pants, doll_cx, doll_cy, 380.0f, 250.0f);
+    // Right Leg
+    DrawVoxelBox(doll_faces, {9.0f, -22.0f, 0.0f}, {8.5f, 26.0f, 8.5f}, leg_swing, 0.0f, 0.0f, col_pants, doll_cx, doll_cy, 380.0f, 250.0f);
+
+    std::sort(doll_faces.begin(), doll_faces.end(), [](const ProjectedFace& a, const ProjectedFace& b) {
+        return a.avg_z > b.avg_z;
+    });
+
+    for (const auto& f : doll_faces) {
+        draw->AddConvexPolyFilled(f.pts, 4, f.color);
+        draw->AddPolyline(f.pts, 4, IM_COL32(20, 20, 20, 160), ImDrawFlags_Closed, 1.2f);
+    }
+}
+
+void ScanSekiroProcessMemory() {
+    g_sekiro_base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    if (!g_sekiro_base) return;
+
+    MODULEINFO mod_info{};
+    if (GetModuleInformation(GetCurrentProcess(), reinterpret_cast<HMODULE>(g_sekiro_base), &mod_info, sizeof(mod_info))) {
+        Log("Sekiro Base: 0x%p, Size: 0x%08X", (void*)g_sekiro_base, mod_info.SizeOfImage);
+    }
+
+    // Initialize Sekiro Native ChrIns
+    g_native_player.Handle = 1;
+    g_native_player.Name = "Wolf";
+    g_native_player.Health = 100.0f;
+    g_native_player.MaxHealth = 100.0f;
+    g_native_player.ModelAlpha = 1.0f;
+    g_native_player.bModelHidden = false;
+    g_native_player.bCapsulePhysicsActive = true;
+
+    // Initialize Camera looking forward
+    g_native_camera.Position = {0.0f, 100.0f, 0.0f};
+    g_native_camera.Forward = {0.0f, 0.0f, 1.0f};
+
+    SekiroMod_Initialize(&g_native_player, &g_native_camera);
+    Log("Initialized mc-core Sekiro Adapter with native player & camera contexts.");
 }
 
 HRESULT WINAPI DetourResizeBuffers(
@@ -399,37 +526,37 @@ HRESULT WINAPI DetourResizeBuffers(
 
 HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UINT flags) {
     if (!g_mod_initialized.load()) {
-        Log("Initializing SekiroMod in DetourPresent...");
-        SekiroMod_Initialize(nullptr, nullptr);
+        ScanSekiroProcessMemory();
         g_last_frame_time = std::chrono::steady_clock::now();
         g_mod_initialized.store(true);
-        Log("SekiroMod initialized successfully.");
     }
 
     if (!g_imgui_initialized.load()) {
         InitImGui(pSwapChain);
     }
 
-    // F6 Hotkey toggle
+    // F6 Hotkey toggle (Steve Mode)
     if (GetAsyncKeyState(VK_F6) & 1) {
         bool current_active = SekiroMod_IsSteveModeActive();
         bool new_active = !current_active;
         SekiroMod_SetSteveMode(new_active);
         MessageBeep(MB_ICONASTERISK);
-        Log(">>> Hotkey [F6] triggered! Steve Mode toggled to: %s", new_active ? "TRUE (ACTIVE)" : "FALSE (STANDBY)");
+        Log(">>> Hotkey [F6] triggered! Steve Mode: %s", new_active ? "ACTIVE (WOLF HIDDEN)" : "STANDBY (WOLF RESTORED)");
+    }
+
+    // F5 Hotkey toggle (Perspective: First-Person vs Third-Person Steve)
+    if (GetAsyncKeyState(VK_F5) & 1) {
+        g_is_first_person = !g_is_first_person;
+        MessageBeep(MB_OK);
+        Log(">>> Hotkey [F5] triggered! Perspective toggled to: %s", g_is_first_person ? "First-Person" : "Third-Person Steve");
     }
 
     // Hotbar 1-9 switch keys
     for (int k = 0; k < 9; ++k) {
         if (GetAsyncKeyState('1' + k) & 1) {
             g_selected_slot = k;
-            Log("Selected hotbar slot: %d (%s)", k + 1, kHotbarItems[k]);
+            Log("Selected hotbar slot: %d", k + 1);
         }
-    }
-
-    // Left click attack swing trigger
-    if (GetAsyncKeyState(VK_LBUTTON) & 1) {
-        g_attack_anim = 1.0f;
     }
 
     // Compute delta time
@@ -442,7 +569,62 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
 
     g_anim_timer += dt;
     if (g_attack_anim > 0.0f) {
-        g_attack_anim = std::max(0.0f, g_attack_anim - dt * 4.0f);
+        g_attack_anim = std::max(0.0f, g_attack_anim - dt * 3.5f);
+    }
+
+    const bool is_steve_mode = SekiroMod_IsSteveModeActive();
+
+    // In-Game Interactions when Steve Mode is Active
+    if (is_steve_mode) {
+        auto* adapter = mc::adapter::GetGlobalSekiroAdapter();
+        auto* world = mc::adapter::GetGlobalVoxelWorld();
+        auto* combat = mc::adapter::GetGlobalCombatEngine();
+
+        // Right Click: Place Voxel Block (aligned to 100cm grid)
+        if (GetAsyncKeyState(VK_RBUTTON) & 1) {
+            if (adapter && world) {
+                mc::Vec3 cam_pos = adapter->getCameraPosition();
+                mc::Vec3 cam_fwd = adapter->getCameraForward();
+                mc::Vec3 ray_end = cam_pos + cam_fwd * 500.0f; // 5 meters
+
+                mc::RaycastResult hit = adapter->raycastWorld(cam_pos, ray_end);
+                if (hit.has_hit) {
+                    auto target = mc::VoxelWorld::calculatePlacementTarget(hit);
+                    if (target) {
+                        mc::BlockId b = mc::BlockId::Stone;
+                        if (g_selected_slot == 2) b = mc::BlockId::Dirt;
+                        else if (g_selected_slot == 3) b = mc::BlockId::Stone;
+                        else if (g_selected_slot == 4) b = mc::BlockId::Tnt;
+
+                        if (world->placeBlock(*target, b, adapter->getPlayerPosition())) {
+                            MessageBeep(MB_OK);
+                            Log("Placed voxel block at Grid [%d, %d, %d]", target->x, target->y, target->z);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Left Click: Attack swing or Mine Block
+        if (GetAsyncKeyState(VK_LBUTTON) & 1) {
+            g_attack_anim = 1.0f; // trigger swing animation
+            if (adapter && world && combat) {
+                mc::Vec3 cam_pos = adapter->getCameraPosition();
+                mc::Vec3 cam_fwd = adapter->getCameraForward();
+                mc::Vec3 ray_end = cam_pos + cam_fwd * 500.0f;
+
+                mc::RaycastResult hit = adapter->raycastWorld(cam_pos, ray_end);
+                if (hit.has_hit) {
+                    if (hit.is_block) {
+                        mc::GridPos gp = mc::VoxelWorld::worldToGrid(hit.point);
+                        world->mineBlock(gp, (g_selected_slot == 1) ? mc::ItemId::DiamondPickaxe : mc::ItemId::DiamondSword, 0.15f);
+                    } else if (hit.hit_entity_id != 0) {
+                        auto intent = combat->calculateMeleeHit(0, hit.hit_entity_id, mc::ItemId::DiamondSword, 1.0f, false, true, hit.point, cam_fwd);
+                        combat->executeHit(intent);
+                    }
+                }
+            }
+        }
     }
 
     // Tick mc-core engine
@@ -466,35 +648,40 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        const bool is_active = SekiroMod_IsSteveModeActive();
-
-        // 1. Status Panel Window
+        // 1. Top-Left Status Panel
         ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(480, 110), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(520, 115), ImGuiCond_Always);
         ImGuiWindowFlags flags_win = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse;
 
-        if (is_active) {
+        if (is_steve_mode) {
             ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.0f, 1.0f, 0.8f, 1.0f));
             ImGui::Begin("Minecraft Core Mod (mc-core)", nullptr, flags_win);
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.4f, 1.0f), "[ACTIVE] Minecraft Steve Mode Engaged!");
+            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.4f, 1.0f), "[ACTIVE] Minecraft Steve Mode Engaged! (Native Wolf Hidden)");
             ImGui::Separator();
-            ImGui::Text("Item: [%d] %s  |  Attack Swing: LMB", g_selected_slot + 1, kHotbarItems[g_selected_slot]);
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Press [F6] to Exit Minecraft Mode  |  Keys [1-9] Change Slot");
+            ImGui::Text("View: [%s] (F5 toggle)  |  LMB: Attack/Mine  |  RMB: Place Block", g_is_first_person ? "First-Person" : "Third-Person");
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "[F6] Exit Minecraft Mode  |  Keys [1-9] Switch Hotbar Slot");
             ImGui::End();
             ImGui::PopStyleColor();
+
+            // 2. Render Full Authentic 16x16 Pixel Minecraft GUI
+            RenderPixelMinecraftGUI(screen_w, screen_h);
+
+            // 3. Render 3D Perspective Visuals
+            if (g_is_first_person) {
+                RenderFirstPersonViewmodel(screen_w, screen_h);
+            } else {
+                RenderThirdPersonSteve(screen_w, screen_h);
+            }
         } else {
             ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
             ImGui::Begin("Minecraft Core Mod (mc-core)", nullptr, flags_win);
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "[STANDBY] mc-core Adapter Ready");
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "[STANDBY] mc-core Sekiro Adapter Ready");
             ImGui::Separator();
             ImGui::Text("Target: Sekiro: Shadows Die Twice (DirectX 11)");
             ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), ">>> Press [F6] to ACTIVATE Minecraft Steve Mode <<<");
             ImGui::End();
             ImGui::PopStyleColor();
         }
-
-        // 2. Render Full Minecraft Crosshair, Hotbar, 3D Steve Rig & Hand
-        RenderMinecraftHUD(screen_w, screen_h, is_active);
 
         ImGui::Render();
 
@@ -533,13 +720,9 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
 
                 if (g_frame_log_count < 5) {
                     g_frame_log_count++;
-                    Log("Frame %d: Rendered successfully to back buffer (%.0fx%.0f)", g_frame_log_count, screen_w, screen_h);
+                    Log("Frame %d: Rendered successfully on back buffer (%.0fx%.0f)", g_frame_log_count, screen_w, screen_h);
                 }
-            } else if (g_frame_log_count < 5) {
-                Log("Failed to create RTV (HR: 0x%08X)", (unsigned)hr_rtv);
             }
-        } else if (g_frame_log_count < 5) {
-            Log("Failed to get SwapChain back buffer (HR: 0x%08X)", (unsigned)hr_buf);
         }
     }
 
@@ -692,7 +875,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls(hModule);
         Log("==================================================");
-        Log(" mc-core Sekiro Adapter v0.1.0 Loaded");
+        Log(" mc-core Sekiro Adapter v1.0.0 Loaded");
         Log("==================================================");
         CreateThread(nullptr, 0, LoaderThread, nullptr, 0, nullptr);
         break;
@@ -705,6 +888,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             SekiroMod_Shutdown();
         }
         if (g_imgui_initialized.load()) {
+            if (g_srv_diamond_sword) g_srv_diamond_sword->Release();
+            if (g_srv_diamond_pickaxe) g_srv_diamond_pickaxe->Release();
+            if (g_srv_dirt) g_srv_dirt->Release();
+            if (g_srv_stone) g_srv_stone->Release();
+            if (g_srv_tnt) g_srv_tnt->Release();
+            if (g_srv_heart) g_srv_heart->Release();
+            if (g_srv_drumstick) g_srv_drumstick->Release();
+
             ImGui_ImplDX11_Shutdown();
             ImGui_ImplWin32_Shutdown();
             ImGui::DestroyContext();

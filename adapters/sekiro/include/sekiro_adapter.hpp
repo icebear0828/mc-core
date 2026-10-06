@@ -45,6 +45,7 @@ public:
     void registerEntity(uint64_t entity_id, sekiro::native::ChrIns* entity);
     void unregisterEntity(uint64_t entity_id);
     sekiro::native::ChrIns* getRegisteredEntity(uint64_t entity_id) const;
+    void setCustomRaycastHandler(sekiro::native::DantelionEngineContext::RaycastHandler handler);
 
     // --- IPhysicsAdapter ---
     RaycastResult raycastWorld(const Vec3& start, const Vec3& end, uint64_t ignore_entity = 0) override;
@@ -103,6 +104,7 @@ private:
     std::unordered_map<uint64_t, std::unique_ptr<SekiroBlockColliderRecord>> colliders_;
     std::unordered_map<uint64_t, std::unique_ptr<SekiroBlockVisualRecord>> visuals_;
     std::unordered_map<uint64_t, sekiro::native::ChrIns*> registered_entities_;
+    sekiro::native::DantelionEngineContext::RaycastHandler custom_raycast_{nullptr};
 
     // 12 Steve parts
     bool steve_parts_spawned_{false};

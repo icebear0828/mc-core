@@ -16,6 +16,7 @@ add_executable(mc_tests
     test_sekiro_adapter.cpp
     test_consumables.cpp
     test_elytra.cpp
+    test_sekiro_integration.cpp
 )
 
 target_link_libraries(mc_tests
