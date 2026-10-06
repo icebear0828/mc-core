@@ -28,7 +28,8 @@ TEST(SteveAnimatorTest, WalkingProducesOppositeLegSwings) {
     const auto left_leg = transforms[static_cast<size_t>(mc::StevePart::LeftLeg)];
 
     // Opposite phase: if one is forward, the other is backward
-    EXPECT_NE(right_leg.rot.x, left_leg.rot.x);
+    EXPECT_NE(right_leg.rot.y, left_leg.rot.y);
+    EXPECT_NEAR(right_leg.rot.y, -left_leg.rot.y, 0.01f);
 }
 
 TEST(SteveAnimatorTest, HeadFollowsLookAngles) {
@@ -41,6 +42,6 @@ TEST(SteveAnimatorTest, HeadFollowsLookAngles) {
     const auto& transforms = animator.getTransforms();
     const auto head = transforms[static_cast<size_t>(mc::StevePart::Head)];
 
-    EXPECT_NE(head.rot.x, 0.0f);
-    EXPECT_NE(head.rot.y, 0.0f);
+    EXPECT_NE(head.rot.y, 0.0f); // pitch
+    EXPECT_NE(head.rot.z, 0.0f); // yaw
 }
