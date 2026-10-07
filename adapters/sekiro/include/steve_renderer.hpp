@@ -20,6 +20,10 @@ public:
     bool init(ID3D11Device* device);
     // Replaces the skin. `rgba` is width*height*4 bytes. Without a skin a neutral grey is used.
     bool setSkin(ID3D11Device* device, const std::vector<uint8_t>& rgba, UINT width, UINT height);
+    // The game's depth buffer (reverse-Z R32G8X24_TYPELESS) so the rig is hidden behind the scene. Null or an
+    // unsupported layout turns occlusion off. The texture is only referenced, not owned beyond this call chain.
+    void setSceneDepth(ID3D11Texture2D* texture);
+    [[nodiscard]] bool sceneDepthActive() const { return scene_depth_srv_ != nullptr; }
     [[nodiscard]] bool ready() const { return ready_; }
 
     // Draws every part with its own world matrix. Saves and restores the pipeline state it touches.
@@ -38,6 +42,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Buffer> indices_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> frame_cb_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> part_cb_;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> scene_cb_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> scene_depth_tex_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> scene_depth_srv_;
     Microsoft::WRL::ComPtr<ID3D11RasterizerState> raster_;
     Microsoft::WRL::ComPtr<ID3D11BlendState> blend_;
     Microsoft::WRL::ComPtr<ID3D11DepthStencilState> depth_state_;

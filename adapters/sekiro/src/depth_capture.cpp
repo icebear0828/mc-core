@@ -284,6 +284,17 @@ void DepthCapture::dump(ID3D11Device* device, ID3D11DeviceContext* context, void
     }
 }
 
+ID3D11Texture2D* DepthCapture::sceneDepth(unsigned width, unsigned height) const {
+    const size_t n = g_count.load();
+    const Candidate* best = nullptr;
+    for (size_t i = 0; i < n; ++i) {
+        const Candidate& c = g_candidates[i];
+        if (c.desc.Width != width || c.desc.Height != height || c.desc.Format != DXGI_FORMAT_R32G8X24_TYPELESS) continue;
+        if (!best || c.binds > best->binds) best = &c;
+    }
+    return best ? best->texture.Get() : nullptr;
+}
+
 void DepthCapture::probe(ID3D11Device* device, ID3D11DeviceContext* context, const Probe* probes, size_t count,
                          void (*log)(const char*, ...)) {
     const size_t n = g_count.load();

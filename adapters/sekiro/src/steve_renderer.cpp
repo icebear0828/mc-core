@@ -15,7 +15,9 @@ using Microsoft::WRL::ComPtr;
 constexpr char kShaderSource[] = R"hlsl(
 cbuffer Frame : register(b0) { row_major float4x4 view_proj; };
 cbuffer Part  : register(b1) { row_major float4x4 world; };
+cbuffer Scene : register(b0) { float4 scene; }; // x depth*z constant, y relative bias, z metre bias, w enabled
 Texture2D skin : register(t0);
+Texture2D<float2> scene_depth : register(t1);
 SamplerState point_clamp : register(s0);
 
 struct VSIn  { float3 pos : POSITION; float2 uv : TEXCOORD0; };
@@ -29,6 +31,12 @@ VSOut VSMain(VSIn i) {
 }
 
 float4 PSMain(VSOut i) : SV_Target {
+    if (scene.w > 0.5) {
+        // Reverse-Z game depth: nearer = larger, 0 = far. SV_POSITION.w is 1 / view-space z in a pixel shader.
+        float gd = scene_depth.Load(int3(i.pos.xy, 0)).r;
+        float steve_z = rcp(i.pos.w);
+        if (gd > 0.0 && scene.x / gd < steve_z * (1.0 - scene.y) - scene.z) discard;
+    }
     float4 c = skin.Sample(point_clamp, i.uv);
     clip(c.a - 0.5);          // overlay layers (hat, jacket, sleeves, pants) are cut out, not blended
     return float4(c.rgb, 1.0);
@@ -82,6 +90,8 @@ struct StateBackup {
     ComPtr<ID3D11DomainShader> ds;
     ComPtr<ID3D11Buffer> vs_cb[2];
     ComPtr<ID3D11ShaderResourceView> ps_srv;
+    ComPtr<ID3D11ShaderResourceView> ps_srv1;
+    ComPtr<ID3D11Buffer> ps_cb0;
     ComPtr<ID3D11SamplerState> ps_sampler;
 
     void save(ID3D11DeviceContext* c) {
@@ -104,6 +114,8 @@ struct StateBackup {
         vs_cb[0].Attach(cbs[0]);
         vs_cb[1].Attach(cbs[1]);
         c->PSGetShaderResources(0, 1, ps_srv.GetAddressOf());
+        c->PSGetShaderResources(1, 1, ps_srv1.GetAddressOf());
+        c->PSGetConstantBuffers(0, 1, ps_cb0.GetAddressOf());
         c->PSGetSamplers(0, 1, ps_sampler.GetAddressOf());
     }
 
@@ -128,6 +140,10 @@ struct StateBackup {
         c->VSSetConstantBuffers(0, 2, cbs);
         ID3D11ShaderResourceView* srv = ps_srv.Get();
         c->PSSetShaderResources(0, 1, &srv);
+        ID3D11ShaderResourceView* srv1 = ps_srv1.Get();
+        c->PSSetShaderResources(1, 1, &srv1);
+        ID3D11Buffer* cb0 = ps_cb0.Get();
+        c->PSSetConstantBuffers(0, 1, &cb0);
         ID3D11SamplerState* sampler = ps_sampler.Get();
         c->PSSetSamplers(0, 1, &sampler);
     }
@@ -191,6 +207,11 @@ bool SteveRenderer::init(ID3D11Device* device) {
         logLine("CreateBuffer (constants) failed");
         return false;
     }
+    cb.ByteWidth = sizeof(float) * 4;
+    if (FAILED(device->CreateBuffer(&cb, nullptr, scene_cb_.GetAddressOf()))) {
+        logLine("CreateBuffer (constants) failed");
+        return false;
+    }
 
     D3D11_RASTERIZER_DESC rd{};
     rd.FillMode = D3D11_FILL_SOLID;
@@ -219,6 +240,28 @@ bool SteveRenderer::init(ID3D11Device* device) {
 
     ready_ = true;
     return true;
+}
+
+void SteveRenderer::setSceneDepth(ID3D11Texture2D* texture) {
+    if (texture == scene_depth_tex_.Get()) return;
+    scene_depth_tex_ = texture;
+    scene_depth_srv_.Reset();
+    if (!texture || !device_) return;
+    D3D11_TEXTURE2D_DESC td{};
+    texture->GetDesc(&td);
+    // Only the layout measured on Sekiro is understood: 32-bit float depth + 8-bit stencil, SRV-capable.
+    if (td.Format != DXGI_FORMAT_R32G8X24_TYPELESS || !(td.BindFlags & D3D11_BIND_SHADER_RESOURCE) || td.SampleDesc.Count != 1) {
+        logLine("scene depth texture has an unsupported layout; occlusion off");
+        return;
+    }
+    D3D11_SHADER_RESOURCE_VIEW_DESC sv{};
+    sv.Format = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+    sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    sv.Texture2D.MipLevels = 1;
+    if (FAILED(device_->CreateShaderResourceView(texture, &sv, scene_depth_srv_.GetAddressOf()))) {
+        logLine("scene depth SRV creation failed; occlusion off");
+        scene_depth_srv_.Reset();
+    }
 }
 
 bool SteveRenderer::setSkin(ID3D11Device* device, const std::vector<uint8_t>& rgba, UINT width, UINT height) {
@@ -279,6 +322,15 @@ void SteveRenderer::draw(ID3D11DeviceContext* context, ID3D11RenderTargetView* t
         return true;
     };
     if (!upload(frame_cb_.Get(), view_projection)) return;
+    {
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (SUCCEEDED(context->Map(scene_cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+            const float params[4] = {kSceneDepthNear, kSceneOcclusionRelativeBias, kSceneOcclusionBiasMetres,
+                                     scene_depth_srv_ ? 1.0f : 0.0f};
+            std::memcpy(mapped.pData, params, sizeof(params));
+            context->Unmap(scene_cb_.Get(), 0);
+        }
+    }
 
     StateBackup backup;
     backup.save(context);
@@ -309,6 +361,10 @@ void SteveRenderer::draw(ID3D11DeviceContext* context, ID3D11RenderTargetView* t
     context->VSSetConstantBuffers(0, 2, cbs);
     ID3D11ShaderResourceView* srv = skin_.Get();
     context->PSSetShaderResources(0, 1, &srv);
+    ID3D11ShaderResourceView* scene_srv = scene_depth_srv_.Get();
+    context->PSSetShaderResources(1, 1, &scene_srv);
+    ID3D11Buffer* scene_cb = scene_cb_.Get();
+    context->PSSetConstantBuffers(0, 1, &scene_cb);
     ID3D11SamplerState* sampler = sampler_.Get();
     context->PSSetSamplers(0, 1, &sampler);
 

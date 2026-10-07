@@ -18,6 +18,10 @@ public:
     // to `log`. Debug aid, called on demand: it stalls the GPU.
     void dump(ID3D11Device* device, ID3D11DeviceContext* context, void (*log)(const char*, ...));
 
+    // The texture holding the game's scene depth for a `width` x `height` frame: the most-bound
+    // depth target of that size. Null until the game has bound one. Not AddRef'd; valid until reset().
+    ID3D11Texture2D* sceneDepth(unsigned width, unsigned height) const;
+
     // Logs the depth value at each pixel of the most-bound full-size candidate (calibration probe).
     // `tags` are printed next to the value so the caller can pair it with what it projected.
     struct Probe {

@@ -34,6 +34,15 @@ Mat4 viewFromCamera(const live::LiveSample& cam);
 Mat4 viewProjection(const live::LiveSample& cam, float fov_y_radians, float aspect, float z_near = 0.05f,
                     float z_far = 500.0f);
 
+// The game's scene depth is a reverse-Z buffer (cleared to 0, nearer = larger) with an effectively infinite
+// far plane, so depth * viewZ is constant. The constant was measured on the real game by projecting points
+// on the Wolf and reading the buffer there. A few percent of error is absorbed by the bias.
+constexpr float kSceneDepthNear = 0.0806f;
+constexpr float kSceneOcclusionRelativeBias = 0.08f; // surface must be this fraction nearer...
+constexpr float kSceneOcclusionBiasMetres = 0.05f;   // ...plus this much
+// True when the game's surface at this pixel is nearer to the camera than Steve's by more than the bias.
+bool sceneOccludes(float game_depth, float steve_view_z);
+
 // ---------------------------------------------------------------------------------------------
 // Steve model: the same box/UV table as tools/extract_mc_assets.py (PARTS), 64x64 skin layout.
 // Model pixels use Minecraft's model space (x = character's left, y = down, z = back). Mesh vertices

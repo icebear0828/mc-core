@@ -130,6 +130,11 @@ native::FVector3 transformPoint(const Mat4& m, const native::FVector3& p) {
     return {o[0], o[1], o[2]};
 }
 
+bool sceneOccludes(float game_depth, float steve_view_z) {
+    if (!(game_depth > 0.0f)) return false; // 0 = far plane, negatives and NaN are not depth
+    return kSceneDepthNear / game_depth < steve_view_z * (1.0f - kSceneOcclusionRelativeBias) - kSceneOcclusionBiasMetres;
+}
+
 Mat4 perspectiveLH(float fov_y_radians, float aspect, float z_near, float z_far) {
     const float ys = 1.0f / std::tan(fov_y_radians * 0.5f);
     const float xs = ys / aspect;

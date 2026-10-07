@@ -660,6 +660,7 @@ void DrawSteveRig(ID3D11RenderTargetView* target, float screen_w, float screen_h
         const sekiro::native::FQuat rot = visual ? visual->RotationQuat : sekiro::native::FQuat{};
         world[i] = sekiro::render::partMatrix(part, rot, root.position, root.yaw);
     }
+    g_steve_renderer->setSceneDepth(g_depth_capture.sceneDepth(static_cast<unsigned>(screen_w), static_cast<unsigned>(screen_h)));
     g_steve_renderer->draw(g_d3d_context, target, static_cast<UINT>(screen_w), static_cast<UINT>(screen_h), view_proj, world);
 }
 

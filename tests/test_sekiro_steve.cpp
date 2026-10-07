@@ -344,3 +344,33 @@ TEST(SekiroSteveRigTest, PivotsMatchTheMinecraftSkeleton) {
     EXPECT_NEAR(partPivot(StevePart::RightLeg).X, 1.9f * px, 1e-5f);
     EXPECT_NEAR(partPivot(StevePart::Hat).Y, partPivot(StevePart::Head).Y, 1e-6f);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Scene occlusion against the game's depth buffer: reverse-Z, depth ~ kSceneDepthNear / view z.
+// Measured on the real game (the Wolf at 4.2 m reads depth 0.0199 -> depth * z = 0.0836 +- body depth).
+// ---------------------------------------------------------------------------------------------
+TEST(SekiroSceneOcclusionTest, WallInFrontOfSteveHidesHim) {
+    const float steve_z = 6.0f;
+    const float wall_z = 3.0f;
+    EXPECT_TRUE(sceneOccludes(kSceneDepthNear / wall_z, steve_z));
+}
+
+TEST(SekiroSceneOcclusionTest, SceneBehindSteveDoesNotHideHim) {
+    EXPECT_FALSE(sceneOccludes(kSceneDepthNear / 10.0f, 4.0f));
+}
+
+TEST(SekiroSceneOcclusionTest, GroundAtHisFeetDoesNotCutHimOff) {
+    // Same surface, calibration error of 5 %: the bias must absorb it.
+    const float z = 4.0f;
+    EXPECT_FALSE(sceneOccludes(kSceneDepthNear / (z * 0.95f), z));
+    EXPECT_FALSE(sceneOccludes(kSceneDepthNear / (z * 1.05f), z));
+}
+
+TEST(SekiroSceneOcclusionTest, ClearedDepthMeansNothingIsInTheWay) {
+    EXPECT_FALSE(sceneOccludes(0.0f, 4.0f)); // reverse-Z: 0 is the far plane / sky
+}
+
+TEST(SekiroSceneOcclusionTest, GarbageDepthNeverHides) {
+    EXPECT_FALSE(sceneOccludes(-1.0f, 4.0f));
+    EXPECT_FALSE(sceneOccludes(std::nanf(""), 4.0f));
+}
