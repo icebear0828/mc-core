@@ -251,9 +251,17 @@ void SaveFramePng(IDXGISwapChain* swap_chain, const wchar_t* out_path) {
         Log("Screenshot: PNG encoder setup failed");
         return;
     }
-    WICPixelFormatGUID format = GUID_WICPixelFormat32bppRGBA;
-    if (FAILED(frame->SetPixelFormat(&format)) ||
-        FAILED(frame->WritePixels(h, w * 4, static_cast<UINT>(rgba.size()), rgba.data())) || FAILED(frame->Commit()) ||
+    // The PNG encoder natively takes BGRA. SetPixelFormat silently rewrites the GUID to the closest
+    // supported format without converting our data, so write BGRA and verify what we got back.
+    for (size_t i = 0; i + 3 < rgba.size(); i += 4) {
+        std::swap(rgba[i], rgba[i + 2]);
+    }
+    WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
+    if (FAILED(frame->SetPixelFormat(&format)) || !IsEqualGUID(format, GUID_WICPixelFormat32bppBGRA)) {
+        Log("Screenshot: PNG encoder does not accept 32bppBGRA; aborting instead of writing swapped colours");
+        return;
+    }
+    if (FAILED(frame->WritePixels(h, w * 4, static_cast<UINT>(rgba.size()), rgba.data())) || FAILED(frame->Commit()) ||
         FAILED(encoder->Commit())) {
         Log("Screenshot: PNG write failed");
         return;
