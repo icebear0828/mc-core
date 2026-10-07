@@ -295,6 +295,7 @@ void SekiroMod_UpdatePointers(sekiro::native::ChrIns* player, sekiro::native::Ch
 bool SekiroMod_RegisterEntity(uint64_t entity_id, sekiro::native::ChrIns* entity);
 void SekiroMod_UnregisterEntity(uint64_t entity_id);
 mc::Session* SekiroMod_GetSession();
+const mc::adapter::SekiroAdapter* SekiroMod_GetAdapter();
 }
 
 TEST(SekiroAdapterTest, PluginLifecycleAndTick) {
@@ -704,4 +705,21 @@ TEST(SekiroAdapterTest, SteveRootIsMetresInDantelionSpaceAndYawFlipsSign) {
     EXPECT_NEAR(root.position.Y, 0.f, 1e-4f);
     EXPECT_NEAR(root.position.Z, 10.f, 1e-4f);  // forward
     EXPECT_NEAR(root.yaw, -3.14159265f * 0.5f, 1e-5f); // a turn to the left is negative about Dantelion +Y
+}
+
+TEST(SekiroSessionTest, AdapterIsReachableForTheRendererOnlyWhileInitialised) {
+    EXPECT_EQ(SekiroMod_GetAdapter(), nullptr);
+    ChrIns player;
+    ChrCam camera;
+    SekiroMod_Initialize(&player, &camera);
+    ASSERT_NE(SekiroMod_GetAdapter(), nullptr);
+
+    SekiroMod_SetSteveMode(true);
+    InputSnapshot idle;
+    SekiroMod_Tick(0.05f, &idle);
+    EXPECT_TRUE(SekiroMod_GetAdapter()->isSteveSpawned());
+    EXPECT_NE(SekiroMod_GetAdapter()->getStevePartVisual(StevePart::Head), nullptr);
+
+    SekiroMod_Shutdown();
+    EXPECT_EQ(SekiroMod_GetAdapter(), nullptr);
 }

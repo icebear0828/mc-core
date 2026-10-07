@@ -27,6 +27,8 @@
 #include "sekiro_hud_atlas.hpp"
 #include "sekiro_adapter.hpp"
 #include "sekiro_live.hpp"
+#include "sekiro_steve.hpp"
+#include "steve_renderer.hpp"
 #include "mc/hud.hpp"
 #include "mc/session.hpp"
 
@@ -39,6 +41,7 @@ bool SekiroMod_IsSteveModeActive();
 void SekiroMod_Tick(float delta_time, const mc::InputSnapshot* input);
 void SekiroMod_UpdatePointers(sekiro::native::ChrIns* player, sekiro::native::ChrCam* camera);
 mc::Session* SekiroMod_GetSession();
+const mc::adapter::SekiroAdapter* SekiroMod_GetAdapter();
 }
 
 // Forward declare ImGui Win32 handler
@@ -271,19 +274,10 @@ void SaveFramePng(IDXGISwapChain* swap_chain, const wchar_t* out_path) {
 
 int g_frame_log_count = 0;
 int g_selected_slot = 0; // 0..8
-float g_anim_timer = 0.0f;
 
 mc::HudEngine* GetHud() {
     mc::Session* session = SekiroMod_GetSession();
     return session ? &session->hud() : nullptr;
-}
-
-// Legacy viewmodel convention: 1 at swing start decaying to 0. Session reports progress 0 -> 1.
-float CurrentAttackAnim() {
-    const mc::Session* session = SekiroMod_GetSession();
-    if (!session) return 0.0f;
-    const float progress = session->lastAnimInput().swing_progress;
-    return progress > 0.0f ? 1.0f - progress : 0.0f;
 }
 
 const char* kHotbarItems[9] = {
@@ -319,6 +313,10 @@ sekiro::native::ChrIns g_player_mirror;
 sekiro::native::ChrCam g_camera_mirror;
 sekiro::live::LiveMirror g_live_mirror;
 bool g_in_world = false;
+sekiro::live::LiveSample g_last_sample{};
+std::unique_ptr<sekiro::render::SteveRenderer> g_steve_renderer;
+bool g_steve_renderer_tried = false;
+bool g_logged_fov = false;
 bool g_warned_model_hide = false;
 sekiro::live::SampleStatus g_last_sample_status = sekiro::live::SampleStatus::NotBound;
 
@@ -378,6 +376,7 @@ bool SyncLiveGameState(float dt) {
 
     if (st == SampleStatus::Ok) {
         g_live_mirror.update(sample, dt, g_player_mirror, g_camera_mirror);
+        g_last_sample = sample;
         if (!g_in_world) {
             g_in_world = true;
             SekiroMod_UpdatePointers(&g_player_mirror, &g_camera_mirror);
@@ -444,98 +443,6 @@ void InitImGui(IDXGISwapChain* pSwapChain) {
 
     g_imgui_initialized.store(true);
     Log("ImGui successfully initialized on SwapChain (HWND: %p, Device: %p)", g_game_hwnd, g_d3d_device);
-}
-
-// 3D Math & Projection structures for Steve Voxel rendering
-struct Vec3F { float x, y, z; };
-
-Vec3F RotateVertex(const Vec3F& v, float pitch, float yaw, float roll) {
-    // Yaw (around Y)
-    float cy = cosf(yaw), sy = sinf(yaw);
-    float x1 = v.x * cy + v.z * sy;
-    float z1 = -v.x * sy + v.z * cy;
-    float y1 = v.y;
-    // Pitch (around X)
-    float cp = cosf(pitch), sp = sinf(pitch);
-    float y2 = y1 * cp - z1 * sp;
-    float z2 = y1 * sp + z1 * cp;
-    float x2 = x1;
-    // Roll (around Z)
-    float cr = cosf(roll), sr = sinf(roll);
-    return { x2 * cr - y2 * sr, x2 * sr + y2 * cr, z2 };
-}
-
-ImVec2 ProjectToScreen(const Vec3F& v, float screen_cx, float screen_cy, float scale, float cam_dist) {
-    float z = v.z + cam_dist;
-    if (z < 0.1f) z = 0.1f;
-    float f = scale / z;
-    return ImVec2(screen_cx + v.x * f, screen_cy - v.y * f);
-}
-
-ImU32 ShadeColor(ImU32 col, float factor) {
-    int r = (int)(((col >> 0) & 0xFF) * factor);
-    int g = (int)(((col >> 8) & 0xFF) * factor);
-    int b = (int)(((col >> 16) & 0xFF) * factor);
-    int a = (int)((col >> 24) & 0xFF);
-    r = std::clamp(r, 0, 255);
-    g = std::clamp(g, 0, 255);
-    b = std::clamp(b, 0, 255);
-    return IM_COL32(r, g, b, a);
-}
-
-struct ProjectedFace {
-    ImVec2 pts[4];
-    float avg_z;
-    ImU32 color;
-};
-
-void DrawVoxelBox(
-    std::vector<ProjectedFace>& out_faces,
-    const Vec3F& center,
-    const Vec3F& half_extents,
-    float pitch, float yaw, float roll,
-    ImU32 base_col,
-    float screen_cx, float screen_cy, float scale, float cam_dist
-) {
-    float hx = half_extents.x;
-    float hy = half_extents.y;
-    float hz = half_extents.z;
-
-    Vec3F local_pts[8] = {
-        {-hx,  hy, -hz}, { hx,  hy, -hz}, { hx, -hy, -hz}, {-hx, -hy, -hz}, // Front 0,1,2,3
-        {-hx,  hy,  hz}, { hx,  hy,  hz}, { hx, -hy,  hz}, {-hx, -hy,  hz}  // Back  4,5,6,7
-    };
-
-    Vec3F world_pts[8];
-    ImVec2 screen_pts[8];
-    for (int i = 0; i < 8; ++i) {
-        Vec3F rotated = RotateVertex(local_pts[i], pitch, yaw, roll);
-        world_pts[i] = { center.x + rotated.x, center.y + rotated.y, center.z + rotated.z };
-        screen_pts[i] = ProjectToScreen(world_pts[i], screen_cx, screen_cy, scale, cam_dist);
-    }
-
-    const int face_indices[6][4] = {
-        {0, 1, 2, 3}, // Front
-        {5, 4, 7, 6}, // Back
-        {4, 5, 1, 0}, // Top
-        {3, 2, 6, 7}, // Bottom
-        {4, 0, 3, 7}, // Left
-        {1, 5, 6, 2}  // Right
-    };
-    const float shade_factors[6] = {1.0f, 0.65f, 1.35f, 0.45f, 0.8f, 0.85f};
-
-    for (int f = 0; f < 6; ++f) {
-        float avg_z = 0.0f;
-        ProjectedFace face{};
-        for (int v = 0; v < 4; ++v) {
-            int idx = face_indices[f][v];
-            face.pts[v] = screen_pts[idx];
-            avg_z += world_pts[idx].z;
-        }
-        face.avg_z = avg_z * 0.25f;
-        face.color = ShadeColor(base_col, shade_factors[f]);
-        out_faces.push_back(face);
-    }
 }
 
 void RenderMinecraftHUD(float screen_w, float screen_h, bool is_steve_mode) {
@@ -655,79 +562,6 @@ void RenderMinecraftHUD(float screen_w, float screen_h, bool is_steve_mode) {
             }
         }
     }
-
-    // 3. 3D Steve Paperdoll in Top-Left
-    if (is_steve_mode) {
-        float doll_cx = 100.0f;
-        float doll_cy = 240.0f;
-
-        // Paperdoll background box
-        draw->AddRectFilled(ImVec2(20, 140), ImVec2(180, 340), IM_COL32(20, 20, 25, 210), 6.0f);
-        draw->AddRect(ImVec2(20, 140), ImVec2(180, 340), IM_COL32(0, 255, 255, 200), 6.0f, 0, 2.0f);
-        draw->AddText(ImVec2(40, 148), IM_COL32(0, 255, 255, 255), "Steve 3D Rig");
-
-        std::vector<ProjectedFace> doll_faces;
-        float leg_swing = sinf(g_anim_timer * 6.0f) * 0.5f;
-        float arm_swing = sinf(g_anim_timer * 6.0f) * 0.5f;
-
-        ImU32 col_head = IM_COL32(219, 176, 140, 255); // Steve skin
-        ImU32 col_shirt = IM_COL32(0, 168, 168, 255);  // Steve cyan shirt
-        ImU32 col_pants = IM_COL32(43, 53, 143, 255);  // Steve blue jeans
-
-        // Head
-        DrawVoxelBox(doll_faces, {0.0f, 42.0f, 0.0f}, {12.0f, 12.0f, 12.0f}, 0.0f, 0.2f, 0.0f, col_head, doll_cx, doll_cy, 220.0f, 200.0f);
-        // Torso
-        DrawVoxelBox(doll_faces, {0.0f, 16.0f, 0.0f}, {12.0f, 14.0f, 6.0f}, 0.0f, 0.2f, 0.0f, col_shirt, doll_cx, doll_cy, 220.0f, 200.0f);
-        // Left Arm
-        DrawVoxelBox(doll_faces, {-17.0f, 16.0f, 0.0f}, {5.0f, 14.0f, 5.0f}, arm_swing, 0.2f, 0.0f, col_shirt, doll_cx, doll_cy, 220.0f, 200.0f);
-        // Right Arm
-        DrawVoxelBox(doll_faces, {17.0f, 16.0f, 0.0f}, {5.0f, 14.0f, 5.0f}, -arm_swing, 0.2f, 0.0f, col_shirt, doll_cx, doll_cy, 220.0f, 200.0f);
-        // Left Leg
-        DrawVoxelBox(doll_faces, {-6.0f, -14.0f, 0.0f}, {5.5f, 16.0f, 5.5f}, -leg_swing, 0.2f, 0.0f, col_pants, doll_cx, doll_cy, 220.0f, 200.0f);
-        // Right Leg
-        DrawVoxelBox(doll_faces, {6.0f, -14.0f, 0.0f}, {5.5f, 16.0f, 5.5f}, leg_swing, 0.2f, 0.0f, col_pants, doll_cx, doll_cy, 220.0f, 200.0f);
-
-        // Sort back-to-front
-        std::sort(doll_faces.begin(), doll_faces.end(), [](const ProjectedFace& a, const ProjectedFace& b) {
-            return a.avg_z > b.avg_z;
-        });
-
-        for (const auto& f : doll_faces) {
-            draw->AddConvexPolyFilled(f.pts, 4, f.color);
-            draw->AddPolyline(f.pts, 4, IM_COL32(20, 20, 20, 160), ImDrawFlags_Closed, 1.0f);
-        }
-    }
-
-    // 4. First-Person Viewmodel (Steve Arm & Diamond Sword at Bottom-Right)
-    if (is_steve_mode) {
-        float hand_cx = screen_w - 180.0f;
-        float hand_cy = screen_h - 100.0f;
-
-        // Bobbing & Attack swing
-        float bob = sinf(g_anim_timer * 6.0f) * 8.0f;
-        float swing_rot = CurrentAttackAnim() * 1.2f;
-
-        std::vector<ProjectedFace> hand_faces;
-        ImU32 col_arm = IM_COL32(0, 168, 168, 255);    // Cyan sleeve
-        ImU32 col_blade = IM_COL32(43, 219, 219, 255); // Diamond cyan
-        ImU32 col_hilt = IM_COL32(139, 90, 43, 255);   // Wooden brown hilt
-
-        // Steve Forearm
-        DrawVoxelBox(hand_faces, {0.0f, -bob, 0.0f}, {14.0f, 40.0f, 14.0f}, -0.6f + swing_rot, 0.4f, 0.2f, col_arm, hand_cx, hand_cy, 350.0f, 300.0f);
-
-        // Diamond Sword (Blade & Hilt)
-        DrawVoxelBox(hand_faces, {-10.0f, 35.0f - bob, 15.0f}, {6.0f, 45.0f, 2.0f}, -0.7f + swing_rot, 0.4f, 0.2f, col_blade, hand_cx, hand_cy, 350.0f, 300.0f);
-        DrawVoxelBox(hand_faces, {-10.0f, -5.0f - bob, 15.0f}, {16.0f, 4.0f, 4.0f}, -0.7f + swing_rot, 0.4f, 0.2f, col_hilt, hand_cx, hand_cy, 350.0f, 300.0f);
-
-        std::sort(hand_faces.begin(), hand_faces.end(), [](const ProjectedFace& a, const ProjectedFace& b) {
-            return a.avg_z > b.avg_z;
-        });
-
-        for (const auto& f : hand_faces) {
-            draw->AddConvexPolyFilled(f.pts, 4, f.color);
-            draw->AddPolyline(f.pts, 4, IM_COL32(20, 20, 20, 180), ImDrawFlags_Closed, 1.2f);
-        }
-    }
 }
 
 HRESULT WINAPI DetourResizeBuffers(
@@ -747,6 +581,54 @@ HRESULT WINAPI DetourResizeBuffers(
         g_d3d_context->OMSetRenderTargets(0, nullptr, nullptr);
     }
     return g_original_resize_buffers(pSwapChain, buffer_count, width, height, new_format, swap_chain_flags);
+}
+
+// Creates the renderer on first use and loads the real skin when it was extracted locally.
+void EnsureSteveRenderer() {
+    if (g_steve_renderer_tried || !g_d3d_device) return;
+    g_steve_renderer_tried = true;
+    auto renderer = std::make_unique<sekiro::render::SteveRenderer>();
+    if (!renderer->init(g_d3d_device)) {
+        Log("Steve renderer init failed; the 3D rig will not be drawn");
+        return;
+    }
+    std::vector<BYTE> skin;
+    UINT w = 0, h = 0;
+    if (DecodePngToRgba(L"mods\\mc_adapter\\steve.png", nullptr, 0, skin, w, h) && w == sekiro::render::kSkinSize && h == sekiro::render::kSkinSize) {
+        renderer->setSkin(g_d3d_device, skin, w, h);
+        Log("Steve skin: external file (real Minecraft skin) %ux%u", w, h);
+    } else {
+        Log("Steve skin: mods\\mc_adapter\\steve.png missing or not 64x64; using a neutral grey skin");
+    }
+    g_steve_renderer = std::move(renderer);
+}
+
+// Draws the real 3D rig into the frame, positioned from the live camera matrix and player position.
+void DrawSteveRig(ID3D11RenderTargetView* target, float screen_w, float screen_h) {
+    if (!g_in_world || !SekiroMod_IsSteveModeActive()) return;
+    EnsureSteveRenderer();
+    if (!g_steve_renderer || !g_steve_renderer->ready()) return;
+    const mc::adapter::SekiroAdapter* adapter = SekiroMod_GetAdapter();
+    if (!adapter || !adapter->isSteveSpawned()) return;
+
+    constexpr float kFallbackFov = 1.0f;
+    const float fov = g_last_sample.cam_fov_y > 0.0f ? g_last_sample.cam_fov_y : kFallbackFov;
+    if (!g_logged_fov) {
+        g_logged_fov = true;
+        Log("Steve rig camera: vertical FOV %.4f rad (%s), aspect %.3f", fov,
+            g_last_sample.cam_fov_y > 0.0f ? "read from game" : "FALLBACK, game value not trusted", screen_w / screen_h);
+    }
+    const sekiro::render::Mat4 view_proj = sekiro::render::viewProjection(g_last_sample, fov, screen_w / screen_h);
+
+    const auto& root = adapter->getSteveRoot();
+    std::array<sekiro::render::Mat4, static_cast<size_t>(mc::StevePart::Count)> world;
+    for (size_t i = 0; i < world.size(); ++i) {
+        const auto part = static_cast<mc::StevePart>(i);
+        const sekiro::native::SekiroVisualMeshComponent* visual = adapter->getStevePartVisual(part);
+        const sekiro::native::FQuat rot = visual ? visual->RotationQuat : sekiro::native::FQuat{};
+        world[i] = sekiro::render::partMatrix(part, rot, root.position, root.yaw);
+    }
+    g_steve_renderer->draw(g_d3d_context, target, static_cast<UINT>(screen_w), static_cast<UINT>(screen_h), view_proj, world);
 }
 
 HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UINT flags) {
@@ -800,8 +682,6 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
     if (dt <= 0.0f || dt > 0.1f) {
         dt = 1.0f / 60.0f;
     }
-
-    g_anim_timer += dt;
 
     // Tick mc-core engine only with a validated live link; otherwise stay idle and say so in the HUD
     if (SyncLiveGameState(dt)) {
@@ -884,6 +764,9 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
                 vp.MinDepth = 0.0f;
                 vp.MaxDepth = 1.0f;
                 g_d3d_context->RSSetViewports(1, &vp);
+
+                // The 3D rig goes under the 2D HUD
+                DrawSteveRig(rtv, screen_w, screen_h);
 
                 // Bind RTV and draw ImGui
                 g_d3d_context->OMSetRenderTargets(1, &rtv, nullptr);

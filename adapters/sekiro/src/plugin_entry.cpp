@@ -73,4 +73,8 @@ mc::Session* SekiroMod_GetSession() {
     return g_session.get();
 }
 
+const mc::adapter::SekiroAdapter* SekiroMod_GetAdapter() {
+    return g_adapter.get();
+}
+
 } // extern "C"
