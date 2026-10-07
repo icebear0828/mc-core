@@ -12,6 +12,7 @@
 #include <imgui_impl_dx11.h>
 
 #include <chrono>
+#include <memory>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -25,6 +26,7 @@
 #include "sekiro_native.hpp"
 #include "sekiro_hud_atlas.hpp"
 #include "sekiro_adapter.hpp"
+#include "sekiro_live.hpp"
 #include "mc/hud.hpp"
 #include "mc/session.hpp"
 
@@ -190,103 +192,106 @@ const char* kHotbarItems[9] = {
     "Totem of Undying"
 };
 
-// Persistent Dantelion game entity pointers & fallback shadow instances
-sekiro::native::ChrIns g_shadow_player;
-sekiro::native::ChrCam g_shadow_camera;
-sekiro::native::ChrIns* g_live_player = &g_shadow_player;
-sekiro::native::ChrCam* g_live_camera = &g_shadow_camera;
-uintptr_t g_world_chr_man_addr = 0;
-uintptr_t g_cam_man_addr = 0;
-
-uintptr_t FindPattern(HMODULE module, const uint8_t* pattern, const char* mask) {
-    if (!module) return 0;
-    MODULEINFO mod_info{};
-    if (!GetModuleInformation(GetCurrentProcess(), module, &mod_info, sizeof(mod_info))) {
-        return 0;
+// ---------------------------------------------------------------------------------------------
+// Live game link. The real game memory is only ever *read* through sekiro::live (validated); the
+// adapter works on these mirror structures, never on a cast of game memory. There is deliberately no
+// fallback object: when the link is not established the mod reports it and does not tick.
+// ---------------------------------------------------------------------------------------------
+class SelfMemoryReader : public sekiro::live::IMemoryReader {
+public:
+    bool read(uintptr_t address, void* out, size_t size) const override {
+        SIZE_T got = 0;
+        return ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(address), out, size, &got) && got == size;
     }
-    const uint8_t* base = reinterpret_cast<const uint8_t*>(mod_info.lpBaseOfDll);
-    const size_t size = mod_info.SizeOfImage;
-    const size_t pattern_len = strlen(mask);
-    if (size < pattern_len) return 0;
+};
 
-    for (size_t i = 0; i <= size - pattern_len; ++i) {
-        bool match = true;
-        for (size_t j = 0; j < pattern_len; ++j) {
-            if (mask[j] == 'x' && base[i + j] != pattern[j]) {
-                match = false;
-                break;
-            }
-        }
-        if (match) {
-            return reinterpret_cast<uintptr_t>(base + i);
-        }
-    }
-    return 0;
+SelfMemoryReader g_memory;
+std::unique_ptr<sekiro::live::LiveBinder> g_binder;
+std::atomic<bool> g_binder_ready{false};
+std::atomic<bool> g_stop{false};
+sekiro::native::ChrIns g_player_mirror;
+sekiro::native::ChrCam g_camera_mirror;
+sekiro::live::LiveMirror g_live_mirror;
+bool g_in_world = false;
+bool g_warned_model_hide = false;
+sekiro::live::SampleStatus g_last_sample_status = sekiro::live::SampleStatus::NotBound;
+
+const char* LinkStateText() {
+    if (!g_binder_ready.load()) return "SEARCHING for game structures (waiting for code to unpack)";
+    return g_in_world ? "LINKED: player + camera bound" : "BOUND: waiting for a loaded world";
 }
 
-void ScanSekiroSignatures() {
-    HMODULE game_mod = GetModuleHandleA(nullptr);
-    if (!game_mod) return;
-
-    // Pattern for WorldChrMan in Sekiro 1.04-1.06:
-    // 48 8B 05 ?? ?? ?? ?? 48 85 C0 74 ?? 48 8B 58 38
-    const uint8_t p_wcm[] = {0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48, 0x85, 0xC0, 0x74, 0x00, 0x48, 0x8B, 0x58, 0x38};
-    uintptr_t match_wcm = FindPattern(game_mod, p_wcm, "xxx????xxxx?xxxx");
-    if (match_wcm) {
-        int32_t rel = *reinterpret_cast<const int32_t*>(match_wcm + 3);
-        g_world_chr_man_addr = match_wcm + 7 + rel;
-        Log("Resolved Sekiro WorldChrMan static pointer at %p", reinterpret_cast<void*>(g_world_chr_man_addr));
+// Runs on the loader thread: the Steam wrapper decrypts code lazily, so keep scanning until the
+// signatures show up. Refuses to bind on ambiguous matches instead of guessing.
+void BindLiveGameState() {
+    MODULEINFO mi{};
+    if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleA(nullptr), &mi, sizeof(mi))) {
+        Log("BindLiveGameState: GetModuleInformation failed (%lu)", GetLastError());
+        return;
     }
+    Log("Sekiro Base: %p, Size: 0x%llX", mi.lpBaseOfDll, static_cast<unsigned long long>(mi.SizeOfImage));
+    auto binder = std::make_unique<sekiro::live::LiveBinder>(
+        g_memory, reinterpret_cast<uintptr_t>(mi.lpBaseOfDll), static_cast<size_t>(mi.SizeOfImage));
 
-    // Pattern for CamMan / FieldArea:
-    // 48 8B 05 ?? ?? ?? ?? 48 85 C0 74 ?? F3 0F 10
-    const uint8_t p_cam[] = {0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48, 0x85, 0xC0, 0x74, 0x00, 0xF3, 0x0F, 0x10};
-    uintptr_t match_cam = FindPattern(game_mod, p_cam, "xxx????xxxx?xxx");
-    if (match_cam) {
-        int32_t rel = *reinterpret_cast<const int32_t*>(match_cam + 3);
-        g_cam_man_addr = match_cam + 7 + rel;
-        Log("Resolved Sekiro CamMan static pointer at %p", reinterpret_cast<void*>(g_cam_man_addr));
+    sekiro::live::BindStatus last = sekiro::live::BindStatus::Bound;
+    for (int attempt = 0; !g_stop.load(); ++attempt) {
+        const sekiro::live::BindStatus st = binder->scan();
+        if (st == sekiro::live::BindStatus::Bound) {
+            Log("Bound game structures after %d scan(s): WorldChrMan global RVA 0x%X, %zu camera candidate(s)",
+                attempt + 1, binder->worldChrManGlobalRva(), binder->cameraCandidateRvas().size());
+            g_binder = std::move(binder);
+            g_binder_ready.store(true);
+            return;
+        }
+        if (st != last || attempt % 30 == 0) {
+            Log("Scan %d: %s", attempt + 1,
+                st == sekiro::live::BindStatus::Ambiguous
+                    ? "AMBIGUOUS WorldChrMan signature (refusing to guess)"
+                    : "signatures not found yet (code may still be packed)");
+            last = st;
+        }
+        Sleep(1000);
     }
 }
 
-void TryUpdateLiveGameEntities() {
-    sekiro::native::ChrIns* resolved_player = nullptr;
-    sekiro::native::ChrCam* resolved_camera = nullptr;
+// Called every frame from Present. Returns true only when player and camera were read and validated.
+bool SyncLiveGameState(float dt) {
+    using sekiro::live::SampleStatus;
+    SampleStatus st = SampleStatus::NotBound;
+    sekiro::live::LiveSample sample{};
+    if (g_binder_ready.load()) {
+        st = g_binder->sample(sample);
+    }
 
-    if (g_world_chr_man_addr) {
-        uintptr_t wcm = *reinterpret_cast<uintptr_t*>(g_world_chr_man_addr);
-        if (wcm) {
-            // Main player ChrIns is at offset +0x88 (or +0x80 / +0x38 depending on game version)
-            uintptr_t p = *reinterpret_cast<uintptr_t*>(wcm + 0x88);
-            if (!p) p = *reinterpret_cast<uintptr_t*>(wcm + 0x80);
-            if (!p) p = *reinterpret_cast<uintptr_t*>(wcm + 0x38);
-            if (p) {
-                resolved_player = reinterpret_cast<sekiro::native::ChrIns*>(p);
+    if (st != g_last_sample_status) {
+        const char* name = st == SampleStatus::Ok ? "Ok" : st == SampleStatus::NotInWorld ? "NotInWorld"
+                         : st == SampleStatus::Invalid ? "Invalid (validation failed)" : "NotBound";
+        Log("Live sample status -> %s", name);
+        g_last_sample_status = st;
+    }
+
+    if (st == SampleStatus::Ok) {
+        g_live_mirror.update(sample, dt, g_player_mirror, g_camera_mirror);
+        if (!g_in_world) {
+            g_in_world = true;
+            SekiroMod_UpdatePointers(&g_player_mirror, &g_camera_mirror);
+            Log("Entered world: player (%.2f, %.2f, %.2f) m", sample.player_pos.X, sample.player_pos.Y, sample.player_pos.Z);
+            if (!g_warned_model_hide) {
+                g_warned_model_hide = true;
+                Log("WARNING: hiding the native Wolf model is NOT wired to game memory yet (offsets unknown); "
+                    "only the mirror flag changes.");
             }
         }
+        return true;
     }
 
-    if (g_cam_man_addr) {
-        uintptr_t cam_man = *reinterpret_cast<uintptr_t*>(g_cam_man_addr);
-        if (cam_man) {
-            uintptr_t c = *reinterpret_cast<uintptr_t*>(cam_man + 0x60);
-            if (c) {
-                resolved_camera = reinterpret_cast<sekiro::native::ChrCam*>(c);
-            }
-        }
+    if (g_in_world) {
+        g_in_world = false;
+        g_live_mirror.reset();
+        SekiroMod_UpdatePointers(nullptr, nullptr);
+        Log("Left world / link lost");
     }
-
-    if (!resolved_player) resolved_player = &g_shadow_player;
-    if (!resolved_camera) resolved_camera = &g_shadow_camera;
-
-    if (resolved_player != g_live_player || resolved_camera != g_live_camera) {
-        g_live_player = resolved_player;
-        g_live_camera = resolved_camera;
-        SekiroMod_UpdatePointers(g_live_player, g_live_camera);
-        Log("Sekiro entities linked: LivePlayer=%p (Real: %s), LiveCamera=%p (Real: %s)",
-            g_live_player, (g_live_player != &g_shadow_player) ? "YES" : "FALLBACK",
-            g_live_camera, (g_live_camera != &g_shadow_camera) ? "YES" : "FALLBACK");
-    }
+    return false;
 }
 
 LRESULT CALLBACK DetourWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
@@ -639,11 +644,9 @@ HRESULT WINAPI DetourResizeBuffers(
 }
 
 HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UINT flags) {
-    TryUpdateLiveGameEntities();
-
     if (!g_mod_initialized.load()) {
-        Log("Initializing SekiroMod in DetourPresent with Player=%p, Camera=%p...", g_live_player, g_live_camera);
-        SekiroMod_Initialize(g_live_player, g_live_camera);
+        Log("Initializing SekiroMod (no player bound yet; waiting for live game link)...");
+        SekiroMod_Initialize(nullptr, nullptr);
         g_last_frame_time = std::chrono::steady_clock::now();
         g_mod_initialized.store(true);
         Log("SekiroMod initialized successfully.");
@@ -690,8 +693,10 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
 
     g_anim_timer += dt;
 
-    // Tick mc-core engine
-    SekiroMod_Tick(dt, &input_snapshot);
+    // Tick mc-core engine only with a validated live link; otherwise stay idle and say so in the HUD
+    if (SyncLiveGameState(dt)) {
+        SekiroMod_Tick(dt, &input_snapshot);
+    }
 
     // Get screen dimensions from SwapChain Desc
     DXGI_SWAP_CHAIN_DESC sc_desc{};
@@ -716,7 +721,7 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
 
         // 1. Status Panel Window
         ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(480, 110), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(480, 132), ImGuiCond_Always);
         ImGuiWindowFlags flags_win = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse;
 
         if (is_active) {
@@ -728,6 +733,7 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
             int cur_slot = global_hud ? global_hud->getSelectedSlot() : g_selected_slot;
             ImGui::Text("Item: [%d] %s  |  Attack Swing: LMB", cur_slot + 1, cur_name);
             ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Press [F6] to Exit Minecraft Mode  |  Keys [1-9] Change Slot");
+            ImGui::TextColored(g_in_world ? ImVec4(0.4f, 1.0f, 0.4f, 1.0f) : ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Link: %s", LinkStateText());
             ImGui::End();
             ImGui::PopStyleColor();
         } else {
@@ -737,6 +743,7 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
             ImGui::Separator();
             ImGui::Text("Target: Sekiro: Shadows Die Twice (DirectX 11)");
             ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), ">>> Press [F6] to ACTIVATE Minecraft Steve Mode <<<");
+            ImGui::TextColored(g_in_world ? ImVec4(0.4f, 1.0f, 0.4f, 1.0f) : ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Link: %s", LinkStateText());
             ImGui::End();
             ImGui::PopStyleColor();
         }
@@ -866,8 +873,6 @@ DWORD WINAPI LoaderThread(LPVOID) {
     Log("LoaderThread started. Waiting 1500ms for Sekiro process initialization...");
     Sleep(1500);
 
-    ScanSekiroSignatures();
-
     MH_STATUS status = MH_Initialize();
     if (status != MH_OK && status != MH_ERROR_ALREADY_INITIALIZED) {
         Log("MinHook initialization failed (Code: %d)", static_cast<int>(status));
@@ -893,6 +898,7 @@ DWORD WINAPI LoaderThread(LPVOID) {
         Log("Failed to locate Present address");
     }
 
+    BindLiveGameState();
     return 0;
 }
 
@@ -947,6 +953,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         CreateThread(nullptr, 0, LoaderThread, nullptr, 0, nullptr);
         break;
     case DLL_PROCESS_DETACH:
+        g_stop.store(true);
         if (g_original_present) {
             MH_DisableHook(MH_ALL_HOOKS);
             MH_Uninitialize();

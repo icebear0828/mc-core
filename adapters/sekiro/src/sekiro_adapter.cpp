@@ -127,8 +127,8 @@ const sekiro::native::SekiroVisualMeshComponent* SekiroAdapter::getStevePartVisu
 // =========================================================================
 
 RaycastResult SekiroAdapter::raycastWorld(const Vec3& start, const Vec3& end, EntityId ignore_entity) {
-    sekiro::native::FVector3 native_start = toNative(start);
-    sekiro::native::FVector3 native_end = toNative(end);
+    sekiro::native::FVector3 native_start = toNativePoint(start);
+    sekiro::native::FVector3 native_end = toNativePoint(end);
     sekiro::native::HavokHitResult hit{};
 
     // Havok knows its own handles, not our EntityIds
@@ -147,8 +147,8 @@ RaycastResult SekiroAdapter::raycastWorld(const Vec3& start, const Vec3& end, En
     if (bEngineHit && hit.bHit) {
         RaycastResult res{};
         res.has_hit = true;
-        res.point = toMc(hit.HitPoint);
-        res.normal = toMc(hit.HitNormal);
+        res.point = toMcPoint(hit.HitPoint);
+        res.normal = toMcDir(hit.HitNormal);
 
         // Check if hit one of our placed block colliders
         for (const auto& [handle, record] : colliders_) {
@@ -253,8 +253,8 @@ uint64_t SekiroAdapter::createBlockCollider(const GridPos& grid_pos, BlockId blo
     // Spawn Havok static box collider in Dantelion physics space
     auto box = std::make_unique<sekiro::native::HavokStaticBoxCollider>();
     box->Handle = handle;
-    box->Center = toNative(world_pos);
-    box->HalfExtents = {49.0f, 49.0f, 49.0f}; // 100cm cube with slight inset for seam-free collision
+    box->Center = toNativePoint(world_pos);
+    box->HalfExtents = {0.49f, 0.49f, 0.49f}; // 1 m cube with 1 cm inset for seam-free collision (metres)
     box->bActive = true;
 
     record->collider = std::move(box);
@@ -275,13 +275,13 @@ void SekiroAdapter::destroyBlockCollider(uint64_t collider_handle) {
 void SekiroAdapter::applyLinearImpulse(EntityId entity_id, const Vec3& impulse) {
     auto it = registered_entities_.find(entity_id);
     if (it != registered_entities_.end() && it->second) {
-        it->second->ApplyImpulse(toNative(impulse));
+        it->second->ApplyImpulse(toNativePoint(impulse));
     }
 }
 
 void SekiroAdapter::setLinearVelocity(EntityId entity_id, const Vec3& velocity) {
     if (sekiro::native::ChrIns* chr = getRegisteredEntity(entity_id)) {
-        chr->Velocity = toNative(velocity);
+        chr->Velocity = toNativePoint(velocity);
     }
 }
 
@@ -361,7 +361,7 @@ void SekiroAdapter::updateStevePartTransforms(const SteveAnimator::PartTransform
     for (size_t i = 0; i < SteveAnimator::kPartCount; ++i) {
         if (steve_parts_[i]) {
             const auto& t = transforms[i];
-            steve_parts_[i]->Position = toNative(t.pos);
+            steve_parts_[i]->Position = toNativePoint(t.pos);
             const sekiro::native::FQuat q = toNativeQuat(t.rot);
             steve_parts_[i]->RotationQuat = q;
             // Debug-only Euler view of the converted quaternion (degrees)
@@ -400,7 +400,7 @@ uint64_t SekiroAdapter::spawnBlockVisual(const GridPos& grid_pos, BlockId block_
 
     auto mesh = std::make_unique<sekiro::native::SekiroVisualMeshComponent>();
     mesh->Handle = handle;
-    mesh->Position = toNative(world_pos);
+    mesh->Position = toNativePoint(world_pos);
     mesh->ModelName = blockIdToModelName(block_id);
     mesh->bVisible = true;
     mesh->Alpha = 1.0f;
@@ -487,7 +487,8 @@ void SekiroAdapter::triggerStaggerOrRagdoll(EntityId entity_id, const Vec3& dire
     auto it = registered_entities_.find(entity_id);
     if (it != registered_entities_.end() && it->second) {
         it->second->StaggerLevel = static_cast<int32_t>(std::clamp(force * 0.5f, 1.0f, 5.0f));
-        sekiro::native::FVector3 impulse = toNative(direction.normalized() * (force * 100.0f));
+        // force is a cm/s impulse speed (same unit as projectile speeds)
+        sekiro::native::FVector3 impulse = toNativePoint(direction.normalized() * force);
         it->second->ApplyImpulse(impulse);
     }
 }
@@ -506,34 +507,34 @@ ItemId SekiroAdapter::getEquippedOffHand() const {
 
 Vec3 SekiroAdapter::getCameraPosition() const {
     if (camera_) {
-        return toMc(camera_->Position);
+        return toMcPoint(camera_->Position);
     }
     return Vec3{};
 }
 
 Vec3 SekiroAdapter::getCameraForward() const {
     if (camera_) {
-        return toMc(camera_->Forward);
+        return toMcDir(camera_->Forward);
     }
     return Vec3{0.f, 1.f, 0.f};
 }
 
 Vec3 SekiroAdapter::getPlayerPosition() const {
     if (player_) {
-        return toMc(player_->Position);
+        return toMcPoint(player_->Position);
     }
     return Vec3{};
 }
 
 Vec3 SekiroAdapter::getPlayerVelocity() const {
     if (player_) {
-        return toMc(player_->Velocity);
+        return toMcPoint(player_->Velocity);
     }
     return Vec3{};
 }
 
 bool SekiroAdapter::isPlayerOnGround() const {
-    constexpr float kAirborneVerticalSpeed = 200.0f;
+    constexpr float kAirborneVerticalSpeed = 2.0f; // m/s
     if (!player_) {
         return true;
     }

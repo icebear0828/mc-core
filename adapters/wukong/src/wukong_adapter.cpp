@@ -487,7 +487,8 @@ void WukongAdapter::triggerStaggerOrRagdoll(EntityId entity_id, const Vec3& dire
     auto it = registered_entities_.find(entity_id);
     if (it != registered_entities_.end() && it->second) {
         it->second->LastStaggerLevel = static_cast<int32_t>(std::clamp(force * 0.5f, 1.0f, 5.0f));
-        b1::native::FVector impulse = toNative(direction.normalized() * (force * 100.0f));
+        // force is a cm/s impulse speed (same unit as projectile speeds)
+        b1::native::FVector impulse = toNative(direction.normalized() * force);
         b1::native::UBGUFunctionLibrary::BGUApplyImpulse(it->second, impulse);
     }
 }

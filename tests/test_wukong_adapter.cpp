@@ -173,14 +173,14 @@ TEST(WukongAdapterTest, ProcessHitDoesNotReactAndExecuteHitKnocksBackOnce) {
     hit.victim_id = EntityId{5};
     hit.damage = 100.0f;
     hit.knockback_vector = Vec3{1.0f, 0.0f, 0.0f};
-    hit.knockback_force = 3.0f;
+    hit.knockback_force = 300.0f; // cm/s, same unit as projectile speeds
 
     EXPECT_TRUE(adapter.processHit(hit));
     EXPECT_EQ(enemy.LastStaggerLevel, 0);
     EXPECT_FLOAT_EQ(enemy.Velocity.Size(), 0.0f);
 
     EXPECT_TRUE(combat.executeHit(hit));
-    EXPECT_NEAR(enemy.Velocity.X, 300.0f, 1e-2f); // applied once (not 600)
+    EXPECT_NEAR(enemy.Velocity.X, 300.0f, 1e-2f); // applied once (not 600), and not scaled by 100
     EXPECT_GT(enemy.LastStaggerLevel, 0);
 }
 
@@ -493,7 +493,7 @@ TEST(WukongSessionTest, AttackDamagesRegisteredEnemy) {
     WukongMod_Tick(0.05f, &in);
 
     EXPECT_FLOAT_EQ(enemy.Health, 950.f);
-    EXPECT_NEAR(enemy.Velocity.X, 800.f * 100.f, 1.f); // single impulse along view (UE +X)
+    EXPECT_NEAR(enemy.Velocity.X, 800.f, 1e-2f); // sword knockback 800 cm/s, one impulse along view (UE +X)
     EXPECT_GT(WukongMod_GetSession()->lastAnimInput().swing_progress, 0.f);
 
     WukongMod_UnregisterEntity(7);

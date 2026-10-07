@@ -18,6 +18,7 @@ add_executable(mc_tests
     test_elytra.cpp
     test_hud.cpp
     test_session.cpp
+    test_sekiro_live.cpp
 )
 
 target_link_libraries(mc_tests

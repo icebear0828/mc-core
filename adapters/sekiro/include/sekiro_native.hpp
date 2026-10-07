@@ -68,7 +68,7 @@ class HavokStaticBoxCollider {
 public:
     uint64_t Handle{0};
     FVector3 Center{};
-    FVector3 HalfExtents{50.0f, 50.0f, 50.0f}; // 100cm cube
+    FVector3 HalfExtents{0.5f, 0.5f, 0.5f}; // 1 m cube (Dantelion units are metres)
     bool bActive{true};
 };
 

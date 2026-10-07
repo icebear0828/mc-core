@@ -88,14 +88,17 @@ public:
     // Vertical-velocity heuristic: Dantelion exposes no grounded flag we can read yet.
     [[nodiscard]] bool isPlayerOnGround() const;
 
+    // Dantelion units are metres (verified in-game: sprint ~5.6 u/s); MC space is centimetres.
+    static constexpr float kCmPerNativeUnit = 100.0f;
+
     // Canonical MC space (Z-up, right-handed, X=forward, Y=left)  <->  Dantelion (Y-up, X=right, Z=forward).
-    // Dantelion is treated as left-handed, so this is a proper change of basis. Unit scale is 1:1 (cm).
-    static sekiro::native::FVector3 toNative(const Vec3& v) {
-        return {-v.y, v.z, v.x};
-    }
-    static Vec3 toMc(const sekiro::native::FVector3& v) {
-        return {v.Z, -v.X, v.Y};
-    }
+    // Dantelion is left-handed (verified: turning the camera right moves forward toward the camera's
+    // right vector), so this is a proper change of basis. Positions, extents and velocities are scaled
+    // (Point); unit directions such as normals and view vectors are not (Dir).
+    static sekiro::native::FVector3 toNativeDir(const Vec3& v) { return {-v.y, v.z, v.x}; }
+    static Vec3 toMcDir(const sekiro::native::FVector3& v) { return {v.Z, -v.X, v.Y}; }
+    static sekiro::native::FVector3 toNativePoint(const Vec3& v) { return toNativeDir(v * (1.0f / kCmPerNativeUnit)); }
+    static Vec3 toMcPoint(const sekiro::native::FVector3& v) { return toMcDir(v) * kCmPerNativeUnit; }
     // Same physical rotation expressed in Dantelion axes. The basis change is a reflection, so the
     // rotation axis (a pseudovector) flips sign relative to the mapped vector part.
     static sekiro::native::FQuat toNativeQuat(const Quat& q) {

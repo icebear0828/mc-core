@@ -66,13 +66,12 @@ TEST(SekiroAdapterTest, PhysicsLinearImpulse) {
     enemy.Velocity = FVector3{0.0f, 0.0f, 0.0f};
 
     adapter.registerEntity(EntityId{102}, &enemy);
-    // Canonical MC (X=forward 150, Y=left 250, Z=up 350)
-    // Dantelion (X=right, Y=up, Z=forward): right = -left, up = up, forward = forward
+    // Canonical MC cm/s (X=forward 150, Y=left 250, Z=up 350) -> Dantelion m/s (X=right, Y=up, Z=forward)
     adapter.applyLinearImpulse(EntityId{102}, Vec3{150.0f, 250.0f, 350.0f});
 
-    EXPECT_NEAR(enemy.Velocity.X, -250.0f, 1e-2f);
-    EXPECT_NEAR(enemy.Velocity.Y, 350.0f, 1e-2f);
-    EXPECT_NEAR(enemy.Velocity.Z, 150.0f, 1e-2f);
+    EXPECT_NEAR(enemy.Velocity.X, -2.5f, 1e-4f);
+    EXPECT_NEAR(enemy.Velocity.Y, 3.5f, 1e-4f);
+    EXPECT_NEAR(enemy.Velocity.Z, 1.5f, 1e-4f);
 }
 
 TEST(SekiroAdapterTest, RenderPlayerVisibilityAndSteveParts) {
@@ -83,7 +82,7 @@ TEST(SekiroAdapterTest, RenderPlayerVisibilityAndSteveParts) {
     player.bCapsulePhysicsActive = true;
 
     ChrCam camera;
-    camera.Position = FVector3{0.f, 160.f, 0.f};
+    camera.Position = FVector3{0.f, 1.6f, 0.f};
 
     SekiroAdapter adapter(&player, &camera);
 
@@ -213,10 +212,10 @@ TEST(SekiroAdapterTest, ExecuteHitAppliesKnockbackExactlyOnce) {
     hit.victim_id = EntityId{202};
     hit.damage = 100.0f;
     hit.knockback_vector = Vec3{1.0f, 0.0f, 0.0f}; // MC forward == Dantelion +Z
-    hit.knockback_force = 3.0f;
+    hit.knockback_force = 300.0f;                   // cm/s, like projectile speeds
 
     EXPECT_TRUE(combat.executeHit(hit));
-    EXPECT_NEAR(boss.Velocity.Z, 300.0f, 1e-2f); // force * 100, applied once (not 600)
+    EXPECT_NEAR(boss.Velocity.Z, 3.0f, 1e-3f); // 300 cm/s = 3 m/s, applied once (not 6)
     EXPECT_GT(boss.StaggerLevel, 0);
 }
 
@@ -224,11 +223,11 @@ TEST(SekiroAdapterTest, InputStateQueries) {
     ChrIns player;
     ChrCam camera;
 
-    // Dantelion camera: X=10, Y=180(up), Z=20(forward)
-    camera.Position = FVector3{10.0f, 180.0f, 20.0f};
+    // Dantelion metres: X=0.1 right, Y=1.8 up, Z=0.2 forward
+    camera.Position = FVector3{0.1f, 1.8f, 0.2f};
     camera.Forward = FVector3{0.0f, 0.0f, 1.0f}; // Looking forward along Z in Dantelion
-    player.Position = FVector3{10.0f, 0.0f, 20.0f};
-    player.Velocity = FVector3{400.0f, 0.0f, 0.0f};
+    player.Position = FVector3{0.1f, 0.0f, 0.2f};
+    player.Velocity = FVector3{4.0f, 0.0f, 0.0f}; // 4 m/s to the right
 
     SekiroAdapter adapter(&player, &camera);
     adapter.setEquippedItems(ItemId::DiamondSword, ItemId::TotemOfUndying);
@@ -238,9 +237,9 @@ TEST(SekiroAdapterTest, InputStateQueries) {
 
     // Canonical MC space: X=forward, Y=left, Z=up
     Vec3 cam_pos = adapter.getCameraPosition();
-    EXPECT_FLOAT_EQ(cam_pos.x, 20.0f);   // native forward (Z)
-    EXPECT_FLOAT_EQ(cam_pos.y, -10.0f);  // native right (X) negated
-    EXPECT_FLOAT_EQ(cam_pos.z, 180.0f);  // native up (Y)
+    EXPECT_NEAR(cam_pos.x, 20.0f, 1e-3f);   // native forward (Z), metres -> cm
+    EXPECT_NEAR(cam_pos.y, -10.0f, 1e-3f);  // native right (X) negated
+    EXPECT_NEAR(cam_pos.z, 180.0f, 1e-3f);  // native up (Y)
 
     Vec3 cam_fwd = adapter.getCameraForward();
     EXPECT_FLOAT_EQ(cam_fwd.x, 1.0f);
@@ -248,12 +247,12 @@ TEST(SekiroAdapterTest, InputStateQueries) {
     EXPECT_FLOAT_EQ(cam_fwd.z, 0.0f);
 
     Vec3 player_pos = adapter.getPlayerPosition();
-    EXPECT_FLOAT_EQ(player_pos.x, 20.0f);
-    EXPECT_FLOAT_EQ(player_pos.y, -10.0f);
-    EXPECT_FLOAT_EQ(player_pos.z, 0.0f);
+    EXPECT_NEAR(player_pos.x, 20.0f, 1e-3f);
+    EXPECT_NEAR(player_pos.y, -10.0f, 1e-3f);
+    EXPECT_NEAR(player_pos.z, 0.0f, 1e-3f);
 
     Vec3 player_vel = adapter.getPlayerVelocity();
-    EXPECT_FLOAT_EQ(player_vel.y, -400.0f); // native +X (right) is MC -Y
+    EXPECT_NEAR(player_vel.y, -400.0f, 1e-3f); // native +X (right) is MC -Y; 4 m/s = 400 cm/s
 }
 
 TEST(SekiroAdapterTest, VoxelWorldIntegrationCycle) {
@@ -356,24 +355,45 @@ TEST(SekiroAdapterTest, DynamicPlayerPointerBindingHidesNativeModel) {
 
 TEST(SekiroCoordinateTest, AxesMapToCanonicalMcSpace) {
     using FV = sekiro::native::FVector3;
-    Vec3 fwd = SekiroAdapter::toMc(FV{0.f, 0.f, 1.f});
+    Vec3 fwd = SekiroAdapter::toMcDir(FV{0.f, 0.f, 1.f});
     EXPECT_FLOAT_EQ(fwd.x, 1.f);
     EXPECT_FLOAT_EQ(fwd.y, 0.f);
     EXPECT_FLOAT_EQ(fwd.z, 0.f);
 
-    Vec3 up = SekiroAdapter::toMc(FV{0.f, 1.f, 0.f});
+    Vec3 up = SekiroAdapter::toMcDir(FV{0.f, 1.f, 0.f});
     EXPECT_FLOAT_EQ(up.z, 1.f);
 
-    Vec3 right = SekiroAdapter::toMc(FV{1.f, 0.f, 0.f});
+    Vec3 right = SekiroAdapter::toMcDir(FV{1.f, 0.f, 0.f});
     EXPECT_FLOAT_EQ(right.y, -1.f); // right-hand side is -Y in MC (Z-up, RH)
 }
 
 TEST(SekiroCoordinateTest, ToNativeInvertsToMc) {
     const Vec3 v{12.f, -34.f, 56.f};
-    const Vec3 back = SekiroAdapter::toMc(SekiroAdapter::toNative(v));
-    EXPECT_FLOAT_EQ(back.x, v.x);
-    EXPECT_FLOAT_EQ(back.y, v.y);
-    EXPECT_FLOAT_EQ(back.z, v.z);
+    const Vec3 back = SekiroAdapter::toMcPoint(SekiroAdapter::toNativePoint(v));
+    EXPECT_NEAR(back.x, v.x, 1e-3f);
+    EXPECT_NEAR(back.y, v.y, 1e-3f);
+    EXPECT_NEAR(back.z, v.z, 1e-3f);
+    const Vec3 dir_back = SekiroAdapter::toMcDir(SekiroAdapter::toNativeDir(v));
+    EXPECT_FLOAT_EQ(dir_back.x, v.x);
+    EXPECT_FLOAT_EQ(dir_back.y, v.y);
+    EXPECT_FLOAT_EQ(dir_back.z, v.z);
+}
+
+// Verified in-game 2026-10-06: Dantelion units are metres (sprint ~5.6 u/s), MC space is centimetres.
+TEST(SekiroCoordinateTest, PointsAreScaledMetresToCentimetresButDirectionsAreNot) {
+    using FV = sekiro::native::FVector3;
+    const Vec3 p = SekiroAdapter::toMcPoint(FV{1.f, 2.f, 3.f}); // 1 m right, 2 m up, 3 m forward
+    EXPECT_FLOAT_EQ(p.x, 300.f);   // forward
+    EXPECT_FLOAT_EQ(p.y, -100.f);  // left (right is negative)
+    EXPECT_FLOAT_EQ(p.z, 200.f);   // up
+
+    const FV n = SekiroAdapter::toNativePoint(Vec3{300.f, -100.f, 200.f});
+    EXPECT_FLOAT_EQ(n.X, 1.f);
+    EXPECT_FLOAT_EQ(n.Y, 2.f);
+    EXPECT_FLOAT_EQ(n.Z, 3.f);
+
+    const Vec3 d = SekiroAdapter::toMcDir(FV{0.f, 0.f, 1.f}); // unit stays unit
+    EXPECT_FLOAT_EQ(d.x, 1.f);
 }
 
 namespace {
@@ -405,8 +425,8 @@ TEST(SekiroCoordinateTest, QuaternionConversionPreservesPhysicalRotation) {
         for (const Vec3& v : vs) {
             const auto mc_out = rotate(q.x, q.y, q.z, q.w, {v.x, v.y, v.z});
             const sekiro::native::FVector3 expected =
-                SekiroAdapter::toNative(Vec3{mc_out[0], mc_out[1], mc_out[2]});
-            const sekiro::native::FVector3 nv = SekiroAdapter::toNative(v);
+                SekiroAdapter::toNativeDir(Vec3{mc_out[0], mc_out[1], mc_out[2]});
+            const sekiro::native::FVector3 nv = SekiroAdapter::toNativeDir(v);
             const auto got = rotate(nq.X, nq.Y, nq.Z, nq.W, {nv.X, nv.Y, nv.Z});
             EXPECT_NEAR(got[0], expected.X, 1e-4f);
             EXPECT_NEAR(got[1], expected.Y, 1e-4f);
@@ -436,11 +456,11 @@ TEST(SekiroCoordinateTest, SteveParts_CarryConvertedQuaternion) {
 TEST(SekiroAdapterTest, OnGroundHeuristicUsesVerticalVelocity) {
     ChrIns player;
     SekiroAdapter adapter(&player, nullptr);
-    player.Velocity = FVector3{300.f, 0.f, 300.f};
+    player.Velocity = FVector3{3.f, 0.f, 3.f}; // running on the ground
     EXPECT_TRUE(adapter.isPlayerOnGround());
-    player.Velocity = FVector3{0.f, 250.f, 0.f};
+    player.Velocity = FVector3{0.f, 2.5f, 0.f};
     EXPECT_FALSE(adapter.isPlayerOnGround());
-    player.Velocity = FVector3{0.f, -250.f, 0.f};
+    player.Velocity = FVector3{0.f, -2.5f, 0.f};
     EXPECT_FALSE(adapter.isPlayerOnGround());
     EXPECT_TRUE(SekiroAdapter().isPlayerOnGround()); // no player bound
 }
@@ -461,7 +481,7 @@ TEST(SekiroSessionTest, UsePlacesBlockAlongNativeForwardAndRaysUseNativeAxes) {
     ChrIns player;
     player.Handle = 321;
     ChrCam camera;
-    camera.Position = FVector3{0.f, 160.f, 0.f};
+    camera.Position = FVector3{0.f, 1.6f, 0.f};
     camera.Forward = FVector3{0.f, 0.f, 1.f};
     SekiroMod_Initialize(&player, &camera);
     ASSERT_NE(SekiroMod_GetSession(), nullptr);
@@ -474,8 +494,8 @@ TEST(SekiroSessionTest, UsePlacesBlockAlongNativeForwardAndRaysUseNativeAxes) {
         seen_end = e;
         seen_ignore = ignore;
         out.bHit = true;
-        out.HitPoint = SekiroAdapter::toNative(Vec3{250.f, 0.f, 100.f});
-        out.HitNormal = SekiroAdapter::toNative(Vec3{-1.f, 0.f, 0.f});
+        out.HitPoint = SekiroAdapter::toNativePoint(Vec3{250.f, 0.f, 100.f});
+        out.HitNormal = SekiroAdapter::toNativeDir(Vec3{-1.f, 0.f, 0.f});
         return true;
     };
 
@@ -485,8 +505,8 @@ TEST(SekiroSessionTest, UsePlacesBlockAlongNativeForwardAndRaysUseNativeAxes) {
     in.use_pressed = true;
     SekiroMod_Tick(0.05f, &in);
 
-    EXPECT_NEAR(seen_start.Y, 160.f, 1e-3f);                          // camera height = native up
-    EXPECT_NEAR(seen_end.Z, Session::kReachCm, 1e-2f);                // reach goes along native forward
+    EXPECT_NEAR(seen_start.Y, 1.6f, 1e-4f);                           // camera height 1.6 m = native up
+    EXPECT_NEAR(seen_end.Z, Session::kReachCm / 100.f, 1e-3f);       // 4.5 m reach along native forward
     EXPECT_NEAR(seen_end.X, 0.f, 1e-3f);
     EXPECT_EQ(seen_ignore, 321u); // Session ignores the player: mapped to its Havok handle, not an internal id
 
@@ -501,7 +521,7 @@ TEST(SekiroSessionTest, UsePlacesBlockAlongNativeForwardAndRaysUseNativeAxes) {
 TEST(SekiroSessionTest, AttackDamagesRegisteredEnemyThroughSession) {
     ChrIns player;
     ChrCam camera;
-    camera.Position = FVector3{0.f, 160.f, 0.f};
+    camera.Position = FVector3{0.f, 1.6f, 0.f};
     camera.Forward = FVector3{0.f, 0.f, 1.f};
     ChrIns enemy;
     enemy.Handle = 900;
@@ -515,8 +535,8 @@ TEST(SekiroSessionTest, AttackDamagesRegisteredEnemyThroughSession) {
     DantelionEngineContext::CustomRaycast = [&](const FVector3&, const FVector3&, HavokHitResult& out, uint64_t) {
         out.bHit = true;
         out.HitEntityHandle = 900;
-        out.HitPoint = SekiroAdapter::toNative(Vec3{250.f, 0.f, 150.f});
-        out.HitNormal = SekiroAdapter::toNative(Vec3{-1.f, 0.f, 0.f});
+        out.HitPoint = SekiroAdapter::toNativePoint(Vec3{250.f, 0.f, 150.f});
+        out.HitNormal = SekiroAdapter::toNativeDir(Vec3{-1.f, 0.f, 0.f});
         return true;
     };
 
@@ -526,7 +546,7 @@ TEST(SekiroSessionTest, AttackDamagesRegisteredEnemyThroughSession) {
     SekiroMod_Tick(0.05f, &in);
 
     EXPECT_FLOAT_EQ(enemy.Health, 950.f); // 5% max-hp balance applied by adapter
-    EXPECT_NEAR(enemy.Velocity.Z, 800.f * 100.f, 1.f); // sword knockback 800, one impulse along view
+    EXPECT_NEAR(enemy.Velocity.Z, 8.0f, 1e-2f); // sword knockback 800 cm/s = 8 m/s, one impulse along view
     EXPECT_GT(SekiroMod_GetSession()->lastAnimInput().swing_progress, 0.f);
 
     SekiroMod_UnregisterEntity(7);
@@ -637,20 +657,20 @@ TEST(SekiroAdapterTest, SetLinearVelocityReplacesInsteadOfAdding) {
     adapter.registerEntity(EntityId{9}, &e);
 
     adapter.setLinearVelocity(EntityId{9}, Vec3{150.f, 250.f, 350.f});
-    EXPECT_NEAR(e.Velocity.X, -250.f, 1e-3f); // MC left 250 = Dantelion right -250
-    EXPECT_NEAR(e.Velocity.Y, 350.f, 1e-3f);
-    EXPECT_NEAR(e.Velocity.Z, 150.f, 1e-3f);
+    EXPECT_NEAR(e.Velocity.X, -2.5f, 1e-4f); // MC left 250 cm/s = Dantelion right -2.5 m/s
+    EXPECT_NEAR(e.Velocity.Y, 3.5f, 1e-4f);
+    EXPECT_NEAR(e.Velocity.Z, 1.5f, 1e-4f);
 
     adapter.setLinearVelocity(EntityId{404}, Vec3{1.f, 2.f, 3.f}); // unknown: no-op, no crash
     adapter.setLinearVelocity(EntityId::None, Vec3{1.f, 2.f, 3.f});
-    EXPECT_NEAR(e.Velocity.Z, 150.f, 1e-3f);
+    EXPECT_NEAR(e.Velocity.Z, 1.5f, 1e-4f);
 }
 
 TEST(SekiroSessionTest, GlidingWritesVelocityToPlayerAndEstimatedGroundDoesNotCancelIt) {
     ChrIns player;
-    player.Velocity = FVector3{0.f, -300.f, 400.f}; // falling (airborne by the vertical-speed estimate), moving forward
+    player.Velocity = FVector3{0.f, -3.f, 4.f}; // falling 3 m/s (airborne by the estimate), moving forward 4 m/s
     ChrCam camera;
-    camera.Position = FVector3{0.f, 160.f, 0.f};
+    camera.Position = FVector3{0.f, 1.6f, 0.f};
     camera.Forward = FVector3{0.f, 0.f, 1.f};
     SekiroMod_Initialize(&player, &camera);
     SekiroMod_SetSteveMode(true);
@@ -661,7 +681,7 @@ TEST(SekiroSessionTest, GlidingWritesVelocityToPlayerAndEstimatedGroundDoesNotCa
     ASSERT_TRUE(SekiroMod_GetSession()->elytra().getState().is_gliding);
 
     const Vec3 mc_v = SekiroMod_GetSession()->elytra().getState().velocity;
-    const FVector3 expected = SekiroAdapter::toNative(mc_v);
+    const FVector3 expected = SekiroAdapter::toNativePoint(mc_v);
     EXPECT_NEAR(player.Velocity.X, expected.X, 1e-2f);
     EXPECT_NEAR(player.Velocity.Y, expected.Y, 1e-2f);
     EXPECT_NEAR(player.Velocity.Z, expected.Z, 1e-2f);
