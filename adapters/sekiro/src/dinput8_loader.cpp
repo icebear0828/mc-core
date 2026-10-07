@@ -672,6 +672,43 @@ void DrawSteveRig(ID3D11RenderTargetView* target, float screen_w, float screen_h
     g_steve_renderer->draw(g_d3d_context, target, static_cast<UINT>(screen_w), static_cast<UINT>(screen_h), view_proj, world);
 }
 
+// Per-frame trace for remote debugging of motion: arm by creating mc_cmd_trace.txt, it records the next
+// 360 frames to mc_trace.csv (position, velocity, facing, camera and what Steve was drawn with).
+void TraceFrame(float dt) {
+    static bool armed = false;
+    static std::vector<std::array<float, 17>> rows;
+    static unsigned poll = 0;
+    if (!armed && (++poll % 10u) == 0u && GetFileAttributesW(L"mc_cmd_trace.txt") != INVALID_FILE_ATTRIBUTES) {
+        DeleteFileW(L"mc_cmd_trace.txt");
+        armed = true;
+        rows.clear();
+    }
+    if (!armed) return;
+    const mc::adapter::SekiroAdapter* adapter = SekiroMod_GetAdapter();
+    const mc::Session* session = SekiroMod_GetSession();
+    if (!adapter || !session) return;
+    const auto& root = adapter->getSteveRoot();
+    const auto& smp = g_last_sample;
+    rows.push_back({dt * 1000.0f, smp.player_pos.X, smp.player_pos.Y, smp.player_pos.Z, g_player_mirror.Velocity.X,
+                    g_player_mirror.Velocity.Z, smp.cam_pos.X, smp.cam_pos.Z, smp.cam_forward.X, smp.cam_forward.Z,
+                    smp.facing_valid ? 1.0f : 0.0f, smp.facing_x, smp.facing_z, root.position.X, root.position.Z, root.yaw,
+                    session->lastAnimInput().forward_speed});
+    if (rows.size() >= 360) {
+        armed = false;
+        FILE* f = nullptr;
+        if (fopen_s(&f, "mc_trace.csv", "w") == 0 && f) {
+            fprintf(f, "dt_ms,px,py,pz,vx,vz,camx,camz,camfx,camfz,facing_ok,fx,fz,rootx,rootz,rootyaw,anim_fwd\n");
+            for (const auto& r : rows) {
+                for (size_t i = 0; i < r.size(); ++i) fprintf(f, "%s%.5f", i ? "," : "", r[i]);
+                fprintf(f, "\n");
+            }
+            fclose(f);
+        }
+        Log("Trace written: %zu frames", rows.size());
+        rows.clear();
+    }
+}
+
 HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UINT flags) {
     if (!g_mod_initialized.load()) {
         Log("Initializing SekiroMod (no player bound yet; waiting for live game link)...");
@@ -741,6 +778,7 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
     // Tick mc-core engine only with a validated live link; otherwise stay idle and say so in the HUD
     if (SyncLiveGameState(dt)) {
         SekiroMod_Tick(dt, &input_snapshot);
+        TraceFrame(dt);
     }
 
     // Get screen dimensions from SwapChain Desc
