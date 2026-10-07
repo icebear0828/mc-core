@@ -1,5 +1,7 @@
 #include "d3d11_rig/depth_capture.hpp"
 
+#include "d3d11_rig/cb_probe.hpp"
+
 #include <MinHook.h>
 #include <wrl/client.h>
 
@@ -149,6 +151,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateDeferred(ID3D11Device* self, UINT flags, I
         if (!g_deferred_set_installed) {
             g_deferred_set_installed = true;
             HookSet<1>::install(*out);
+            cbprobe::installOn(1, *out);
         }
     }
     return hr;
@@ -159,6 +162,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateDeferred(ID3D11Device* self, UINT flags, I
 bool DepthCapture::install(ID3D11Device* device, ID3D11DeviceContext* immediate) {
     if (!g_hooked_targets.empty() || !immediate || !device) return !g_hooked_targets.empty();
     bool ok = HookSet<0>::install(immediate);
+    cbprobe::installOn(0, immediate);
     void** dvt = *reinterpret_cast<void***>(device);
     g_create_deferred_target = dvt[kCreateDeferredContextVtableIndex];
     if (MH_CreateHook(g_create_deferred_target, reinterpret_cast<void*>(&DetourCreateDeferred),

@@ -40,6 +40,7 @@
 #include "sekiro_steve.hpp"
 #include "mc/hud_layout.hpp"
 #include "d3d11_rig/rig_renderer.hpp"
+#include "d3d11_rig/cb_probe.hpp"
 #include "d3d11_rig/depth_capture.hpp"
 #include "mc/hud.hpp"
 #include "mc/session.hpp"
@@ -728,6 +729,11 @@ bool SyncLiveGameState(float dt) {
         g_camera_stabilizer.apply(sample);
         g_live_mirror.update(sample, dt, g_player_mirror, g_camera_mirror);
         g_last_sample = sample;
+        {
+            const float cam[3] = {sample.cam_pos.X, sample.cam_pos.Y, sample.cam_pos.Z};
+            const float ply[3] = {sample.player_pos.X, sample.player_pos.Y, sample.player_pos.Z};
+            mc::d3d11::cbprobe::setTargets(cam, ply);
+        }
         if (g_model_hider) {
             std::lock_guard<std::mutex> hider_lock(g_hider_mutex);
             g_wolf_hide_wanted.store(g_player_mirror.bModelHidden);
@@ -819,6 +825,15 @@ void InitImGui(IDXGISwapChain* pSwapChain) {
     }
 
     g_d3d_device->GetImmediateContext(&g_d3d_context);
+    mc::d3d11::cbprobe::setLog(Log);
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, "mc_cb_probe.txt", "r") == 0 && f) {
+            fclose(f);
+            mc::d3d11::cbprobe::enable(true);
+            Log("Constant buffer probe ENABLED (mc_cb_probe.txt present)");
+        }
+    }
     Log(g_depth_capture.install(g_d3d_device, g_d3d_context) ? "Depth capture hook installed" : "Depth capture hook FAILED");
 
     // Hook WndProc for input
