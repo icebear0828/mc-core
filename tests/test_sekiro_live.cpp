@@ -122,12 +122,18 @@ struct World {
         mem.put(kPlayer + 0x1050, a);
         mem.put(kPlayer + 0x1060, b);
     }
-    // Heading block of the model object: (0, qy, 0, qw) at +0x2c, measured on the real game.
-    void setFacingBlock(float qy, float qw, float x = 0.f, float z = 0.f) {
+    // The model object holds the character's world transform at +0x30: a row-major 3x4 [R | t] with R a
+    // rotation about Y and t the player's position (measured on the real game). The model faces -Z.
+    // `yaw` is the heading of the character in native (x, z) = (sin yaw, cos yaw).
+    void setModelTransform(float yaw, float px, float py, float pz, bool break_translation = false) {
         if (!mem.regions.count(kChrModel)) mem.region(kChrModel, 0x400);
         mem.put<uint64_t>(kPlayer + 0x48, kChrModel);
-        const float block[4] = {x, qy, z, qw};
-        mem.put(kChrModel + 0x2c, block);
+        const float c = std::cos(yaw), s = std::sin(yaw);
+        // forward = (-R02, -R22) = (sin yaw, cos yaw)  =>  R02 = -sin, R22 = -cos; keep R a proper rotation.
+        const float m[12] = {-c, 0.f, -s, break_translation ? px + 50.f : px,
+                             0.f, 1.f, 0.f, py,
+                             s, 0.f, -c, pz};
+        mem.put(kChrModel + 0x30, m);
     }
     void setCamera(const Mat& m, uintptr_t obj = kCamera) { mem.put(obj + 0xea0, m); }
 };
@@ -235,17 +241,18 @@ TEST(SekiroLiveSampleTest, ReadsVerticalFovWhenPlausibleAndReportsZeroOtherwise)
     }
 }
 
-TEST(SekiroLiveSampleTest, ReadsTheCharactersFacingDirection) {
+TEST(SekiroLiveSampleTest, ReadsTheCharactersFacingDirectionFromItsModelTransform) {
     World w;
-    // Values read from the running game while walking straight ahead: the heading equals (-qw, -qy) in (x, z).
-    w.setFacingBlock(0.9281f, -0.3722f);
-    LiveBinder binder(w.mem, kBase, kImageSize);
-    ASSERT_EQ(binder.scan(), BindStatus::Bound);
-    LiveSample s;
-    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
-    EXPECT_TRUE(s.facing_valid);
-    EXPECT_NEAR(s.facing_x, 0.3722f, 1e-4f);
-    EXPECT_NEAR(s.facing_z, -0.9281f, 1e-4f);
+    for (float yaw : {0.f, 0.7f, 1.6f, -2.4f, 3.0f}) {
+        w.setModelTransform(yaw, 10.f, -36.f, 5.f);
+        LiveBinder binder(w.mem, kBase, kImageSize);
+        ASSERT_EQ(binder.scan(), BindStatus::Bound);
+        LiveSample s;
+        ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+        ASSERT_TRUE(s.facing_valid) << "yaw " << yaw;
+        EXPECT_NEAR(s.facing_x, std::sin(yaw), 1e-5f) << "yaw " << yaw;
+        EXPECT_NEAR(s.facing_z, std::cos(yaw), 1e-5f) << "yaw " << yaw;
+    }
 }
 
 TEST(SekiroLiveSampleTest, MissingOrImplausibleFacingNeverInvalidatesTheSample) {
@@ -257,15 +264,26 @@ TEST(SekiroLiveSampleTest, MissingOrImplausibleFacingNeverInvalidatesTheSample) 
     ASSERT_EQ(binder.sample(s), SampleStatus::Ok); // no model object at all
     EXPECT_FALSE(s.facing_valid);
 
-    w.setFacingBlock(0.5f, 0.5f);                  // length 0.707: not a unit direction
+    // The matrix is only trusted when its translation is the player's position: that rejects any other
+    // object that happens to look like a rotation.
+    w.setModelTransform(0.5f, 10.f, -36.f, 5.f, /*break_translation=*/true);
     ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
     EXPECT_FALSE(s.facing_valid);
 
-    w.setFacingBlock(0.6f, 0.8f, 0.3f, 0.f);       // x/z of the block must be ~0 for it to be a Y rotation
+    w.setModelTransform(0.5f, 10.f, -36.f, 5.f);
+    float skew = 0.4f; // not a rotation about Y any more
+    w.mem.put(kChrModel + 0x34, skew);
     ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
     EXPECT_FALSE(s.facing_valid);
 
-    w.setFacingBlock(std::numeric_limits<float>::quiet_NaN(), 1.f);
+    w.setModelTransform(0.5f, 10.f, -36.f, 5.f);
+    float scaled = 2.0f; // not unit length
+    w.mem.put(kChrModel + 0x30, scaled);
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+    EXPECT_FALSE(s.facing_valid);
+
+    w.setModelTransform(0.5f, 10.f, -36.f, 5.f);
+    w.mem.put(kChrModel + 0x38, std::numeric_limits<float>::quiet_NaN());
     ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
     EXPECT_FALSE(s.facing_valid);
 }

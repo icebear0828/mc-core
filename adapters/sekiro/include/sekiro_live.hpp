@@ -30,12 +30,14 @@ inline constexpr uint32_t kRipInstrLength = 7;
 inline constexpr uintptr_t kPlayerInsInWorldChrMan = 0x88;
 inline constexpr uintptr_t kChrPosition = 0x1050;     // float x,y,z (metres)
 inline constexpr uintptr_t kChrPositionCopy = 0x1060; // second copy, used as a consistency check
-// The player's model object ([ChrIns+0x48]) holds the body heading as (0, qy, 0, qw) at +0x2c. Measured on
-// the running game: walking straight ahead gave exactly the camera's forward vector as (-qw, -qy) in (x, z),
-// the block is stable while only the camera turns, and it follows the character when it turns.
+// The player's model object ([ChrIns+0x48]) holds the character's world transform at +0x30 as a row-major
+// 3x4 [R | t]: R a rotation about Y, t the player's position (so t doubles as a structural check). Measured
+// on the running game by correlating it with the run direction over 140 samples; the model faces -Z, so the
+// heading is (-R02, -R22) in (x, z).
 inline constexpr uintptr_t kChrModelInChrIns = 0x48;
-inline constexpr uintptr_t kFacingBlock = 0x2c; // float x, y, z, w
+inline constexpr uintptr_t kModelTransform = 0x30;
 inline constexpr float kFacingTolerance = 0.02f;
+inline constexpr float kMaxModelPositionDelta = 1.0f;
 inline constexpr uintptr_t kCameraMatrix = 0xea0;     // row-major 4x4: right, up, forward, position(w=1)
 inline constexpr uintptr_t kCameraFov = 0x160;        // float, returned by the camera getter the signature matches
 

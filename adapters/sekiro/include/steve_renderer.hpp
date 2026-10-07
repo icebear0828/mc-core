@@ -23,6 +23,8 @@ public:
     // The game's depth buffer (reverse-Z R32G8X24_TYPELESS) so the rig is hidden behind the scene. Null or an
     // unsupported layout turns occlusion off. The texture is only referenced, not owned beyond this call chain.
     void setSceneDepth(ID3D11Texture2D* texture);
+    // Where on screen (uv, 0..1) Steve stands: the frame around it lights him.
+    void setAmbientProbe(float u, float v) { probe_u_ = u; probe_v_ = v; }
     [[nodiscard]] bool sceneDepthActive() const { return scene_depth_srv_ != nullptr; }
     [[nodiscard]] bool ready() const { return ready_; }
 
@@ -32,6 +34,7 @@ public:
 
 private:
     bool ensureDepth(UINT width, UINT height);
+    bool captureFrame(ID3D11DeviceContext* context, ID3D11RenderTargetView* target);
 
     bool ready_{false};
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
@@ -43,6 +46,12 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Buffer> frame_cb_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> part_cb_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> scene_cb_;
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> linear_sampler_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> frame_tex_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> frame_srv_;
+    UINT frame_w_{0}, frame_h_{0};
+    DXGI_FORMAT frame_fmt_{DXGI_FORMAT_UNKNOWN};
+    float probe_u_{0.5f}, probe_v_{0.5f};
     Microsoft::WRL::ComPtr<ID3D11Texture2D> scene_depth_tex_;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> scene_depth_srv_;
     Microsoft::WRL::ComPtr<ID3D11RasterizerState> raster_;

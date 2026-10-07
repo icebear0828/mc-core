@@ -660,6 +660,14 @@ void DrawSteveRig(ID3D11RenderTargetView* target, float screen_w, float screen_h
         const sekiro::native::FQuat rot = visual ? visual->RotationQuat : sekiro::native::FQuat{};
         world[i] = sekiro::render::partMatrix(part, rot, root.position, root.yaw);
     }
+    {
+        // Light him like the world he stands in: sample the frame around his chest.
+        const sekiro::native::FVector3 chest{root.position.X, root.position.Y + 1.0f, root.position.Z};
+        const auto clip = sekiro::render::transform(view_proj, chest);
+        if (clip[3] > 0.0f) {
+            g_steve_renderer->setAmbientProbe(clip[0] / clip[3] * 0.5f + 0.5f, 1.0f - (clip[1] / clip[3] * 0.5f + 0.5f));
+        }
+    }
     g_steve_renderer->setSceneDepth(g_depth_capture.sceneDepth(static_cast<unsigned>(screen_w), static_cast<unsigned>(screen_h)));
     g_steve_renderer->draw(g_d3d_context, target, static_cast<UINT>(screen_w), static_cast<UINT>(screen_h), view_proj, world);
 }

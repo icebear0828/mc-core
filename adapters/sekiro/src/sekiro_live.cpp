@@ -174,16 +174,22 @@ void LiveBinder::readFacing(uintptr_t player, LiveSample& out) const {
     out.facing_valid = false;
     uintptr_t model = 0;
     if (!readPointer(player + layout::kChrModelInChrIns, model) || model == 0) return;
-    float block[4];
-    if (!reader_.read(model + layout::kFacingBlock, block, sizeof(block))) return;
-    for (float v : block) {
+    float m[12]; // row-major 3x4: [R | t]
+    if (!reader_.read(model + layout::kModelTransform, m, sizeof(m))) return;
+    for (float v : m) {
         if (!std::isfinite(v)) return;
     }
-    // A rotation about the vertical axis only: x and z stay zero and (y, w) is a unit pair.
-    if (std::fabs(block[0]) > layout::kFacingTolerance || std::fabs(block[2]) > layout::kFacingTolerance) return;
-    if (std::fabs(block[1] * block[1] + block[3] * block[3] - 1.0f) > layout::kFacingTolerance) return;
-    out.facing_x = -block[3];
-    out.facing_z = -block[1];
+    const float tol = layout::kFacingTolerance;
+    // A rotation about the vertical axis only, unit length.
+    if (std::fabs(m[1]) > tol || std::fabs(m[4]) > tol || std::fabs(m[6]) > tol || std::fabs(m[9]) > tol) return;
+    if (std::fabs(m[5] - 1.0f) > tol) return;
+    if (std::fabs(m[0] * m[0] + m[2] * m[2] - 1.0f) > tol || std::fabs(m[8] * m[8] + m[10] * m[10] - 1.0f) > tol) return;
+    if (std::fabs(m[0] - m[10]) > tol || std::fabs(m[2] + m[8]) > tol) return;
+    // Only this player's transform counts: its translation must be where the player is.
+    const native::FVector3 t{m[3], m[7], m[11]};
+    if ((t - out.player_pos).Length() > layout::kMaxModelPositionDelta) return;
+    out.facing_x = -m[2];
+    out.facing_z = -m[10];
     out.facing_valid = true;
 }
 

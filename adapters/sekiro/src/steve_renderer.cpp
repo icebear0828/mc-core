@@ -15,18 +15,25 @@ using Microsoft::WRL::ComPtr;
 constexpr char kShaderSource[] = R"hlsl(
 cbuffer Frame : register(b0) { row_major float4x4 view_proj; };
 cbuffer Part  : register(b1) { row_major float4x4 world; };
-cbuffer Scene : register(b0) { float4 scene; }; // x depth*z constant, y relative bias, z metre bias, w enabled
+cbuffer Scene : register(b0) {
+    float4 scene; // x depth*z constant, y relative bias, z metre bias, w occlusion enabled
+    float4 probe; // xy: uv of the scene around Steve, z: ambient matching enabled
+};
 Texture2D skin : register(t0);
 Texture2D<float2> scene_depth : register(t1);
+Texture2D scene_color : register(t2);
 SamplerState point_clamp : register(s0);
+SamplerState linear_clamp : register(s1);
 
 struct VSIn  { float3 pos : POSITION; float2 uv : TEXCOORD0; };
-struct VSOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };
+struct VSOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; float3 wpos : TEXCOORD1; };
 
 VSOut VSMain(VSIn i) {
     VSOut o;
-    o.pos = mul(mul(float4(i.pos, 1.0), world), view_proj);
+    float4 w = mul(float4(i.pos, 1.0), world);
+    o.pos = mul(w, view_proj);
     o.uv = i.uv;
+    o.wpos = w.xyz;
     return o;
 }
 
@@ -39,7 +46,32 @@ float4 PSMain(VSOut i) : SV_Target {
     }
     float4 c = skin.Sample(point_clamp, i.uv);
     clip(c.a - 0.5);          // overlay layers (hat, jacket, sleeves, pants) are cut out, not blended
-    return float4(c.rgb, 1.0);
+    float3 rgb = c.rgb;
+
+    if (probe.z > 0.5) {
+        // Minecraft's fixed face shading (top 1.0, north/south 0.8, east/west 0.6), from the face normal.
+        float3 n = normalize(cross(ddx(i.wpos), ddy(i.wpos)));
+        float3 a = abs(n);
+        float face = a.y > 0.7 ? 1.0 : (a.z > a.x ? 0.82 : 0.68);
+
+        // Light the figure like the world around it: average colour of the frame near Steve (mip chain of
+        // the frame copy), taken ahead of him so he does not light himself.
+        float3 amb = 0;
+        [unroll] for (int k = 0; k < 5; ++k) {
+            float2 o = float2((k - 2) * 0.05, ((k % 2) * 2 - 1) * 0.04);
+            amb += scene_color.SampleLevel(linear_clamp, saturate(probe.xy + o), 6.0).rgb;
+        }
+        amb *= 0.2;
+        float luma = dot(amb, float3(0.299, 0.587, 0.114));
+        float exposure = clamp(0.30 + 2.6 * luma, 0.30, 1.0);   // dark places darken him, bright ones leave him alone
+        float3 tint = amb / max(luma, 1e-3);
+        tint = lerp(float3(1, 1, 1), clamp(tint, 0.5, 1.6), 0.45);   // pick up the scene's colour cast
+
+        float g = dot(rgb, float3(0.299, 0.587, 0.114));
+        rgb = lerp(float3(g, g, g), rgb, 0.82);                // the game is desaturated; pure MC colours are not
+        rgb = rgb * face * exposure * tint;
+    }
+    return float4(rgb, 1.0);
 }
 )hlsl";
 
@@ -91,6 +123,8 @@ struct StateBackup {
     ComPtr<ID3D11Buffer> vs_cb[2];
     ComPtr<ID3D11ShaderResourceView> ps_srv;
     ComPtr<ID3D11ShaderResourceView> ps_srv1;
+    ComPtr<ID3D11ShaderResourceView> ps_srv2;
+    ComPtr<ID3D11SamplerState> ps_sampler1;
     ComPtr<ID3D11Buffer> ps_cb0;
     ComPtr<ID3D11SamplerState> ps_sampler;
 
@@ -115,6 +149,8 @@ struct StateBackup {
         vs_cb[1].Attach(cbs[1]);
         c->PSGetShaderResources(0, 1, ps_srv.GetAddressOf());
         c->PSGetShaderResources(1, 1, ps_srv1.GetAddressOf());
+        c->PSGetShaderResources(2, 1, ps_srv2.GetAddressOf());
+        c->PSGetSamplers(1, 1, ps_sampler1.GetAddressOf());
         c->PSGetConstantBuffers(0, 1, ps_cb0.GetAddressOf());
         c->PSGetSamplers(0, 1, ps_sampler.GetAddressOf());
     }
@@ -142,6 +178,10 @@ struct StateBackup {
         c->PSSetShaderResources(0, 1, &srv);
         ID3D11ShaderResourceView* srv1 = ps_srv1.Get();
         c->PSSetShaderResources(1, 1, &srv1);
+        ID3D11ShaderResourceView* srv2 = ps_srv2.Get();
+        c->PSSetShaderResources(2, 1, &srv2);
+        ID3D11SamplerState* sampler1 = ps_sampler1.Get();
+        c->PSSetSamplers(1, 1, &sampler1);
         ID3D11Buffer* cb0 = ps_cb0.Get();
         c->PSSetConstantBuffers(0, 1, &cb0);
         ID3D11SamplerState* sampler = ps_sampler.Get();
@@ -207,7 +247,7 @@ bool SteveRenderer::init(ID3D11Device* device) {
         logLine("CreateBuffer (constants) failed");
         return false;
     }
-    cb.ByteWidth = sizeof(float) * 4;
+    cb.ByteWidth = sizeof(float) * 8;
     if (FAILED(device->CreateBuffer(&cb, nullptr, scene_cb_.GetAddressOf()))) {
         logLine("CreateBuffer (constants) failed");
         return false;
@@ -227,6 +267,14 @@ bool SteveRenderer::init(ID3D11Device* device) {
     sd.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT; // keep the skin pixelated like Minecraft
     sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
     sd.MaxLOD = D3D11_FLOAT32_MAX;
+    D3D11_SAMPLER_DESC ls{};
+    ls.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    ls.AddressU = ls.AddressV = ls.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    ls.MaxLOD = D3D11_FLOAT32_MAX;
+    if (FAILED(device->CreateSamplerState(&ls, linear_sampler_.GetAddressOf()))) {
+        logLine("CreateSamplerState (linear) failed");
+        return false;
+    }
     if (FAILED(device->CreateRasterizerState(&rd, raster_.GetAddressOf())) || FAILED(device->CreateBlendState(&bd, blend_.GetAddressOf())) ||
         FAILED(device->CreateDepthStencilState(&dd, depth_state_.GetAddressOf())) || FAILED(device->CreateSamplerState(&sd, sampler_.GetAddressOf()))) {
         logLine("CreateState failed");
@@ -239,6 +287,46 @@ bool SteveRenderer::init(ID3D11Device* device) {
     if (!setSkin(device, grey, kSkinSize, kSkinSize)) return false;
 
     ready_ = true;
+    return true;
+}
+
+// Copies the frame so far (before Steve is drawn) into a mip-mapped texture the shader can average.
+bool SteveRenderer::captureFrame(ID3D11DeviceContext* context, ID3D11RenderTargetView* target) {
+    ComPtr<ID3D11Resource> res;
+    target->GetResource(res.GetAddressOf());
+    ComPtr<ID3D11Texture2D> src;
+    if (!res || FAILED(res.As(&src))) return false;
+    D3D11_TEXTURE2D_DESC sd{};
+    src->GetDesc(&sd);
+    D3D11_RENDER_TARGET_VIEW_DESC rd{};
+    target->GetDesc(&rd);
+    if (sd.SampleDesc.Count != 1 || rd.Format == DXGI_FORMAT_UNKNOWN) return false;
+    if (!frame_tex_ || frame_w_ != sd.Width || frame_h_ != sd.Height || frame_fmt_ != rd.Format) {
+        frame_srv_.Reset();
+        frame_tex_.Reset();
+        D3D11_TEXTURE2D_DESC td{};
+        td.Width = sd.Width;
+        td.Height = sd.Height;
+        td.MipLevels = 0; // full chain
+        td.ArraySize = 1;
+        td.Format = rd.Format;
+        td.SampleDesc.Count = 1;
+        td.Usage = D3D11_USAGE_DEFAULT;
+        td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+        td.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+        if (FAILED(device_->CreateTexture2D(&td, nullptr, frame_tex_.GetAddressOf())) ||
+            FAILED(device_->CreateShaderResourceView(frame_tex_.Get(), nullptr, frame_srv_.GetAddressOf()))) {
+            logLine("frame copy texture creation failed; ambient matching off");
+            frame_tex_.Reset();
+            frame_srv_.Reset();
+            return false;
+        }
+        frame_w_ = sd.Width;
+        frame_h_ = sd.Height;
+        frame_fmt_ = rd.Format;
+    }
+    context->CopySubresourceRegion(frame_tex_.Get(), 0, 0, 0, 0, src.Get(), 0, nullptr);
+    context->GenerateMips(frame_srv_.Get());
     return true;
 }
 
@@ -322,11 +410,12 @@ void SteveRenderer::draw(ID3D11DeviceContext* context, ID3D11RenderTargetView* t
         return true;
     };
     if (!upload(frame_cb_.Get(), view_projection)) return;
+    const bool ambient = captureFrame(context, target);
     {
         D3D11_MAPPED_SUBRESOURCE mapped{};
         if (SUCCEEDED(context->Map(scene_cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-            const float params[4] = {kSceneDepthNear, kSceneOcclusionRelativeBias, kSceneOcclusionBiasMetres,
-                                     scene_depth_srv_ ? 1.0f : 0.0f};
+            const float params[8] = {kSceneDepthNear, kSceneOcclusionRelativeBias, kSceneOcclusionBiasMetres,
+                                     scene_depth_srv_ ? 1.0f : 0.0f, probe_u_, probe_v_, ambient ? 1.0f : 0.0f, 0.0f};
             std::memcpy(mapped.pData, params, sizeof(params));
             context->Unmap(scene_cb_.Get(), 0);
         }
@@ -363,6 +452,10 @@ void SteveRenderer::draw(ID3D11DeviceContext* context, ID3D11RenderTargetView* t
     context->PSSetShaderResources(0, 1, &srv);
     ID3D11ShaderResourceView* scene_srv = scene_depth_srv_.Get();
     context->PSSetShaderResources(1, 1, &scene_srv);
+    ID3D11ShaderResourceView* frame_srv = ambient ? frame_srv_.Get() : nullptr;
+    context->PSSetShaderResources(2, 1, &frame_srv);
+    ID3D11SamplerState* linear = linear_sampler_.Get();
+    context->PSSetSamplers(1, 1, &linear);
     ID3D11Buffer* scene_cb = scene_cb_.Get();
     context->PSSetConstantBuffers(0, 1, &scene_cb);
     ID3D11SamplerState* sampler = sampler_.Get();
