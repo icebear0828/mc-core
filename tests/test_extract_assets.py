@@ -123,3 +123,96 @@ def test_build_hud_atlas_contains_expected_uvs():
         assert 0.0 <= u0 < u1 <= 1.0, f"Invalid U range for {key}: {u0}..{u1}"
         assert 0.0 <= v0 < v1 <= 1.0, f"Invalid V range for {key}: {v0}..{v1}"
 
+
+
+# --- real client.jar sprites must be used (not the procedural fallback) ---------------------------
+
+def _solid(size, color):
+    return Image.new("RGBA", size, color)
+
+
+def _png(img: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _fake_client_jar(path: Path) -> Path:
+    import zipfile
+
+    base = "assets/minecraft/textures/"
+    hotbar = Image.new("RGBA", (182, 22), (0, 0, 0, 0))
+    for x in range(182):  # recognisable vertical gradient so a crop can be located exactly
+        for y in range(22):
+            hotbar.putpixel((x, y), (x % 256, y * 10, 77, 255))
+    selection = _solid((24, 23), (255, 0, 255, 255))
+    crosshair = _solid((15, 15), (10, 200, 30, 255))
+    files = {
+        "gui/sprites/hud/crosshair.png": crosshair,
+        "gui/sprites/hud/heart/full.png": _solid((9, 9), (200, 0, 0, 255)),
+        "gui/sprites/hud/food_full.png": _solid((9, 9), (150, 90, 20, 255)),
+        "gui/sprites/hud/hotbar.png": hotbar,
+        "gui/sprites/hud/hotbar_selection.png": selection,
+        "item/diamond_sword.png": _solid((16, 16), (1, 2, 3, 255)),
+        "item/diamond_pickaxe.png": _solid((16, 16), (4, 5, 6, 255)),
+        "block/dirt.png": _solid((16, 16), (7, 8, 9, 255)),
+        "block/stone.png": _solid((16, 16), (10, 11, 12, 255)),
+        "block/tnt_side.png": _solid((16, 16), (13, 14, 15, 255)),
+        "item/golden_apple.png": _solid((16, 16), (16, 17, 18, 255)),
+        "item/bow.png": _solid((16, 16), (19, 20, 21, 255)),
+        "item/elytra.png": _solid((16, 16), (22, 23, 24, 255)),
+        "item/totem_of_undying.png": _solid((16, 16), (25, 26, 27, 255)),
+    }
+    with zipfile.ZipFile(path, "w") as z:
+        for name, img in files.items():
+            z.writestr(base + name, _png(img))
+    return path
+
+
+def _region(atlas: Image.Image, uv, w=None, h=None):
+    u0, v0, u1, v1 = uv
+    return atlas.crop((round(u0 * atlas.width), round(v0 * atlas.height), round(u1 * atlas.width), round(v1 * atlas.height)))
+
+
+def test_hud_atlas_uses_real_sprites_when_client_jar_given(tmp_path):
+    from extract_mc_assets import build_hud_atlas
+
+    atlas, uv = build_hud_atlas(_fake_client_jar(tmp_path / "client.jar"))
+
+    assert _region(atlas, uv["item_dirt"]).getpixel((8, 8)) == (7, 8, 9, 255)
+    assert _region(atlas, uv["item_diamond_sword"]).getpixel((8, 8)) == (1, 2, 3, 255)
+    assert _region(atlas, uv["heart_full"]).getpixel((4, 4)) == (200, 0, 0, 255)
+    assert _region(atlas, uv["hunger_full"]).getpixel((4, 4)) == (150, 90, 20, 255)
+
+
+def test_hud_atlas_keeps_layout_identical_with_and_without_jar(tmp_path):
+    from extract_mc_assets import build_hud_atlas
+
+    _, uv_fallback = build_hud_atlas()
+    _, uv_real = build_hud_atlas(_fake_client_jar(tmp_path / "client.jar"))
+    assert uv_fallback == uv_real  # C++ UV constants must stay valid for either atlas
+
+
+def test_hud_atlas_hotbar_slot_comes_from_real_hotbar_strip(tmp_path):
+    from extract_mc_assets import build_hud_atlas
+
+    atlas, uv = build_hud_atlas(_fake_client_jar(tmp_path / "client.jar"))
+    slot = _region(atlas, uv["hotbar_slot"])
+    assert slot.size == (24, 24)
+    # one 22x22 cell of the strip (cell index 1 => x = 20..42) centred on the 24x24 canvas
+    assert slot.getpixel((1, 1)) == (20, 0, 77, 255)
+    assert slot.getpixel((22, 21)) == (41, 200, 77, 255)  # canvas (22,21) = cell (21,20) = strip (41,20)
+    assert slot.getpixel((0, 0))[3] == 0 and slot.getpixel((23, 23))[3] == 0  # transparent margin
+
+    cursor = _region(atlas, uv["hotbar_cursor"])
+    assert cursor.getpixel((12, 10)) == (255, 0, 255, 255)
+
+
+def test_hud_atlas_crosshair_is_centred_not_stretched(tmp_path):
+    from extract_mc_assets import build_hud_atlas
+
+    atlas, uv = build_hud_atlas(_fake_client_jar(tmp_path / "client.jar"))
+    ch = _region(atlas, uv["crosshair"])
+    assert ch.size == (16, 16)
+    colored = [(x, y) for x in range(16) for y in range(16) if ch.getpixel((x, y))[3] > 0]
+    assert len(colored) == 15 * 15  # 15x15 source pasted 1:1, no resampling holes or doubled rows

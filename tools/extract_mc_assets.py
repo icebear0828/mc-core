@@ -300,6 +300,73 @@ def create_canonical_sprite(name: str) -> Image.Image:
     return img
 
 
+_JAR_TEXTURES = "assets/minecraft/textures/"
+
+_JAR_HUD_SPRITES = {
+    "crosshair": "gui/sprites/hud/crosshair.png",
+    "heart_full": "gui/sprites/hud/heart/full.png",
+    "hunger_full": "gui/sprites/hud/food_full.png",
+    "item_diamond_sword": "item/diamond_sword.png",
+    "item_diamond_pickaxe": "item/diamond_pickaxe.png",
+    "item_dirt": "block/dirt.png",
+    "item_stone": "block/stone.png",
+    "item_tnt": "block/tnt_side.png",
+    "item_golden_apple": "item/golden_apple.png",
+    "item_bow": "item/bow.png",
+    "item_elytra": "item/elytra.png",
+    "item_totem_of_undying": "item/totem_of_undying.png",
+}
+
+# The real hotbar is one 182x22 strip: nine 22x22 cells at a 20px pitch (neighbouring cells share a
+# 2px border). Cell 1 has both borders and tiles cleanly, so it becomes the single-slot sprite.
+_HOTBAR_STRIP = "gui/sprites/hud/hotbar.png"
+_HOTBAR_SELECTION = "gui/sprites/hud/hotbar_selection.png"
+_HOTBAR_CELL = (20, 0, 42, 22)
+
+
+def _open_jar_png(jar_zip: zipfile.ZipFile, relative: str) -> Image.Image | None:
+    full = _JAR_TEXTURES + relative
+    if full not in jar_zip.namelist():
+        return None
+    try:
+        with jar_zip.open(full) as zf:
+            return Image.open(io.BytesIO(zf.read())).convert("RGBA")
+    except Exception:
+        return None
+
+
+def _fit_sprite(src: Image.Image, size: tuple[int, int]) -> Image.Image:
+    """Smaller sprites are pasted unscaled and centred (no resampling artefacts); others are resized."""
+    if src.size == size:
+        return src
+    if src.width <= size[0] and src.height <= size[1]:
+        canvas = Image.new("RGBA", size, (0, 0, 0, 0))
+        canvas.paste(src, ((size[0] - src.width) // 2, (size[1] - src.height) // 2))
+        return canvas
+    return src.resize(size, Image.Resampling.NEAREST)
+
+
+def _read_real_hud_sprite(jar_zip: zipfile.ZipFile, name: str, size: tuple[int, int]) -> Image.Image | None:
+    """Real Minecraft sprite for `name`, or None so the caller falls back to the canonical placeholder."""
+    if name == "hotbar_slot":
+        strip = _open_jar_png(jar_zip, _HOTBAR_STRIP)
+        if strip is None or strip.width < _HOTBAR_CELL[2] or strip.height < _HOTBAR_CELL[3]:
+            return None
+        return _fit_sprite(strip.crop(_HOTBAR_CELL), size)
+    if name == "hotbar_cursor":
+        selection = _open_jar_png(jar_zip, _HOTBAR_SELECTION)
+        if selection is None:
+            return None
+        canvas = Image.new("RGBA", size, (0, 0, 0, 0))
+        canvas.paste(selection, (0, 0))
+        return canvas
+    relative = _JAR_HUD_SPRITES.get(name)
+    if relative is None:
+        return None
+    src = _open_jar_png(jar_zip, relative)
+    return None if src is None else _fit_sprite(src, size)
+
+
 def build_hud_atlas(client_jar: Path | None = None) -> tuple[Image.Image, dict[str, tuple[float, float, float, float]]]:
     """Build unified 256x256 RGBA HUD texture atlas and return (atlas_image, uv_mapping)."""
     atlas_size = 256
@@ -342,28 +409,7 @@ def build_hud_atlas(client_jar: Path | None = None) -> tuple[Image.Image, dict[s
         sprite_img = None
         # Try reading from jar if possible
         if jar_zip:
-            jar_paths = {
-                "crosshair": "assets/minecraft/textures/gui/sprites/hud/crosshair.png",
-                "heart_full": "assets/minecraft/textures/gui/sprites/hud/heart/full.png",
-                "hunger_full": "assets/minecraft/textures/gui/sprites/hud/food_full.png",
-                "item_diamond_sword": "assets/minecraft/textures/item/diamond_sword.png",
-                "item_diamond_pickaxe": "assets/minecraft/textures/item/diamond_pickaxe.png",
-                "item_dirt": "assets/minecraft/textures/block/dirt.png",
-                "item_stone": "assets/minecraft/textures/block/stone.png",
-                "item_tnt": "assets/minecraft/textures/block/tnt_side.png",
-                "item_golden_apple": "assets/minecraft/textures/item/golden_apple.png",
-                "item_bow": "assets/minecraft/textures/item/bow.png",
-                "item_elytra": "assets/minecraft/textures/item/elytra.png",
-                "item_totem_of_undying": "assets/minecraft/textures/item/totem_of_undying.png",
-            }
-            if name in jar_paths and jar_paths[name] in jar_zip.namelist():
-                try:
-                    with jar_zip.open(jar_paths[name]) as zf:
-                        sprite_img = Image.open(io.BytesIO(zf.read())).convert("RGBA")
-                        if sprite_img.size != (w, h):
-                            sprite_img = sprite_img.resize((w, h), Image.Resampling.NEAREST)
-                except Exception:
-                    sprite_img = None
+            sprite_img = _read_real_hud_sprite(jar_zip, name, (w, h))
 
         if sprite_img is None:
             sprite_img = create_canonical_sprite(name)

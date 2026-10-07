@@ -82,61 +82,47 @@ ID3D11ShaderResourceView* g_hud_srv = nullptr;
 HWND g_game_hwnd = nullptr;
 WNDPROC g_original_wndproc = nullptr;
 
-ID3D11ShaderResourceView* CreateHudTextureSRV(ID3D11Device* device) {
-    if (!device) return nullptr;
+template <typename T>
+struct ComGuard {
+    T* p{nullptr};
+    ComGuard() = default;
+    ComGuard(const ComGuard&) = delete;
+    ComGuard& operator=(const ComGuard&) = delete;
+    ~ComGuard() { if (p) p->Release(); }
+    T** put() { return &p; }
+    T* operator->() const { return p; }
+};
 
-    IWICImagingFactory* pFactory = nullptr;
-    HRESULT hr = CoCreateInstance(
-        CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-        IID_PPV_ARGS(&pFactory)
-    );
-    if (FAILED(hr) || !pFactory) return nullptr;
-
-    IWICStream* pStream = nullptr;
-    hr = pFactory->CreateStream(&pStream);
-    if (FAILED(hr)) { pFactory->Release(); return nullptr; }
-
-    hr = pStream->InitializeFromMemory(
-        const_cast<BYTE*>(sekiro::hud::kHudAtlasPngData),
-        static_cast<DWORD>(sekiro::hud::kHudAtlasPngSize)
-    );
-    if (FAILED(hr)) { pStream->Release(); pFactory->Release(); return nullptr; }
-
-    IWICBitmapDecoder* pDecoder = nullptr;
-    hr = pFactory->CreateDecoderFromStream(
-        pStream, nullptr, WICDecodeMetadataCacheOnDemand, &pDecoder
-    );
-    if (FAILED(hr)) { pStream->Release(); pFactory->Release(); return nullptr; }
-
-    IWICBitmapFrameDecode* pFrame = nullptr;
-    hr = pDecoder->GetFrame(0, &pFrame);
-    if (FAILED(hr)) { pDecoder->Release(); pStream->Release(); pFactory->Release(); return nullptr; }
-
-    IWICFormatConverter* pConverter = nullptr;
-    hr = pFactory->CreateFormatConverter(&pConverter);
-    if (FAILED(hr)) { pFrame->Release(); pDecoder->Release(); pStream->Release(); pFactory->Release(); return nullptr; }
-
-    hr = pConverter->Initialize(
-        pFrame, GUID_WICPixelFormat32bppRGBA,
-        WICBitmapDitherTypeNone, nullptr, 0.0f, WICBitmapPaletteTypeCustom
-    );
-    if (FAILED(hr)) {
-        pConverter->Release(); pFrame->Release(); pDecoder->Release(); pStream->Release(); pFactory->Release();
-        return nullptr;
+// Decodes a PNG (from a file when `path` is set, otherwise from memory) into tightly packed RGBA8.
+bool DecodePngToRgba(const wchar_t* path, const BYTE* data, size_t size, std::vector<BYTE>& out, UINT& width, UINT& height) {
+    ComGuard<IWICImagingFactory> factory;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(factory.put())))) {
+        return false;
     }
+    ComGuard<IWICBitmapDecoder> decoder;
+    ComGuard<IWICStream> stream;
+    if (path) {
+        if (FAILED(factory->CreateDecoderFromFilename(path, nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, decoder.put()))) {
+            return false;
+        }
+    } else if (FAILED(factory->CreateStream(stream.put())) ||
+               FAILED(stream->InitializeFromMemory(const_cast<BYTE*>(data), static_cast<DWORD>(size))) ||
+               FAILED(factory->CreateDecoderFromStream(stream.p, nullptr, WICDecodeMetadataCacheOnDemand, decoder.put()))) {
+        return false;
+    }
+    ComGuard<IWICBitmapFrameDecode> frame;
+    ComGuard<IWICFormatConverter> converter;
+    if (FAILED(decoder->GetFrame(0, frame.put())) || FAILED(factory->CreateFormatConverter(converter.put())) ||
+        FAILED(converter->Initialize(frame.p, GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, nullptr, 0.0f,
+                                     WICBitmapPaletteTypeCustom)) ||
+        FAILED(converter->GetSize(&width, &height)) || width == 0 || height == 0) {
+        return false;
+    }
+    out.resize(static_cast<size_t>(width) * height * 4);
+    return SUCCEEDED(converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(out.size()), out.data()));
+}
 
-    UINT width = 256, height = 256;
-    pConverter->GetSize(&width, &height);
-
-    std::vector<BYTE> pixels(width * height * 4);
-    pConverter->CopyPixels(nullptr, width * 4, static_cast<UINT>(pixels.size()), pixels.data());
-
-    pConverter->Release();
-    pFrame->Release();
-    pDecoder->Release();
-    pStream->Release();
-    pFactory->Release();
-
+ID3D11ShaderResourceView* CreateSrvFromRgba(ID3D11Device* device, const std::vector<BYTE>& pixels, UINT width, UINT height) {
     D3D11_TEXTURE2D_DESC desc{};
     desc.Width = width;
     desc.Height = height;
@@ -151,16 +137,128 @@ ID3D11ShaderResourceView* CreateHudTextureSRV(ID3D11Device* device) {
     sub.pSysMem = pixels.data();
     sub.SysMemPitch = width * 4;
 
-    ID3D11Texture2D* pTex = nullptr;
-    hr = device->CreateTexture2D(&desc, &sub, &pTex);
-    if (FAILED(hr) || !pTex) return nullptr;
+    ComGuard<ID3D11Texture2D> tex;
+    if (FAILED(device->CreateTexture2D(&desc, &sub, tex.put()))) return nullptr;
+    ID3D11ShaderResourceView* srv = nullptr;
+    if (FAILED(device->CreateShaderResourceView(tex.p, nullptr, &srv))) return nullptr;
+    return srv;
+}
 
-    ID3D11ShaderResourceView* pSrv = nullptr;
-    hr = device->CreateShaderResourceView(pTex, nullptr, &pSrv);
-    pTex->Release();
+// Real Minecraft sprites are extracted locally from the player's own client.jar and are never
+// committed to the repo; the embedded atlas is only a placeholder fallback.
+constexpr const wchar_t* kExternalHudAtlasPath = L"mods\\mc_adapter\\mc_hud_atlas.png";
 
-    if (FAILED(hr)) return nullptr;
-    return pSrv;
+ID3D11ShaderResourceView* CreateHudTextureSRV(ID3D11Device* device) {
+    if (!device) return nullptr;
+
+    std::vector<BYTE> pixels;
+    UINT width = 0, height = 0;
+    if (DecodePngToRgba(kExternalHudAtlasPath, nullptr, 0, pixels, width, height)) {
+        Log("HUD atlas source: external file (real Minecraft sprites) %ux%u", width, height);
+    } else if (DecodePngToRgba(nullptr, sekiro::hud::kHudAtlasPngData, sekiro::hud::kHudAtlasPngSize, pixels, width, height)) {
+        Log("HUD atlas source: EMBEDDED PLACEHOLDER (no mods\\mc_adapter\\mc_hud_atlas.png found) %ux%u", width, height);
+    } else {
+        Log("HUD atlas: failed to decode any atlas");
+        return nullptr;
+    }
+    return CreateSrvFromRgba(device, pixels, width, height);
+}
+
+std::atomic<bool> g_screenshot_requested{false};
+
+// Writes the frame about to be presented (including our overlay) to a PNG next to the game, so UI
+// problems can be inspected without a screen capture tool.
+void SaveFramePng(IDXGISwapChain* swap_chain, const wchar_t* out_path) {
+    ComGuard<ID3D11Texture2D> back;
+    if (FAILED(swap_chain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(back.put())))) {
+        Log("Screenshot: GetBuffer failed");
+        return;
+    }
+    D3D11_TEXTURE2D_DESC desc{};
+    back->GetDesc(&desc);
+    if (desc.SampleDesc.Count != 1) {
+        Log("Screenshot: multisampled back buffer is not supported");
+        return;
+    }
+    D3D11_TEXTURE2D_DESC staging_desc = desc;
+    staging_desc.Usage = D3D11_USAGE_STAGING;
+    staging_desc.BindFlags = 0;
+    staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    staging_desc.MiscFlags = 0;
+    staging_desc.MipLevels = 1;
+    staging_desc.ArraySize = 1;
+    ComGuard<ID3D11Texture2D> staging;
+    if (FAILED(g_d3d_device->CreateTexture2D(&staging_desc, nullptr, staging.put()))) {
+        Log("Screenshot: staging texture creation failed");
+        return;
+    }
+    g_d3d_context->CopyResource(staging.p, back.p);
+
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(g_d3d_context->Map(staging.p, 0, D3D11_MAP_READ, 0, &mapped))) {
+        Log("Screenshot: Map failed");
+        return;
+    }
+    const UINT w = desc.Width, h = desc.Height;
+    std::vector<BYTE> rgba(static_cast<size_t>(w) * h * 4);
+    bool supported = true;
+    for (UINT y = 0; y < h && supported; ++y) {
+        const BYTE* src = static_cast<const BYTE*>(mapped.pData) + static_cast<size_t>(y) * mapped.RowPitch;
+        BYTE* dst = rgba.data() + static_cast<size_t>(y) * w * 4;
+        switch (desc.Format) {
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+            std::copy(src, src + static_cast<size_t>(w) * 4, dst);
+            break;
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+            for (UINT x = 0; x < w; ++x) {
+                dst[x * 4 + 0] = src[x * 4 + 2];
+                dst[x * 4 + 1] = src[x * 4 + 1];
+                dst[x * 4 + 2] = src[x * 4 + 0];
+                dst[x * 4 + 3] = src[x * 4 + 3];
+            }
+            break;
+        case DXGI_FORMAT_R10G10B10A2_UNORM:
+            for (UINT x = 0; x < w; ++x) {
+                const uint32_t v = *reinterpret_cast<const uint32_t*>(src + static_cast<size_t>(x) * 4);
+                dst[x * 4 + 0] = static_cast<BYTE>(((v >> 0) & 0x3FF) >> 2);
+                dst[x * 4 + 1] = static_cast<BYTE>(((v >> 10) & 0x3FF) >> 2);
+                dst[x * 4 + 2] = static_cast<BYTE>(((v >> 20) & 0x3FF) >> 2);
+                dst[x * 4 + 3] = 255;
+            }
+            break;
+        default:
+            supported = false;
+            break;
+        }
+    }
+    g_d3d_context->Unmap(staging.p, 0);
+    if (!supported) {
+        Log("Screenshot: unsupported back buffer format %d", static_cast<int>(desc.Format));
+        return;
+    }
+
+    ComGuard<IWICImagingFactory> factory;
+    ComGuard<IWICStream> file;
+    ComGuard<IWICBitmapEncoder> encoder;
+    ComGuard<IWICBitmapFrameEncode> frame;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(factory.put()))) ||
+        FAILED(factory->CreateStream(file.put())) || FAILED(file->InitializeFromFilename(out_path, GENERIC_WRITE)) ||
+        FAILED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, encoder.put())) ||
+        FAILED(encoder->Initialize(file.p, WICBitmapEncoderNoCache)) || FAILED(encoder->CreateNewFrame(frame.put(), nullptr)) ||
+        FAILED(frame->Initialize(nullptr)) || FAILED(frame->SetSize(w, h))) {
+        Log("Screenshot: PNG encoder setup failed");
+        return;
+    }
+    WICPixelFormatGUID format = GUID_WICPixelFormat32bppRGBA;
+    if (FAILED(frame->SetPixelFormat(&format)) ||
+        FAILED(frame->WritePixels(h, w * 4, static_cast<UINT>(rgba.size()), rgba.data())) || FAILED(frame->Commit()) ||
+        FAILED(encoder->Commit())) {
+        Log("Screenshot: PNG write failed");
+        return;
+    }
+    Log("Screenshot saved (%ux%u, DXGI format %d)", w, h, static_cast<int>(desc.Format));
 }
 
 int g_frame_log_count = 0;
@@ -665,6 +763,10 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
         Log(">>> Hotkey [F6] triggered! Steve Mode toggled to: %s", new_active ? "TRUE (ACTIVE)" : "FALSE (STANDBY)");
     }
 
+    if (GetAsyncKeyState(VK_F7) & 1) {
+        g_screenshot_requested.store(true);
+    }
+
     // Gather this frame's input events for the mc-core Session
     mc::InputSnapshot input_snapshot{};
     mc::HudEngine* global_hud = GetHud();
@@ -796,6 +898,10 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
         } else if (g_frame_log_count < 5) {
             Log("Failed to get SwapChain back buffer (HR: 0x%08X)", (unsigned)hr_buf);
         }
+    }
+
+    if (g_screenshot_requested.exchange(false) && g_d3d_device && g_d3d_context) {
+        SaveFramePng(pSwapChain, L"mc_screenshot.png");
     }
 
     return g_original_present(pSwapChain, sync_interval, flags);
