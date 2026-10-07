@@ -55,30 +55,30 @@ void expectNear(const FVector3& a, const FVector3& b, float eps = 1e-4f) {
 // ----------------------------------------------------------------------------- matrix math
 
 TEST(SekiroRenderMathTest, ProductAppliesLeftOperandFirst) {
-    const Mat4 m = translation({1.f, 0.f, 0.f}) * rotationY(kPi * 0.5f); // move +X, then yaw 90deg
+    const Mat4 m = sekiro::render::translation({1.f, 0.f, 0.f}) * rotationY(kPi * 0.5f); // move +X, then yaw 90deg
     // (0,0,0) -> (1,0,0) -> rotated about Y: +X turns toward -Z
-    expectNear(transformPoint(m, {0.f, 0.f, 0.f}), {0.f, 0.f, -1.f});
+    expectNear(sekiro::render::transformPoint(m, {0.f, 0.f, 0.f}), {0.f, 0.f, -1.f});
 }
 
 TEST(SekiroRenderMathTest, RotationYTurnsForwardTowardPlusX) {
-    expectNear(transformPoint(rotationY(kPi * 0.5f), {0.f, 0.f, 1.f}), {1.f, 0.f, 0.f});
-    expectNear(transformPoint(rotationY(kPi), {0.f, 0.f, 1.f}), {0.f, 0.f, -1.f});
-    expectNear(transformPoint(rotationY(0.7f), {0.f, 2.f, 0.f}), {0.f, 2.f, 0.f}); // axis is fixed
+    expectNear(sekiro::render::transformPoint(rotationY(kPi * 0.5f), {0.f, 0.f, 1.f}), {1.f, 0.f, 0.f});
+    expectNear(sekiro::render::transformPoint(rotationY(kPi), {0.f, 0.f, 1.f}), {0.f, 0.f, -1.f});
+    expectNear(sekiro::render::transformPoint(rotationY(0.7f), {0.f, 2.f, 0.f}), {0.f, 2.f, 0.f}); // axis is fixed
 }
 
 TEST(SekiroRenderMathTest, QuaternionMatrixMatchesHamiltonRotation) {
     // 90deg about +Y takes +Z to +X (same convention as sekiro_adapter / the unit tests of toNativeQuat)
-    expectNear(transformPoint(rotationFromQuat(yQuat(kPi * 0.5f)), {0.f, 0.f, 1.f}), {1.f, 0.f, 0.f});
+    expectNear(sekiro::render::transformPoint(rotationFromQuat(yQuat(kPi * 0.5f)), {0.f, 0.f, 1.f}), {1.f, 0.f, 0.f});
     // 90deg about +X takes +Y to +Z
     const FQuat qx{std::sin(kPi * 0.25f), 0.f, 0.f, std::cos(kPi * 0.25f)};
-    expectNear(transformPoint(rotationFromQuat(qx), {0.f, 1.f, 0.f}), {0.f, 0.f, 1.f});
+    expectNear(sekiro::render::transformPoint(rotationFromQuat(qx), {0.f, 1.f, 0.f}), {0.f, 0.f, 1.f});
     // identity
-    expectNear(transformPoint(rotationFromQuat(FQuat{}), {3.f, -2.f, 5.f}), {3.f, -2.f, 5.f});
+    expectNear(sekiro::render::transformPoint(rotationFromQuat(FQuat{}), {3.f, -2.f, 5.f}), {3.f, -2.f, 5.f});
 }
 
 TEST(SekiroRenderMathTest, QuaternionMatrixAgreesWithRotationYForAllAngles) {
     for (float a : {0.1f, 0.9f, 2.0f, -1.3f}) {
-        expectNear(transformPoint(rotationFromQuat(yQuat(a)), {0.3f, 0.f, 1.f}), transformPoint(rotationY(a), {0.3f, 0.f, 1.f}));
+        expectNear(sekiro::render::transformPoint(rotationFromQuat(yQuat(a)), {0.3f, 0.f, 1.f}), sekiro::render::transformPoint(rotationY(a), {0.3f, 0.f, 1.f}));
     }
 }
 
@@ -96,7 +96,7 @@ sekiro::live::LiveSample camera(FVector3 pos, FVector3 right, FVector3 up, FVect
 
 // clip-space -> NDC, returns {x, y, depth, w}
 std::array<float, 4> project(const Mat4& vp, FVector3 p) {
-    const auto c = transform(vp, p);
+    const auto c = sekiro::render::transform(vp, p);
     return {c[0] / c[3], c[1] / c[3], c[2] / c[3], c[3]};
 }
 } // namespace
@@ -306,7 +306,7 @@ TEST(SekiroSteveRigTest, RestPoseWithRootAtOriginIsTheBareMesh) {
         const SteveMesh m = buildPartMesh(p);
         const Mat4 mat = partMatrix(p, FQuat{}, {0.f, 0.f, 0.f}, 0.f);
         for (const auto& v : m.vertices) {
-            expectNear(transformPoint(mat, {v.x, v.y, v.z}), {v.x, v.y, v.z}, 1e-5f);
+            expectNear(sekiro::render::transformPoint(mat, {v.x, v.y, v.z}), {v.x, v.y, v.z}, 1e-5f);
         }
     }
 }
@@ -315,9 +315,9 @@ TEST(SekiroSteveRigTest, RootMovesAndYawsTheWholeFigureAboutTheFeet) {
     const FVector3 root{10.f, -35.f, 14.f};
     const Mat4 mat = partMatrix(StevePart::Head, FQuat{}, root, kPi * 0.5f);
     // a point 1 m in front of the feet (+Z) ends up 1 m toward +X of the root after a 90deg yaw
-    expectNear(transformPoint(partMatrix(StevePart::Body, FQuat{}, root, kPi * 0.5f), {0.f, 0.f, 1.f}), {11.f, -35.f, 14.f});
+    expectNear(sekiro::render::transformPoint(partMatrix(StevePart::Body, FQuat{}, root, kPi * 0.5f), {0.f, 0.f, 1.f}), {11.f, -35.f, 14.f});
     // the head still sits above the root
-    const FVector3 neck = transformPoint(mat, partPivot(StevePart::Head));
+    const FVector3 neck = sekiro::render::transformPoint(mat, partPivot(StevePart::Head));
     expectNear(neck, {10.f, -35.f + partPivot(StevePart::Head).Y, 14.f});
 }
 
@@ -325,11 +325,11 @@ TEST(SekiroSteveRigTest, PartsRotateAboutTheirPivotNotTheOrigin) {
     for (StevePart p : {StevePart::Head, StevePart::RightArm, StevePart::LeftLeg, StevePart::Body}) {
         const FVector3 pivot = partPivot(p);
         const Mat4 mat = partMatrix(p, yQuat(0.9f), {0.f, 0.f, 0.f}, 0.f);
-        expectNear(transformPoint(mat, pivot), pivot, 1e-5f);
+        expectNear(sekiro::render::transformPoint(mat, pivot), pivot, 1e-5f);
     }
     // ... and a point away from the pivot does move
     const FVector3 foot = {partPivot(StevePart::RightLeg).X, 0.f, 0.f};
-    const FVector3 swung = transformPoint(partMatrix(StevePart::RightLeg, FQuat{std::sin(0.4f), 0.f, 0.f, std::cos(0.4f)}, {}, 0.f), foot);
+    const FVector3 swung = sekiro::render::transformPoint(partMatrix(StevePart::RightLeg, FQuat{std::sin(0.4f), 0.f, 0.f, std::cos(0.4f)}, {}, 0.f), foot);
     EXPECT_GT(std::fabs(swung.Z), 0.1f); // a leg swinging about X moves its foot fore/aft
 }
 
