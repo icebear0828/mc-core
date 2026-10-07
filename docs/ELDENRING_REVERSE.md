@@ -47,7 +47,7 @@
 ### 敌人列表
 | 项 | 值 | 等级 |
 |---|---|---|
-| 容器 | `WorldChrMan+0x1E270`：`+0x08` uint32 容量（实测 115），`+0x10` 起为 `EnemyIns*` 数组，步长 8 | A |
+| 容器 | `WorldChrMan+0x1E270`：`+0x08` uint32 容量（实测 115），`+0x10` 起为 `EnemyIns*` 数组，步长 8。**注意：按 `fromsoftware-rs` 的排布推算，它只是 `chr_sets[196]`（起点 `+0x1DED8`）中下标 115 的那一个 `ChrSet`，只读它会漏敌人，见 §7.2** | A（读数）/ C（是否完整） |
 | 元素 | 虚表 RVA `0x2A47090`（`EnemyIns`），非空槽 51 个全部通过，且 `modules[0]+0x8 == chr` 全部通过 | A |
 | 角色字段 | `+0x64` NPC id（样本：100、110、2271、4300、6060）| A |
 | 角色字段（存疑） | `+0x68`：玩家 0、一个野外敌人 5（仅这两个样本）。**外部参考里 `+0x68` 是 `chr_type`，阵营 `team_type` 在 `+0x6C`**，所以这个值更可能是角色类型，不是阵营，见 §7。`+0x60` 逆向方称实例句柄，外部参考里是 `npc_param_id`，句柄在 `+0x08` | C |
@@ -144,9 +144,13 @@
 7a. 读 `ChrIns+0x6C`（玩家、各类敌人、召唤物、友方）与 `+0x1B0`（加载状态），确认 `+0x68` 是 `chr_type`。
 8. 所有固定 RVA 改成签名或 RTTI 查找。
 9. 方块碰撞方案：注册进游戏物理，还是自己拦截移动。
-10. 着地标志：跳起、落地时 dump `PhysicsModule+0x80..+0xA0` 与 `+0x1C0..+0x1D0`，看哪个字节在变（外部线索：`standing_on_solid_ground`、`touching_solid_ground`、`is_falling`，偏移未知）。
-11. 敌人枚举完整性：`WorldChrMan+0x1E270` 对应源码里的 `world_block_chr[192]`、`world_area_chr[28]`、`open_field_chr_set` 中的哪一个，是否漏了别的容器。读 `chr_inses_by_distance`（游戏自己按距离排的实体列表）的结构，看是否带距离。
+10. 着地标志：偏移已有（§7.2），见 15。
+11. 敌人枚举完整性（见 §7.2，`+0x1E270` 只是 `chr_sets[115]`）：遍历 `chr_sets[0..196]` 的非空项，核对 `ChrSet` 内部布局（`+0x08` 是容量还是数量、数组起点）；读 `chr_inses_by_distance`（确认偏移 `+0x1F1D0` 还是 `+0x1F1D8`、`DLVector` 布局、距离相对谁）；与敌人总数对照。
 12. 隐藏模型：`PlayerIns+0x648`（`chr_asm_model_ins`）之下的部件数组、`CSModelIns.model_disp_entity.disp_flags1` 的偏移，用 RTTI 做只读遍历确认，再谈写入。
+13. 相机：读 `WorldChrMan+0x1ECE0`（`chr_cam`）→ `ChrCam+0x10` 矩阵、`+0x50` fov；转头、前进验证手性和单位；记录每帧是否更新（只狼是隔帧 30 Hz）；瞄准、死亡镜头时 `camera_type` 与活动相机的关系。
+14. 射线：用签名找 `CSPhysWorld::cast_ray` 或 `cast_shape` 的地址（不要用别的补丁的 RVA）；确认 `filter` 含义、调用线程、是否能拿到法线和命中对象。
+15. 读 `PhysicsModule+0x92/+0x93/+0x1D0/+0x1D1`，跳起、落地时看是否按预期翻转。
+16. 物理模块 `+0x120..+0x128` 是否真是线速度：对比 `Δ位置/dt`（源码里该处叫 `gravity`）。
 
 ---
 
@@ -188,3 +192,34 @@ README 没写目标游戏版本，仓库同时含 Nightreign，偏移可能针�
 - **原点跳变的干净检验**：块局部坐标在同一块内不受 Havok 重定位影响，所以 `Havok(PhysicsModule+0x70) − Block(PlayerIns+0x6C0)` 在没跳变时恒定，跳变那一帧会变，变化量就是原点移动量。注意跨块时块局部坐标自己也会跳（`current_block_id` 变）。
 - `BlockPosition.yaw` 是现成的朝向角，可与 `PhysicsModule` 四元数交叉验证。
 - `chr_inses_by_distance` 是游戏自己按距离排的列表，若带距离，就是在游戏自洽的坐标里算出来的，比我们自己做坐标差可靠。内部结构未知。
+
+### 7.2 第三批线索：偏移推算（`fromsoftware-rs` 的结构体字段排布，**推算，非明文**）
+
+方法：Rust 结构体里 `unkXXXX` 的名字带偏移、数组大小已知，据此向前后推。用 `net_chr_sync`（推算 `WorldChrMan+0x1E5E0`）校验：它与我们实机发现的 `NetChrSetSync` 位置吻合，所以这套推算方法可信。
+
+| 项 | 推算偏移 | 备注 |
+|---|---|---|
+| `WorldChrMan.main_player` | `+0x1E508` | 与逆向方给的一致，待读 |
+| `WorldChrMan.net_chr_sync` | `+0x1E5E0` | **与实机一致**（§2 的"网络同步表"） |
+| `WorldChrMan.chr_sets[196]` | `+0x1DED8` 起，每项 8 字节指针 | 我们的敌人容器 `+0x1E270` 正好是下标 115 |
+| `WorldChrMan.chr_cam` | `+0x1ECE0`（`ChrCam*`） | `ChrCam` 的第一个成员是 `CSPersCam`，所以 `ChrCam+0x10` 是矩阵、`+0x50` 是 fov；另有 `ex_follow_cam`、`aim_cam`、`dist_view_cam` 与 `camera_type`，瞄准或死亡镜头时活动相机不是 `pers_cam` |
+| `WorldChrMan.chr_inses_by_distance` | `+0x1F1D0`（`DLVector`，条目 `{ chr_ins, distance: f32, _unk }`，16 字节） | 逆向方给的是 `+0x1F1D8`，可能差一个分配器指针，需看 `DLVector` 布局；"距离相对谁"源码没写 |
+| `WorldChrMan.player_chr_set` | `+0x10EE0` | TGA 转述 `+0x10EF8`，可能是它内部的字段 |
+| `CSChrPhysicsModule` | `+0x08 owner`、`+0x20 data_module`（指向 `CSChrDataModule`）、`+0x50 orientation`、`+0x60 interpolated_orientation`、`+0x70 position`、`+0x80 last_update_position`、`+0x92 standing_on_solid_ground`、`+0x93 touching_solid_ground`、`+0x1D0 is_falling`、`+0x1D1 is_touching_ground`、`+0x1D5 gravity_disabled` | `+0x50/+0x70/+0x80` 与我们实测吻合；着地各字节待跳跃实测 |
+
+**与我们实测的差异**：源码里物理模块 `+0x120` 的 `F32Vector4` 叫 `gravity`，而我们量到的"线速度 `+0x120..+0x128`"在走动时变化（`(0,−0.16,0)` → `(−3.13,−5.70,0.98)`），更像速度。**"这就是线速度"没有被证明**，使用前需验证它是否等于 `Δ位置/dt`。
+
+**敌人枚举**：`chr_sets[196]` 里的每一项都是一个 `ChrSet`。只读下标 115 会漏掉其余的。可行做法：遍历 `chr_sets[0..196]` 的非空项；或读 `chr_inses_by_distance`（完整列表，带游戏自己算的距离）。`ChrSet` 内部布局（`+0x08` 是容量还是数量，数组起点）要核对；下标 115 与容量 115 同为 115 是巧合还是关联，也要确认。
+
+**射线（`fromsoftware-rs` `havok_man.rs`、`erfps2` `raycast.rs`）**：
+- `CSHavokMan` 的 `phys_world` 在 `+0x98`（推算）。
+- `cast_ray(world, filter: u32, origin, end, &mut out_pos, owner: &PlayerIns) -> bool`：**只返回命中点，没有法线，也没有命中对象**；放方块、射箭都不够。
+- `erfps2` 用 `cast_shape` + `hknpHit { pos, normal, segment, filter, body_id, body }` 才有法线和命中对象，但要构造碰撞收集器。
+- 转述的 RVA（`0x187f860`、`0xc5a1c0`、`0xc71e00`）在抓到的源码里没有数值，且属于别的补丁，**不能直接用**。
+- `filter` 取值含义、调用线程要求，源码都没写。
+
+**隐藏模型与第一人称（`erfps2` `player.rs`）**：`HEAD_DMY_ID = 907`；部件下标 `[0, 2, 6, 21, 22, 23, 24, 25]`（脸、头盔、头发、眼睛）；`chr_asm_model_res` 的 `+0x60`（耳，bit 3）、`+0x51`（兜帽，bit 11）、`+0x58`（兜帽变体，bit 5）。`GET_DMY_POS_RVA` 的数值未核实（转述 `0x3e96b0`）。
+
+**输入（`pad.rs`）**：`UserInputKey`：`Attack = 7`、`Guard = 9`、`Jump = 14`，鼠标位移 `4`、`5`；游戏层有 `key_assign.mouse_button_states_map` 一类的鼠标按键状态。源码**没有**写底层是 DirectInput 还是 RawInput，也没有 `poll_digital_input` 的地址；拦截点偏移未知。
+
+**仍无来源的结论**：Havok 原点按整数步长平移（源码没解释，§4 的检验照做）；ReShade "验证了 ER 反向 Z 与格式"；TGA 的 `NoDamage`（`+0x19B` bit 1）。
