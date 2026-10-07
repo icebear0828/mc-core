@@ -300,6 +300,17 @@ TEST(SekiroAdapterTest, ReportsRealPlayerVitalsOnlyWhenTheLiveReadIsValid) {
     EXPECT_FALSE(adapter.getPlayerVitals(v));
 }
 
+TEST(SekiroAdapterTest, NativeCombatInputSuppressionIsAFlagTheLoaderReadsFromAnotherThread) {
+    SekiroAdapter adapter;
+    EXPECT_FALSE(adapter.nativeCombatInputSuppressed());
+    adapter.setNativeCombatInputSuppressed(true);
+    EXPECT_TRUE(adapter.nativeCombatInputSuppressed());
+    adapter.setNativeCombatInputSuppressed(true); // idempotent
+    EXPECT_TRUE(adapter.nativeCombatInputSuppressed());
+    adapter.setNativeCombatInputSuppressed(false);
+    EXPECT_FALSE(adapter.nativeCombatInputSuppressed());
+}
+
 TEST(SekiroAdapterTest, OnlyDeclaresTheHostFeaturesThatWereVerifiedInTheLiveGame) {
     SekiroAdapter adapter;
     // Add a bit here only together with its live-game verification (docs/REVERSE_INTERFACES.md).

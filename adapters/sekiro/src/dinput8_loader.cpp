@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <mutex>
 #include <atomic>
 #include <cstdio>
 #include <cstdarg>
@@ -30,6 +31,7 @@
 #include "sekiro_live.hpp"
 #include "sekiro_enemies.hpp"
 #include "sekiro_host_write.hpp"
+#include "sekiro_input_filter.hpp"
 #include "sekiro_model.hpp"
 #include "sekiro_steve.hpp"
 #include "mc/hud_layout.hpp"
@@ -49,6 +51,7 @@ void SekiroMod_UpdatePointers(sekiro::native::ChrIns* player, sekiro::native::Ch
 bool SekiroMod_RegisterEntity(uint64_t entity_id, sekiro::native::ChrIns* entity);
 void SekiroMod_UnregisterEntity(uint64_t entity_id);
 size_t SekiroMod_DrainEnemyHealthWrites(uint64_t* ids, float* healths, size_t max);
+bool SekiroMod_IsNativeInputSuppressed();
 mc::Session* SekiroMod_GetSession();
 const mc::adapter::SekiroAdapter* SekiroMod_GetAdapter();
 }
@@ -1088,6 +1091,122 @@ DWORD WINAPI LoaderThread(LPVOID) {
 } // namespace
 
 // =========================================================================
+// DirectInput mouse hooks: keep the native character from attacking/guarding while a Minecraft action owns
+// the mouse buttons. The game's own DirectInput mouse device is found when it is created (we are its
+// dinput8.dll), and its GetDeviceState / GetDeviceData results are filtered on the way to the game. Only
+// the two buttons are cleared; camera movement and every key stay untouched.
+// =========================================================================
+
+namespace {
+
+// IDirectInputDevice8 vtable: IUnknown 0-2, GetCapabilities 3, EnumObjects 4, GetProperty 5, SetProperty 6,
+// Acquire 7, Unacquire 8, GetDeviceState 9, GetDeviceData 10. IDirectInput8: CreateDevice is 3.
+using CreateDevice_t = HRESULT(STDMETHODCALLTYPE*)(void*, REFGUID, void**, LPUNKNOWN);
+using GetDeviceState_t = HRESULT(STDMETHODCALLTYPE*)(void*, DWORD, LPVOID);
+using GetDeviceData_t = HRESULT(STDMETHODCALLTYPE*)(void*, DWORD, void*, LPDWORD, DWORD);
+
+CreateDevice_t g_original_create_device = nullptr;
+GetDeviceState_t g_original_get_device_state = nullptr;
+GetDeviceData_t g_original_get_device_data = nullptr;
+void* g_create_device_target = nullptr;
+void* g_device_state_target = nullptr;
+void* g_device_data_target = nullptr;
+std::mutex g_mouse_mutex;
+std::vector<void*> g_mouse_devices; // identity only: never dereferenced
+std::atomic<unsigned> g_mouse_state_calls{0}, g_mouse_data_calls{0}, g_suppressed_clicks{0};
+
+// GUID_SysMouse {6F1D2B60-D5A0-11CF-BFC7-444553540000}
+constexpr GUID kGuidSysMouse = {0x6F1D2B60, 0xD5A0, 0x11CF, {0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00}};
+
+bool IsMouseDevice(void* device) {
+    std::lock_guard<std::mutex> lock(g_mouse_mutex);
+    return std::find(g_mouse_devices.begin(), g_mouse_devices.end(), device) != g_mouse_devices.end();
+}
+
+void NoteSuppressed(bool had_click) {
+    if (had_click && g_suppressed_clicks.fetch_add(1) == 0) Log("DirectInput: suppressed a native mouse click (first time)");
+}
+
+HRESULT STDMETHODCALLTYPE DetourGetDeviceState(void* self, DWORD cb, LPVOID data) {
+    const HRESULT hr = g_original_get_device_state(self, cb, data);
+    if (SUCCEEDED(hr) && data && IsMouseDevice(self)) {
+        if (g_mouse_state_calls.fetch_add(1) == 0) Log("DirectInput: the game polls its mouse with GetDeviceState (size %lu)", cb);
+        if (SekiroMod_IsNativeInputSuppressed()) {
+            const auto* b = static_cast<const uint8_t*>(data);
+            const bool click = (cb == 16 || cb == 20) && (b[sekiro::input::kMouseButton0Offset] || b[sekiro::input::kMouseButton1Offset]);
+            sekiro::input::suppressMouseButtons(data, cb);
+            NoteSuppressed(click);
+        }
+    }
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE DetourGetDeviceData(void* self, DWORD cb, void* elements, LPDWORD in_out, DWORD flags) {
+    const HRESULT hr = g_original_get_device_data(self, cb, elements, in_out, flags);
+    if (SUCCEEDED(hr) && elements && in_out && IsMouseDevice(self)) {
+        if (g_mouse_data_calls.fetch_add(1) == 0) Log("DirectInput: the game reads its mouse with GetDeviceData (element size %lu)", cb);
+        if (SekiroMod_IsNativeInputSuppressed()) {
+            sekiro::input::suppressBufferedMouseButtons(elements, *in_out, cb);
+            NoteSuppressed(false);
+        }
+    }
+    return hr;
+}
+
+void HookMouseDeviceMethods(void* device) {
+    if (g_device_state_target) return;
+    void** vtable = *reinterpret_cast<void***>(device);
+    g_device_state_target = vtable[9];
+    g_device_data_target = vtable[10];
+    if (MH_CreateHook(g_device_state_target, reinterpret_cast<void*>(&DetourGetDeviceState),
+                      reinterpret_cast<void**>(&g_original_get_device_state)) != MH_OK ||
+        MH_EnableHook(g_device_state_target) != MH_OK) {
+        Log("DirectInput: could not hook GetDeviceState");
+        g_device_state_target = nullptr;
+        return;
+    }
+    if (MH_CreateHook(g_device_data_target, reinterpret_cast<void*>(&DetourGetDeviceData),
+                      reinterpret_cast<void**>(&g_original_get_device_data)) != MH_OK ||
+        MH_EnableHook(g_device_data_target) != MH_OK) {
+        Log("DirectInput: could not hook GetDeviceData (buffered mouse input will not be filtered)");
+        g_device_data_target = nullptr;
+    }
+}
+
+HRESULT STDMETHODCALLTYPE DetourCreateDevice(void* self, REFGUID guid, void** out, LPUNKNOWN outer) {
+    const HRESULT hr = g_original_create_device(self, guid, out, outer);
+    if (SUCCEEDED(hr) && out && *out && IsEqualGUID(guid, kGuidSysMouse)) {
+        {
+            std::lock_guard<std::mutex> lock(g_mouse_mutex);
+            g_mouse_devices.push_back(*out);
+        }
+        Log("DirectInput: the game created its system mouse device (%p)", *out);
+        HookMouseDeviceMethods(*out);
+    }
+    return hr;
+}
+
+// Called once with the IDirectInput8 the game just got from us.
+void HookDirectInputInterface(void* directinput) {
+    if (!directinput || g_create_device_target) return;
+    const MH_STATUS init = MH_Initialize();
+    if (init != MH_OK && init != MH_ERROR_ALREADY_INITIALIZED) {
+        Log("DirectInput: MinHook unavailable (%d); mouse suppression off", static_cast<int>(init));
+        return;
+    }
+    void** vtable = *reinterpret_cast<void***>(directinput);
+    g_create_device_target = vtable[3];
+    if (MH_CreateHook(g_create_device_target, reinterpret_cast<void*>(&DetourCreateDevice),
+                      reinterpret_cast<void**>(&g_original_create_device)) != MH_OK ||
+        MH_EnableHook(g_create_device_target) != MH_OK) {
+        Log("DirectInput: could not hook CreateDevice; mouse suppression off");
+        g_create_device_target = nullptr;
+    }
+}
+
+} // namespace
+
+// =========================================================================
 // DirectInput8 Proxy Export
 // =========================================================================
 
@@ -1114,7 +1233,9 @@ extern "C" HRESULT WINAPI DirectInput8Create(
     }
 
     if (g_system_DirectInput8Create) {
-        return g_system_DirectInput8Create(hinst, dwVersion, riidltf, ppvOut, punkOuter);
+        const HRESULT hr = g_system_DirectInput8Create(hinst, dwVersion, riidltf, ppvOut, punkOuter);
+        if (SUCCEEDED(hr) && ppvOut && *ppvOut) HookDirectInputInterface(*ppvOut);
+        return hr;
     }
 
     Log("DirectInput8Create: Failed to forward call to system dinput8.dll");

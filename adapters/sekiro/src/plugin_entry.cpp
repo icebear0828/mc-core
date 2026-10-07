@@ -84,6 +84,11 @@ size_t SekiroMod_DrainEnemyHealthWrites(uint64_t* ids, float* healths, size_t ma
     return n;
 }
 
+// Read by the DirectInput hooks (the game's input thread): true while a Minecraft action owns the mouse buttons.
+bool SekiroMod_IsNativeInputSuppressed() {
+    return g_adapter && g_adapter->nativeCombatInputSuppressed();
+}
+
 mc::Session* SekiroMod_GetSession() {
     return g_session.get();
 }

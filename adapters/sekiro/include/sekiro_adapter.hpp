@@ -8,6 +8,7 @@
 #include "mc/animator.hpp"
 #include "sekiro_native.hpp"
 
+#include <atomic>
 #include <map>
 #include <unordered_map>
 #include <vector>
@@ -93,6 +94,9 @@ public:
     // --- IHostGameplay (only what was verified in the live game) ---
     [[nodiscard]] uint32_t supportedFeatures() const override;
     bool getPlayerVitals(HostVitals& out) const override;
+    void setNativeCombatInputSuppressed(bool suppressed) override { input_suppressed_.store(suppressed); }
+    // Read by the DirectInput hooks on the game's input thread.
+    [[nodiscard]] bool nativeCombatInputSuppressed() const { return input_suppressed_.load(); }
 
     // Auxiliary methods & inspections
     void setEquippedItems(ItemId main, ItemId off);
@@ -143,6 +147,7 @@ private:
     std::unordered_map<uint64_t, std::unique_ptr<SekiroBlockVisualRecord>> visuals_;
     std::unordered_map<EntityId, sekiro::native::ChrIns*> registered_entities_;
     std::map<EntityId, float> pending_health_writes_;
+    std::atomic<bool> input_suppressed_{false};
 
     // 12 Steve parts
     bool steve_parts_spawned_{false};
