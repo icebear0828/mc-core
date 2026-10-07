@@ -416,10 +416,23 @@ void AppendProbeFile(const std::string& text) {
     }
 }
 
+std::string VtableRvaOf(void* object) {
+    uint64_t vt = 0;
+    if (!object || !g_memory.read(reinterpret_cast<uintptr_t>(object), &vt, sizeof(vt)) || vt < g_probe_image_base || vt >= g_probe_image_base + g_probe_image_size) return "?";
+    char buf[24];
+    std::snprintf(buf, sizeof(buf), "%#llx", static_cast<unsigned long long>(vt - g_probe_image_base));
+    return buf;
+}
+
 void __fastcall DetourDealDamage(void* target, void* attacker, uint8_t* data, uint8_t flag) {
-    static std::atomic<int> calls{0};
-    const int index = calls.fetch_add(1);
-    const bool record = index < 24;
+    static std::atomic<int> calls{0}, noise{0}, recorded{0};
+    calls.fetch_add(1);
+    // Most calls are enemies touching enemies (hp 0, posture 1): only calls that involve the player are recorded.
+    const std::string attacker_class = ClassOf(attacker);
+    const std::string target_class = ClassOf(target);
+    const bool involves_player = attacker_class.rfind("PlayerIns", 0) == 0 || target_class.rfind("SprjPlayerDamageModule", 0) == 0;
+    const bool record = involves_player && recorded.load() < 60;
+    if (!involves_player) noise.fetch_add(1);
     std::string before;
     if (record) {
         uint8_t copy[sekiro::live::kDamageDataSize];
@@ -431,16 +444,24 @@ void __fastcall DetourDealDamage(void* target, void* attacker, uint8_t* data, ui
     }
     g_original_deal_damage(target, attacker, data, flag);
     if (!record) return;
+    const int index = recorded.fetch_add(1);
     std::string after;
     uint8_t copy[sekiro::live::kDamageDataSize];
     if (g_memory.read(reinterpret_cast<uintptr_t>(data), copy, sizeof(copy))) {
         after = sekiro::live::describeDamageData(copy, sizeof(copy), g_memory, g_probe_image_base, g_probe_image_size);
     }
-    char head[512];
-    std::snprintf(head, sizeof(head), "=== DealDamage call #%d: target module %p (%s) attacker %p (%s) data %p flag %u\n", index, target,
-                  ClassOf(target).c_str(), attacker, ClassOf(attacker).c_str(), static_cast<void*>(data), static_cast<unsigned>(flag));
+    uint64_t owner = 0;
+    g_memory.read(reinterpret_cast<uintptr_t>(target) + 8, &owner, sizeof(owner));
+    char head[900];
+    std::snprintf(head, sizeof(head),
+                  "=== DealDamage player call #%d (thread %lu, %d noise calls so far): target module %p (%s, vtable RVA %s, owner %llx) "
+                  "attacker %p (%s, vtable RVA %s) data %p flag %u\n",
+                  index, GetCurrentThreadId(), noise.load(), target, target_class.c_str(), VtableRvaOf(target).c_str(),
+                  static_cast<unsigned long long>(owner), attacker, attacker_class.c_str(), VtableRvaOf(attacker).c_str(),
+                  static_cast<void*>(data), static_cast<unsigned>(flag));
     AppendProbeFile(std::string(head) + "--- DamageData BEFORE the call\n" + before + "--- DamageData AFTER the call\n" + after);
-    Log("DealDamage probe: call #%d target=%s attacker=%s (details in mc_damage_probe.txt)", index, ClassOf(target).c_str(), ClassOf(attacker).c_str());
+    Log("DealDamage probe: player call #%d target=%s attacker=%s hp=%u posture=%u stagger=%u", index, target_class.c_str(), attacker_class.c_str(),
+        *reinterpret_cast<uint32_t*>(copy + 0x24), *reinterpret_cast<uint32_t*>(copy + 0x28), *reinterpret_cast<uint32_t*>(copy + 0x54));
 }
 
 void InstallDamageProbe() {
