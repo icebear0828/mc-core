@@ -10,8 +10,8 @@ namespace sekiro::render {
 // real scene. Read-only: it only records, it never changes what the game binds.
 class DepthCapture {
 public:
-    // Hooks ID3D11DeviceContext::OMSetRenderTargets on the immediate context. False if MinHook fails.
-    bool install(ID3D11DeviceContext* immediate);
+    // Hooks the render-target binding and depth-clear calls on the immediate context, and on the first deferred context the game creates. False if MinHook fails.
+    bool install(ID3D11Device* device, ID3D11DeviceContext* immediate);
     void remove();
 
     // Writes every candidate (size, format, bind count) and the depth range of its current contents

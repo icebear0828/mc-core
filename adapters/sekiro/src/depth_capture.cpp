@@ -19,7 +19,15 @@ namespace {
 using Microsoft::WRL::ComPtr;
 using OMSetRenderTargets_t = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, ID3D11RenderTargetView* const*,
                                                       ID3D11DepthStencilView*);
+using OMSetRTUAV_t = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, ID3D11RenderTargetView* const*, ID3D11DepthStencilView*,
+                                              UINT, UINT, ID3D11UnorderedAccessView* const*, const UINT*);
+using ClearDSV_t = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11DepthStencilView*, UINT, FLOAT, UINT8);
+using CreateDeferred_t = HRESULT(STDMETHODCALLTYPE*)(ID3D11Device*, UINT, ID3D11DeviceContext**);
+
 constexpr size_t kOMSetRenderTargetsVtableIndex = 33;
+constexpr size_t kOMSetRTUAVVtableIndex = 34;
+constexpr size_t kClearDSVVtableIndex = 53;
+constexpr size_t kCreateDeferredContextVtableIndex = 27;
 constexpr size_t kMaxCandidates = 16;
 
 struct Candidate {
@@ -31,23 +39,19 @@ struct Candidate {
     D3D11_DEVICE_CONTEXT_TYPE context_type{D3D11_DEVICE_CONTEXT_IMMEDIATE};
 };
 
-using ClearDSV_t = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11DepthStencilView*, UINT, FLOAT, UINT8);
-ClearDSV_t g_original_clear = nullptr;
-void* g_clear_target = nullptr;
+std::array<Candidate, kMaxCandidates> g_candidates;
+std::atomic<size_t> g_count{0};
 ID3D11Device* g_trace_device = nullptr;
 void (*g_trace_log)(const char*, ...) = nullptr;
 std::atomic<int> g_trace_budget{0};
+std::atomic<uint64_t> g_calls[2][3]; // [set][OM, OM+UAV, Clear]
+std::atomic<uint64_t> g_deferred_created{0};
+CreateDeferred_t g_original_create_deferred = nullptr;
+void* g_create_deferred_target = nullptr;
+std::vector<void*> g_hooked_targets;
+
 void describeDepth(ID3D11Device*, ID3D11DeviceContext*, ID3D11Texture2D*, const D3D11_TEXTURE2D_DESC&,
                    void (*)(const char*, ...), const char*);
-using OMSetRTUAV_t = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, ID3D11RenderTargetView* const*, ID3D11DepthStencilView*,
-                                              UINT, UINT, ID3D11UnorderedAccessView* const*, const UINT*);
-OMSetRTUAV_t g_original_uav = nullptr;
-void* g_uav_target = nullptr;
-OMSetRenderTargets_t g_original = nullptr;
-void* g_target = nullptr;
-std::array<Candidate, kMaxCandidates> g_candidates;
-std::atomic<size_t> g_count{0};
-std::atomic<uint64_t> g_calls_om{0}, g_calls_om_uav{0}, g_calls_om_uav_keep{0}, g_calls_om_dsv{0}, g_calls_clear{0};
 
 void record(ID3D11DeviceContext* self, UINT num, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv) {
     if (!dsv) return;
@@ -79,78 +83,98 @@ void record(ID3D11DeviceContext* self, UINT num, ID3D11RenderTargetView* const* 
     }
 }
 
-void STDMETHODCALLTYPE DetourOMSetRenderTargets(ID3D11DeviceContext* self, UINT num, ID3D11RenderTargetView* const* rtvs,
-                                                ID3D11DepthStencilView* dsv) {
-    ++g_calls_om;
-    if (dsv) ++g_calls_om_dsv;
-    record(self, num, rtvs, dsv);
-    g_original(self, num, rtvs, dsv);
-}
+// One set of detours per distinct context implementation (immediate and deferred contexts have their own
+// vtables); each set needs its own trampolines.
+template <int N>
+struct HookSet {
+    static inline OMSetRenderTargets_t original_om = nullptr;
+    static inline OMSetRTUAV_t original_uav = nullptr;
+    static inline ClearDSV_t original_clear = nullptr;
 
-void STDMETHODCALLTYPE DetourOMSetRenderTargetsAndUAVs(ID3D11DeviceContext* self, UINT num, ID3D11RenderTargetView* const* rtvs,
-                                                       ID3D11DepthStencilView* dsv, UINT uav_start, UINT num_uavs,
-                                                       ID3D11UnorderedAccessView* const* uavs, const UINT* counts) {
-    ++g_calls_om_uav;
-    if (num == D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) ++g_calls_om_uav_keep;
-    if (num != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) record(self, num, rtvs, dsv);
-    g_original_uav(self, num, rtvs, dsv, uav_start, num_uavs, uavs, counts);
-}
-
-void STDMETHODCALLTYPE DetourClearDSV(ID3D11DeviceContext* self, ID3D11DepthStencilView* dsv, UINT flags, FLOAT depth,
-                                      UINT8 stencil) {
-    ++g_calls_clear;
-    if (g_trace_budget.load() > 0 && dsv) {
-        const size_t n = g_count.load();
-        for (size_t i = 0; i < n; ++i) {
-            if (g_candidates[i].dsv.Get() == dsv && g_trace_budget.fetch_sub(1) > 0) {
-                g_trace_log("  clear #%d flags=%u value=%.3f; contents before:", 12 - g_trace_budget.load(), flags, depth);
-                describeDepth(g_trace_device, self, g_candidates[i].texture.Get(), g_candidates[i].desc, g_trace_log, "pre-clear");
-                break;
+    static void STDMETHODCALLTYPE om(ID3D11DeviceContext* self, UINT num, ID3D11RenderTargetView* const* rtvs,
+                                     ID3D11DepthStencilView* dsv) {
+        ++g_calls[N][0];
+        record(self, num, rtvs, dsv);
+        original_om(self, num, rtvs, dsv);
+    }
+    static void STDMETHODCALLTYPE om_uav(ID3D11DeviceContext* self, UINT num, ID3D11RenderTargetView* const* rtvs,
+                                         ID3D11DepthStencilView* dsv, UINT uav_start, UINT num_uavs,
+                                         ID3D11UnorderedAccessView* const* uavs, const UINT* counts) {
+        ++g_calls[N][1];
+        if (num != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) record(self, num, rtvs, dsv);
+        original_uav(self, num, rtvs, dsv, uav_start, num_uavs, uavs, counts);
+    }
+    static void STDMETHODCALLTYPE clear(ID3D11DeviceContext* self, ID3D11DepthStencilView* dsv, UINT flags, FLOAT depth,
+                                        UINT8 stencil) {
+        ++g_calls[N][2];
+        if (g_trace_budget.load() > 0 && dsv) {
+            const size_t n = g_count.load();
+            for (size_t i = 0; i < n; ++i) {
+                if (g_candidates[i].dsv.Get() == dsv && g_trace_budget.fetch_sub(1) > 0) {
+                    g_trace_log("  clear #%d (set %d) flags=%u value=%.3f; contents before:", 12 - g_trace_budget.load(), N,
+                                flags, depth);
+                    describeDepth(g_trace_device, self, g_candidates[i].texture.Get(), g_candidates[i].desc, g_trace_log, "pre-clear");
+                    break;
+                }
             }
         }
+        original_clear(self, dsv, flags, depth, stencil);
     }
-    g_original_clear(self, dsv, flags, depth, stencil);
+
+    static bool install(ID3D11DeviceContext* ctx) {
+        void** vtable = *reinterpret_cast<void***>(ctx);
+        bool ok = true;
+        auto hook = [&](size_t index, void* detour, void** original) {
+            void* target = vtable[index];
+            if (std::find(g_hooked_targets.begin(), g_hooked_targets.end(), target) != g_hooked_targets.end()) return;
+            if (MH_CreateHook(target, detour, original) != MH_OK || MH_EnableHook(target) != MH_OK) {
+                ok = false;
+                return;
+            }
+            g_hooked_targets.push_back(target);
+        };
+        hook(kOMSetRenderTargetsVtableIndex, reinterpret_cast<void*>(&om), reinterpret_cast<void**>(&original_om));
+        hook(kOMSetRTUAVVtableIndex, reinterpret_cast<void*>(&om_uav), reinterpret_cast<void**>(&original_uav));
+        hook(kClearDSVVtableIndex, reinterpret_cast<void*>(&clear), reinterpret_cast<void**>(&original_clear));
+        return ok;
+    }
+};
+
+bool g_deferred_set_installed = false;
+
+HRESULT STDMETHODCALLTYPE DetourCreateDeferred(ID3D11Device* self, UINT flags, ID3D11DeviceContext** out) {
+    const HRESULT hr = g_original_create_deferred(self, flags, out);
+    if (SUCCEEDED(hr) && out && *out) {
+        ++g_deferred_created;
+        if (!g_deferred_set_installed) {
+            g_deferred_set_installed = true;
+            HookSet<1>::install(*out);
+        }
+    }
+    return hr;
 }
 
 } // namespace
 
-bool DepthCapture::install(ID3D11DeviceContext* immediate) {
-    if (g_target || !immediate) return g_target != nullptr;
-    void** vtable = *reinterpret_cast<void***>(immediate);
-    g_target = vtable[kOMSetRenderTargetsVtableIndex];
-    if (MH_CreateHook(g_target, reinterpret_cast<void*>(&DetourOMSetRenderTargets), reinterpret_cast<void**>(&g_original)) != MH_OK ||
-        MH_EnableHook(g_target) != MH_OK) {
-        g_target = nullptr;
-        return false;
+bool DepthCapture::install(ID3D11Device* device, ID3D11DeviceContext* immediate) {
+    if (!g_hooked_targets.empty() || !immediate || !device) return !g_hooked_targets.empty();
+    bool ok = HookSet<0>::install(immediate);
+    void** dvt = *reinterpret_cast<void***>(device);
+    g_create_deferred_target = dvt[kCreateDeferredContextVtableIndex];
+    if (MH_CreateHook(g_create_deferred_target, reinterpret_cast<void*>(&DetourCreateDeferred),
+                      reinterpret_cast<void**>(&g_original_create_deferred)) == MH_OK) {
+        MH_EnableHook(g_create_deferred_target);
+        g_hooked_targets.push_back(g_create_deferred_target);
     }
-    g_clear_target = vtable[53];
-    if (MH_CreateHook(g_clear_target, reinterpret_cast<void*>(&DetourClearDSV), reinterpret_cast<void**>(&g_original_clear)) != MH_OK ||
-        MH_EnableHook(g_clear_target) != MH_OK) {
-        g_clear_target = nullptr;
-    }
-    g_uav_target = vtable[34];
-    if (MH_CreateHook(g_uav_target, reinterpret_cast<void*>(&DetourOMSetRenderTargetsAndUAVs), reinterpret_cast<void**>(&g_original_uav)) != MH_OK ||
-        MH_EnableHook(g_uav_target) != MH_OK) {
-        g_uav_target = nullptr;
-    }
-    return true;
+    return ok;
 }
 
 void DepthCapture::remove() {
-    if (!g_target) return;
-    MH_DisableHook(g_target);
-    MH_RemoveHook(g_target);
-    if (g_uav_target) {
-        MH_DisableHook(g_uav_target);
-        MH_RemoveHook(g_uav_target);
-        g_uav_target = nullptr;
+    for (void* t : g_hooked_targets) {
+        MH_DisableHook(t);
+        MH_RemoveHook(t);
     }
-    if (g_clear_target) {
-        MH_DisableHook(g_clear_target);
-        MH_RemoveHook(g_clear_target);
-        g_clear_target = nullptr;
-    }
-    g_target = nullptr;
+    g_hooked_targets.clear();
     reset();
 }
 
@@ -213,10 +237,11 @@ void describeDepth(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Tex
 
 void DepthCapture::dump(ID3D11Device* device, ID3D11DeviceContext* context, void (*log)(const char*, ...)) {
     const size_t n = g_count.load();
-    log("depth dump: %zu candidate(s); calls OM=%llu (with dsv %llu) OM+UAV=%llu (keep %llu) ClearDSV=%llu", n,
-        static_cast<unsigned long long>(g_calls_om.load()), static_cast<unsigned long long>(g_calls_om_dsv.load()),
-        static_cast<unsigned long long>(g_calls_om_uav.load()), static_cast<unsigned long long>(g_calls_om_uav_keep.load()),
-        static_cast<unsigned long long>(g_calls_clear.load()));
+    log("depth dump: %zu candidate(s); immediate calls OM=%llu OM+UAV=%llu Clear=%llu; deferred contexts created=%llu, calls OM=%llu OM+UAV=%llu Clear=%llu",
+        n, static_cast<unsigned long long>(g_calls[0][0].load()), static_cast<unsigned long long>(g_calls[0][1].load()),
+        static_cast<unsigned long long>(g_calls[0][2].load()), static_cast<unsigned long long>(g_deferred_created.load()),
+        static_cast<unsigned long long>(g_calls[1][0].load()), static_cast<unsigned long long>(g_calls[1][1].load()),
+        static_cast<unsigned long long>(g_calls[1][2].load()));
     for (size_t i = 0; i < n; ++i) {
         const Candidate& c = g_candidates[i];
         const D3D11_TEXTURE2D_DESC& d = c.desc;

@@ -456,7 +456,7 @@ void InitImGui(IDXGISwapChain* pSwapChain) {
     }
 
     g_d3d_device->GetImmediateContext(&g_d3d_context);
-    Log(g_depth_capture.install(g_d3d_context) ? "Depth capture hook installed" : "Depth capture hook FAILED");
+    Log(g_depth_capture.install(g_d3d_device, g_d3d_context) ? "Depth capture hook installed" : "Depth capture hook FAILED");
 
     // Hook WndProc for input
     if (g_game_hwnd) {
