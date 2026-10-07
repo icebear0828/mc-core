@@ -49,7 +49,8 @@
 |---|---|---|
 | 容器 | `WorldChrMan+0x1E270`：`+0x08` uint32 容量（实测 115），`+0x10` 起为 `EnemyIns*` 数组，步长 8 | A |
 | 元素 | 虚表 RVA `0x2A47090`（`EnemyIns`），非空槽 51 个全部通过，且 `modules[0]+0x8 == chr` 全部通过 | A |
-| 角色字段 | `ChrIns+0x60` 句柄、`+0x64` NPC id（样本：100、110、2271、4300、6060）、`+0x68` 阵营（玩家 0，一个野外敌人 5，**仅这两个样本**） | A |
+| 角色字段 | `+0x64` NPC id（样本：100、110、2271、4300、6060）| A |
+| 角色字段（存疑） | `+0x68`：玩家 0、一个野外敌人 5（仅这两个样本）。**外部参考里 `+0x68` 是 `chr_type`，阵营 `team_type` 在 `+0x6C`**，所以这个值更可能是角色类型，不是阵营，见 §7。`+0x60` 逆向方称实例句柄，外部参考里是 `npc_param_id`，句柄在 `+0x08` | C |
 | 全局指针 | `WorldChrMan` 全局 `base+0x3D69FF8`（固定 RVA）；玩家 `[WorldChrMan+0x1E508]`（**没有在真机上读过**） | B / C |
 
 敌人的数据模块仍沿用"槽 0 + 虚表 + owner"校验；敌人最大血量字段、死亡和卸载的识别未验证。
@@ -61,7 +62,7 @@
 | 旧说法 | 事实 |
 |---|---|
 | `WorldChrMan+0x1E5E0` 是敌人容器（`WorldBlockChr`） | 它是**按句柄查表的网络同步表**：构造时分配 `0x14A0` 字节，容量 `[+8] = 116`（= 配置值 111 + 5），下标 `(handle>>11)&0xFF`。116 个槽里只有 3 个非空，类型是 `NetChrSetSync` / `NetOpenFieldChrSetSync`，**一个 `EnemyIns` 都没有** |
-| `team_type` 在 `ChrIns+0x70`、值 5/9 | `+0x68`；玩家 0、敌人 5。`+0x70` 是从只狼抄来的 |
+| `team_type` 在 `ChrIns+0x70`、值 5/9 | `+0x70` 是从只狼抄来的。曾改为 `+0x68`（玩家 0、敌人 5），但外部参考指出 `+0x68` 是 `chr_type`、`team_type` 在 `+0x6C`（u8）。**待读 `+0x6C` 后定** |
 | 最大 HP 在 `+0x140`、基础在 `+0x13C` | 反了：`+0x13C` 有效最大、`+0x144` 基础 |
 | `ReceiveHit` 的 AOB `48 89 5C 24 10 56 48 83 EC 30 48 8B 4A 08` | 全镜像 993 处命中，只是通用函数序言 |
 | 受击入口 `RCX = DamageModule, RDX = 攻击者, R8 = HitParamData, R9D = uint32` | `0x14044EC00` 开头就用 `[rdx+8]` 覆盖了 RCX；`RDX` 是一对 `(句柄, 指针)`，`R8` 是**带虚表的对象**（至少 14 个虚函数）；`R9D` 是 `vfunc[6]` 这个 thunk 从栈上取的一个 byte |
@@ -126,7 +127,7 @@
 | `InputSuppression` | 未做。导入表有 `DINPUT8.dll`，但**必须先挂只读计数钩子**确认游戏用 `GetDeviceState` 还是 RawInput |
 | `IncomingDamageEvents` | 线索：`0x14044CCA0` 入口可读 `[rdx+0x48]`（伤害）、`[rdx+0x1A0]`（命中点），需要时可改写。待抓真实命中 |
 | 敌人受击 | 敌人侧函数未分析 |
-| `FirstPersonCamera` / 渲染 | **未开始**。导入表只有 `d3d12.dll`/`dxgi.dll`（D3D12），现有 D3D11 渲染钩子全部不能复用：需要命令队列（`ExecuteCommandLists`）、深度资源（格式、是否反向 Z）、ImGui DX12 后端。相机矩阵、FOV、手性、更新频率、隐藏原生模型的字段都没有 |
+| `FirstPersonCamera` / 渲染 | **未开始**。导入表只有 `d3d12.dll`/`dxgi.dll`（D3D12），现有 D3D11 渲染钩子全部不能复用：需要命令队列（`ExecuteCommandLists`）、深度资源（格式、是否反向 Z）、ImGui DX12 后端。相机矩阵、FOV、手性、更新频率、隐藏原生模型的字段都没有实测（外部参考给了偏移线索，见 §7） |
 
 ---
 
@@ -139,6 +140,28 @@
 4. 一次真实命中的 `0x14044CCA0` 上下文（`+0x54 != 0` 的调用，dump `RDX` 前 `0x1C0` 字节，加线程和返回地址）；`+0x48` 是否等于扣血量。
 5. 敌人侧伤害模块的对应函数；敌人最大血量字段、死亡/卸载识别；`team_type` 在召唤物、友方、Boss 上的值。
 6. 输入路径计数钩子。
-7. 渲染：D3D12 命令队列、深度、相机；隐藏原生模型；着地标志。
+7. 渲染：D3D12 命令队列、深度；着地标志。相机与隐藏模型按 §7 的线索验证。
+7a. 读 `ChrIns+0x6C`（玩家、各类敌人、召唤物、友方）与 `+0x1B0`（加载状态），确认 `+0x68` 是 `chr_type`。
 8. 所有固定 RVA 改成签名或 RTTI 查找。
 9. 方块碰撞方案：注册进游戏物理，还是自己拦截移动。
+
+---
+
+## 7. 外部参考（线索，不是证据）
+
+来源（2026-10 读取，网页摘要，非逐行原文）：
+- `Dasaav-dsv/fromsoftware-rs`（`crates/eldenring`，Rust，MIT / Apache-2.0 双许可）：`cs/chr_ins.rs`、`cs/camera.rs`、`position.rs`。
+- `Dasaav-dsv/erfps2`（`src/player.rs`）：第一人称与隐藏玩家模型。
+- `crosire/reshade`：通用 D3D12 深度检测算法（不含 ER 专属结论）。
+
+README 没写目标游戏版本，仓库同时含 Nightreign，偏移可能针对较新的补丁。**我们这版 exe 上每一项都要实机验证，验证前一律按 C 级对待。**
+
+| 线索 | 来源给出的内容 | 我们要做的验证 |
+|---|---|---|
+| `ChrIns` 字段 | `+0x08` 句柄、`+0x38` block_id、`+0x60` npc_param_id、`+0x64` npc_id、`+0x68` chr_type、`+0x6C` team_type(u8)、`+0x70` p2p 句柄、`+0x80` chunk_position(float4)、`+0x90` initial_position、`+0x180` last_hit_by、`+0x188` character_id、`+0x190` modules、`+0x1B0` load_state | `+0x64`、`+0x80`、`+0x190` 已和我们的实测吻合；其余待读 |
+| 相机 | `CSCamera` 有 4 个 `CSPersCam` 指针；`CSCam`：`+0x10` 4x4 矩阵（行：右、上、前、位置），`+0x50` fov，`+0x54` aspect，`+0x58` near，`+0x5C` far | 哪个 `pers_cam` 是活动的；是否与 RTTI `CSCameraImp`（`0x2A2AFF0`）是同一个单例；手性、更新频率（只狼是隔帧 30 Hz）源码**没写**，必须实测 |
+| 坐标 | `BlockPosition` 与 `HavokPosition` 都以米为单位，可互相做位移；Havok 空间是碰撞和相机共用的空间 | 玩家、敌人、相机是否都在同一个 Havok 空间；整数跳变是否是 Havok 原点重定位（§4 的检验）。源码**没有**描述原点何时变化 |
+| 隐藏模型 | `disp_flags1 = disp_flags1 & !1 \| state`，`0x100000A1` 可见，`0x100000A0` 隐藏且保留阴影；另一条路是写 `PlayerIns.base_transparency`（魔数） | 先只读遍历部件，确认 `disp_flags1` 当前值；`base_transparency` 的偏移源码没给，别信其他来源写的 `+0x24C` |
+| 深度 | ReShade 的做法：跟踪主绘制 pass 的 DSV，拷贝到可读纹理 | ER 的格式和是否反向 Z 必须自己测（只狼是 `R32G8X24_TYPELESS` + 反向 Z） |
+
+这些仓库**没有**给出：世界射线查询、敌人侧受击的调用方式、方块碰撞、D3D12 命令队列捕获、输入路径（`pad.rs` / `mouse_man.rs` 未核对）。
