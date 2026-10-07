@@ -266,15 +266,15 @@ SampleStatus LiveBinder::sample(LiveSample& out) const {
     return SampleStatus::Invalid;
 }
 
-std::optional<DataModuleRef> findChrDataModule(const IMemoryReader& reader, uintptr_t image_base, uintptr_t container,
+std::optional<ContainerModuleRef> findChrDataModule(const IMemoryReader& reader, uintptr_t image_base, uintptr_t container,
                                                uintptr_t hint_offset) {
     if (container == 0) return std::nullopt;
-    auto check = [&](uintptr_t offset) -> std::optional<DataModuleRef> {
+    auto check = [&](uintptr_t offset) -> std::optional<ContainerModuleRef> {
         uint64_t module = 0, vtable = 0;
         if (!reader.read(container + offset, &module, sizeof(module)) || module == 0) return std::nullopt;
         if (!reader.read(static_cast<uintptr_t>(module), &vtable, sizeof(vtable))) return std::nullopt;
         if (vtable != image_base + layout::kChrDataModuleVtableRva) return std::nullopt;
-        return DataModuleRef{static_cast<uintptr_t>(module), offset};
+        return ContainerModuleRef{static_cast<uintptr_t>(module), offset};
     };
     if (hint_offset != 0) {
         if (const auto hit = check(hint_offset)) return hit;
@@ -286,8 +286,69 @@ std::optional<DataModuleRef> findChrDataModule(const IMemoryReader& reader, uint
     return std::nullopt;
 }
 
+namespace {
+constexpr unsigned kModuleRetryFrames = 90; // about 1.5 s at 60 fps
+}
+
+std::optional<DataModuleRef> findOwnedDataModule(const IMemoryReader& reader, uintptr_t image_base, size_t image_size,
+                                                 uintptr_t owner, const DataModuleRef* hint) {
+    if (owner == 0) return std::nullopt;
+    auto heapPointer = [&](uint64_t q) {
+        return q >= 0x10000 && q < 0x00007FFFFFFFFFFFull && !(q >= image_base && q < image_base + image_size);
+    };
+    // A candidate is a module when it has the class's vtable and names `owner` as its owner.
+    auto owned = [&](uint64_t q) {
+        if (!heapPointer(q)) return false;
+        uint64_t head[2]{};
+        if (!reader.read(static_cast<uintptr_t>(q), head, sizeof(head))) return false;
+        return head[0] == image_base + layout::kChrDataModuleVtableRva && head[1] == owner;
+    };
+    auto readPtr = [&](uintptr_t address, uint64_t& out) { return reader.read(address, &out, sizeof(out)); };
+
+    if (hint) {
+        uint64_t q = 0;
+        if (hint->isDirect()) {
+            if (readPtr(owner + hint->first, q) && owned(q)) return DataModuleRef{static_cast<uintptr_t>(q), hint->first, DataModuleRef::kDirect};
+        } else {
+            uint64_t box = 0;
+            if (readPtr(owner + hint->first, box) && heapPointer(box) && readPtr(static_cast<uintptr_t>(box) + hint->second, q) && owned(q)) {
+                return DataModuleRef{static_cast<uintptr_t>(q), hint->first, hint->second};
+            }
+        }
+    }
+
+    // 1. the character object points at the module itself (most enemy types)
+    constexpr size_t kChunk = 0x200;
+    std::vector<uint64_t> words;
+    words.reserve(layout::kCharacterScanLimit / 8);
+    for (uintptr_t off = 0; off < layout::kCharacterScanLimit; off += kChunk) {
+        uint64_t chunk[kChunk / 8];
+        if (!reader.read(owner + off, chunk, sizeof(chunk))) {
+            words.insert(words.end(), kChunk / 8, 0); // unreadable part: keeps the offsets aligned
+            continue;
+        }
+        words.insert(words.end(), chunk, chunk + kChunk / 8);
+    }
+    for (size_t i = 0; i < words.size(); ++i) {
+        if (owned(words[i])) return DataModuleRef{static_cast<uintptr_t>(words[i]), i * 8, DataModuleRef::kDirect};
+    }
+
+    // 2. through the module container (+0x10b8), which holds the player's module and some enemies'
+    uint64_t container = 0;
+    if (readPtr(owner + layout::kModuleContainerInChrIns, container) && heapPointer(container)) {
+        for (uintptr_t off = 0; off < layout::kModuleScanLimit; off += sizeof(uint64_t)) {
+            uint64_t q = 0;
+            if (readPtr(static_cast<uintptr_t>(container) + off, q) && owned(q)) {
+                return DataModuleRef{static_cast<uintptr_t>(q), layout::kModuleContainerInChrIns, off};
+            }
+        }
+    }
+    return std::nullopt;
+}
+
 size_t LiveBinder::enumerateEnemies(std::vector<LiveEnemy>& out, size_t max_entries) const {
     out.clear();
+    ++enumerate_calls_;
     if (status_ != BindStatus::Bound) return 0;
     uintptr_t world = 0, block = 0, block_vtable = 0, slots = 0;
     if (!readPointer(base_ + wcm_global_rva_, world) || world == 0) return 0;
@@ -318,12 +379,21 @@ size_t LiveBinder::enumerateEnemies(std::vector<LiveEnemy>& out, size_t max_entr
         reader_.read(enemy + layout::kEnemyTeam, &e.team, sizeof(e.team));
         e.hostile = e.team == layout::kTeamHostile;
 
-        uintptr_t container = 0;
-        if (readPointer(enemy + layout::kModuleContainerInChrIns, container) && container != 0) {
-            const auto hint = module_offset_hints_.find(enemy);
-            const auto ref = findChrDataModule(reader_, base_, container, hint == module_offset_hints_.end() ? 0 : hint->second);
+        {
+            const auto hint = module_hints_.find(enemy);
+            const auto retry = module_retry_at_.find(enemy);
+            const bool backing_off = hint == module_hints_.end() && retry != module_retry_at_.end() && enumerate_calls_ < retry->second;
+            std::optional<DataModuleRef> ref;
+            if (!backing_off) {
+                ref = findOwnedDataModule(reader_, base_, size_, enemy, hint == module_hints_.end() ? nullptr : &hint->second);
+                if (!ref) {
+                    module_hints_.erase(enemy);
+                    module_retry_at_[enemy] = enumerate_calls_ + kModuleRetryFrames;
+                }
+            }
             if (ref) {
-                module_offset_hints_[enemy] = ref->offset; // a character's layout does not change while it lives
+                module_retry_at_.erase(enemy);
+                module_hints_[enemy] = *ref; // a character's layout does not change while it lives
                 int32_t hp = 0, max_hp = 0;
                 if (reader_.read(ref->module + layout::kDataHp, &hp, sizeof(hp)) &&
                     reader_.read(ref->module + layout::kEnemyMaxHp, &max_hp, sizeof(max_hp)) && max_hp > 0 &&

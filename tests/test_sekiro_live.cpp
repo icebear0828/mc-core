@@ -180,6 +180,9 @@ struct World {
         bool active{true}; // live position (+0x1050) non-zero; inactive ones only have a spawn position (+0xE0)
         uintptr_t module_offset{0x1f8}; // where in the module container the data module hangs; differs between characters
         bool decoy_at_1f8{false};       // a pointer to some other object sits at +0x1f8 (seen on real soldiers)
+        uintptr_t direct_offset{0};     // when non-zero the enemy object itself points at its module here (most soldiers: +0x2288)
+        bool in_container{true};        // false: nothing points at the module from the module container
+        bool foreign_owner{false};      // the module says it belongs to some other character
     };
     void ensureBlock(int32_t slots = 144) {
         if (!mem.regions.count(kBlock)) mem.region(kBlock, 0x200);
@@ -208,8 +211,10 @@ struct World {
         }
         mem.put<uint64_t>(enemy + 0x10b8, container);
         if (e.decoy_at_1f8) mem.put<uint64_t>(container + 0x1f8, enemy); // points back at an EnemyIns, not a data module
-        mem.put<uint64_t>(container + e.module_offset, module);
+        if (e.in_container) mem.put<uint64_t>(container + e.module_offset, module);
+        if (e.direct_offset != 0) mem.put<uint64_t>(enemy + e.direct_offset, module);
         mem.put<uint64_t>(module, kBase + (e.module_ok ? kDataModuleVtableRva : 0x999));
+        mem.put<uint64_t>(module + 8, e.foreign_owner ? uint64_t{0x7ff4deadbeef} : static_cast<uint64_t>(enemy)); // owner back-pointer
         mem.put<int32_t>(module + 0x130, e.hp);
         mem.put<int32_t>(module + 0x160, e.max_hp);
         return enemy;
@@ -895,4 +900,118 @@ TEST(SekiroLiveEnemiesTest, FindChrDataModuleReportsTheOffsetAndHonoursTheHint) 
     EXPECT_EQ(wrong_hint->offset, 0x2C8u);
     EXPECT_FALSE(findChrDataModule(w.mem, kBase, 0).has_value());
     EXPECT_FALSE(findChrDataModule(w.mem, kBase, 0xdead0000ull).has_value());
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Most enemies (dozens of character types in the live game) point at their data module straight from the
+// EnemyIns object, at +0x2188..+0x2288 depending on the type; the module's +0x8 names its owner.
+// ---------------------------------------------------------------------------------------------
+TEST(SekiroLiveEnemiesTest, FindsAModuleThatTheEnemyObjectPointsAtDirectly) {
+    World w;
+    w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .hp = 1572, .max_hp = 1572, .in_container = false, .direct_offset = 0x2288});
+    w.addEnemy(2, {.x = 2.f, .y = 1.f, .z = 2.f, .hp = 700, .max_hp = 756, .in_container = false, .direct_offset = 0x2228});
+    w.addEnemy(3, {.x = 3.f, .y = 1.f, .z = 3.f, .hp = 5, .max_hp = 9, .in_container = false, .direct_offset = 0x20b8});
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    ASSERT_EQ(binder.enumerateEnemies(e), 3u);
+    EXPECT_TRUE(e[0].hp_valid);
+    EXPECT_FLOAT_EQ(e[0].hp, 1572.f);
+    EXPECT_TRUE(e[1].hp_valid);
+    EXPECT_FLOAT_EQ(e[1].hp, 700.f);
+    EXPECT_TRUE(e[2].hp_valid);
+    EXPECT_FLOAT_EQ(e[2].hp, 5.f);
+}
+
+TEST(SekiroLiveEnemiesTest, AModuleThatBelongsToAnotherCharacterIsNeverAccepted) {
+    World w;
+    // both the container and the direct pointer lead to a module whose owner field names somebody else
+    w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .hp = 100, .max_hp = 200, .direct_offset = 0x2288, .foreign_owner = true});
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    ASSERT_EQ(binder.enumerateEnemies(e), 1u);
+    EXPECT_FALSE(e[0].hp_valid) << "never read (and never write) another character's health";
+}
+
+TEST(SekiroLiveEnemiesTest, FindOwnedDataModuleReportsHowItWasFoundAndHonoursTheHint) {
+    World w;
+    const uintptr_t direct = w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .in_container = false, .direct_offset = 0x2288});
+    const uintptr_t boxed = w.addEnemy(2, {.x = 2.f, .y = 1.f, .z = 2.f, .module_offset = 0x1b0});
+
+    const auto a = findOwnedDataModule(w.mem, kBase, kImageSize, direct);
+    ASSERT_TRUE(a.has_value());
+    EXPECT_TRUE(a->isDirect());
+    EXPECT_EQ(a->first, 0x2288u);
+    EXPECT_EQ(a->module, direct + 0x11000);
+
+    const auto b = findOwnedDataModule(w.mem, kBase, kImageSize, boxed);
+    ASSERT_TRUE(b.has_value());
+    EXPECT_FALSE(b->isDirect());
+    EXPECT_EQ(b->first, 0x10b8u);
+    EXPECT_EQ(b->second, 0x1b0u);
+
+    const auto again = findOwnedDataModule(w.mem, kBase, kImageSize, direct, &*a);
+    ASSERT_TRUE(again.has_value());
+    EXPECT_EQ(again->module, a->module);
+    const DataModuleRef stale{0, 0x40, DataModuleRef::kDirect}; // a hint that no longer points at a module
+    const auto recovered = findOwnedDataModule(w.mem, kBase, kImageSize, direct, &stale);
+    ASSERT_TRUE(recovered.has_value());
+    EXPECT_EQ(recovered->first, 0x2288u);
+
+    EXPECT_FALSE(findOwnedDataModule(w.mem, kBase, kImageSize, 0).has_value());
+    EXPECT_FALSE(findOwnedDataModule(w.mem, kBase, kImageSize, 0xdead0000ull).has_value());
+}
+
+
+namespace {
+// Counts reads so a test can see how much work a frame costs.
+class CountingReader : public IMemoryReader {
+public:
+    explicit CountingReader(const IMemoryReader& inner) : inner_(inner) {}
+    bool read(uintptr_t address, void* out, size_t size) const override {
+        ++reads;
+        return inner_.read(address, out, size);
+    }
+    mutable size_t reads{0};
+
+private:
+    const IMemoryReader& inner_;
+};
+} // namespace
+
+TEST(SekiroLiveEnemiesTest, ACharacterWithNoDataModuleIsNotRescannedEveryFrame) {
+    World w;
+    for (int i = 0; i < 5; ++i) {
+        w.addEnemy(i, {.x = float(i + 1), .y = 1.f, .z = 1.f, .module_ok = false, .in_container = false});
+    }
+    CountingReader counting(w.mem);
+    LiveBinder binder(counting, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    counting.reads = 0;
+    ASSERT_EQ(binder.enumerateEnemies(e), 5u); // the first frame searches (and finds nothing)
+    const size_t first_frame = counting.reads;
+    counting.reads = 0;
+    ASSERT_EQ(binder.enumerateEnemies(e), 5u);
+    EXPECT_LT(counting.reads * 2, first_frame) << "the second frame must not repeat the full search (" << counting.reads << " vs " << first_frame << " reads)";
+}
+
+TEST(SekiroLiveEnemiesTest, AModuleThatAppearsLaterIsFoundOnceTheMissIsRetried) {
+    World w;
+    w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .module_ok = false, .in_container = false, .direct_offset = 0x2288});
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    ASSERT_EQ(binder.enumerateEnemies(e), 1u);
+    EXPECT_FALSE(e[0].hp_valid);
+    // the game finishes building the character: the module gets its class
+    w.mem.put<uint64_t>(kEnemyBase + 1 * kEnemyStride + 0x11000, kBase + kDataModuleVtableRva);
+    bool found = false;
+    for (int frame = 0; frame < 200 && !found; ++frame) {
+        binder.enumerateEnemies(e);
+        found = !e.empty() && e[0].hp_valid;
+    }
+    EXPECT_TRUE(found) << "a retry must eventually pick the module up";
 }

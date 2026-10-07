@@ -412,7 +412,7 @@ void BindLiveGameState() {
                 attempt + 1, binder->worldChrManGlobalRva(), binder->cameraCandidateRvas().size());
             g_model_hider = std::make_unique<sekiro::live::ModelHider>(
                 g_memory, g_memory_writer, binder->imageBase(), binder->imageSize(), binder->worldChrManGlobalRva());
-            g_health_writer = std::make_unique<sekiro::live::HostHealthWriter>(g_memory, g_memory_writer, binder->imageBase());
+            g_health_writer = std::make_unique<sekiro::live::HostHealthWriter>(g_memory, g_memory_writer, binder->imageBase(), binder->imageSize());
             g_binder = std::move(binder);
             g_binder_ready.store(true);
             CreateThread(nullptr, 0, WolfGuardThread, nullptr, 0, nullptr);

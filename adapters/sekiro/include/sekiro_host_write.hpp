@@ -20,8 +20,8 @@ public:
         WriteFailed, // the write (or its read-back) failed
     };
 
-    HostHealthWriter(const IMemoryReader& reader, IMemoryWriter& writer, uintptr_t image_base)
-        : reader_(reader), writer_(writer), base_(image_base) {}
+    HostHealthWriter(const IMemoryReader& reader, IMemoryWriter& writer, uintptr_t image_base, size_t image_size)
+        : reader_(reader), writer_(writer), base_(image_base), image_size_(image_size) {}
 
     // EnemyIns -> [+0x10b8] -> [+0x1f8] SprjChrDataModule: hp at +0x130, max at +0x160.
     Result lowerEnemyHealth(uintptr_t enemy, float new_health);
@@ -35,6 +35,7 @@ private:
     const IMemoryReader& reader_;
     IMemoryWriter& writer_;
     uintptr_t base_;
+    size_t image_size_;
 };
 
 } // namespace sekiro::live

@@ -71,6 +71,10 @@ Minecraft 动作（攻击、盾牌、弓箭、受伤、第一人称……）的�
 - **验证**：打一个杂兵，血条下降；血量归零后走游戏自己的死亡动画；不会出现"打不死/卡无敌"。
 - **只狼状态**：**已实现，待实机验证**。敌人数据模块在 `[[enemy+0x10b8]+0x1f8]`（玩家的是 `+0x1e8`），虚表 `0x2A8BE18`；`+0x130` 当前血量，**敌人的最大血量在 `+0x160`**（玩家在 `+0x138`），`+0x148` 架势。`HostHealthWriter` 只写 `+0x130` 一个 int32：写前校验类名与数值（`0≤hp≤max`），写后读回确认；**对敌人只降不升，对玩家只升不降**。核心的伤害是最大血量的 5 %（钻石剑，`HitIntent.max_hp_percent`）。
 
+### 3.1 敌人数据模块怎么找（只狼，2026-10-07 实机，89 个敌人）
+
+不要写死偏移。血量模块（`SprjChrDataModule`，虚表 RVA `0x2A8BE18`）的 **`+0x8` 是它的主人角色指针**，用它做校验：在角色对象里找一个指针，指向"虚表是数据模块、且 `+0x8` 等于这个角色"的对象（`findOwnedDataModule`）。多数敌人类型直接从 `EnemyIns+0x2288`（或 `+0x2188..+0x2268` 附近）指向它；玩家和少数敌人走 `+0x10b8` 容器；个别类型走 `0x1ff8→+0x18`、`0x1150→+0x128`、`0x1b58→+0xe8`。血量 `+0x130`，最大血量 `+0x160`。**写血能让敌人掉血/死亡，但不会让它硬直或击退**：受击反应需要逆向游戏自己的受击流程（容器里的 `SprjEnemyDamageModule`、`SprjEnemyKnockBackModule`、`SprjChrActionRequestModule`），尚未做。
+
 ## 5. IncomingDamageEvents —— 玩家将受的伤害
 
 - **契约**：`IHostGameplay::drainIncomingDamage(IncomingDamage*, size_t)` + `refundPlayerDamage(float)`。

@@ -64,7 +64,9 @@ inline constexpr uintptr_t kEnemyTeam = 0x70;       // uint32: 0/1 player side, 
 inline constexpr uint32_t kTeamHostile = 5;
 inline constexpr uintptr_t kEnemyDataModuleInContainer = 0x1f8; // enemies: +0x1f8 (the player's is +0x1e8)
 inline constexpr uintptr_t kEnemyMaxHp = 0x160;                 // max hp at +0x160 (read 1120 on the player and 2101 on an enemy)
-inline constexpr uintptr_t kModuleScanLimit = 0x400;            // how far into a module container to look for the data module
+inline constexpr uintptr_t kModuleScanLimit = 0x400;
+inline constexpr uintptr_t kOwnerInDataModule = 0x8;            // the character a data module belongs to
+inline constexpr uintptr_t kCharacterScanLimit = 0x3000;        // how far into a character object its module pointer is looked for            // how far into a module container to look for the data module
 // Fall module: [container+0x240] is SprjPlayerFallModule; int32 at +0x40 is -1 on the ground and >= 0 airborne.
 inline constexpr uintptr_t kFallModuleInContainer = 0x240;
 inline constexpr uint32_t kFallModuleVtableRva = 0x2A821F0;
@@ -103,12 +105,26 @@ std::optional<std::vector<uint32_t>> findPattern(const IMemoryReader& reader, ui
 // A character's SprjChrDataModule inside its module container. The player's hangs at +0x1e8 and some enemies'
 // at +0x1f8, but most soldiers have something else at those offsets, so the container is searched for a
 // pointer to an object with the data module's vtable; `hint_offset` (a previous result) is tried first.
-struct DataModuleRef {
+struct ContainerModuleRef {
     uintptr_t module{0};
     uintptr_t offset{0}; // within the container
 };
-std::optional<DataModuleRef> findChrDataModule(const IMemoryReader& reader, uintptr_t image_base, uintptr_t container,
+std::optional<ContainerModuleRef> findChrDataModule(const IMemoryReader& reader, uintptr_t image_base, uintptr_t container,
                                                uintptr_t hint_offset = 0);
+
+// How a character reaches its data module. Most enemy types point at it straight from the character object
+// (`first` = offset in the character, `second` = kDirect); a few go through a sub-object (`first` = offset in the
+// character, `second` = offset in that object). A module is only accepted when its own `+0x8` names the character
+// as its owner, so another character's health is never read (or written) by mistake.
+struct DataModuleRef {
+    static constexpr uintptr_t kDirect = ~uintptr_t{0};
+    uintptr_t module{0};
+    uintptr_t first{0};
+    uintptr_t second{kDirect};
+    [[nodiscard]] bool isDirect() const { return second == kDirect; }
+};
+std::optional<DataModuleRef> findOwnedDataModule(const IMemoryReader& reader, uintptr_t image_base, size_t image_size,
+                                                 uintptr_t owner, const DataModuleRef* hint = nullptr);
 
 struct LiveSample {
     native::FVector3 player_pos;
@@ -173,7 +189,10 @@ private:
     bool readCamera(uintptr_t object, LiveSample& out) const;
     void readFacing(uintptr_t player, LiveSample& out) const;
     // Where the data module was last found per enemy address (a search hint; always re-validated by vtable).
-    mutable std::map<uintptr_t, uintptr_t> module_offset_hints_;
+    mutable std::map<uintptr_t, DataModuleRef> module_hints_;
+    // Characters that had no data module: do not repeat the full search every frame, retry every so often.
+    mutable std::map<uintptr_t, unsigned> module_retry_at_;
+    mutable unsigned enumerate_calls_{0};
     void readVitals(uintptr_t player, LiveSample& out) const;
     void readGrounded(uintptr_t player, LiveSample& out) const;
 

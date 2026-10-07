@@ -28,10 +28,11 @@ HostHealthWriter::Result HostHealthWriter::apply(uintptr_t character, uint32_t c
         return true;
     };
 
-    uintptr_t vtable = 0, container = 0;
+    uintptr_t vtable = 0;
     if (!readPtr(character, vtable) || vtable != base_ + character_vtable_rva) return Result::Rejected;
-    if (!readPtr(character + layout::kModuleContainerInChrIns, container) || container == 0) return Result::Rejected;
-    const auto ref = findChrDataModule(reader_, base_, container, module_offset);
+    (void)module_offset;
+    // Only a module that names this very character as its owner is written (never another character's).
+    const auto ref = findOwnedDataModule(reader_, base_, image_size_, character);
     if (!ref) return Result::Rejected;
     const uintptr_t module = ref->module;
 
