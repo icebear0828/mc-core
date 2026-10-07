@@ -47,6 +47,22 @@ inline constexpr uint32_t kChrDataModuleVtableRva = 0x2A8BE18;
 inline constexpr uintptr_t kDataHp = 0x130;
 inline constexpr uintptr_t kDataMaxHp = 0x138;
 inline constexpr int32_t kMaxPlausibleMaxHp = 100000;
+// Enemies: WorldChrMan+0xC8 -> WorldBlockChr (class-checked); +0x80 int32 slot count (144 seen), +0x88 pointer
+// to the slot array, stride 0x38, EnemyIns* at +0 of each slot (null when empty). Verified in the live game.
+// +0xE0 on a character is its static spawn position (it does not follow the character); the live one is
+// +0x1050 like the player's, and all-zero there means the character is not loaded/active.
+inline constexpr uintptr_t kWorldBlockInWorldChrMan = 0xC8;
+inline constexpr uint32_t kWorldBlockVtableRva = 0x2A2EB10;
+inline constexpr uintptr_t kBlockSlotCount = 0x80;
+inline constexpr uintptr_t kBlockSlotArray = 0x88;
+inline constexpr uintptr_t kSlotStride = 0x38;
+inline constexpr int32_t kMaxSlots = 4096;
+inline constexpr uint32_t kEnemyInsVtableRva = 0x2A27F28;
+inline constexpr uintptr_t kEnemyCharId = 0x68;     // uint32, e.g. 10010000
+inline constexpr uintptr_t kEnemyTeam = 0x70;       // uint32: 0/1 player side, 5 hostile, 9 neutral
+inline constexpr uint32_t kTeamHostile = 5;
+inline constexpr uintptr_t kEnemyDataModuleInContainer = 0x1f8; // enemies: +0x1f8 (the player's is +0x1e8)
+inline constexpr uintptr_t kEnemyMaxHp = 0x160;                 // enemies: max hp at +0x160 (the player's is +0x138)
 inline constexpr uintptr_t kCameraMatrix = 0xea0;     // row-major 4x4: right, up, forward, position(w=1)
 inline constexpr uintptr_t kCameraFov = 0x160;        // float, returned by the camera getter the signature matches
 
@@ -95,6 +111,20 @@ struct LiveSample {
     float max_hp{0.0f};
 };
 
+// One loaded character of the world block, as read from the live game this frame.
+struct LiveEnemy {
+    uintptr_t handle{0}; // the host's address: identity within this frame only, never an EntityId
+    uint32_t slot{0};
+    uint32_t char_id{0};
+    uint32_t team{0};
+    bool hostile{false};
+    native::FVector3 position{};
+    bool hp_valid{false};
+    float hp{0.0f};
+    float max_hp{0.0f};
+    bool dead{false}; // only ever true on a valid reading of 0 hp
+};
+
 enum class BindStatus { Searching, Ambiguous, Bound };
 enum class SampleStatus { NotBound, NotInWorld, Invalid, Ok };
 
@@ -109,6 +139,10 @@ public:
 
     // Validated read of the live state. Never guesses: anything implausible is reported, not used.
     SampleStatus sample(LiveSample& out) const;
+
+    // Active enemies of the current world block (up to `max_entries`). Every pointer is class-checked by its
+    // RTTI vtable before it is read; garbage never produces an entry. Returns the number appended.
+    size_t enumerateEnemies(std::vector<LiveEnemy>& out, size_t max_entries = 512) const;
 
     [[nodiscard]] uint32_t worldChrManGlobalRva() const { return wcm_global_rva_; }
     [[nodiscard]] uintptr_t imageBase() const { return base_; }

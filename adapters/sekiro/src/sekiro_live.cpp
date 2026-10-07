@@ -252,6 +252,56 @@ SampleStatus LiveBinder::sample(LiveSample& out) const {
     return SampleStatus::Invalid;
 }
 
+size_t LiveBinder::enumerateEnemies(std::vector<LiveEnemy>& out, size_t max_entries) const {
+    out.clear();
+    if (status_ != BindStatus::Bound) return 0;
+    uintptr_t world = 0, block = 0, block_vtable = 0, slots = 0;
+    if (!readPointer(base_ + wcm_global_rva_, world) || world == 0) return 0;
+    if (!readPointer(world + layout::kWorldBlockInWorldChrMan, block) || block == 0) return 0;
+    if (!readPointer(block, block_vtable) || block_vtable != base_ + layout::kWorldBlockVtableRva) return 0;
+    int32_t count = 0;
+    if (!reader_.read(block + layout::kBlockSlotCount, &count, sizeof(count)) || count <= 0 || count > layout::kMaxSlots) return 0;
+    if (!readPointer(block + layout::kBlockSlotArray, slots) || slots == 0) return 0;
+
+    for (int32_t i = 0; i < count && out.size() < max_entries; ++i) {
+        uintptr_t enemy = 0, vtable = 0;
+        if (!readPointer(slots + static_cast<uintptr_t>(i) * layout::kSlotStride, enemy) || enemy == 0) continue;
+        if (!readPointer(enemy, vtable) || vtable != base_ + layout::kEnemyInsVtableRva) continue;
+
+        // Live position, like the player's: both copies must agree, and all-zero means not loaded.
+        float a[3], b[3];
+        if (!reader_.read(enemy + layout::kChrPosition, a, sizeof(a)) || !reader_.read(enemy + layout::kChrPositionCopy, b, sizeof(b))) continue;
+        const native::FVector3 pos{a[0], a[1], a[2]}, copy{b[0], b[1], b[2]};
+        if (!finiteAndBounded(pos) || !finiteAndBounded(copy)) continue;
+        if (pos.X == 0.0f && pos.Y == 0.0f && pos.Z == 0.0f) continue;
+        if ((pos - copy).Length() > layout::kMaxPositionCopyDelta) continue;
+
+        LiveEnemy e;
+        e.handle = enemy;
+        e.slot = static_cast<uint32_t>(i);
+        e.position = pos;
+        reader_.read(enemy + layout::kEnemyCharId, &e.char_id, sizeof(e.char_id));
+        reader_.read(enemy + layout::kEnemyTeam, &e.team, sizeof(e.team));
+        e.hostile = e.team == layout::kTeamHostile;
+
+        uintptr_t container = 0, module = 0, module_vtable = 0;
+        if (readPointer(enemy + layout::kModuleContainerInChrIns, container) && container != 0 &&
+            readPointer(container + layout::kEnemyDataModuleInContainer, module) && module != 0 &&
+            readPointer(module, module_vtable) && module_vtable == base_ + layout::kChrDataModuleVtableRva) {
+            int32_t hp = 0, max_hp = 0;
+            if (reader_.read(module + layout::kDataHp, &hp, sizeof(hp)) && reader_.read(module + layout::kEnemyMaxHp, &max_hp, sizeof(max_hp)) &&
+                max_hp > 0 && max_hp <= layout::kMaxPlausibleMaxHp && hp >= 0 && hp <= max_hp) {
+                e.hp_valid = true;
+                e.hp = static_cast<float>(hp);
+                e.max_hp = static_cast<float>(max_hp);
+                e.dead = hp == 0;
+            }
+        }
+        out.push_back(e);
+    }
+    return out.size();
+}
+
 void CameraStabilizer::apply(LiveSample& sample) {
     const native::FVector3 raw_camera = sample.cam_pos;
     if (!have_previous_ || (sample.player_pos - last_player_).Length() > kMaxJump) {

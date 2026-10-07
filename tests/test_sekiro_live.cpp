@@ -24,6 +24,12 @@ constexpr uintptr_t kChrModel = 0x7ff400400000ull;  // player ChrIns+0x48 object
 constexpr uintptr_t kModuleContainer = 0x7ff400500000ull; // [player+0x10b8]
 constexpr uintptr_t kDataModule = 0x7ff400600000ull;      // [container+0x1e8], SprjChrDataModule
 constexpr uint32_t kDataModuleVtableRva = 0x2A8BE18;
+constexpr uintptr_t kBlock = 0x7ff400700000ull;       // [WorldChrMan+0xC8] WorldBlockChr
+constexpr uintptr_t kSlots = 0x7ff400710000ull;       // slot array, stride 0x38
+constexpr uintptr_t kEnemyBase = 0x7ff400800000ull;   // enemies are kEnemyBase + n * kEnemyStride
+constexpr uintptr_t kEnemyStride = 0x20000;
+constexpr uint32_t kBlockVtableRva = 0x2A2EB10;
+constexpr uint32_t kEnemyVtableRva = 0x2A27F28;
 
 constexpr uint32_t kWcmPatternRva = 0x100;
 constexpr uint32_t kWcmGlobalRva = 0x1000;
@@ -148,6 +154,50 @@ struct World {
         mem.put<uint64_t>(kDataModule, kBase + (right_class ? kDataModuleVtableRva : 0x1234));
         mem.put<int32_t>(kDataModule + 0x130, hp);
         mem.put<int32_t>(kDataModule + 0x138, max_hp);
+    }
+    // ---- enemies: WorldChrMan+0xC8 -> block (+0x80 slot count, +0x88 slot array, stride 0x38, enemy at +0) ----
+    struct EnemySpec {
+        float x{0}, y{0}, z{0};
+        float live_y{std::numeric_limits<float>::quiet_NaN()};
+        uint32_t char_id{10010000};
+        uint32_t team{5};
+        int32_t hp{2101};
+        int32_t max_hp{2101};
+        bool right_class{true};
+        bool module_ok{true};
+        bool active{true}; // live position (+0x1050) non-zero; inactive ones only have a spawn position (+0xE0)
+    };
+    void ensureBlock(int32_t slots = 144) {
+        if (!mem.regions.count(kBlock)) mem.region(kBlock, 0x200);
+        if (!mem.regions.count(kSlots)) mem.region(kSlots, 0x38 * 256);
+        mem.put<uint64_t>(kWorld + 0xC8, kBlock);
+        mem.put<uint64_t>(kBlock, kBase + kBlockVtableRva);
+        mem.put<int32_t>(kBlock + 0x80, slots);
+        mem.put<uint64_t>(kBlock + 0x88, kSlots);
+    }
+    uintptr_t addEnemy(int slot, const EnemySpec& e) {
+        ensureBlock();
+        const uintptr_t enemy = kEnemyBase + static_cast<uintptr_t>(slot) * kEnemyStride;
+        const uintptr_t container = enemy + 0x10000;
+        const uintptr_t module = enemy + 0x11000;
+        mem.region(enemy, 0x20000);
+        mem.put<uint64_t>(kSlots + static_cast<uintptr_t>(slot) * 0x38, enemy);
+        mem.put<uint64_t>(enemy, kBase + (e.right_class ? kEnemyVtableRva : 0x4321));
+        mem.put<uint32_t>(enemy + 0x68, e.char_id);
+        mem.put<uint32_t>(enemy + 0x70, e.team);
+        const float spawn[3] = {e.x, e.y, e.z};
+        mem.put(enemy + 0xE0, spawn);
+        if (e.active) {
+            const float live[3] = {e.x, std::isnan(e.live_y) ? e.y : e.live_y, e.z};
+            mem.put(enemy + 0x1050, live);
+            mem.put(enemy + 0x1060, live);
+        }
+        mem.put<uint64_t>(enemy + 0x10b8, container);
+        mem.put<uint64_t>(container + 0x1f8, module);
+        mem.put<uint64_t>(module, kBase + (e.module_ok ? kDataModuleVtableRva : 0x999));
+        mem.put<int32_t>(module + 0x130, e.hp);
+        mem.put<int32_t>(module + 0x160, e.max_hp);
+        return enemy;
     }
     void setCamera(const Mat& m, uintptr_t obj = kCamera) { mem.put(obj + 0xea0, m); }
 };
@@ -612,4 +662,111 @@ TEST(SekiroCameraStabilizerTest, ResetForgetsThePreviousFrame) {
     const LiveSample raw = b;
     stabilizer.apply(b);
     EXPECT_FLOAT_EQ(b.cam_pos.Z, raw.cam_pos.Z);
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Enemy enumeration: WorldChrMan+0xC8 -> WorldBlockChr, a slot array of EnemyIns (verified in the live game)
+// ---------------------------------------------------------------------------------------------
+TEST(SekiroLiveEnemiesTest, ListsActiveEnemiesWithTheirRealHealthAndPosition) {
+    World w;
+    const uintptr_t first = w.addEnemy(4, {.x = 164.f, .y = -29.f, .z = 23.f, .char_id = 10010000, .hp = 1500, .max_hp = 2101});
+    w.addEnemy(7, {.x = 10.f, .y = 2.f, .z = 3.f, .char_id = 10100300, .hp = 200, .max_hp = 322});
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+
+    std::vector<LiveEnemy> enemies;
+    ASSERT_EQ(binder.enumerateEnemies(enemies), 2u);
+    EXPECT_EQ(enemies[0].slot, 4u);
+    EXPECT_EQ(enemies[0].handle, first);
+    EXPECT_EQ(enemies[0].char_id, 10010000u);
+    EXPECT_EQ(enemies[0].team, 5u);
+    EXPECT_TRUE(enemies[0].hostile);
+    EXPECT_FLOAT_EQ(enemies[0].position.X, 164.f);
+    EXPECT_FLOAT_EQ(enemies[0].position.Y, -29.f);
+    EXPECT_TRUE(enemies[0].hp_valid);
+    EXPECT_FLOAT_EQ(enemies[0].hp, 1500.f);
+    EXPECT_FLOAT_EQ(enemies[0].max_hp, 2101.f);
+    EXPECT_FALSE(enemies[0].dead);
+    EXPECT_EQ(enemies[1].slot, 7u);
+}
+
+TEST(SekiroLiveEnemiesTest, UsesTheLivePositionNotTheStaticSpawnPosition) {
+    World w;
+    w.addEnemy(1, {.x = 100.f, .y = 5.f, .z = 100.f, .live_y = 6.5f}); // moved: live differs from the spawn copy
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> enemies;
+    ASSERT_EQ(binder.enumerateEnemies(enemies), 1u);
+    EXPECT_FLOAT_EQ(enemies[0].position.Y, 6.5f);
+}
+
+TEST(SekiroLiveEnemiesTest, SkipsInactiveEmptyAndWrongClassSlots) {
+    World w;
+    w.addEnemy(0, {.x = 50.f, .y = 1.f, .z = 50.f, .active = false});      // unloaded: no live position
+    w.addEnemy(2, {.x = 1.f, .y = 1.f, .z = 1.f, .right_class = false});   // not an EnemyIns
+    w.addEnemy(3, {.x = 2.f, .y = 1.f, .z = 2.f});                         // the only real one
+    // slot 1 stays a null pointer
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> enemies;
+    ASSERT_EQ(binder.enumerateEnemies(enemies), 1u);
+    EXPECT_EQ(enemies[0].slot, 3u);
+}
+
+TEST(SekiroLiveEnemiesTest, ClassifiesTeamsAndDeathFromHealth) {
+    World w;
+    w.addEnemy(0, {.x = 1.f, .y = 1.f, .z = 1.f, .team = 5});
+    w.addEnemy(1, {.x = 2.f, .y = 1.f, .z = 2.f, .team = 9});              // neutral
+    w.addEnemy(2, {.x = 3.f, .y = 1.f, .z = 3.f, .team = 1});              // friendly
+    w.addEnemy(3, {.x = 4.f, .y = 1.f, .z = 4.f, .hp = 0});                // dead
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    ASSERT_EQ(binder.enumerateEnemies(e), 4u);
+    EXPECT_TRUE(e[0].hostile);
+    EXPECT_FALSE(e[1].hostile);
+    EXPECT_FALSE(e[2].hostile);
+    EXPECT_TRUE(e[3].dead);
+    EXPECT_TRUE(e[3].hp_valid);
+}
+
+TEST(SekiroLiveEnemiesTest, UntrustworthyHealthIsReportedAsUnknownNotAsZero) {
+    World w;
+    w.addEnemy(0, {.x = 1.f, .y = 1.f, .z = 1.f, .module_ok = false});          // module class mismatch (garbage)
+    w.addEnemy(1, {.x = 2.f, .y = 1.f, .z = 2.f, .hp = 500, .max_hp = 0});      // impossible max
+    w.addEnemy(2, {.x = 3.f, .y = 1.f, .z = 3.f, .hp = 9000, .max_hp = 100});   // hp above max
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    ASSERT_EQ(binder.enumerateEnemies(e), 3u); // still listed: position is real
+    for (const auto& enemy : e) {
+        EXPECT_FALSE(enemy.hp_valid);
+        EXPECT_FALSE(enemy.dead) << "unknown health must not look like a corpse";
+    }
+}
+
+TEST(SekiroLiveEnemiesTest, NothingWithoutABlockAndABoundedWalkWithAHugeSlotCount) {
+    World w;
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    EXPECT_EQ(binder.enumerateEnemies(e), 0u); // no block pointer
+
+    w.addEnemy(5, {.x = 1.f, .y = 1.f, .z = 1.f});
+    w.ensureBlock(1000000); // corrupt count: must not read a million slots
+    EXPECT_EQ(binder.enumerateEnemies(e), 0u);
+
+    w.ensureBlock(144);
+    w.mem.put<uint64_t>(kBlock, kBase + 0x7777); // wrong class for the block
+    EXPECT_EQ(binder.enumerateEnemies(e), 0u);
+}
+
+TEST(SekiroLiveEnemiesTest, HonoursTheMaxEntriesLimit) {
+    World w;
+    for (int i = 0; i < 6; ++i) w.addEnemy(i, {.x = float(i + 1), .y = 1.f, .z = 1.f});
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    EXPECT_EQ(binder.enumerateEnemies(e, 4), 4u);
 }
