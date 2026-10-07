@@ -88,3 +88,31 @@ TEST(SekiroDamageProbeTest, AnUnreadableHeapPointerIsFlaggedAsDangling) {
     const std::string text = describeDamageData(data.data(), data.size(), mem, kBase, kImageSize);
     EXPECT_NE(text.find("heap pointer (NOT readable)"), std::string::npos) << text;
 }
+
+TEST(SekiroDamageProbeTest, FindsTheEnemyDamageModuleByVtableAndOwner) {
+    FakeMemory mem;
+    const uintptr_t enemy = 0x7ff400100000ull, module = 0x7ff400200000ull, other = 0x7ff400300000ull;
+    auto word = [&](uintptr_t a, uint64_t v) { std::vector<uint8_t> b(8); std::memcpy(b.data(), &v, 8); mem.put(a, b); };
+    EXPECT_FALSE(findEnemyDamageModule(mem, kBase, kImageSize, enemy));
+    word(other, kBase + kEnemyDamageModuleVtableRva);
+    word(other + 8, 0x1234); // right class, somebody else's module
+    word(enemy + 0x120, other);
+    EXPECT_FALSE(findEnemyDamageModule(mem, kBase, kImageSize, enemy));
+    word(module, kBase + kEnemyDamageModuleVtableRva);
+    word(module + 8, enemy);
+    word(enemy + 0x300, module);
+    const auto found = findEnemyDamageModule(mem, kBase, kImageSize, enemy);
+    ASSERT_TRUE(found.has_value());
+    EXPECT_EQ(*found, module);
+}
+
+TEST(SekiroDamageProbeTest, PatchesATemplateIntoANativeHit) {
+    std::vector<uint8_t> tmpl(kDamageDataSize, 0xAB);
+    uint8_t out[kDamageDataSize];
+    patchNativeHit(tmpl.data(), 0x1111, 0x2222, 7, 3, out);
+    uint32_t hp, posture; uint64_t atk, tgt;
+    std::memcpy(&hp, out + 0x24, 4); std::memcpy(&posture, out + 0x28, 4);
+    std::memcpy(&atk, out + 0x190, 8); std::memcpy(&tgt, out + 0x198, 8);
+    EXPECT_EQ(hp, 7u); EXPECT_EQ(posture, 3u); EXPECT_EQ(atk, 0x1111u); EXPECT_EQ(tgt, 0x2222u);
+    EXPECT_EQ(out[0x100], 0xAB) << "everything else is the template's";
+}

@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace sekiro::live {
@@ -30,6 +31,16 @@ bool prologueMatches(const IMemoryReader& reader, uintptr_t image_base, uint32_t
     }
     return true;
 }
+
+inline constexpr uint32_t kEnemyDamageModuleVtableRva = 0x2A7D628; // SprjEnemyDamageModule, [+8] = its enemy
+inline constexpr uintptr_t kDamageHp = 0x24, kDamagePosture = 0x28, kDamageAttacker = 0x190, kDamageTarget = 0x198;
+
+// The enemy's SprjEnemyDamageModule: a pointer inside the character object (or its +0x10b8 container) to an
+// object with that vtable whose owner (+8) is the enemy. nullopt when there is none.
+std::optional<uintptr_t> findEnemyDamageModule(const IMemoryReader& reader, uintptr_t image_base, size_t image_size, uintptr_t enemy);
+
+// Copies a recorded wolf->enemy DamageData and addresses it to `enemy` from `attacker` with our numbers.
+void patchNativeHit(const uint8_t* tmpl, uint64_t attacker, uint64_t enemy, uint32_t hp, uint32_t posture, uint8_t* out);
 
 // One line per known field and per non-zero 8-byte word, pointers classified (image / readable heap / dangling).
 std::string describeDamageData(const uint8_t* data, size_t size, const IMemoryReader& reader, uintptr_t image_base, size_t image_size);

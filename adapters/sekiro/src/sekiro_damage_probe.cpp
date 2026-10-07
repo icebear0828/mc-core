@@ -40,3 +40,41 @@ std::string describeDamageData(const uint8_t* data, size_t size, const IMemoryRe
 }
 
 } // namespace sekiro::live
+
+namespace sekiro::live {
+
+std::optional<uintptr_t> findEnemyDamageModule(const IMemoryReader& reader, uintptr_t image_base, size_t image_size, uintptr_t enemy) {
+    if (enemy == 0) return std::nullopt;
+    auto owned = [&](uint64_t q) {
+        if (q < 0x10000 || q >= 0x00007FFFFFFFFFFFull || (q >= image_base && q < image_base + image_size)) return false;
+        uint64_t head[2]{};
+        return reader.read(static_cast<uintptr_t>(q), head, sizeof(head)) && head[0] == image_base + kEnemyDamageModuleVtableRva && head[1] == enemy;
+    };
+    auto scan = [&](uintptr_t start, size_t length) -> std::optional<uintptr_t> {
+        constexpr size_t kChunk = 0x200;
+        for (size_t off = 0; off < length; off += kChunk) {
+            uint64_t chunk[kChunk / 8];
+            if (!reader.read(start + off, chunk, sizeof(chunk))) continue;
+            for (uint64_t q : chunk) {
+                if (owned(q)) return static_cast<uintptr_t>(q);
+            }
+        }
+        return std::nullopt;
+    };
+    if (const auto direct = scan(enemy, layout::kCharacterScanLimit)) return direct;
+    uint64_t container = 0;
+    if (reader.read(enemy + layout::kModuleContainerInChrIns, &container, sizeof(container)) && container >= 0x10000 && container < 0x00007FFFFFFFFFFFull) {
+        return scan(static_cast<uintptr_t>(container), layout::kModuleScanLimit);
+    }
+    return std::nullopt;
+}
+
+void patchNativeHit(const uint8_t* tmpl, uint64_t attacker, uint64_t enemy, uint32_t hp, uint32_t posture, uint8_t* out) {
+    std::memcpy(out, tmpl, kDamageDataSize);
+    std::memcpy(out + kDamageHp, &hp, sizeof(hp));
+    std::memcpy(out + kDamagePosture, &posture, sizeof(posture));
+    std::memcpy(out + kDamageAttacker, &attacker, sizeof(attacker));
+    std::memcpy(out + kDamageTarget, &enemy, sizeof(enemy));
+}
+
+} // namespace sekiro::live

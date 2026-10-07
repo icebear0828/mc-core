@@ -424,9 +424,55 @@ std::string VtableRvaOf(void* object) {
     return buf;
 }
 
+// Native hit reactions (opt-in: the file mc_native_hit.txt next to the game exe). A wolf->enemy DamageData seen
+// in the hook is kept as the template; hits our rig lands are queued by the Present thread and replayed through
+// the game's own DealDamage from inside the hook, i.e. on the game's logic thread. hp is 0 in the replay: our
+// direct hp write already applied the damage, the replay only brings the stagger / flinch / hit sound.
+struct PendingNativeHit {
+    uintptr_t enemy;
+    uintptr_t module;
+};
+std::mutex g_native_hit_mutex;
+std::vector<PendingNativeHit> g_native_hits;
+uint8_t g_native_template[sekiro::live::kDamageDataSize];
+uintptr_t g_native_attacker = 0;
+std::atomic<bool> g_native_template_ready{false};
+std::atomic<bool> g_native_hit_enabled{false};
+
+void RunPendingNativeHits() {
+    std::vector<PendingNativeHit> hits;
+    {
+        std::lock_guard<std::mutex> lock(g_native_hit_mutex);
+        hits.swap(g_native_hits);
+    }
+    for (const auto& h : hits) {
+        uint8_t data[sekiro::live::kDamageDataSize];
+        uint32_t posture = 0;
+        std::memcpy(&posture, g_native_template + sekiro::live::kDamagePosture, sizeof(posture));
+        sekiro::live::patchNativeHit(g_native_template, g_native_attacker, h.enemy, 0, posture, data);
+        g_original_deal_damage(reinterpret_cast<void*>(h.module), reinterpret_cast<void*>(g_native_attacker), data, 0);
+        static int logged = 0;
+        if (logged < 20) Log("Native hit #%d: replayed DealDamage on enemy %llx (module %llx, posture %u)", ++logged,
+                             static_cast<unsigned long long>(h.enemy), static_cast<unsigned long long>(h.module), posture);
+    }
+}
+
 void __fastcall DetourDealDamage(void* target, void* attacker, uint8_t* data, uint8_t flag) {
     static std::atomic<int> calls{0}, noise{0}, recorded{0};
     calls.fetch_add(1);
+    if (g_native_hit_enabled.load()) {
+        RunPendingNativeHits();
+        // Keep the latest real wolf->enemy hit as the template for replays.
+        if (attacker && target && data && ClassOf(attacker).rfind("PlayerIns", 0) == 0 && ClassOf(target).rfind("SprjEnemyDamageModule", 0) == 0) {
+            uint8_t copy[sekiro::live::kDamageDataSize];
+            if (g_memory.read(reinterpret_cast<uintptr_t>(data), copy, sizeof(copy))) {
+                std::lock_guard<std::mutex> lock(g_native_hit_mutex);
+                std::memcpy(g_native_template, copy, sizeof(copy));
+                g_native_attacker = reinterpret_cast<uintptr_t>(attacker);
+                g_native_template_ready.store(true);
+            }
+        }
+    }
     // Most calls are enemies touching enemies (hp 0, posture 1): only calls that involve the player are recorded.
     const std::string attacker_class = ClassOf(attacker);
     const std::string target_class = ClassOf(target);
@@ -478,6 +524,14 @@ void InstallDamageProbe() {
         MH_EnableHook(target) != MH_OK) {
         Log("Damage probe: could not hook DealDamage");
         return;
+    }
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, "mc_native_hit.txt", "r") == 0 && f) {
+            fclose(f);
+            g_native_hit_enabled.store(true);
+            Log("Native hit reactions ENABLED (mc_native_hit.txt present)");
+        }
     }
     Log("Damage probe: hooked DealDamage at %p (read-only, every call is passed through)", target);
 }
@@ -583,6 +637,15 @@ void ApplyEnemyHealthWrites() {
         const uintptr_t handle = g_enemy_tracker.handleOf(static_cast<mc::EntityId>(ids[i]));
         if (handle == 0) continue; // the enemy left the world between the hit and now
         const auto r = g_health_writer->lowerEnemyHealth(handle, healths[i]);
+        if (g_native_hit_enabled.load() && g_native_template_ready.load() && r == sekiro::live::HostHealthWriter::Result::Written) {
+            if (const auto module = sekiro::live::findEnemyDamageModule(g_memory, g_probe_image_base, g_probe_image_size, handle)) {
+                std::lock_guard<std::mutex> lock(g_native_hit_mutex);
+                if (g_native_hits.size() < 8) g_native_hits.push_back({handle, *module});
+            } else {
+                static int missing = 0;
+                if (missing++ < 5) Log("Native hit: no SprjEnemyDamageModule found for enemy %llx", static_cast<unsigned long long>(handle));
+            }
+        }
         static int logged = 0;
         if (logged < 40 && r != sekiro::live::HostHealthWriter::Result::Unchanged) {
             ++logged;
