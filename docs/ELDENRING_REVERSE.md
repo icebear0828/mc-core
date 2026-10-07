@@ -150,7 +150,10 @@
 13. 相机：读 `WorldChrMan+0x1ECE0`（`chr_cam`）→ `ChrCam+0x10` 矩阵、`+0x50` fov；转头、前进验证手性和单位；记录每帧是否更新（只狼是隔帧 30 Hz）；瞄准、死亡镜头时 `camera_type` 与活动相机的关系。
 14. 射线：用签名找 `CSPhysWorld::cast_ray` 或 `cast_shape` 的地址（不要用别的补丁的 RVA）；确认 `filter` 含义、调用线程、是否能拿到法线和命中对象。
 15. 读 `PhysicsModule+0x92/+0x93/+0x1D0/+0x1D1`，跳起、落地时看是否按预期翻转。
-16. 物理模块 `+0x120..+0x128` 是否真是线速度：对比 `Δ位置/dt`（源码里该处叫 `gravity`）。
+16. 物理模块 `+0x120..+0x128` 是否真是线速度：对比 `Δ位置/dt`（源码里该处叫 `gravity`）。**在此之前不要往 `+0x120` 写任何值。**
+17. 射箭/对敌伤害的"用游戏自己的子弹"方案（§7.3）：`BulletSpawnData` 布局、是否有目标字段、调用线程、伤害由什么决定、会不会误伤友方；评估值不值得逆向。
+18. D3D12：用签名或 `CreateSwapChain` 拿到交换链真正使用的命令队列（不能只靠 `ExecuteCommandLists` 的 `this`）；深度拷贝要插入自己的命令列表并处理资源状态。
+19. 输入：游戏层（`CSInGamePad`）拦截的偏移和 `allow_polling` 标志都要实测；确认拦截不影响菜单。
 
 ---
 
@@ -223,3 +226,29 @@ README 没写目标游戏版本，仓库同时含 Nightreign，偏移可能针�
 **输入（`pad.rs`）**：`UserInputKey`：`Attack = 7`、`Guard = 9`、`Jump = 14`，鼠标位移 `4`、`5`；游戏层有 `key_assign.mouse_button_states_map` 一类的鼠标按键状态。源码**没有**写底层是 DirectInput 还是 RawInput，也没有 `poll_digital_input` 的地址；拦截点偏移未知。
 
 **仍无来源的结论**：Havok 原点按整数步长平移（源码没解释，§4 的检验照做）；ReShade "验证了 ER 反向 Z 与格式"；TGA 的 `NoDamage`（`+0x19B` bit 1）。
+
+### 7.3 第四批转述（射线、受击调用、方块碰撞、D3D12、输入、坐标跳变）的评估
+
+这一批全部是转述，**没有一项变成已确认**。下面记录哪些可以当方向、哪些与已有证据冲突。
+
+**与已有证据冲突，不要采用**
+- `CSHavokMan` 的虚表被写成 `0x2A3C890`：在我们的记录里（RTTI，A 级）它是 `CSChrPhysicsModule`。
+- `hknpHit` 的偏移（`filter +0x34`、`body +0x58`，夹着 `unk24[16]`、`unk38[12]`）与 `erfps2` 的字段顺序（`pos, normal, segment, filter, body_id, body`，无填充）不符；按字段顺序推算 `filter` 约 `+0x24`、`body_id` 约 `+0x28`。"`segment` 是占射线全长的比例"、"`CSPhysIns+0x8` 是 owner"同样无来源。
+- 所有 RVA（`cast_shape 0x187f860`、`CAM_HIT_COLLECTOR 0xc5a1c0`、`HKNP_SPHERE_SHAPE 0x1885b30`、`cast_ray 0xc71e00`、`spawn_bullet 0x3a2cb0`、输入相关虚表等）：抓到的源码没有数值，属于别的补丁，在我们的 exe 上不可用，必须用签名或 RTTI 重新定位。
+- 方块碰撞"参考只狼适配器"：只狼里没有实现，只有影子碰撞盒。
+- 坐标跳变的"机制"（浮动原点、同帧广播、整数网格步长）：源码里没有这段解释，`(56, 0, 40)` 也不是常见的网格步长。仍按 §4 的检验。
+- TGA 签名 `48 8B 03 48 8B CB ?? ?? ?? ?? FF 50 10 83 F8 01`：用于**读取**最近一次命中的 NPC，不是触发命中反应的入口；"通过 `[rax+0x10]` 触发命中反应"没有依据，不要用。
+- 深度 "`D32_FLOAT`、反向 Z、`GREATER_EQUAL`"：没有来源，必须自己测（只狼是 `R32G8X24_TYPELESS` + 反向 Z）。
+
+**值得评估的方向（均未验证）**
+- **用游戏自己的子弹系统射箭**（`CSBulletManager::spawn_bullet`，参数含 owner 的 `FieldInsHandle`、`bullet_id`、位置、朝向、可能的目标）：如果可行，箭的飞行、碰撞、伤害、硬直都由游戏处理，可能同时解决"射箭"和"对敌伤害"。风险：`BulletSpawnData` 布局未知；伤害由游戏的子弹/攻击参数决定，不是 MC 的百分比规则；可能误伤友方；线程与调用时机未知。
+- **方块碰撞用运动学拦截**（每帧用体素 swept-AABB 求交，穿透时把位置推到方块外）：方向合理，但
+  - `PhysicsModule+0x91` 是 `chr_proxy_pos_update_requested`，写位置后可能需要它来通知碰撞代理，否则会被覆盖或不同步；
+  - 转述建议清零 `+0x120`，而源码里该处叫 `gravity`，清零可能破坏重力；
+  - 物理在多个工作线程运行，别的线程写位置会有竞争；
+  - 只狼里盲写崩过两次：先只读验证，一次只写一个字段。
+- **D3D12 钩子**：`IDXGISwapChain::Present` 序号 8、`ID3D12CommandQueue::ExecuteCommandLists` 序号 10（核对无误）。补充：游戏有多个命令队列，`ExecuteCommandLists` 的 `this` 不一定是画面用的那个，需要按队列类型过滤，或改挂 `CreateSwapChain`；深度不能在 `OMSetRenderTargets` 记录时拷贝（D3D12 先录后执行），需要在合适的时机插入自己的命令列表并做资源状态转换。
+- **输入在 `CSInGamePad` 层拦截**：动作枚举（`Attack = 7`、`Guard = 9`、`Jump = 14`）已确认；`allow_polling` 标志、轮询函数地址、"放行菜单无副作用"都没有证据。同一个动作在菜单里可能有别的含义，拦截前要判断是否在游戏内。
+- **同帧相对量**：`P_enemy − P_player` 同帧内自洽是我们要验证的假设；"不用位置差分算速度"的建议与我们一致，但它推荐的 `+0x120` 是否为线速度尚未证明（见清单 16）。
+
+**优先级**：先验证便宜的线索（相机、着地、`main_player`、`chr_sets`）；射线用签名定位并读返回，不用别的补丁的 RVA；评估 `spawn_bullet` 路线；渲染与碰撞排后。
