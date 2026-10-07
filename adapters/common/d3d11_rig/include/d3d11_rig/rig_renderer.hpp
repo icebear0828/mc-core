@@ -1,9 +1,11 @@
 #pragma once
 
-// D3D11 renderer for the 12-part Steve rig, drawn into the frame the game is about to present.
-// Windows only. Geometry and matrices come from sekiro_steve.hpp (Dantelion space, row vectors).
+// D3D11 renderer for the 12-part Steve rig, drawn into the frame the game is about to present. Windows only.
+// Game independent: the host supplies the meshes already in its own space (mc::rig::buildPartMesh with its
+// HostBasis), row-vector matrices, and how its depth buffer works (mc::rig::DepthConvention). Reusable for any
+// D3D11 title; see docs/PORTING_PLAYBOOK.md section 6.
 
-#include "sekiro_steve.hpp"
+#include "mc/rig.hpp"
 
 #include <d3d11.h>
 #include <wrl/client.h>
@@ -12,12 +14,19 @@
 #include <cstdint>
 #include <vector>
 
-namespace sekiro::render {
+namespace mc::d3d11 {
 
-class SteveRenderer {
+class RigRenderer {
 public:
-    // Compiles the shaders and uploads the static mesh. Returns false (and logs why) on failure.
-    bool init(ID3D11Device* device);
+    using PartMeshes = std::array<mc::rig::RigMesh, static_cast<size_t>(mc::StevePart::Count)>;
+    using PartMatrices = std::array<mc::rig::Mat4, static_cast<size_t>(mc::StevePart::Count)>;
+
+    // Compiles the shaders and uploads the static meshes (24 vertices / 36 indices per part, indices relative to
+    // the part). Returns false (and logs why) on failure.
+    bool init(ID3D11Device* device, const PartMeshes& meshes);
+    // How the host's depth buffer relates to distance; without a calibrated reverse-Z convention the rig is
+    // never occluded.
+    void setDepthConvention(const mc::rig::DepthConvention& conv) { depth_conv_ = conv; }
     // Replaces the skin. `rgba` is width*height*4 bytes. Without a skin a neutral grey is used.
     bool setSkin(ID3D11Device* device, const std::vector<uint8_t>& rgba, UINT width, UINT height);
     // The game's depth buffer (reverse-Z R32G8X24_TYPELESS) so the rig is hidden behind the scene. Null or an
@@ -30,13 +39,14 @@ public:
 
     // Draws every part with its own world matrix. Saves and restores the pipeline state it touches.
     void draw(ID3D11DeviceContext* context, ID3D11RenderTargetView* target, UINT width, UINT height,
-              const Mat4& view_projection, const std::array<Mat4, static_cast<size_t>(mc::StevePart::Count)>& part_world);
+              const mc::rig::Mat4& view_projection, const PartMatrices& part_world);
 
 private:
     bool ensureDepth(UINT width, UINT height);
     bool captureFrame(ID3D11DeviceContext* context, ID3D11RenderTargetView* target);
 
     bool ready_{false};
+    mc::rig::DepthConvention depth_conv_{};
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11VertexShader> vs_;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> ps_;
@@ -67,4 +77,4 @@ private:
     UINT vertices_per_part_{24};
 };
 
-} // namespace sekiro::render
+} // namespace mc::d3d11

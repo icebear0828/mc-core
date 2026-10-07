@@ -1,4 +1,4 @@
-#include "depth_capture.hpp"
+#include "d3d11_rig/depth_capture.hpp"
 
 #include <MinHook.h>
 #include <wrl/client.h>
@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace sekiro::render {
+namespace mc::d3d11 {
 
 namespace {
 
@@ -338,4 +338,4 @@ void DepthCapture::armTrace(ID3D11Device* device, void (*log)(const char*, ...))
     g_trace_budget.store(12);
 }
 
-} // namespace sekiro::render
+} // namespace mc::d3d11

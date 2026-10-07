@@ -4,7 +4,7 @@
 
 #include <cstdint>
 
-namespace sekiro::render {
+namespace mc::d3d11 {
 
 // Watches which depth-stencil views the game binds so the Steve rig can be depth-tested against the
 // real scene. Read-only: it only records, it never changes what the game binds.
@@ -39,4 +39,4 @@ public:
     void reset();
 };
 
-} // namespace sekiro::render
+} // namespace mc::d3d11

@@ -83,10 +83,11 @@ if(WIN32)
         endif()
     endif()
 
+    # Game-independent D3D11 rig renderer + depth probe, shared by every D3D11 port.
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../common/d3d11_rig" d3d11_rig)
+
     set(SEKIRO_PLATFORM_SRCS
         src/dinput8_loader.cpp
-        src/steve_renderer.cpp
-        src/depth_capture.cpp
         dinput8.def
     )
 endif()
@@ -122,6 +123,7 @@ target_link_libraries(sekiro_adapter
 
 if(WIN32)
     target_link_libraries(sekiro_adapter PRIVATE
+        mc_d3d11_rig
         minhook
         imgui
         d3d11

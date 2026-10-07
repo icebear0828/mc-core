@@ -1,4 +1,4 @@
-#include "steve_renderer.hpp"
+#include "d3d11_rig/rig_renderer.hpp"
 
 #include <d3dcompiler.h>
 
@@ -6,7 +6,7 @@
 #include <cstring>
 #include <string>
 
-namespace sekiro::render {
+namespace mc::d3d11 {
 
 namespace {
 
@@ -78,7 +78,7 @@ float4 PSMain(VSOut i) : SV_Target {
 void logLine(const char* what) {
     FILE* f = nullptr;
     if (fopen_s(&f, "mc_adapter.log", "a") == 0 && f) {
-        fprintf(f, "[mc_adapter] SteveRenderer: %s\n", what);
+        fprintf(f, "[mc_adapter] RigRenderer: %s\n", what);
         fclose(f);
     }
 }
@@ -191,7 +191,7 @@ struct StateBackup {
 
 } // namespace
 
-bool SteveRenderer::init(ID3D11Device* device) {
+bool RigRenderer::init(ID3D11Device* device, const PartMeshes& meshes) {
     ready_ = false;
     device_ = device;
 
@@ -213,10 +213,10 @@ bool SteveRenderer::init(ID3D11Device* device) {
     }
 
     // All 12 meshes back to back: 24 vertices / 36 indices each (indices are relative to the part).
-    std::vector<SteveVertex> vertices;
+    std::vector<mc::rig::RigVertex> vertices;
     std::vector<uint16_t> indices;
-    for (size_t i = 0; i < static_cast<size_t>(mc::StevePart::Count); ++i) {
-        const SteveMesh mesh = buildPartMesh(static_cast<mc::StevePart>(i));
+    for (size_t i = 0; i < meshes.size(); ++i) {
+        const mc::rig::RigMesh& mesh = meshes[i];
         vertices_per_part_ = static_cast<UINT>(mesh.vertices.size());
         indices_per_part_ = static_cast<UINT>(mesh.indices.size());
         vertices.insert(vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
@@ -224,7 +224,7 @@ bool SteveRenderer::init(ID3D11Device* device) {
     }
 
     D3D11_BUFFER_DESC vb{};
-    vb.ByteWidth = static_cast<UINT>(vertices.size() * sizeof(SteveVertex));
+    vb.ByteWidth = static_cast<UINT>(vertices.size() * sizeof(mc::rig::RigVertex));
     vb.Usage = D3D11_USAGE_IMMUTABLE;
     vb.BindFlags = D3D11_BIND_VERTEX_BUFFER;
     D3D11_SUBRESOURCE_DATA vd{vertices.data(), 0, 0};
@@ -282,16 +282,16 @@ bool SteveRenderer::init(ID3D11Device* device) {
     }
 
     // Neutral skin until the real one is supplied
-    std::vector<uint8_t> grey(static_cast<size_t>(kSkinSize) * kSkinSize * 4, 190);
+    std::vector<uint8_t> grey(static_cast<size_t>(mc::rig::kSkinSize) * mc::rig::kSkinSize * 4, 190);
     for (size_t i = 3; i < grey.size(); i += 4) grey[i] = 255;
-    if (!setSkin(device, grey, kSkinSize, kSkinSize)) return false;
+    if (!setSkin(device, grey, mc::rig::kSkinSize, mc::rig::kSkinSize)) return false;
 
     ready_ = true;
     return true;
 }
 
 // Copies the frame so far (before Steve is drawn) into a mip-mapped texture the shader can average.
-bool SteveRenderer::captureFrame(ID3D11DeviceContext* context, ID3D11RenderTargetView* target) {
+bool RigRenderer::captureFrame(ID3D11DeviceContext* context, ID3D11RenderTargetView* target) {
     ComPtr<ID3D11Resource> res;
     target->GetResource(res.GetAddressOf());
     ComPtr<ID3D11Texture2D> src;
@@ -330,14 +330,14 @@ bool SteveRenderer::captureFrame(ID3D11DeviceContext* context, ID3D11RenderTarge
     return true;
 }
 
-void SteveRenderer::setSceneDepth(ID3D11Texture2D* texture) {
+void RigRenderer::setSceneDepth(ID3D11Texture2D* texture) {
     if (texture == scene_depth_tex_.Get()) return;
     scene_depth_tex_ = texture;
     scene_depth_srv_.Reset();
     if (!texture || !device_) return;
     D3D11_TEXTURE2D_DESC td{};
     texture->GetDesc(&td);
-    // Only the layout measured on Sekiro is understood: 32-bit float depth + 8-bit stencil, SRV-capable.
+    // Only the layout measured so far (Sekiro) is understood: 32-bit float depth + 8-bit stencil, SRV-capable.
     if (td.Format != DXGI_FORMAT_R32G8X24_TYPELESS || !(td.BindFlags & D3D11_BIND_SHADER_RESOURCE) || td.SampleDesc.Count != 1) {
         logLine("scene depth texture has an unsupported layout; occlusion off");
         return;
@@ -352,7 +352,7 @@ void SteveRenderer::setSceneDepth(ID3D11Texture2D* texture) {
     }
 }
 
-bool SteveRenderer::setSkin(ID3D11Device* device, const std::vector<uint8_t>& rgba, UINT width, UINT height) {
+bool RigRenderer::setSkin(ID3D11Device* device, const std::vector<uint8_t>& rgba, UINT width, UINT height) {
     if (rgba.size() != static_cast<size_t>(width) * height * 4) return false;
     D3D11_TEXTURE2D_DESC td{};
     td.Width = width;
@@ -375,7 +375,7 @@ bool SteveRenderer::setSkin(ID3D11Device* device, const std::vector<uint8_t>& rg
     return true;
 }
 
-bool SteveRenderer::ensureDepth(UINT width, UINT height) {
+bool RigRenderer::ensureDepth(UINT width, UINT height) {
     if (depth_view_ && depth_width_ == width && depth_height_ == height) return true;
     depth_view_.Reset();
     depth_tex_.Reset();
@@ -398,11 +398,11 @@ bool SteveRenderer::ensureDepth(UINT width, UINT height) {
     return true;
 }
 
-void SteveRenderer::draw(ID3D11DeviceContext* context, ID3D11RenderTargetView* target, UINT width, UINT height,
-                         const Mat4& view_projection, const std::array<Mat4, static_cast<size_t>(mc::StevePart::Count)>& part_world) {
+void RigRenderer::draw(ID3D11DeviceContext* context, ID3D11RenderTargetView* target, UINT width, UINT height,
+                         const mc::rig::Mat4& view_projection, const PartMatrices& part_world) {
     if (!ready_ || width == 0 || height == 0 || !ensureDepth(width, height)) return;
 
-    auto upload = [&](ID3D11Buffer* buffer, const Mat4& m) {
+    auto upload = [&](ID3D11Buffer* buffer, const mc::rig::Mat4& m) {
         D3D11_MAPPED_SUBRESOURCE mapped{};
         if (FAILED(context->Map(buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return false;
         std::memcpy(mapped.pData, m.m.data(), sizeof(float) * 16);
@@ -414,8 +414,9 @@ void SteveRenderer::draw(ID3D11DeviceContext* context, ID3D11RenderTargetView* t
     {
         D3D11_MAPPED_SUBRESOURCE mapped{};
         if (SUCCEEDED(context->Map(scene_cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-            const float params[8] = {kSceneDepthNear, kSceneOcclusionRelativeBias, kSceneOcclusionBiasMetres,
-                                     scene_depth_srv_ ? 1.0f : 0.0f, probe_u_, probe_v_, ambient ? 1.0f : 0.0f, 0.0f};
+            const bool occlude = scene_depth_srv_ && depth_conv_.reverse_z && depth_conv_.depth_times_distance > 0.0f;
+            const float params[8] = {depth_conv_.depth_times_distance, depth_conv_.relative_bias, depth_conv_.absolute_bias,
+                                     occlude ? 1.0f : 0.0f, probe_u_, probe_v_, ambient ? 1.0f : 0.0f, 0.0f};
             std::memcpy(mapped.pData, params, sizeof(params));
             context->Unmap(scene_cb_.Get(), 0);
         }
@@ -437,7 +438,7 @@ void SteveRenderer::draw(ID3D11DeviceContext* context, ID3D11RenderTargetView* t
     context->IASetInputLayout(layout_.Get());
     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ID3D11Buffer* vb = vertices_.Get();
-    const UINT stride = sizeof(SteveVertex), offset = 0;
+    const UINT stride = sizeof(mc::rig::RigVertex), offset = 0;
     context->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
     context->IASetIndexBuffer(indices_.Get(), DXGI_FORMAT_R16_UINT, 0);
 
@@ -469,4 +470,4 @@ void SteveRenderer::draw(ID3D11DeviceContext* context, ID3D11RenderTargetView* t
     backup.restore(context);
 }
 
-} // namespace sekiro::render
+} // namespace mc::d3d11

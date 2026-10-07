@@ -31,8 +31,8 @@
 #include "sekiro_model.hpp"
 #include "sekiro_steve.hpp"
 #include "mc/hud_layout.hpp"
-#include "steve_renderer.hpp"
-#include "depth_capture.hpp"
+#include "d3d11_rig/rig_renderer.hpp"
+#include "d3d11_rig/depth_capture.hpp"
 #include "mc/hud.hpp"
 #include "mc/session.hpp"
 
@@ -333,8 +333,8 @@ sekiro::live::LiveMirror g_live_mirror;
 sekiro::live::CameraStabilizer g_camera_stabilizer;
 bool g_in_world = false;
 sekiro::live::LiveSample g_last_sample{};
-std::unique_ptr<sekiro::render::SteveRenderer> g_steve_renderer;
-sekiro::render::DepthCapture g_depth_capture;
+std::unique_ptr<mc::d3d11::RigRenderer> g_steve_renderer;
+mc::d3d11::DepthCapture g_depth_capture;
 std::atomic<bool> g_depth_dump_requested{false};
 bool g_steve_renderer_tried = false;
 bool g_logged_fov = false;
@@ -622,8 +622,11 @@ HRESULT WINAPI DetourResizeBuffers(
 void EnsureSteveRenderer() {
     if (g_steve_renderer_tried || !g_d3d_device) return;
     g_steve_renderer_tried = true;
-    auto renderer = std::make_unique<sekiro::render::SteveRenderer>();
-    if (!renderer->init(g_d3d_device)) {
+    auto renderer = std::make_unique<mc::d3d11::RigRenderer>();
+    mc::d3d11::RigRenderer::PartMeshes meshes;
+    for (size_t i = 0; i < meshes.size(); ++i) meshes[i] = sekiro::render::buildPartMesh(static_cast<mc::StevePart>(i));
+    renderer->setDepthConvention(sekiro::render::kSekiroDepth);
+    if (!renderer->init(g_d3d_device, meshes)) {
         Log("Steve renderer init failed; the 3D rig will not be drawn");
         return;
     }
@@ -902,7 +905,7 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
             const float fov = g_last_sample.cam_fov_y > 0.0f ? g_last_sample.cam_fov_y : 1.0f;
             const auto vp = sekiro::render::viewProjection(g_last_sample, fov, w / h);
             const auto view = sekiro::render::viewFromCamera(g_last_sample);
-            std::vector<sekiro::render::DepthCapture::Probe> probes;
+            std::vector<mc::d3d11::DepthCapture::Probe> probes;
             for (int i = 0; i < 12; ++i) {
                 sekiro::native::FVector3 p = g_last_sample.player_pos;
                 p.Y += 0.15f + 0.14f * static_cast<float>(i);
