@@ -17,6 +17,7 @@ add_executable(mc_tests
     test_consumables.cpp
     test_elytra.cpp
     test_hud.cpp
+    test_hud_layout.cpp
     test_session.cpp
     test_sekiro_live.cpp
     test_sekiro_steve.cpp

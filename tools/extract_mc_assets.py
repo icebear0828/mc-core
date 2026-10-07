@@ -163,15 +163,26 @@ def build_cube_block(texture: Image.Image, size_cm: float = 100.0) -> dict:
 def create_canonical_sprite(name: str) -> Image.Image:
     """Generate canonical pixel sprite when extracting without an official client.jar."""
     if name == "crosshair":
-        img = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
-        # Black outline + white cross in center
-        for i in range(16):
-            if 6 <= i <= 9:
-                img.putpixel((7, i), (255, 255, 255, 220))
-                img.putpixel((8, i), (255, 255, 255, 220))
-                img.putpixel((i, 7), (255, 255, 255, 220))
-                img.putpixel((i, 8), (255, 255, 255, 220))
+        img = Image.new("RGBA", (15, 15), (0, 0, 0, 0))
+        for i in range(4, 11):  # a plain white plus; the real sprite replaces it when a client.jar is given
+            img.putpixel((7, i), (255, 255, 255, 220))
+            img.putpixel((i, 7), (255, 255, 255, 220))
         return img
+
+    if name in ("heart_container", "heart_half", "hunger_container", "hunger_half"):
+        # Derived from the full sprite so the placeholder set stays visually consistent
+        base = create_canonical_sprite("heart_full" if name.startswith("heart") else "hunger_full")
+        out = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        for y in range(base.height):
+            for x in range(base.width):
+                r, g, b, a = base.getpixel((x, y))
+                if a == 0:
+                    continue
+                if name.endswith("container"):
+                    out.putpixel((x, y), (r, g, b, a) if (r, g, b) == (0, 0, 0) else (50, 50, 50, 255))
+                elif x < base.width // 2 + 1:
+                    out.putpixel((x, y), (r, g, b, a))
+        return out
 
     if name == "heart_full":
         img = Image.new("RGBA", (9, 9), (0, 0, 0, 0))
@@ -209,31 +220,22 @@ def create_canonical_sprite(name: str) -> Image.Image:
             img.putpixel((x, y), col)
         return img
 
-    if name == "hotbar_slot":
-        img = Image.new("RGBA", (24, 24), (45, 45, 45, 220))
-        # Bevel
-        c_dark = (55, 55, 55, 255)
-        c_lite = (240, 240, 240, 255)
-        for i in range(24):
-            img.putpixel((i, 0), c_dark)
-            img.putpixel((0, i), c_dark)
-            img.putpixel((i, 23), c_lite)
-            img.putpixel((23, i), c_lite)
+    if name == "hotbar":
+        img = Image.new("RGBA", (182, 22), (40, 40, 40, 200))
+        for x in range(182):
+            for y in (0, 21):
+                img.putpixel((x, y), (200, 200, 200, 255))
+        for i in range(10):
+            for y in range(22):
+                img.putpixel((min(i * 20 + 1, 181), y), (200, 200, 200, 255))
         return img
 
-    if name == "hotbar_cursor":
-        img = Image.new("RGBA", (24, 24), (0, 0, 0, 0))
-        c_wht = (255, 255, 255, 255)
-        c_blk = (0, 0, 0, 255)
-        for i in range(24):
-            img.putpixel((i, 0), c_wht)
-            img.putpixel((i, 1), c_wht)
-            img.putpixel((0, i), c_wht)
-            img.putpixel((1, i), c_wht)
-            img.putpixel((i, 22), c_wht)
-            img.putpixel((i, 23), c_wht)
-            img.putpixel((22, i), c_wht)
-            img.putpixel((23, i), c_wht)
+    if name == "hotbar_selection":
+        img = Image.new("RGBA", (24, 23), (0, 0, 0, 0))
+        for x in range(24):
+            for y in range(23):
+                if x < 2 or x >= 22 or y < 2 or y >= 21:
+                    img.putpixel((x, y), (255, 255, 255, 255))
         return img
 
     # 16x16 Items
@@ -302,26 +304,53 @@ def create_canonical_sprite(name: str) -> Image.Image:
 
 _JAR_TEXTURES = "assets/minecraft/textures/"
 
+# (key, native size). The order is the packing order and therefore the UV layout.
+HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
+    ("crosshair", (15, 15)),
+    ("heart_container", (9, 9)),
+    ("heart_full", (9, 9)),
+    ("heart_half", (9, 9)),
+    ("hunger_container", (9, 9)),
+    ("hunger_full", (9, 9)),
+    ("hunger_half", (9, 9)),
+    ("hotbar", (182, 22)),
+    ("hotbar_selection", (24, 23)),
+    ("item_diamond_sword", (16, 16)),
+    ("item_diamond_pickaxe", (16, 16)),
+    ("item_dirt", (16, 16)),
+    ("item_stone", (16, 16)),
+    ("item_tnt", (16, 16)),
+    ("item_golden_apple", (16, 16)),
+    ("item_bow", (16, 16)),
+    ("item_elytra", (16, 16)),
+    ("item_totem_of_undying", (16, 16)),
+]
+
 _JAR_HUD_SPRITES = {
     "crosshair": "gui/sprites/hud/crosshair.png",
+    "heart_container": "gui/sprites/hud/heart/container.png",
     "heart_full": "gui/sprites/hud/heart/full.png",
+    "heart_half": "gui/sprites/hud/heart/half.png",
+    "hunger_container": "gui/sprites/hud/food_empty.png",
     "hunger_full": "gui/sprites/hud/food_full.png",
+    "hunger_half": "gui/sprites/hud/food_half.png",
+    "hotbar": "gui/sprites/hud/hotbar.png",
+    "hotbar_selection": "gui/sprites/hud/hotbar_selection.png",
     "item_diamond_sword": "item/diamond_sword.png",
     "item_diamond_pickaxe": "item/diamond_pickaxe.png",
-    "item_dirt": "block/dirt.png",
-    "item_stone": "block/stone.png",
-    "item_tnt": "block/tnt_side.png",
     "item_golden_apple": "item/golden_apple.png",
     "item_bow": "item/bow.png",
     "item_elytra": "item/elytra.png",
     "item_totem_of_undying": "item/totem_of_undying.png",
 }
 
-# The real hotbar is one 182x22 strip: nine 22x22 cells at a 20px pitch (neighbouring cells share a
-# 2px border). Cell 1 has both borders and tiles cleanly, so it becomes the single-slot sprite.
-_HOTBAR_STRIP = "gui/sprites/hud/hotbar.png"
-_HOTBAR_SELECTION = "gui/sprites/hud/hotbar_selection.png"
-_HOTBAR_CELL = (20, 0, 42, 22)
+# Block items are drawn by Minecraft as isometric cubes: (top, left/right sides)
+_JAR_BLOCK_ITEMS = {
+    "item_dirt": ("block/dirt.png", "block/dirt.png"),
+    "item_stone": ("block/stone.png", "block/stone.png"),
+    "item_tnt": ("block/tnt_top.png", "block/tnt_side.png"),
+}
+_CUBE_SHADE = {"top": 1.0, "left": 0.78, "right": 0.6}
 
 
 def _open_jar_png(jar_zip: zipfile.ZipFile, relative: str) -> Image.Image | None:
@@ -335,63 +364,77 @@ def _open_jar_png(jar_zip: zipfile.ZipFile, relative: str) -> Image.Image | None
         return None
 
 
-def _fit_sprite(src: Image.Image, size: tuple[int, int]) -> Image.Image:
-    """Smaller sprites are pasted unscaled and centred (no resampling artefacts); others are resized."""
+def _shade(img: Image.Image, factor: float) -> Image.Image:
+    out = img.copy()
+    px = out.load()
+    for y in range(out.height):
+        for x in range(out.width):
+            r, g, b, a = px[x, y]
+            px[x, y] = (int(r * factor), int(g * factor), int(b * factor), a)
+    return out
+
+
+def _paste_face(canvas: Image.Image, face: Image.Image, origin: tuple[float, float],
+                u_axis: tuple[float, float], v_axis: tuple[float, float]) -> None:
+    """Map the face texture's unit square onto the parallelogram origin + u*u_axis + v*v_axis."""
+    (ux, uy), (vx, vy) = u_axis, v_axis
+    det = ux * vy - uy * vx
+    if det == 0:
+        return
+    size = face.width
+    src = face.load()
+    dst = canvas.load()
+    for y in range(canvas.height):
+        for x in range(canvas.width):
+            dx, dy = x + 0.5 - origin[0], y + 0.5 - origin[1]
+            u = (dx * vy - dy * vx) / det
+            v = (ux * dy - uy * dx) / det
+            if 0.0 <= u < 1.0 and 0.0 <= v < 1.0:
+                dst[x, y] = src[int(u * size), int(v * size)]
+
+
+def isometric_block_icon(top: Image.Image, side: Image.Image, size: int = 16) -> Image.Image:
+    """The 16x16 GUI icon Minecraft shows for a block item: top, left and right faces of a cube."""
+    h = size / 2.0
+    q = size / 4.0
+    icon = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    _paste_face(icon, _shade(top, _CUBE_SHADE["top"]), (h, 0.5), (h - 1, q - 0.5 + 0.5), (-(h - 1), q))
+    _paste_face(icon, _shade(side, _CUBE_SHADE["left"]), (1.0, q + 0.5), (h - 1, q), (0.0, size - q - 1.5))
+    _paste_face(icon, _shade(side, _CUBE_SHADE["right"]), (h, size / 2.0), (h - 1, -q), (0.0, size - q - 1.5))
+    return icon
+
+
+def _fit_exact(src: Image.Image, size: tuple[int, int]) -> Image.Image:
+    """Sprites are used at their native size; anything else is centred (never stretched)."""
     if src.size == size:
         return src
-    if src.width <= size[0] and src.height <= size[1]:
-        canvas = Image.new("RGBA", size, (0, 0, 0, 0))
-        canvas.paste(src, ((size[0] - src.width) // 2, (size[1] - src.height) // 2))
-        return canvas
-    return src.resize(size, Image.Resampling.NEAREST)
+    canvas = Image.new("RGBA", size, (0, 0, 0, 0))
+    canvas.paste(src, ((size[0] - src.width) // 2, (size[1] - src.height) // 2))
+    return canvas
 
 
 def _read_real_hud_sprite(jar_zip: zipfile.ZipFile, name: str, size: tuple[int, int]) -> Image.Image | None:
     """Real Minecraft sprite for `name`, or None so the caller falls back to the canonical placeholder."""
-    if name == "hotbar_slot":
-        strip = _open_jar_png(jar_zip, _HOTBAR_STRIP)
-        if strip is None or strip.width < _HOTBAR_CELL[2] or strip.height < _HOTBAR_CELL[3]:
+    if name in _JAR_BLOCK_ITEMS:
+        top_path, side_path = _JAR_BLOCK_ITEMS[name]
+        top, side = _open_jar_png(jar_zip, top_path), _open_jar_png(jar_zip, side_path)
+        if top is None or side is None:
             return None
-        return _fit_sprite(strip.crop(_HOTBAR_CELL), size)
-    if name == "hotbar_cursor":
-        selection = _open_jar_png(jar_zip, _HOTBAR_SELECTION)
-        if selection is None:
-            return None
-        canvas = Image.new("RGBA", size, (0, 0, 0, 0))
-        canvas.paste(selection, (0, 0))
-        return canvas
+        return isometric_block_icon(top, side, size[0])
     relative = _JAR_HUD_SPRITES.get(name)
     if relative is None:
         return None
     src = _open_jar_png(jar_zip, relative)
-    return None if src is None else _fit_sprite(src, size)
+    return None if src is None else _fit_exact(src, size)
 
 
 def build_hud_atlas(client_jar: Path | None = None) -> tuple[Image.Image, dict[str, tuple[float, float, float, float]]]:
-    """Build unified 256x256 RGBA HUD texture atlas and return (atlas_image, uv_mapping)."""
+    """Build the 256x256 RGBA HUD atlas and return (image, uv_mapping). The layout never depends on
+    whether a client.jar was given, so generated UV constants stay valid for either atlas."""
     atlas_size = 256
+    pad = 1  # transparent gap between sprites so nearest-neighbour sampling never reads a neighbour
     atlas = Image.new("RGBA", (atlas_size, atlas_size), (0, 0, 0, 0))
     uv_map: dict[str, tuple[float, float, float, float]] = {}
-
-    sprites_to_pack = [
-        ("crosshair", (16, 16)),
-        ("heart_full", (9, 9)),
-        ("hunger_full", (9, 9)),
-        ("hotbar_slot", (24, 24)),
-        ("hotbar_cursor", (24, 24)),
-        ("item_diamond_sword", (16, 16)),
-        ("item_diamond_pickaxe", (16, 16)),
-        ("item_dirt", (16, 16)),
-        ("item_stone", (16, 16)),
-        ("item_tnt", (16, 16)),
-        ("item_golden_apple", (16, 16)),
-        ("item_bow", (16, 16)),
-        ("item_elytra", (16, 16)),
-        ("item_totem_of_undying", (16, 16)),
-    ]
-
-    curr_x, curr_y = 2, 2
-    row_height = 0
 
     jar_zip = None
     if client_jar and client_jar.is_file():
@@ -400,53 +443,52 @@ def build_hud_atlas(client_jar: Path | None = None) -> tuple[Image.Image, dict[s
         except Exception:
             jar_zip = None
 
-    for name, (w, h) in sprites_to_pack:
-        if curr_x + w + 2 > atlas_size:
-            curr_x = 2
-            curr_y += row_height + 2
-            row_height = 0
+    x, y, row_h = pad, pad, 0
+    for name, (w, h) in HUD_SPRITES:
+        if x + w + pad > atlas_size:
+            x, y, row_h = pad, y + row_h + pad, 0
+        if y + h + pad > atlas_size:
+            raise ValueError("HUD sprites do not fit in the atlas")
 
-        sprite_img = None
-        # Try reading from jar if possible
-        if jar_zip:
-            sprite_img = _read_real_hud_sprite(jar_zip, name, (w, h))
+        sprite = _read_real_hud_sprite(jar_zip, name, (w, h)) if jar_zip else None
+        if sprite is None:
+            sprite = create_canonical_sprite(name)
+        atlas.paste(sprite, (x, y))
+        uv_map[name] = (x / atlas_size, y / atlas_size, (x + w) / atlas_size, (y + h) / atlas_size)
 
-        if sprite_img is None:
-            sprite_img = create_canonical_sprite(name)
-
-        atlas.paste(sprite_img, (curr_x, curr_y), sprite_img)
-
-        u0 = curr_x / float(atlas_size)
-        v0 = curr_y / float(atlas_size)
-        u1 = (curr_x + w) / float(atlas_size)
-        v1 = (curr_y + h) / float(atlas_size)
-        uv_map[name] = (u0, v0, u1, v1)
-
-        curr_x += w + 2
-        row_height = max(row_height, h)
+        x += w + pad
+        row_h = max(row_h, h)
 
     if jar_zip:
         jar_zip.close()
-
     return atlas, uv_map
 
 
+_ITEM_KEYS = [
+    "item_diamond_sword", "item_diamond_pickaxe", "item_dirt", "item_stone", "item_tnt",
+    "item_golden_apple", "item_bow", "item_elytra", "item_totem_of_undying",
+]
+
+
+def _atlas_png(atlas: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    atlas.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def export_hud_atlas_header(atlas: Image.Image, uv_map: dict[str, tuple[float, float, float, float]], output_header: Path) -> None:
-    """Export C++ header containing atlas UV definitions and embedded PNG data."""
-    png_io = io.BytesIO()
-    atlas.save(png_io, format="PNG")
-    png_bytes = png_io.getvalue()
-
-    hex_bytes = ", ".join(f"0x{b:02x}" for b in png_bytes)
-
+    """Write include/mc/hud_atlas.hpp: UV constants plus the placeholder atlas PNG embedded as bytes."""
+    png_bytes = _atlas_png(atlas)
     lines = [
-        "// Auto-generated by extract_mc_assets.py - DO NOT EDIT MANUALLY",
+        "// Minecraft HUD texture atlas definitions and embedded PNG data.",
+        "// Auto-generated by tools/extract_mc_assets.py - shared across all game adapters. DO NOT EDIT.",
+        "// The embedded PNG is a placeholder; real sprites are extracted locally from a client.jar.",
         "#pragma once",
         "",
         "#include <cstdint>",
         "#include <cstddef>",
         "",
-        "namespace sekiro::hud {",
+        "namespace mc::hud {",
         "",
         "struct HudUV {",
         "    float u0{0.0f};",
@@ -456,34 +498,41 @@ def export_hud_atlas_header(atlas: Image.Image, uv_map: dict[str, tuple[float, f
         "};",
         "",
     ]
-
     for key, (u0, v0, u1, v1) in uv_map.items():
-        var_name = f"kUV_{key.upper()}"
-        lines.append(f"constexpr HudUV {var_name} = {{{u0:.6f}f, {v0:.6f}f, {u1:.6f}f, {v1:.6f}f}};")
-
-    lines.extend([
-        "",
-        "constexpr HudUV kUV_ITEMS[9] = {",
-        "    kUV_ITEM_DIAMOND_SWORD,",
-        "    kUV_ITEM_DIAMOND_PICKAXE,",
-        "    kUV_ITEM_DIRT,",
-        "    kUV_ITEM_STONE,",
-        "    kUV_ITEM_TNT,",
-        "    kUV_ITEM_GOLDEN_APPLE,",
-        "    kUV_ITEM_BOW,",
-        "    kUV_ITEM_ELYTRA,",
-        "    kUV_ITEM_TOTEM_OF_UNDYING,",
+        lines.append(f"constexpr HudUV kUV_{key.upper()} = {{{u0:.6f}f, {v0:.6f}f, {u1:.6f}f, {v1:.6f}f}};")
+    lines += ["", "constexpr HudUV kUV_ITEMS[9] = {"]
+    lines += [f"    kUV_{k.upper()}," for k in _ITEM_KEYS]
+    lines += [
         "};",
         "",
         f"constexpr uint32_t kHudAtlasWidth = {atlas.width};",
         f"constexpr uint32_t kHudAtlasHeight = {atlas.height};",
         f"constexpr size_t kHudAtlasPngSize = {len(png_bytes)};",
-        f"constexpr uint8_t kHudAtlasPngData[{len(png_bytes)}] = {{ {hex_bytes} }};",
+        "constexpr uint8_t kHudAtlasPngData[" + str(len(png_bytes)) + "] = { " + ", ".join(f"0x{b:02x}" for b in png_bytes) + " };",
         "",
-        "} // namespace sekiro::hud",
+        "} // namespace mc::hud",
         "",
-    ])
+    ]
+    output_header.parent.mkdir(parents=True, exist_ok=True)
+    output_header.write_text("\n".join(lines), encoding="utf-8")
 
+
+def export_adapter_atlas_header(uv_map: dict[str, tuple[float, float, float, float]], output_header: Path, namespace: str) -> None:
+    """Write an adapter header that forwards the shared mc::hud atlas names into `namespace`."""
+    names = [f"kUV_{k.upper()}" for k in uv_map] + ["kUV_ITEMS", "kHudAtlasWidth", "kHudAtlasHeight", "kHudAtlasPngSize", "kHudAtlasPngData"]
+    lines = [
+        "// Auto-generated by tools/extract_mc_assets.py - DO NOT EDIT MANUALLY",
+        "// Forwards to mc_core unified HUD atlas definitions",
+        "#pragma once",
+        "",
+        '#include "mc/hud_atlas.hpp"',
+        "",
+        f"namespace {namespace} {{",
+        "",
+        "using ::mc::hud::HudUV;",
+    ]
+    lines += [f"using ::mc::hud::{n};" for n in names]
+    lines += ["", f"}} // namespace {namespace}", ""]
     output_header.parent.mkdir(parents=True, exist_ok=True)
     output_header.write_text("\n".join(lines), encoding="utf-8")
 
@@ -508,7 +557,9 @@ def main():
     parser.add_argument("--client-jar", type=Path, help="Path to Minecraft Java client.jar")
     parser.add_argument("--out-dir", type=Path, default=Path("assets/exported"), help="Output directory")
     parser.add_argument("--export-hud-atlas", action="store_true", help="Export mc_hud_atlas.png and UV JSON")
-    parser.add_argument("--export-header", type=Path, help="Export C++ header file for HUD atlas")
+    parser.add_argument("--export-header", type=Path, help="Export the shared C++ HUD atlas header (include/mc/hud_atlas.hpp)")
+    parser.add_argument("--export-adapter-header", type=Path, help="Export an adapter header forwarding the shared atlas names")
+    parser.add_argument("--adapter-namespace", default="sekiro::hud", help="Namespace for --export-adapter-header")
     parser.add_argument("--export-steve-skin", action="store_true", help="Export the real Steve skin as steve.png (needs --client-jar)")
     args = parser.parse_args()
 
@@ -517,7 +568,7 @@ def main():
         if not args.client_jar:
             parser.error("--export-steve-skin requires --client-jar")
         print(f"Exported Steve skin to {export_steve_skin(args.client_jar, args.out_dir)}")
-    if args.export_hud_atlas or args.export_header:
+    if args.export_hud_atlas or args.export_header or args.export_adapter_header:
         atlas_img, uv_map = build_hud_atlas(args.client_jar)
         atlas_path = args.out_dir / "mc_hud_atlas.png"
         atlas_img.save(atlas_path)
@@ -526,6 +577,9 @@ def main():
         if args.export_header:
             export_hud_atlas_header(atlas_img, uv_map, args.export_header)
             print(f"Exported C++ HUD header to {args.export_header}")
+        if args.export_adapter_header:
+            export_adapter_atlas_header(uv_map, args.export_adapter_header, args.adapter_namespace)
+            print(f"Exported adapter HUD header to {args.export_adapter_header}")
 
     print(f"MC asset exporter ready. Output: {args.out_dir}")
 

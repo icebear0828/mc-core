@@ -24,6 +24,7 @@ add_library(mc_core STATIC
     include/mc/consumables.hpp
     include/mc/elytra.hpp
     include/mc/hud.hpp
+    include/mc/hud_layout.hpp
     include/mc/session.hpp
     include/mc/contracts/physics_adapter.hpp
     include/mc/contracts/render_adapter.hpp
@@ -37,6 +38,7 @@ add_library(mc_core STATIC
     src/consumables.cpp
     src/elytra.cpp
     src/hud.cpp
+    src/hud_layout.cpp
     src/session.cpp
 )
 

@@ -11,6 +11,7 @@
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx11.h>
 
+#include <cfloat>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -28,6 +29,7 @@
 #include "sekiro_adapter.hpp"
 #include "sekiro_live.hpp"
 #include "sekiro_steve.hpp"
+#include "mc/hud_layout.hpp"
 #include "steve_renderer.hpp"
 #include "mc/hud.hpp"
 #include "mc/session.hpp"
@@ -82,6 +84,8 @@ std::chrono::steady_clock::time_point g_last_frame_time;
 ID3D11Device* g_d3d_device = nullptr;
 ID3D11DeviceContext* g_d3d_context = nullptr;
 ID3D11ShaderResourceView* g_hud_srv = nullptr;
+ID3D11SamplerState* g_point_sampler = nullptr;
+bool g_show_debug_panel = false;
 HWND g_game_hwnd = nullptr;
 WNDPROC g_original_wndproc = nullptr;
 
@@ -445,123 +449,123 @@ void InitImGui(IDXGISwapChain* pSwapChain) {
     Log("ImGui successfully initialized on SwapChain (HWND: %p, Device: %p)", g_game_hwnd, g_d3d_device);
 }
 
-void RenderMinecraftHUD(float screen_w, float screen_h, bool is_steve_mode) {
-    ImDrawList* draw = ImGui::GetForegroundDrawList();
+// Swapped in for the HUD draw calls: Minecraft's sprites are meant to be sampled without filtering.
+void UsePointSampler(const ImDrawList*, const ImDrawCmd*) {
+    if (g_d3d_context && g_point_sampler) {
+        g_d3d_context->PSSetSamplers(0, 1, &g_point_sampler);
+    }
+}
 
-    // Ensure HUD Texture Atlas SRV is created
+const sekiro::hud::HudUV* ItemIconUv(mc::ItemId item) {
+    switch (item) {
+        case mc::ItemId::DiamondSword: return &sekiro::hud::kUV_ITEM_DIAMOND_SWORD;
+        case mc::ItemId::DiamondPickaxe: return &sekiro::hud::kUV_ITEM_DIAMOND_PICKAXE;
+        case mc::ItemId::BlockDirt: return &sekiro::hud::kUV_ITEM_DIRT;
+        case mc::ItemId::BlockStone: return &sekiro::hud::kUV_ITEM_STONE;
+        case mc::ItemId::BlockTnt: return &sekiro::hud::kUV_ITEM_TNT;
+        case mc::ItemId::GoldenApple: return &sekiro::hud::kUV_ITEM_GOLDEN_APPLE;
+        case mc::ItemId::Bow: return &sekiro::hud::kUV_ITEM_BOW;
+        case mc::ItemId::Elytra: return &sekiro::hud::kUV_ITEM_ELYTRA;
+        case mc::ItemId::TotemOfUndying: return &sekiro::hud::kUV_ITEM_TOTEM_OF_UNDYING;
+        default: return nullptr;
+    }
+}
+
+void Blit(ImDrawList* draw, const sekiro::hud::HudUV& uv, const mc::HudRect& r, ImU32 tint = IM_COL32_WHITE) {
+    draw->AddImage(reinterpret_cast<ImTextureID>(g_hud_srv), ImVec2(r.x, r.y), ImVec2(r.x + r.w, r.y + r.h),
+                   ImVec2(uv.u0, uv.v0), ImVec2(uv.u1, uv.v1), tint);
+}
+
+// Minecraft-style drop shadow: the same text one GUI pixel down-right in dark grey.
+void ShadowText(ImDrawList* draw, float size, ImVec2 pos, ImU32 color, float shadow_offset, const char* text) {
+    const ImU32 shadow = IM_COL32(62, 62, 62, (color >> IM_COL32_A_SHIFT) & 0xFF);
+    draw->AddText(ImGui::GetFont(), size, ImVec2(pos.x + shadow_offset, pos.y + shadow_offset), shadow, text);
+    draw->AddText(ImGui::GetFont(), size, pos, color, text);
+}
+
+void RenderMinecraftHUD(float screen_w, float screen_h, bool is_steve_mode, float dt) {
     if (!g_hud_srv && g_d3d_device) {
         g_hud_srv = CreateHudTextureSRV(g_d3d_device);
         if (g_hud_srv) {
             Log("Successfully created D3D11 ShaderResourceView for Minecraft HUD Atlas!");
         }
     }
+    if (!g_point_sampler && g_d3d_device) {
+        D3D11_SAMPLER_DESC sd{};
+        sd.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+        sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.MaxLOD = D3D11_FLOAT32_MAX;
+        g_d3d_device->CreateSamplerState(&sd, &g_point_sampler);
+    }
 
-    // 1. Crosshair in screen center
-    if (is_steve_mode) {
-        float cx = screen_w * 0.5f;
-        float cy = screen_h * 0.5f;
-        float ch_sz = 16.0f;
-        if (g_hud_srv) {
-            draw->AddImage(reinterpret_cast<ImTextureID>(g_hud_srv),
-                ImVec2(cx - ch_sz * 0.5f, cy - ch_sz * 0.5f),
-                ImVec2(cx + ch_sz * 0.5f, cy + ch_sz * 0.5f),
-                ImVec2(sekiro::hud::kUV_CROSSHAIR.u0, sekiro::hud::kUV_CROSSHAIR.v0),
-                ImVec2(sekiro::hud::kUV_CROSSHAIR.u1, sekiro::hud::kUV_CROSSHAIR.v1));
-        } else {
-            ImU32 ch_col = IM_COL32(255, 255, 255, 220);
-            draw->AddRectFilled(ImVec2(cx - 8, cy - 1), ImVec2(cx + 8, cy + 1), ch_col);
-            draw->AddRectFilled(ImVec2(cx - 1, cy - 8), ImVec2(cx + 1, cy + 8), ch_col);
+    mc::HudEngine* hud = GetHud();
+    if (!is_steve_mode || !g_hud_srv || !hud) return;
+
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    const mc::HudLayout layout(screen_w, screen_h);
+    const float s = static_cast<float>(layout.scale());
+
+    draw->AddCallback(UsePointSampler, nullptr);
+
+    Blit(draw, sekiro::hud::kUV_CROSSHAIR, layout.crosshair());
+    Blit(draw, sekiro::hud::kUV_HOTBAR, layout.hotbar());
+
+    const int active = hud->getSelectedSlot();
+    Blit(draw, sekiro::hud::kUV_HOTBAR_SELECTION, layout.selection(active));
+
+    for (int i = 0; i < mc::HudEngine::kHotbarSlotCount; ++i) {
+        const mc::HudSlot& slot = hud->getSlot(i);
+        const sekiro::hud::HudUV* uv = ItemIconUv(slot.item);
+        if (!uv) continue;
+        const mc::HudRect icon = layout.item(i);
+        Blit(draw, *uv, icon);
+        if (slot.count > 1) {
+            char count[16];
+            snprintf(count, sizeof(count), "%u", slot.count);
+            const float size = layout.textSize();
+            const float width = ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0.0f, count).x;
+            ShadowText(draw, size, ImVec2(icon.x + 17.0f * s - width, icon.y + 9.0f * s - size * 0.5f), IM_COL32_WHITE, s, count);
         }
     }
 
-    // 2. Hotbar at bottom center
-    if (is_steve_mode) {
-        float slot_size = 46.0f;
-        float bar_w = slot_size * 9.0f;
-        float start_x = (screen_w - bar_w) * 0.5f;
-        float start_y = screen_h - 70.0f;
-
-        mc::HudEngine* hud = GetHud();
-        int active_slot = hud ? hud->getSelectedSlot() : g_selected_slot;
-
-        for (int i = 0; i < 9; ++i) {
-            float sx = start_x + i * slot_size;
-            float sy = start_y;
-            bool selected = (i == active_slot);
-
-            if (g_hud_srv) {
-                // Official Minecraft Slot Texture
-                draw->AddImage(reinterpret_cast<ImTextureID>(g_hud_srv),
-                    ImVec2(sx, sy), ImVec2(sx + slot_size, sy + slot_size),
-                    ImVec2(sekiro::hud::kUV_HOTBAR_SLOT.u0, sekiro::hud::kUV_HOTBAR_SLOT.v0),
-                    ImVec2(sekiro::hud::kUV_HOTBAR_SLOT.u1, sekiro::hud::kUV_HOTBAR_SLOT.v1));
-
-                // Official Minecraft 16x16 Item Texture Icon
-                const auto& item_uv = sekiro::hud::kUV_ITEMS[i];
-                float pad = 7.0f;
-                draw->AddImage(reinterpret_cast<ImTextureID>(g_hud_srv),
-                    ImVec2(sx + pad, sy + pad), ImVec2(sx + slot_size - pad, sy + slot_size - pad),
-                    ImVec2(item_uv.u0, item_uv.v0), ImVec2(item_uv.u1, item_uv.v1));
-
-                // If selected, render official Minecraft cursor frame
-                if (selected) {
-                    float ext = 4.0f;
-                    draw->AddImage(reinterpret_cast<ImTextureID>(g_hud_srv),
-                        ImVec2(sx - ext, sy - ext), ImVec2(sx + slot_size + ext, sy + slot_size + ext),
-                        ImVec2(sekiro::hud::kUV_HOTBAR_CURSOR.u0, sekiro::hud::kUV_HOTBAR_CURSOR.v0),
-                        ImVec2(sekiro::hud::kUV_HOTBAR_CURSOR.u1, sekiro::hud::kUV_HOTBAR_CURSOR.v1));
-                }
-            } else {
-                draw->AddRectFilled(ImVec2(sx, sy), ImVec2(sx + slot_size, sy + slot_size), IM_COL32(40, 40, 40, 220));
-            }
-
-            // Key number
-            char key_str[4];
-            snprintf(key_str, sizeof(key_str), "%d", i + 1);
-            draw->AddText(ImVec2(sx + 3.0f, sy + 2.0f), IM_COL32(220, 220, 220, 220), key_str);
-        }
-
-        // Active item label above hotbar
-        const char* item_name = hud ? hud->getSelectedItemDisplayName() : kHotbarItems[active_slot];
-        char active_info[128];
-        if (item_name && item_name[0] != '\0') {
-            snprintf(active_info, sizeof(active_info), "[%d] %s", active_slot + 1, item_name);
-        } else {
-            snprintf(active_info, sizeof(active_info), "[%d]", active_slot + 1);
-        }
-        float info_w = ImGui::CalcTextSize(active_info).x;
-        draw->AddText(ImVec2((screen_w - info_w) * 0.5f + 1.0f, start_y - 42.0f + 1.0f), IM_COL32(0, 0, 0, 220), active_info);
-        draw->AddText(ImVec2((screen_w - info_w) * 0.5f, start_y - 42.0f), IM_COL32(255, 255, 255, 255), active_info);
-
-        // 10 Red Hearts
-        mc::HeartContainers hearts = hud ? hud->computeHearts() : mc::HeartContainers{10, false, 0};
-        float heart_start_x = start_x;
-        float heart_start_y = start_y - 24.0f;
-        int drawn_hearts = 0;
-        for (int h = 0; h < hearts.full_hearts && drawn_hearts < 10; ++h, ++drawn_hearts) {
-            float hx = heart_start_x + drawn_hearts * 18.0f;
-            if (g_hud_srv) {
-                draw->AddImage(reinterpret_cast<ImTextureID>(g_hud_srv),
-                    ImVec2(hx, heart_start_y), ImVec2(hx + 18.0f, heart_start_y + 18.0f),
-                    ImVec2(sekiro::hud::kUV_HEART_FULL.u0, sekiro::hud::kUV_HEART_FULL.v0),
-                    ImVec2(sekiro::hud::kUV_HEART_FULL.u1, sekiro::hud::kUV_HEART_FULL.v1));
-            }
-        }
-
-        // 10 Food drumsticks (Hunger)
-        mc::HungerContainers hunger = hud ? hud->computeHunger() : mc::HungerContainers{10, false, 0};
-        float food_start_x = start_x + bar_w - 180.0f;
-        int drawn_food = 0;
-        for (int fd = 0; fd < hunger.full_drumsticks && drawn_food < 10; ++fd, ++drawn_food) {
-            float fx = food_start_x + drawn_food * 18.0f;
-            if (g_hud_srv) {
-                draw->AddImage(reinterpret_cast<ImTextureID>(g_hud_srv),
-                    ImVec2(fx, heart_start_y), ImVec2(fx + 18.0f, heart_start_y + 18.0f),
-                    ImVec2(sekiro::hud::kUV_HUNGER_FULL.u0, sekiro::hud::kUV_HUNGER_FULL.v0),
-                    ImVec2(sekiro::hud::kUV_HUNGER_FULL.u1, sekiro::hud::kUV_HUNGER_FULL.v1));
-            }
-        }
+    // Health: every container is drawn, then the filled part on top
+    const mc::HeartContainers hearts = hud->computeHearts();
+    for (int i = 0; i < 10; ++i) {
+        const mc::HudRect r = layout.heart(i);
+        Blit(draw, sekiro::hud::kUV_HEART_CONTAINER, r);
+        if (i < hearts.full_hearts) Blit(draw, sekiro::hud::kUV_HEART_FULL, r);
+        else if (i == hearts.full_hearts && hearts.has_half_heart) Blit(draw, sekiro::hud::kUV_HEART_HALF, r);
     }
+    // Hunger grows from the right edge towards the centre
+    const mc::HungerContainers hunger = hud->computeHunger();
+    for (int i = 0; i < 10; ++i) {
+        const mc::HudRect r = layout.food(i);
+        Blit(draw, sekiro::hud::kUV_HUNGER_CONTAINER, r);
+        if (i < hunger.full_drumsticks) Blit(draw, sekiro::hud::kUV_HUNGER_FULL, r);
+        else if (i == hunger.full_drumsticks && hunger.has_half_drumstick) Blit(draw, sekiro::hud::kUV_HUNGER_HALF, r);
+    }
+
+    // Selected-item name: shown for two seconds after the slot or item changes, fading over the last half second
+    static int last_slot = -1;
+    static mc::ItemId last_item = mc::ItemId::None;
+    static float label_time = 0.0f;
+    const mc::ItemId item = hud->getSelectedItem();
+    if (active != last_slot || item != last_item) {
+        last_slot = active;
+        last_item = item;
+        label_time = 2.0f;
+    }
+    label_time = std::max(0.0f, label_time - dt);
+    const char* name = hud->getSelectedItemDisplayName();
+    if (label_time > 0.0f && name && name[0] != '\0') {
+        const float alpha = std::min(1.0f, label_time / 0.5f);
+        const float size = layout.textSize();
+        const float width = ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0.0f, name).x;
+        ShadowText(draw, size, ImVec2(std::floor((screen_w - width) * 0.5f), layout.itemNameBaselineY()),
+                   IM_COL32(255, 255, 255, static_cast<int>(alpha * 255.0f)), s, name);
+    }
+
+    draw->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
 }
 
 HRESULT WINAPI DetourResizeBuffers(
@@ -656,6 +660,9 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
     if (GetAsyncKeyState(VK_F7) & 1) {
         g_screenshot_requested.store(true);
     }
+    if (GetAsyncKeyState(VK_F8) & 1) {
+        g_show_debug_panel = !g_show_debug_panel;
+    }
 
     // Gather this frame's input events for the mc-core Session
     mc::InputSnapshot input_snapshot{};
@@ -710,6 +717,8 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
         global_hud = GetHud();
 
         // 1. Status Panel Window
+        const bool show_panel = g_show_debug_panel || !g_in_world;
+        if (show_panel) {
         ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(480, 132), ImGuiCond_Always);
         ImGuiWindowFlags flags_win = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse;
@@ -722,7 +731,7 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
             const char* cur_name = global_hud ? global_hud->getSelectedItemDisplayName() : kHotbarItems[g_selected_slot];
             int cur_slot = global_hud ? global_hud->getSelectedSlot() : g_selected_slot;
             ImGui::Text("Item: [%d] %s  |  Attack Swing: LMB", cur_slot + 1, cur_name);
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Press [F6] to Exit Minecraft Mode  |  Keys [1-9] Change Slot");
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "[F6] Exit  |  [1-9] Slot  |  [F7] Screenshot  |  [F8] Hide this panel");
             ImGui::TextColored(g_in_world ? ImVec4(0.4f, 1.0f, 0.4f, 1.0f) : ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Link: %s", LinkStateText());
             ImGui::End();
             ImGui::PopStyleColor();
@@ -738,8 +747,10 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
             ImGui::PopStyleColor();
         }
 
-        // 2. Render Full Minecraft Crosshair, Hotbar, 3D Steve Rig & Hand
-        RenderMinecraftHUD(screen_w, screen_h, is_active);
+        }
+
+        // 2. Render the Minecraft HUD (crosshair, hotbar, hearts, hunger)
+        RenderMinecraftHUD(screen_w, screen_h, is_active, dt);
 
         ImGui::Render();
 
@@ -966,6 +977,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         if (g_hud_srv) {
             g_hud_srv->Release();
             g_hud_srv = nullptr;
+        }
+        if (g_point_sampler) {
+            g_point_sampler->Release();
+            g_point_sampler = nullptr;
         }
         if (g_system_dinput8) {
             FreeLibrary(g_system_dinput8);
