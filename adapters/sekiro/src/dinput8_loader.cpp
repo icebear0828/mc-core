@@ -553,6 +553,13 @@ bool __fastcall DetourApplySpEffect(void* target, int32_t id) {
 }
 
 void InstallDamageProbe() {
+    // Diagnostics only: the hooks run a class lookup per game call, so they are installed on request.
+    {
+        FILE* f = nullptr;
+        const bool wanted = (fopen_s(&f, "mc_probe.txt", "r") == 0 && f) || (f = nullptr, fopen_s(&f, "mc_native_hit.txt", "r") == 0 && f);
+        if (f) fclose(f);
+        if (!wanted) return;
+    }
     MODULEINFO mi{};
     if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleA(nullptr), &mi, sizeof(mi))) return;
     g_probe_image_base = reinterpret_cast<uintptr_t>(mi.lpBaseOfDll);
