@@ -9,6 +9,7 @@
 #include "mc/contracts/render_adapter.hpp"
 #include "mc/elytra.hpp"
 #include "mc/hud.hpp"
+#include "mc/contracts/host_gameplay.hpp"
 #include "mc/session.hpp"
 #include "mc/voxel_world.hpp"
 
@@ -831,4 +832,119 @@ TEST_F(SessionTest, AnimationSpeedStartsFromTheCurrentVelocityAfterReactivation)
     session.setActive(true);
     session.tick(0.016f, {});
     EXPECT_NEAR(session.lastAnimInput().forward_speed, 0.f, 0.05f); // no stale run carried over
+}
+
+// ---------------------------------------------------------------------------------------------
+// Host gameplay port (docs/REVERSE_INTERFACES.md): optional, everything degrades without it
+// ---------------------------------------------------------------------------------------------
+namespace {
+class MockGameplay : public mc::IHostGameplay {
+public:
+    uint32_t features{0};
+    bool vitals_ok{false};
+    mc::HostVitals vitals{};
+    int suppress_calls{0};
+    bool suppressed{false};
+
+    uint32_t supportedFeatures() const override { return features; }
+    bool getPlayerVitals(mc::HostVitals& out) const override {
+        if (vitals_ok) out = vitals;
+        return vitals_ok;
+    }
+    void setNativeCombatInputSuppressed(bool s) override {
+        ++suppress_calls;
+        suppressed = s;
+    }
+};
+} // namespace
+
+class SessionGameplayTest : public SessionTest {
+protected:
+    MockGameplay gameplay;
+    mc::Session with_gameplay{mc::Ports{physics, render, combat, input, &gameplay}};
+};
+
+TEST_F(SessionGameplayTest, NativeCombatInputIsSuppressedExactlyWhileActive) {
+    EXPECT_FALSE(gameplay.suppressed);
+    with_gameplay.setActive(true);
+    EXPECT_TRUE(gameplay.suppressed);
+    with_gameplay.setActive(false);
+    EXPECT_FALSE(gameplay.suppressed);
+}
+
+TEST_F(SessionGameplayTest, DestroyingAnActiveSessionReleasesTheInput) {
+    {
+        mc::Session temp{mc::Ports{physics, render, combat, input, &gameplay}};
+        temp.setActive(true);
+        ASSERT_TRUE(gameplay.suppressed);
+    }
+    EXPECT_FALSE(gameplay.suppressed);
+}
+
+TEST_F(SessionGameplayTest, SettingTheSameActiveStateTwiceDoesNotSpamTheHost) {
+    with_gameplay.setActive(true);
+    with_gameplay.setActive(true);
+    EXPECT_EQ(gameplay.suppress_calls, 1);
+}
+
+TEST_F(SessionGameplayTest, HostHealthDrivesTheHeartsAsAFractionOfTwentyHalfHearts) {
+    gameplay.vitals_ok = true;
+    gameplay.vitals = {300.f, 600.f};
+    with_gameplay.setActive(true);
+    with_gameplay.tick(0.016f, {});
+    EXPECT_FLOAT_EQ(with_gameplay.hud().getMaxHealth(), 20.f);
+    EXPECT_FLOAT_EQ(with_gameplay.hud().getHealth(), 10.f);
+
+    gameplay.vitals = {30.f, 600.f}; // took a beating
+    with_gameplay.tick(0.016f, {});
+    EXPECT_FLOAT_EQ(with_gameplay.hud().getHealth(), 1.f);
+}
+
+TEST_F(SessionGameplayTest, UnreadableOrNonsenseVitalsLeaveTheHeartsAlone) {
+    with_gameplay.hud().setHealth(14.f);
+    with_gameplay.setActive(true);
+    gameplay.vitals_ok = false;
+    with_gameplay.tick(0.016f, {});
+    EXPECT_FLOAT_EQ(with_gameplay.hud().getHealth(), 14.f);
+
+    gameplay.vitals_ok = true;
+    for (mc::HostVitals bad : {mc::HostVitals{10.f, 0.f}, mc::HostVitals{10.f, -5.f},
+                               mc::HostVitals{std::nanf(""), 100.f}, mc::HostVitals{10.f, std::nanf("")}}) {
+        gameplay.vitals = bad;
+        with_gameplay.tick(0.016f, {});
+        EXPECT_FLOAT_EQ(with_gameplay.hud().getHealth(), 14.f);
+    }
+
+    gameplay.vitals = {500.f, 100.f}; // over max: clamped to full
+    with_gameplay.tick(0.016f, {});
+    EXPECT_FLOAT_EQ(with_gameplay.hud().getHealth(), 20.f);
+}
+
+TEST_F(SessionGameplayTest, ReportsWhichHostFeaturesAreStillMissing) {
+    EXPECT_EQ(with_gameplay.missingHostFeatures(), mc::kAllHostFeatures);
+    gameplay.features = static_cast<uint32_t>(mc::HostFeature::PlayerVitals) | static_cast<uint32_t>(mc::HostFeature::InputSuppression);
+    EXPECT_EQ(with_gameplay.missingHostFeatures(),
+              mc::kAllHostFeatures & ~(static_cast<uint32_t>(mc::HostFeature::PlayerVitals) | static_cast<uint32_t>(mc::HostFeature::InputSuppression)));
+}
+
+TEST_F(SessionTest, WithoutAGameplayPortEverythingStillWorksAndAllFeaturesAreMissing) {
+    EXPECT_EQ(session.missingHostFeatures(), mc::kAllHostFeatures);
+    session.setActive(true);
+    session.tick(0.016f, {});
+    session.setActive(false);
+}
+
+TEST(HostFeatureTest, EveryFeatureHasADistinctNameAndBit) {
+    const mc::HostFeature all[] = {mc::HostFeature::PlayerVitals,      mc::HostFeature::EntityEnumeration,
+                                   mc::HostFeature::InputSuppression, mc::HostFeature::IncomingDamageEvents,
+                                   mc::HostFeature::FirstPersonCamera, mc::HostFeature::GroundedFlag};
+    uint32_t seen = 0;
+    for (auto f : all) {
+        const uint32_t bit = static_cast<uint32_t>(f);
+        EXPECT_EQ(bit & (bit - 1), 0u) << "single bit";
+        EXPECT_EQ(seen & bit, 0u) << "distinct";
+        seen |= bit;
+        EXPECT_STRNE(mc::hostFeatureName(f), "Unknown");
+    }
+    EXPECT_EQ(seen, mc::kAllHostFeatures);
 }

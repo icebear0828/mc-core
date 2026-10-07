@@ -104,3 +104,25 @@ def test_playbook_references_only_files_that_exist():
             continue
         assert (REPO_ROOT / ref).exists(), f"playbook mentions a path that does not exist: {ref}"
 
+
+
+def test_every_host_feature_is_documented_in_the_reverse_interface_list():
+    header = (REPO_ROOT / "include" / "mc" / "contracts" / "host_gameplay.hpp").read_text(encoding="utf-8")
+    enum_body = re.search(r"enum class HostFeature[^{]*\{(.*?)\};", header, re.S).group(1)
+    features = re.findall(r"^\s*(\w+)\s*=", enum_body, re.M)
+    assert len(features) >= 6
+    doc = (REPO_ROOT / "docs" / "REVERSE_INTERFACES.md").read_text(encoding="utf-8")
+    for name in features:
+        assert f"`{name}`" in doc, f"REVERSE_INTERFACES.md does not document HostFeature::{name}"
+        assert f'"{name}"' in header, f"hostFeatureName() does not name {name}"
+
+
+def test_reverse_interface_list_is_linked_and_its_paths_exist():
+    doc = (REPO_ROOT / "docs" / "REVERSE_INTERFACES.md").read_text(encoding="utf-8")
+    for linker in (REPO_ROOT / "docs" / "PORTING_PLAYBOOK.md", REPO_ROOT / "docs" / "ADAPTER_SPECIFICATION.md",
+                   REPO_ROOT / "skills" / "mc-game-adapter" / "SKILL.md"):
+        assert "REVERSE_INTERFACES" in linker.read_text(encoding="utf-8"), f"{linker.name} should link REVERSE_INTERFACES.md"
+    for ref in sorted(set(re.findall(r"`((?:docs|tools|include|src|tests|skills)/[A-Za-z0-9_./-]+)`", doc))):
+        if "*" in ref or ref.endswith("/"):
+            continue
+        assert (REPO_ROOT / ref).exists(), f"REVERSE_INTERFACES.md mentions a path that does not exist: {ref}"

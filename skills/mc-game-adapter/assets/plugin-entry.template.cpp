@@ -14,7 +14,9 @@ std::unique_ptr<mc::Session> g_session;
 
 void OnModInitialize() {
     g_adapter = std::make_unique<mc::adapter::{{GAME_NAME}}Adapter>();
-    g_session = std::make_unique<mc::Session>(mc::Ports{*g_adapter, *g_adapter, *g_adapter, *g_adapter});
+    // The fifth port (IHostGameplay*) is optional: pass the adapter once it implements the reverse-engineered
+    // host data (see docs/REVERSE_INTERFACES.md); nullptr keeps those actions off.
+    g_session = std::make_unique<mc::Session>(mc::Ports{*g_adapter, *g_adapter, *g_adapter, *g_adapter, nullptr});
     g_session->loadDefaultHotbar();
 }
 

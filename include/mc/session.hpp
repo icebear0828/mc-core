@@ -11,6 +11,7 @@ class IPhysicsAdapter;
 class IRenderAdapter;
 class ICombatAdapter;
 class IInputAdapter;
+class IHostGameplay;
 class VoxelWorld;
 class CombatEngine;
 class BallisticsEngine;
@@ -25,6 +26,7 @@ struct Ports {
     IRenderAdapter& render;
     ICombatAdapter& combat;
     IInputAdapter& input;
+    IHostGameplay* gameplay{nullptr}; // optional: the actions that need reverse-engineered host data
 };
 
 // Per-frame input events gathered by the host loader (edge/level flags, no engine types).
@@ -67,6 +69,9 @@ public:
 
     // No-op while inactive.
     void tick(float dt, const InputSnapshot& in);
+
+    // HostFeature bits the adapter has not implemented (all of them when there is no gameplay port).
+    [[nodiscard]] uint32_t missingHostFeatures() const;
 
     HudEngine& hud() { return *hud_; }
     VoxelWorld& voxel() { return *voxel_; }

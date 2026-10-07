@@ -120,3 +120,8 @@ Write the adapter against mirror structs and unit tests on macOS/Linux first (mo
    - Placed blocks allow character and NPC walking/collision.
    - Mining crack stages (0..9) progress and destroy both mesh and collider.
 3. Report checklist status to user.
+
+
+## 动作系统的宿主接口
+
+要让攻击、盾牌、弓箭、受伤、第一人称在新游戏里工作，需要逆向的宿主接口已整理在 `docs/REVERSE_INTERFACES.md`（每项：契约、解锁的行为、怎么找、怎么验证、风险）。实现 `IHostGameplay` 里已经找到的部分，`supportedFeatures()` 只声明真实游戏里验证过的特性。

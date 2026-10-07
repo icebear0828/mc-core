@@ -4,6 +4,7 @@
 #include "mc/combat.hpp"
 #include "mc/consumables.hpp"
 #include "mc/contracts/combat_adapter.hpp"
+#include "mc/contracts/host_gameplay.hpp"
 #include "mc/contracts/input_adapter.hpp"
 #include "mc/contracts/physics_adapter.hpp"
 #include "mc/contracts/render_adapter.hpp"
@@ -53,12 +54,17 @@ Session::~Session() {
     setActive(false);
 }
 
+uint32_t Session::missingHostFeatures() const {
+    return kAllHostFeatures & ~(ports_.gameplay ? ports_.gameplay->supportedFeatures() : 0u);
+}
+
 void Session::setActive(bool active) {
     if (active == active_) {
         return;
     }
     active_ = active;
     if (active_) {
+        if (ports_.gameplay) ports_.gameplay->setNativeCombatInputSuppressed(true);
         ports_.render.setNativePlayerVisible(false);
         ports_.render.spawnSteveParts();
         ports_.render.setHeldItemVisual(hud_->getSelectedItem(), false);
@@ -70,6 +76,7 @@ void Session::setActive(bool active) {
         smoothed_vel_seeded_ = false;
         ports_.render.destroySteveParts();
         ports_.render.setNativePlayerVisible(true);
+        if (ports_.gameplay) ports_.gameplay->setNativeCombatInputSuppressed(false);
     }
 }
 
@@ -119,6 +126,17 @@ void Session::tick(float dt, const InputSnapshot& in) {
         ports_.render.setHeldItemVisual(hud_->getSelectedItem(), false);
     }
     const ItemId held = hud_->getSelectedItem();
+
+    // --- Host vitals -> hearts (only when the host can report them) ---------
+    if (ports_.gameplay) {
+        HostVitals vitals;
+        if (ports_.gameplay->getPlayerVitals(vitals) && std::isfinite(vitals.health) && std::isfinite(vitals.max_health) &&
+            vitals.max_health > 0.f) {
+            constexpr float kHalfHeartsFull = 20.f;
+            hud_->setMaxHealth(kHalfHeartsFull);
+            hud_->setHealth(std::clamp(vitals.health / vitals.max_health, 0.f, 1.f) * kHalfHeartsFull);
+        }
+    }
 
     // --- Frame state in canonical MC space --------------------------------
     Vec3 fwd = ports_.input.getCameraForward().normalized();
