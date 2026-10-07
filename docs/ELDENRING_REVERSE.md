@@ -134,7 +134,7 @@
 ## 6. 待验证清单（按优先级）
 
 0. **世界射线查询**（P0，和相机、深度同级）：游戏自己的射线测试函数——朝地面、墙、敌人各射几次，对照屏幕，确认线程。
-1. 逐帧玩家坐标，抓住跳变帧：同帧玩家单帧位移是否 ≈ `(+56,0,+40)`；同时记录所有敌人是否同帧得到相同位移。固定同一个 `EnemyIns*`。
+1. 逐帧玩家坐标，抓住跳变帧：同帧玩家单帧位移是否 ≈ `(+56,0,+40)`；同时记录所有敌人是否同帧得到相同位移。固定同一个 `EnemyIns*`。**同时读 Havok 位置（`PhysicsModule+0x70`）、块局部位置（`PlayerIns+0x6C0`）和块 id（见 §7），看 `Havok − Block` 在哪一帧变化，变化量即原点移动量。**
 2. 玩家真实跑过的距离 vs 95.9 米；近距离（约 5 米）可见敌人的坐标差。
 3. `readPlayerVitals` 在真机上跑通（`+0x1E508`）；`PhysicsModule` 虚表与 owner 校验；朝向四元数与跑动方向。
 4. 一次真实命中的 `0x14044CCA0` 上下文（`+0x54 != 0` 的调用，dump `RDX` 前 `0x1C0` 字节，加线程和返回地址）；`+0x48` 是否等于扣血量。
@@ -144,6 +144,9 @@
 7a. 读 `ChrIns+0x6C`（玩家、各类敌人、召唤物、友方）与 `+0x1B0`（加载状态），确认 `+0x68` 是 `chr_type`。
 8. 所有固定 RVA 改成签名或 RTTI 查找。
 9. 方块碰撞方案：注册进游戏物理，还是自己拦截移动。
+10. 着地标志：跳起、落地时 dump `PhysicsModule+0x80..+0xA0` 与 `+0x1C0..+0x1D0`，看哪个字节在变（外部线索：`standing_on_solid_ground`、`touching_solid_ground`、`is_falling`，偏移未知）。
+11. 敌人枚举完整性：`WorldChrMan+0x1E270` 对应源码里的 `world_block_chr[192]`、`world_area_chr[28]`、`open_field_chr_set` 中的哪一个，是否漏了别的容器。读 `chr_inses_by_distance`（游戏自己按距离排的实体列表）的结构，看是否带距离。
+12. 隐藏模型：`PlayerIns+0x648`（`chr_asm_model_ins`）之下的部件数组、`CSModelIns.model_disp_entity.disp_flags1` 的偏移，用 RTTI 做只读遍历确认，再谈写入。
 
 ---
 
@@ -165,3 +168,23 @@ README 没写目标游戏版本，仓库同时含 Nightreign，偏移可能针�
 | 深度 | ReShade 的做法：跟踪主绘制 pass 的 DSV，拷贝到可读纹理 | ER 的格式和是否反向 Z 必须自己测（只狼是 `R32G8X24_TYPELESS` + 反向 Z） |
 
 这些仓库**没有**给出：世界射线查询、敌人侧受击的调用方式、方块碰撞、D3D12 命令队列捕获、输入路径（`pad.rs` / `mouse_man.rs` 未核对）。
+
+### 7.1 第二批线索（2026-10，核对 `fromsoftware-rs` 的 `physics.rs`、`world_chr_man.rs`、`chr_ins.rs`）
+
+可由源码字段排布推算的（`unkXXX` 名字带偏移，**推算，非明文**）：
+
+| 项 | 推算结果 | 状态 |
+|---|---|---|
+| `PlayerIns.chr_asm` | `+0x638` | 待读 |
+| `PlayerIns.chr_asm_model_res` / `chr_asm_model_ins` | `+0x640` / `+0x648`，与逆向方给的一致 | 待读 |
+| `PlayerIns.block_position` | `+0x6C0`，`BlockPosition { x, y, z, yaw }`（**块局部坐标**，不是全图坐标），紧跟 `current_block_id` | 待读 |
+| `base_transparency` | 在 `ChrIns` 里（不是 `PlayerIns`），偏移**未给出**；别的来源写的 `+0x24C` 没有依据 | 未知 |
+
+`CSChrPhysicsModule` 的字段名（源码）：`position`、`last_update_position`、`standing_on_solid_ground`、`touching_solid_ground`、`orientation`（四元数）、`interpolated_orientation`、`orientation_euler`、`is_falling`、`is_touching_ground`、`gravity_disabled` 等。**源码摘要没有给偏移**；逆向方转述的 `+0x92`、`+0x93`、`+0x1C8` 来自 TGA 表，未核对。我们实测的 `+0x70` 位置与 `+0x50..+0x5C` 朝向与字段名一致。
+
+`WorldChrMan`（源码字段，无偏移）：`player_chr_set`、`ghost_chr_set`、`summon_buddy_chr_set`、`debug_chr_set`、`open_field_chr_set`、`chr_sets[196]`、`main_player`、`world_area_chr[28]`、`world_block_chr[192]`、`chr_inses_by_distance`、`chr_inses_by_update_priority`。转述的 `WorldChrMan+0x10EF8`（`player_chr_set`）与 `FieldArea→+0x20→+0x18→+0x0`（活动相机）来自 TGA，未核对。
+
+有用的方法：
+- **原点跳变的干净检验**：块局部坐标在同一块内不受 Havok 重定位影响，所以 `Havok(PhysicsModule+0x70) − Block(PlayerIns+0x6C0)` 在没跳变时恒定，跳变那一帧会变，变化量就是原点移动量。注意跨块时块局部坐标自己也会跳（`current_block_id` 变）。
+- `BlockPosition.yaw` 是现成的朝向角，可与 `PhysicsModule` 四元数交叉验证。
+- `chr_inses_by_distance` 是游戏自己按距离排的列表，若带距离，就是在游戏自洽的坐标里算出来的，比我们自己做坐标差可靠。内部结构未知。
