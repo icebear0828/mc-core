@@ -341,6 +341,8 @@ public:
 SelfMemoryReader g_memory;
 SelfMemoryWriter g_memory_writer;
 std::unique_ptr<sekiro::live::ModelHider> g_model_hider;
+std::mutex g_hider_mutex;                   // the Present thread and the guard thread both drive the hider
+std::atomic<bool> g_wolf_hide_wanted{false};
 sekiro::live::HideStatus g_last_hide_status = sekiro::live::HideStatus::Idle;
 std::unique_ptr<sekiro::live::LiveBinder> g_binder;
 std::atomic<bool> g_binder_ready{false};
@@ -366,6 +368,30 @@ const char* LinkStateText() {
     return g_in_world ? "LINKED: player + camera bound" : "BOUND: waiting for a loaded world";
 }
 
+// The game can make the Wolf visible again between two of our Present calls (warps, cutscenes, outfit changes), and
+// each such reset would show the Wolf for a frame. This thread re-applies the hide every ~2 ms while Steve mode
+// owns the model, so a reset is undone before the next frame is rendered. update() is idempotent and only writes
+// when the masks are not already zero.
+DWORD WINAPI WolfGuardThread(LPVOID) {
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, 0x00000002 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+    if (!timer) timer = CreateWaitableTimerW(nullptr, TRUE, nullptr);
+    while (!g_stop.load()) {
+        if (timer) {
+            LARGE_INTEGER due;
+            due.QuadPart = -20000LL; // 2 ms, relative
+            SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+            WaitForSingleObject(timer, 5);
+        } else {
+            Sleep(2);
+        }
+        if (!g_wolf_hide_wanted.load()) continue;
+        std::lock_guard<std::mutex> lock(g_hider_mutex);
+        if (g_model_hider) g_model_hider->update(true);
+    }
+    if (timer) CloseHandle(timer);
+    return 0;
+}
+
 // Runs on the loader thread: the Steam wrapper decrypts code lazily, so keep scanning until the
 // signatures show up. Refuses to bind on ambiguous matches instead of guessing.
 void BindLiveGameState() {
@@ -389,6 +415,7 @@ void BindLiveGameState() {
             g_health_writer = std::make_unique<sekiro::live::HostHealthWriter>(g_memory, g_memory_writer, binder->imageBase());
             g_binder = std::move(binder);
             g_binder_ready.store(true);
+            CreateThread(nullptr, 0, WolfGuardThread, nullptr, 0, nullptr);
             return;
         }
         if (st != last || attempt % 30 == 0) {
@@ -468,7 +495,20 @@ bool SyncLiveGameState(float dt) {
         g_live_mirror.update(sample, dt, g_player_mirror, g_camera_mirror);
         g_last_sample = sample;
         if (g_model_hider) {
+            std::lock_guard<std::mutex> hider_lock(g_hider_mutex);
+            g_wolf_hide_wanted.store(g_player_mirror.bModelHidden);
             const sekiro::live::HideStatus hs = g_model_hider->update(g_player_mirror.bModelHidden);
+            static unsigned logged_resets = 0, logged_changes = 0;
+            if (g_model_hider->resetCount() != logged_resets && logged_resets < 60) {
+                logged_resets = g_model_hider->resetCount();
+                Log("Wolf model: the game made it visible again behind our back (reset #%u); hidden again", logged_resets);
+            } else {
+                logged_resets = g_model_hider->resetCount();
+            }
+            if (g_model_hider->objectChangeCount() != logged_changes) {
+                logged_changes = g_model_hider->objectChangeCount();
+                Log("Wolf model: the game replaced the Wolf's model object (warp/cutscene #%u); hidden again", logged_changes);
+            }
             if (hs != g_last_hide_status) {
                 const char* name = hs == sekiro::live::HideStatus::Hidden ? "Hidden (Wolf draw mask = 0)"
                                  : hs == sekiro::live::HideStatus::Idle ? "Idle (Wolf visible)"
@@ -489,7 +529,11 @@ bool SyncLiveGameState(float dt) {
 
     if (g_in_world) {
         g_in_world = false;
-        if (g_model_hider) g_model_hider->forgetObject();
+        g_wolf_hide_wanted.store(false);
+        if (g_model_hider) {
+            std::lock_guard<std::mutex> hider_lock(g_hider_mutex);
+            g_model_hider->forgetObject();
+        }
         g_last_hide_status = sekiro::live::HideStatus::Idle;
         g_live_mirror.reset();
         g_camera_stabilizer.reset();

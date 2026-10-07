@@ -63,6 +63,10 @@ public:
     void forgetObject();
 
     [[nodiscard]] HideStatus status() const { return status_; }
+    // How often the game put the Wolf back behind our back while we were hiding it (each one is a leaked
+    // frame unless a guard re-applies the hide fast), and how often the model object itself was replaced.
+    [[nodiscard]] unsigned resetCount() const { return resets_; }
+    [[nodiscard]] unsigned objectChangeCount() const { return object_changes_; }
 
 private:
     std::optional<uintptr_t> resolveEntity() const;
@@ -84,6 +88,8 @@ private:
     uintptr_t masks_model_{0};       // the ChrModel whose masks we zeroed
     uint64_t masks_original_[2]{0, 0};
     bool have_masks_original_{false};
+    unsigned resets_{0};
+    unsigned object_changes_{0};
 };
 
 } // namespace sekiro::live

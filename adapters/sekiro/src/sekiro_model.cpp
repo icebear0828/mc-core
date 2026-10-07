@@ -118,6 +118,7 @@ HideStatus ModelHider::updateDrawEntity(bool want_hidden) {
         return status_;
     }
 
+    if (have_original_) ++resets_; // we hid this very entity and the game made it visible again
     if (!have_original_) {
         original_mask_ = *current;
         have_original_ = true;
@@ -155,6 +156,7 @@ HideStatus ModelHider::updateChrModelMasks(bool want_hidden) {
     if (have_masks_original_ && *model != masks_model_) {
         have_masks_original_ = false; // the remembered values belonged to another object
         masks_model_ = 0;
+        ++object_changes_;
     }
 
     uint64_t current[2]{};
@@ -179,6 +181,7 @@ HideStatus ModelHider::updateChrModelMasks(bool want_hidden) {
     }
 
     if (zero) return have_masks_original_ ? HideStatus::Hidden : HideStatus::Rejected; // not ours to restore
+    if (have_masks_original_) ++resets_; // we hid this very object and the game made it visible again
     if (!have_masks_original_) {
         masks_original_[0] = current[0];
         masks_original_[1] = current[1];

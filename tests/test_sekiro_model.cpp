@@ -366,3 +366,59 @@ TEST(SekiroModelMasksTest, ANewModelObjectInvalidatesTheRememberedValues) {
     EXPECT_EQ(s.mem.get<uint64_t>(kModel2 + 0x90), 0x7ull) << "never write the old object's values into the new one";
     EXPECT_EQ(s.mem.get<uint64_t>(kModel2 + 0x98), 0x9ull);
 }
+
+
+// ---------------------------------------------------------------------------------------------
+// The game resets the masks between our frames (warps, cutscenes, outfit changes). Each reset leaks a frame
+// of the Wolf, so the hider counts them and a guard thread re-applies the hide within milliseconds.
+// ---------------------------------------------------------------------------------------------
+TEST(SekiroModelResetsTest, CountsEveryTimeTheGameResetTheMasksBehindOurBack) {
+    MaskScene s;
+    s.dropDrawEntity();
+    ModelHider h = s.hider();
+    EXPECT_EQ(h.resetCount(), 0u);
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    EXPECT_EQ(h.resetCount(), 0u) << "the first hide is not a reset";
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    EXPECT_EQ(h.resetCount(), 0u) << "nothing happened between the two updates";
+
+    s.mem.put<uint64_t>(kModel + 0x90, kAllOnes); // the game redraws the Wolf
+    s.mem.put<uint64_t>(kModel + 0x98, kAllOnes);
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    EXPECT_EQ(h.resetCount(), 1u);
+    EXPECT_EQ(s.m1(), 0u);
+    s.mem.put<uint64_t>(kModel + 0x98, 0x5ull); // only one of the two comes back
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    EXPECT_EQ(h.resetCount(), 2u);
+    EXPECT_EQ(s.m2(), 0u);
+    // restoring afterwards still puts back the values remembered at the very first hide
+    ASSERT_EQ(h.update(false), HideStatus::Idle);
+    EXPECT_EQ(s.m1(), kAllOnes);
+    EXPECT_EQ(s.m2(), kAllOnes);
+}
+
+TEST(SekiroModelResetsTest, ANewModelObjectIsAFreshHideNotAReset) {
+    MaskScene s;
+    s.dropDrawEntity();
+    ModelHider h = s.hider();
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    constexpr uintptr_t kModel2 = 0x7ff400500000ull;
+    s.mem.region(kModel2, 0x400);
+    s.mem.put<uint64_t>(kModel2, kBase + kChrModelVtableRva);
+    s.mem.put<uint64_t>(kModel2 + 0x90, kAllOnes);
+    s.mem.put<uint64_t>(kModel2 + 0x98, kAllOnes);
+    s.mem.put<uint64_t>(kPlayer + 0x48, kModel2);
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    EXPECT_EQ(h.resetCount(), 0u);
+    EXPECT_EQ(h.objectChangeCount(), 1u) << "a warp swapped the Wolf's model object";
+}
+
+TEST(SekiroModelResetsTest, TheDrawEntityMaskResetsAreCountedToo) {
+    Scene s; // draw-entity path only
+    ModelHider h = s.hider();
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    s.mem.put<uint32_t>(kEntity + 0x70, 4); // redrawn
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    EXPECT_EQ(h.resetCount(), 1u);
+    EXPECT_EQ(s.mask(), 0u);
+}
