@@ -28,6 +28,8 @@
 #include "sekiro_hud_atlas.hpp"
 #include "sekiro_adapter.hpp"
 #include "sekiro_live.hpp"
+#include "sekiro_enemies.hpp"
+#include "sekiro_host_write.hpp"
 #include "sekiro_model.hpp"
 #include "sekiro_steve.hpp"
 #include "mc/hud_layout.hpp"
@@ -44,6 +46,9 @@ void SekiroMod_SetSteveMode(bool active);
 bool SekiroMod_IsSteveModeActive();
 void SekiroMod_Tick(float delta_time, const mc::InputSnapshot* input);
 void SekiroMod_UpdatePointers(sekiro::native::ChrIns* player, sekiro::native::ChrCam* camera);
+bool SekiroMod_RegisterEntity(uint64_t entity_id, sekiro::native::ChrIns* entity);
+void SekiroMod_UnregisterEntity(uint64_t entity_id);
+size_t SekiroMod_DrainEnemyHealthWrites(uint64_t* ids, float* healths, size_t max);
 mc::Session* SekiroMod_GetSession();
 const mc::adapter::SekiroAdapter* SekiroMod_GetAdapter();
 }
@@ -331,6 +336,9 @@ sekiro::native::ChrIns g_player_mirror;
 sekiro::native::ChrCam g_camera_mirror;
 sekiro::live::LiveMirror g_live_mirror;
 sekiro::live::CameraStabilizer g_camera_stabilizer;
+sekiro::live::EnemyTracker g_enemy_tracker;
+std::unique_ptr<sekiro::live::HostHealthWriter> g_health_writer;
+size_t g_logged_enemy_count = static_cast<size_t>(-1);
 bool g_in_world = false;
 sekiro::live::LiveSample g_last_sample{};
 std::unique_ptr<mc::d3d11::RigRenderer> g_steve_renderer;
@@ -365,6 +373,7 @@ void BindLiveGameState() {
                 attempt + 1, binder->worldChrManGlobalRva(), binder->cameraCandidateRvas().size());
             g_model_hider = std::make_unique<sekiro::live::ModelHider>(
                 g_memory, g_memory_writer, binder->imageBase(), binder->imageSize(), binder->worldChrManGlobalRva());
+            g_health_writer = std::make_unique<sekiro::live::HostHealthWriter>(g_memory, g_memory_writer, binder->imageBase());
             g_binder = std::move(binder);
             g_binder_ready.store(true);
             return;
@@ -377,6 +386,51 @@ void BindLiveGameState() {
             last = st;
         }
         Sleep(1000);
+    }
+}
+
+// Enemies are only tracked (and so hittable) while Steve mode is on. Everything is dropped otherwise.
+void ReleaseEnemies() {
+    for (const mc::EntityId id : g_enemy_tracker.clear()) SekiroMod_UnregisterEntity(static_cast<uint64_t>(id));
+    g_logged_enemy_count = static_cast<size_t>(-1);
+}
+
+void SyncEnemies(float dt) {
+    if (!g_binder_ready.load() || !g_in_world || !SekiroMod_IsSteveModeActive()) {
+        ReleaseEnemies();
+        return;
+    }
+    static std::vector<sekiro::live::LiveEnemy> list;
+    g_binder->enumerateEnemies(list);
+    const auto changes = g_enemy_tracker.update(list, dt);
+    for (const mc::EntityId id : changes.removed) SekiroMod_UnregisterEntity(static_cast<uint64_t>(id));
+    for (const mc::EntityId id : changes.added) {
+        SekiroMod_RegisterEntity(static_cast<uint64_t>(id), g_enemy_tracker.mirror(id));
+    }
+    if (g_enemy_tracker.count() != g_logged_enemy_count) {
+        g_logged_enemy_count = g_enemy_tracker.count();
+        Log("Tracking %zu hostile enemies (%zu loaded characters read)", g_logged_enemy_count, list.size());
+    }
+}
+
+// Health the core took from enemies this frame, written into the game (lower-only, class-checked).
+void ApplyEnemyHealthWrites() {
+    if (!g_health_writer) return;
+    uint64_t ids[16];
+    float healths[16];
+    const size_t n = SekiroMod_DrainEnemyHealthWrites(ids, healths, 16);
+    for (size_t i = 0; i < n; ++i) {
+        const uintptr_t handle = g_enemy_tracker.handleOf(static_cast<mc::EntityId>(ids[i]));
+        if (handle == 0) continue; // the enemy left the world between the hit and now
+        const auto r = g_health_writer->lowerEnemyHealth(handle, healths[i]);
+        static int logged = 0;
+        if (logged < 40 && r != sekiro::live::HostHealthWriter::Result::Unchanged) {
+            ++logged;
+            Log("Enemy hit: wrote hp %.0f -> %s", healths[i],
+                r == sekiro::live::HostHealthWriter::Result::Written ? "written"
+                : r == sekiro::live::HostHealthWriter::Result::Rejected ? "REJECTED (validation failed, nothing written)"
+                : "WRITE FAILED");
+        }
     }
 }
 
@@ -426,6 +480,7 @@ bool SyncLiveGameState(float dt) {
         g_last_hide_status = sekiro::live::HideStatus::Idle;
         g_live_mirror.reset();
         g_camera_stabilizer.reset();
+        ReleaseEnemies();
         SekiroMod_UpdatePointers(nullptr, nullptr);
         Log("Left world / link lost");
     }
@@ -783,7 +838,9 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
 
     // Tick mc-core engine only with a validated live link; otherwise stay idle and say so in the HUD
     if (SyncLiveGameState(dt)) {
+        SyncEnemies(dt);
         SekiroMod_Tick(dt, &input_snapshot);
+        ApplyEnemyHealthWrites();
         TraceFrame(dt);
     }
 

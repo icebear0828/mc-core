@@ -69,6 +69,21 @@ void SekiroMod_Tick(float delta_time, const mc::InputSnapshot* input) {
     g_session->tick(delta_time, snapshot);
 }
 
+// Moves up to `max` queued enemy health values (set by hits this frame) into the caller's arrays and returns
+// how many; ids are EntityIds as handed out to the core.
+size_t SekiroMod_DrainEnemyHealthWrites(uint64_t* ids, float* healths, size_t max) {
+    if (!g_adapter || !ids || !healths) return 0;
+    const auto writes = g_adapter->drainHostHealthWrites();
+    size_t n = 0;
+    for (const auto& w : writes) {
+        if (n >= max) break;
+        ids[n] = static_cast<uint64_t>(w.id);
+        healths[n] = w.health;
+        ++n;
+    }
+    return n;
+}
+
 mc::Session* SekiroMod_GetSession() {
     return g_session.get();
 }
