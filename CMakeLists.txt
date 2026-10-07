@@ -26,6 +26,7 @@ add_library(mc_core STATIC
     include/mc/hud.hpp
     include/mc/hud_layout.hpp
     include/mc/session.hpp
+    include/mc/rig.hpp
     include/mc/contracts/physics_adapter.hpp
     include/mc/contracts/render_adapter.hpp
     include/mc/contracts/combat_adapter.hpp
@@ -40,6 +41,7 @@ add_library(mc_core STATIC
     src/hud.cpp
     src/hud_layout.cpp
     src/session.cpp
+    src/rig.cpp
 )
 
 target_include_directories(mc_core
