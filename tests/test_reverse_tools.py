@@ -105,3 +105,68 @@ def test_score_is_zero_for_identical_images_and_grows_with_difference():
     b = Image.new("RGB", (40, 40), (60, 10, 10))
     assert screen_probe.score(a, a, (0, 0, 40, 40)) == 0
     assert screen_probe.score(a, b, (0, 0, 40, 40)) == pytest.approx(50 / 3)
+
+
+# ---------------------------------------------------------------------------------------------
+# facing.py: synthetic snapshots with a planted yaw angle and a planted direction vector
+# ---------------------------------------------------------------------------------------------
+import facing  # noqa: E402
+
+
+def _fnode(floats):
+    data = struct.pack(f"<{len(floats)}f", *floats)
+    return (0x1000, data)
+
+
+def _fsnapshot(angle=None, vec=None, camera_noise=0.0):
+    f = [0.0] * 64
+    f[3] = 7.5  # an unrelated constant
+    f[10] = camera_noise  # changes when only the camera turns
+    if angle is not None:
+        f[20] = angle
+    if vec is not None:
+        f[30], f[31] = vec
+    return {(): _fnode(f)}
+
+
+def _fwalk(heading_angle, sign=1, offset=0.0):
+    dx, dz = math.sin(heading_angle), math.cos(heading_angle)
+    return (
+        _fsnapshot(angle=facing._wrap(sign * heading_angle + offset), vec=(dx, dz)),
+        (dx * 3, dz * 3),
+    )
+
+
+def test_facing_finds_planted_angle_and_vector():
+    still, camera = _fsnapshot(angle=0.3, vec=(0.1, 0.9), camera_noise=0.0), _fsnapshot(angle=0.3, vec=(0.1, 0.9), camera_noise=1.2)
+    hits = facing.find_facing_fields(still, camera, [_fwalk(0.8), _fwalk(-1.9)])
+    angle = [h for h in hits if h["kind"] == "angle" and h["offset"] == 20 * 4]
+    vector = [h for h in hits if h["kind"] == "vector" and h["offset"] == 30 * 4]
+    assert angle and vector
+
+
+def test_facing_reports_the_sign_convention_of_the_angle():
+    still = camera = _fsnapshot(angle=0.0)
+    hits = facing.find_facing_fields(still, camera, [_fwalk(0.8, sign=-1, offset=math.pi / 2), _fwalk(-1.9, sign=-1, offset=math.pi / 2)])
+    assert any(h["offset"] == 80 and h["model"] == (-1, math.pi / 2) for h in hits)
+
+
+def test_facing_ignores_fields_that_move_with_the_camera():
+    still = _fsnapshot(angle=0.3)
+    camera = _fsnapshot(angle=1.1)  # the planted angle changed when only the camera turned
+    hits = facing.find_facing_fields(still, camera, [_fwalk(0.8), _fwalk(-1.9)])
+    assert not [h for h in hits if h["offset"] == 80]
+
+
+def test_facing_ignores_constants_and_unrelated_fields():
+    still = camera = _fsnapshot()
+    hits = facing.find_facing_fields(still, camera, [_fwalk(0.8), _fwalk(-1.9)])
+    assert not hits or all(h["offset"] not in (12, 40) for h in hits)
+
+
+def test_facing_needs_two_clearly_different_walks():
+    still = camera = _fsnapshot()
+    with pytest.raises(ValueError):
+        facing.find_facing_fields(still, camera, [_fwalk(0.8)])
+    with pytest.raises(ValueError):
+        facing.find_facing_fields(still, camera, [_fwalk(0.8), _fwalk(0.85)])
