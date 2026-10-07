@@ -59,8 +59,18 @@ public:
     };
     [[nodiscard]] std::vector<HostHealthWrite> drainHostHealthWrites();
 
+    // The most recent raycastWorld() call, for diagnostics (why did that click not hit anything?).
+    struct LastRay {
+        bool valid{false};
+        Vec3 start{};
+        Vec3 end{};
+        RaycastResult result{};
+    };
+    [[nodiscard]] const LastRay& lastRay() const { return last_ray_; }
+
     // --- IPhysicsAdapter ---
     RaycastResult raycastWorld(const Vec3& start, const Vec3& end, EntityId ignore_entity = EntityId::None) override;
+    RaycastResult raycastWorldImpl(const Vec3& start, const Vec3& end, EntityId ignore_entity);
     uint64_t createBlockCollider(const GridPos& grid_pos, BlockId block_id, const Vec3& world_pos) override;
     void destroyBlockCollider(uint64_t collider_handle) override;
     void applyLinearImpulse(EntityId entity_id, const Vec3& impulse) override;
@@ -149,6 +159,7 @@ private:
     std::unordered_map<uint64_t, std::unique_ptr<SekiroBlockVisualRecord>> visuals_;
     std::unordered_map<EntityId, sekiro::native::ChrIns*> registered_entities_;
     std::map<EntityId, float> pending_health_writes_;
+    LastRay last_ray_{};
     std::atomic<bool> input_suppressed_{false};
 
     // 12 Steve parts

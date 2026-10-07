@@ -66,6 +66,8 @@ public:
     // How often the game put the Wolf back behind our back while we were hiding it (each one is a leaked
     // frame unless a guard re-applies the hide fast), and how often the model object itself was replaced.
     [[nodiscard]] unsigned resetCount() const { return resets_; }
+    // One line describing what both hide paths currently see (read only): for logs when hiding does not work.
+    [[nodiscard]] std::string describe() const;
     [[nodiscard]] unsigned objectChangeCount() const { return object_changes_; }
 
 private:

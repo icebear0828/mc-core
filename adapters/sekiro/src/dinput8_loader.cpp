@@ -435,12 +435,14 @@ void ReleaseEnemies() {
     g_logged_enemy_count = static_cast<size_t>(-1);
 }
 
+std::vector<sekiro::live::LiveEnemy> g_last_enemy_list; // what the last frame read, for diagnostics
+
 void SyncEnemies(float dt) {
     if (!g_binder_ready.load() || !g_in_world || !SekiroMod_IsSteveModeActive()) {
         ReleaseEnemies();
         return;
     }
-    static std::vector<sekiro::live::LiveEnemy> list;
+    std::vector<sekiro::live::LiveEnemy>& list = g_last_enemy_list;
     g_binder->enumerateEnemies(list);
     const auto changes = g_enemy_tracker.update(list, dt);
     for (const mc::EntityId id : changes.removed) SekiroMod_UnregisterEntity(static_cast<uint64_t>(id));
@@ -450,6 +452,33 @@ void SyncEnemies(float dt) {
     if (g_enemy_tracker.count() != g_logged_enemy_count) {
         g_logged_enemy_count = g_enemy_tracker.count();
         Log("Tracking %zu hostile enemies (%zu loaded characters read)", g_logged_enemy_count, list.size());
+    }
+}
+
+// Why did that click (not) hit anything? Logged for the first clicks of a run: where the ray started and went,
+// what it found, and every loaded character within 12 m with the reason it is or is not a target.
+void LogAttackDiagnostics() {
+    static int logged = 0;
+    if (logged >= 40) return;
+    const mc::adapter::SekiroAdapter* adapter = SekiroMod_GetAdapter();
+    if (!adapter) return;
+    ++logged;
+    const auto& ray = adapter->lastRay();
+    if (!ray.valid) {
+        Log("Attack click #%d: the Session did not cast a ray", logged);
+        return;
+    }
+    const mc::Vec3 d = (ray.end - ray.start).normalized();
+    Log("Attack click #%d: ray from (%.0f,%.0f,%.0f) cm dir (%.2f,%.2f,%.2f) -> %s%s entity=%llu at (%.0f,%.0f,%.0f); %zu tracked",
+        logged, ray.start.x, ray.start.y, ray.start.z, d.x, d.y, d.z, ray.result.has_hit ? "HIT" : "no hit",
+        ray.result.is_block ? " (block)" : "", static_cast<unsigned long long>(ray.result.hit_entity), ray.result.point.x,
+        ray.result.point.y, ray.result.point.z, g_enemy_tracker.count());
+    for (const auto& e : g_last_enemy_list) {
+        const float dx = e.position.X - g_last_sample.player_pos.X, dz = e.position.Z - g_last_sample.player_pos.Z;
+        const float dist = std::sqrt(dx * dx + dz * dz), dy = e.position.Y - g_last_sample.player_pos.Y;
+        if (dist > 12.0f) continue;
+        Log("    near: slot %u id %u team %u dist %.1f m dy %.1f hp %s%.0f/%.0f %s%s", e.slot, e.char_id, e.team, dist, dy,
+            e.hp_valid ? "" : "(unknown) ", e.hp, e.max_hp, e.hostile ? "hostile" : "not-hostile", e.dead ? " DEAD" : "");
     }
 }
 
@@ -508,6 +537,20 @@ bool SyncLiveGameState(float dt) {
             if (g_model_hider->objectChangeCount() != logged_changes) {
                 logged_changes = g_model_hider->objectChangeCount();
                 Log("Wolf model: the game replaced the Wolf's model object (warp/cutscene #%u); hidden again", logged_changes);
+            }
+            {
+                // While the Wolf is being hidden, say what both hide paths see once a second for the first 8 s.
+                static DWORD last_describe = 0;
+                static int described = 0;
+                if (g_player_mirror.bModelHidden) {
+                    const DWORD now = GetTickCount();
+                    if (hs != g_last_hide_status) described = 0;
+                    if (described < 8 && now - last_describe >= 1000) {
+                        last_describe = now;
+                        ++described;
+                        Log("Wolf model state: %s", g_model_hider->describe().c_str());
+                    }
+                }
             }
             if (hs != g_last_hide_status) {
                 const char* name = hs == sekiro::live::HideStatus::Hidden ? "Hidden (Wolf draw mask = 0)"
@@ -978,6 +1021,7 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
     if (SyncLiveGameState(dt)) {
         SyncEnemies(dt);
         SekiroMod_Tick(dt, &input_snapshot);
+        if (input_snapshot.attack_pressed && SekiroMod_IsSteveModeActive()) LogAttackDiagnostics();
         ApplyEnemyHealthWrites();
         TraceFrame(dt);
     }

@@ -422,3 +422,30 @@ TEST(SekiroModelResetsTest, TheDrawEntityMaskResetsAreCountedToo) {
     EXPECT_EQ(h.resetCount(), 1u);
     EXPECT_EQ(s.mask(), 0u);
 }
+
+
+TEST(SekiroModelDiagnosticsTest, DescribesBothHidePathsWithoutWritingAnything) {
+    MaskScene s;
+    ModelHider h = s.hider();
+    const std::string before = h.describe();
+    EXPECT_NE(before.find("model="), std::string::npos);
+    EXPECT_NE(before.find("masks=ffffffffffffffff,ffffffffffffffff"), std::string::npos) << before;
+    EXPECT_NE(before.find("entity="), std::string::npos);
+    EXPECT_NE(before.find("entity_mask=4"), std::string::npos) << before;
+    EXPECT_EQ(s.mem.writes, 0);
+
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    const std::string after = h.describe();
+    EXPECT_NE(after.find("masks=0,0"), std::string::npos) << after;
+    EXPECT_NE(after.find("entity_mask=0"), std::string::npos) << after;
+}
+
+TEST(SekiroModelDiagnosticsTest, SaysWhyAPathIsUnavailable) {
+    MaskScene s;
+    s.dropDrawEntity();
+    s.mem.put<uint64_t>(kModel, kBase + 0x1111);
+    ModelHider h = s.hider();
+    const std::string text = h.describe();
+    EXPECT_NE(text.find("model=wrong-class"), std::string::npos) << text;
+    EXPECT_NE(text.find("entity=none"), std::string::npos) << text;
+}

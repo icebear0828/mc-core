@@ -188,6 +188,12 @@ std::optional<CapsuleHit> rayVsCapsule(const Vec3& start, const Vec3& dir, float
 } // namespace
 
 RaycastResult SekiroAdapter::raycastWorld(const Vec3& start, const Vec3& end, EntityId ignore_entity) {
+    const RaycastResult result = raycastWorldImpl(start, end, ignore_entity);
+    last_ray_ = {true, start, end, result};
+    return result;
+}
+
+RaycastResult SekiroAdapter::raycastWorldImpl(const Vec3& start, const Vec3& end, EntityId ignore_entity) {
     sekiro::native::FVector3 native_start = toNativePoint(start);
     sekiro::native::FVector3 native_end = toNativePoint(end);
     sekiro::native::HavokHitResult hit{};

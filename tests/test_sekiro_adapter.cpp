@@ -363,6 +363,24 @@ TEST(SekiroAdapterEnemyTest, ARayAtChestHeightHitsTheEnemyAndNamesItsEntityId) {
     EXPECT_LT(hit.normal.x, -0.9f); // faces back toward the shooter
 }
 
+TEST(SekiroAdapterEnemyTest, TheLastRayIsRememberedForDiagnostics) {
+    SekiroAdapter adapter;
+    ChrIns enemy = makeEnemy(0.f, 0.f, 3.f);
+    adapter.registerEntity(static_cast<EntityId>(7), &enemy);
+    EXPECT_FALSE(adapter.lastRay().valid);
+
+    adapter.raycastWorld({0.f, 0.f, 100.f}, {450.f, 0.f, 100.f});
+    ASSERT_TRUE(adapter.lastRay().valid);
+    EXPECT_NEAR(adapter.lastRay().start.z, 100.f, 1e-3f);
+    EXPECT_NEAR(adapter.lastRay().end.x, 450.f, 1e-3f);
+    EXPECT_TRUE(adapter.lastRay().result.has_hit);
+    EXPECT_EQ(adapter.lastRay().result.hit_entity, static_cast<EntityId>(7));
+
+    adapter.raycastWorld({0.f, 100.f, 100.f}, {450.f, 100.f, 100.f}); // a miss
+    EXPECT_FALSE(adapter.lastRay().result.has_hit);
+    EXPECT_NEAR(adapter.lastRay().start.y, 100.f, 1e-3f);
+}
+
 TEST(SekiroAdapterEnemyTest, MissesBesideAboveAndBelowAndBeyondTheRay) {
     SekiroAdapter adapter;
     ChrIns enemy = makeEnemy(0.f, 0.f, 3.f);

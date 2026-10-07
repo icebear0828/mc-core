@@ -1,5 +1,7 @@
 #include "sekiro_model.hpp"
 
+#include <cstdio>
+
 #include <cstring>
 
 namespace sekiro::live {
@@ -218,6 +220,39 @@ void ModelHider::restoreChrModelMasks() {
     }
     have_masks_original_ = false;
     masks_model_ = 0;
+}
+
+std::string ModelHider::describe() const {
+    char buf[320];
+    std::string text;
+    auto readU64At = [&](uintptr_t a) -> std::optional<uint64_t> {
+        uint64_t v = 0;
+        if (!reader_.read(a, &v, sizeof(v))) return std::nullopt;
+        return v;
+    };
+    const auto world = readU64At(base_ + wcm_rva_);
+    const auto player = world && *world ? readU64At(*world + layout::kPlayerInsInWorldChrMan) : std::nullopt;
+    const auto model = player && *player ? readU64At(*player + layout::kModelInChrIns) : std::nullopt;
+    if (!model || *model == 0) return "model=none";
+    const auto vtable = readU64At(*model);
+    if (!vtable || *vtable != base_ + layout::kChrModelVtableRva) {
+        text = "model=wrong-class";
+    } else {
+        const auto m1 = readU64At(*model + layout::kChrModelDrawMask1);
+        const auto m2 = readU64At(*model + layout::kChrModelDrawMask2);
+        std::snprintf(buf, sizeof(buf), "model=%llx masks=%llx,%llx", static_cast<unsigned long long>(*model),
+                      static_cast<unsigned long long>(m1.value_or(0)), static_cast<unsigned long long>(m2.value_or(0)));
+        text = buf;
+    }
+    const auto entity = readU64At(*model + layout::kAsmDrawEntityInModel);
+    if (!entity || *entity == 0 || *entity < 0x10000) {
+        text += " entity=none";
+    } else {
+        const auto mask = readU32(reader_, *entity + layout::kDrawMask);
+        std::snprintf(buf, sizeof(buf), " entity=%llx entity_mask=%u", static_cast<unsigned long long>(*entity), mask.value_or(0xFFFFFFFFu));
+        text += buf;
+    }
+    return text;
 }
 
 HideStatus ModelHider::update(bool want_hidden) {
