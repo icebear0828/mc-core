@@ -236,15 +236,23 @@ void Session::tick(float dt, const InputSnapshot& in) {
     anim.forward_speed = (player_vel.x * forward_h.x + player_vel.y * forward_h.y) / kCmPerMeter;
     anim.strafe_speed = (player_vel.x * right.x + player_vel.y * right.y) / kCmPerMeter;
     // Minecraft turns the head freely up to 50 degrees off the body's heading, then drags the body along.
-    if (!body_yaw_seeded_) {
-        body_yaw_ = yaw;
+    float host_yaw = 0.f;
+    if (ports_.input.getPlayerFacingYaw(host_yaw) && std::isfinite(host_yaw)) {
+        // The native character owns its heading; only the head is ours.
+        body_yaw_ = wrapPi(host_yaw);
         body_yaw_seeded_ = true;
+        anim.look_yaw = std::clamp(wrapPi(yaw - body_yaw_), -kMaxHeadYawRad, kMaxHeadYawRad);
+    } else {
+        if (!body_yaw_seeded_) {
+            body_yaw_ = yaw;
+            body_yaw_seeded_ = true;
+        }
+        const float head_offset = wrapPi(yaw - body_yaw_);
+        if (std::fabs(head_offset) > kMaxHeadYawRad) {
+            body_yaw_ = wrapPi(body_yaw_ + head_offset - std::copysign(kMaxHeadYawRad, head_offset));
+        }
+        anim.look_yaw = wrapPi(yaw - body_yaw_);
     }
-    const float head_offset = wrapPi(yaw - body_yaw_);
-    if (std::fabs(head_offset) > kMaxHeadYawRad) {
-        body_yaw_ = wrapPi(body_yaw_ + head_offset - std::copysign(kMaxHeadYawRad, head_offset));
-    }
-    anim.look_yaw = wrapPi(yaw - body_yaw_);
     anim.look_pitch = -pitch; // our canonical pitch is positive-up; the rig expects positive-down
     anim.swing_progress = swing_progress;
     anim.eating_progress = consumables_->getProgress();

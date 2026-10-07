@@ -538,6 +538,14 @@ Vec3 SekiroAdapter::getPlayerVelocity() const {
     return Vec3{};
 }
 
+bool SekiroAdapter::getPlayerFacingYaw(float& out_yaw) const {
+    if (!player_ || !player_->bFacingValid) return false;
+    const Vec3 dir = toMcDir(sekiro::native::FVector3{player_->Facing.X, 0.0f, player_->Facing.Z});
+    if (dir.x * dir.x + dir.y * dir.y < 0.25f) return false;
+    out_yaw = std::atan2(dir.y, dir.x);
+    return true;
+}
+
 bool SekiroAdapter::isPlayerOnGround() const {
     constexpr float kAirborneVerticalSpeed = 2.0f; // m/s
     if (!player_) {

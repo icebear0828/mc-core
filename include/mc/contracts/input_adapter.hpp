@@ -17,6 +17,15 @@ public:
     virtual Vec3 getCameraForward() const = 0;
     virtual Vec3 getPlayerPosition() const = 0;
     virtual Vec3 getPlayerVelocity() const = 0;
+
+    // The heading of the host character's own body, as a canonical yaw (0 = +X, counter-clockwise
+    // positive, radians). Hosts whose character turns where it walks should report it so Steve's body
+    // follows the real character; the head then turns freely up to 50 degrees off it. Return false when
+    // the host has no trustworthy facing (the Session then derives the body yaw from the camera).
+    virtual bool getPlayerFacingYaw(float& out_yaw) const {
+        (void)out_yaw;
+        return false;
+    }
 };
 
 } // namespace mc

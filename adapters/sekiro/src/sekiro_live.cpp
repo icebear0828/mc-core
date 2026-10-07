@@ -170,6 +170,23 @@ bool LiveBinder::readCamera(uintptr_t object, LiveSample& out) const {
     return true;
 }
 
+void LiveBinder::readFacing(uintptr_t player, LiveSample& out) const {
+    out.facing_valid = false;
+    uintptr_t model = 0;
+    if (!readPointer(player + layout::kChrModelInChrIns, model) || model == 0) return;
+    float block[4];
+    if (!reader_.read(model + layout::kFacingBlock, block, sizeof(block))) return;
+    for (float v : block) {
+        if (!std::isfinite(v)) return;
+    }
+    // A rotation about the vertical axis only: x and z stay zero and (y, w) is a unit pair.
+    if (std::fabs(block[0]) > layout::kFacingTolerance || std::fabs(block[2]) > layout::kFacingTolerance) return;
+    if (std::fabs(block[1] * block[1] + block[3] * block[3] - 1.0f) > layout::kFacingTolerance) return;
+    out.facing_x = -block[3];
+    out.facing_z = -block[1];
+    out.facing_valid = true;
+}
+
 SampleStatus LiveBinder::sample(LiveSample& out) const {
     if (status_ != BindStatus::Bound) return SampleStatus::NotBound;
 
@@ -196,6 +213,7 @@ SampleStatus LiveBinder::sample(LiveSample& out) const {
 
     LiveSample s;
     s.player_pos = pos;
+    readFacing(player, s);
 
     // Try the candidate that worked last time first, then the others.
     const size_t count = camera_global_rvas_.size();
@@ -222,6 +240,8 @@ void LiveMirror::update(const LiveSample& sample, float dt, native::ChrIns& play
 
     player.Position = sample.player_pos;
     player.Velocity = velocity;
+    player.bFacingValid = sample.facing_valid;
+    if (sample.facing_valid) player.Facing = {sample.facing_x, 0.0f, sample.facing_z};
     camera.Position = sample.cam_pos;
     camera.Forward = sample.cam_forward;
 }

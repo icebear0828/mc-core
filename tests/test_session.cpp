@@ -99,7 +99,13 @@ public:
     mc::Vec3 player_vel{0.f, 0.f, 0.f};
     mc::Vec3 cam_pos{0.f, 0.f, 160.f};
     mc::Vec3 cam_fwd{1.f, 0.f, 0.f};
+    bool has_facing{false};
+    float facing_yaw{0.f};
 
+    bool getPlayerFacingYaw(float& out) const override {
+        if (has_facing) out = facing_yaw;
+        return has_facing;
+    }
     mc::ItemId getEquippedMainHand() const override { return mc::ItemId::None; }
     mc::ItemId getEquippedOffHand() const override { return mc::ItemId::None; }
     mc::Vec3 getCameraPosition() const override { return cam_pos; }
@@ -717,4 +723,51 @@ TEST_F(SessionTest, ReactivatingReseedsTheBodyYawFromTheCamera) {
     session.setActive(true);
     session.tick(0.05f, {});
     EXPECT_NEAR(render.root_yaw, kPi / 2.f, 1e-4f); // not stuck at the old heading
+}
+
+// ---------------------------------------------------------------------------------------------
+// Host-owned body facing (the native character turns where it walks; Steve must follow that, not the camera)
+// ---------------------------------------------------------------------------------------------
+TEST_F(SessionTest, BodyFollowsTheHostFacingNotTheCameraWhenTheHostReportsOne) {
+    input.has_facing = true;
+    input.facing_yaw = kPi / 2.f;
+    session.setActive(true);
+    input.cam_fwd = {1.f, 0.f, 0.f}; // camera looks along +X, the character faces +Y
+    session.tick(0.05f, {});
+    EXPECT_NEAR(render.root_yaw, kPi / 2.f, 1e-4f);
+    EXPECT_NEAR(session.lastAnimInput().look_yaw, -50.f * kPi / 180.f, 1e-4f); // 90 degrees off: clamped
+}
+
+TEST_F(SessionTest, HeadIsClampedToFiftyDegreesAndTheHostBodyIsNeverDragged) {
+    input.has_facing = true;
+    input.facing_yaw = 0.f;
+    session.setActive(true);
+    input.cam_fwd = {std::cos(2.f), std::sin(2.f), 0.f}; // 115 degrees off the body
+    session.tick(0.05f, {});
+    EXPECT_NEAR(render.root_yaw, 0.f, 1e-4f);                  // the body stays where the host put it
+    EXPECT_NEAR(session.lastAnimInput().look_yaw, 50.f * kPi / 180.f, 1e-4f);
+}
+
+TEST_F(SessionTest, BodyYawTracksTheHostWhenItTurnsAcrossThePiBoundary) {
+    input.has_facing = true;
+    session.setActive(true);
+    input.facing_yaw = 3.0f;
+    session.tick(0.05f, {});
+    input.facing_yaw = -3.0f; // 0.28 rad further round, through +/-pi
+    session.tick(0.05f, {});
+    EXPECT_NEAR(std::cos(render.root_yaw), std::cos(-3.0f), 1e-4f);
+    EXPECT_NEAR(std::sin(render.root_yaw), std::sin(-3.0f), 1e-4f);
+}
+
+TEST_F(SessionTest, HostFacingAppearingOrVanishingMidSessionIsHandled) {
+    session.setActive(true);
+    input.cam_fwd = {1.f, 0.f, 0.f};
+    session.tick(0.05f, {});
+    input.has_facing = true;
+    input.facing_yaw = 1.0f;
+    session.tick(0.05f, {});
+    EXPECT_NEAR(render.root_yaw, 1.0f, 1e-4f);
+    input.has_facing = false; // sample went invalid: carry on from the last body yaw (head limit rules), no jump
+    session.tick(0.05f, {});
+    EXPECT_NEAR(render.root_yaw, 1.0f, 0.2f);
 }

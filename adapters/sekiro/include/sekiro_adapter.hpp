@@ -77,6 +77,7 @@ public:
     Vec3 getCameraForward() const override;
     Vec3 getPlayerPosition() const override;
     Vec3 getPlayerVelocity() const override;
+    bool getPlayerFacingYaw(float& out_yaw) const override;
 
     // Auxiliary methods & inspections
     void setEquippedItems(ItemId main, ItemId off);

@@ -255,6 +255,31 @@ TEST(SekiroAdapterTest, InputStateQueries) {
     EXPECT_NEAR(player_vel.y, -400.0f, 1e-3f); // native +X (right) is MC -Y; 4 m/s = 400 cm/s
 }
 
+TEST(SekiroAdapterTest, FacingYawIsTheCanonicalHeadingOfTheNativeFacingDirection) {
+    sekiro::native::ChrIns player;
+    sekiro::native::ChrCam camera;
+    SekiroAdapter adapter(&player, &camera);
+    float yaw = 123.f;
+
+    EXPECT_FALSE(adapter.getPlayerFacingYaw(yaw)); // nothing valid yet: the Session falls back to the camera
+
+    player.bFacingValid = true;
+    player.Facing = {0.f, 0.f, 1.f};               // native forward (+Z) is canonical +X
+    ASSERT_TRUE(adapter.getPlayerFacingYaw(yaw));
+    EXPECT_NEAR(yaw, 0.f, 1e-5f);
+
+    player.Facing = {1.f, 0.f, 0.f};               // native right (+X) is canonical -Y: yaw -90 degrees
+    ASSERT_TRUE(adapter.getPlayerFacingYaw(yaw));
+    EXPECT_NEAR(yaw, -1.5707963f, 1e-5f);
+
+    player.Facing = {-1.f, 0.f, 0.f};              // native left is canonical +Y: yaw +90 degrees
+    ASSERT_TRUE(adapter.getPlayerFacingYaw(yaw));
+    EXPECT_NEAR(yaw, 1.5707963f, 1e-5f);
+
+    player.Facing = {0.f, 0.f, 0.f};               // degenerate direction is not a facing
+    EXPECT_FALSE(adapter.getPlayerFacingYaw(yaw));
+}
+
 TEST(SekiroAdapterTest, VoxelWorldIntegrationCycle) {
     SekiroAdapter adapter;
     VoxelWorld world(adapter, adapter);

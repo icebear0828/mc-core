@@ -104,6 +104,9 @@ public:
 
     FVector3 Position{0.f, 0.f, 0.f};
     FVector3 Velocity{0.f, 0.f, 0.f};
+    // Horizontal heading of the character's body (unit vector in X/Z), mirrored from the live game.
+    FVector3 Facing{0.f, 0.f, 1.f};
+    bool bFacingValid{false};
     int32_t StaggerLevel{0};
 
     void ApplyImpulse(const FVector3& impulse) {

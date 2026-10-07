@@ -20,6 +20,7 @@ constexpr uintptr_t kWorld = 0x7ff400000000ull;   // WorldChrMan object
 constexpr uintptr_t kPlayer = 0x7ff400100000ull;  // player ChrIns
 constexpr uintptr_t kCamera = 0x7ff400200000ull;  // camera object
 constexpr uintptr_t kCameraDecoy = 0x7ff400300000ull;
+constexpr uintptr_t kChrModel = 0x7ff400400000ull;  // player ChrIns+0x48 object
 
 constexpr uint32_t kWcmPatternRva = 0x100;
 constexpr uint32_t kWcmGlobalRva = 0x1000;
@@ -120,6 +121,13 @@ struct World {
         float b[3] = {x + copy_dx, y, z};
         mem.put(kPlayer + 0x1050, a);
         mem.put(kPlayer + 0x1060, b);
+    }
+    // Heading block of the model object: (0, qy, 0, qw) at +0x2c, measured on the real game.
+    void setFacingBlock(float qy, float qw, float x = 0.f, float z = 0.f) {
+        if (!mem.regions.count(kChrModel)) mem.region(kChrModel, 0x400);
+        mem.put<uint64_t>(kPlayer + 0x48, kChrModel);
+        const float block[4] = {x, qy, z, qw};
+        mem.put(kChrModel + 0x2c, block);
     }
     void setCamera(const Mat& m, uintptr_t obj = kCamera) { mem.put(obj + 0xea0, m); }
 };
@@ -227,6 +235,41 @@ TEST(SekiroLiveSampleTest, ReadsVerticalFovWhenPlausibleAndReportsZeroOtherwise)
     }
 }
 
+TEST(SekiroLiveSampleTest, ReadsTheCharactersFacingDirection) {
+    World w;
+    // Values read from the running game while walking straight ahead: the heading equals (-qw, -qy) in (x, z).
+    w.setFacingBlock(0.9281f, -0.3722f);
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    LiveSample s;
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+    EXPECT_TRUE(s.facing_valid);
+    EXPECT_NEAR(s.facing_x, 0.3722f, 1e-4f);
+    EXPECT_NEAR(s.facing_z, -0.9281f, 1e-4f);
+}
+
+TEST(SekiroLiveSampleTest, MissingOrImplausibleFacingNeverInvalidatesTheSample) {
+    World w;
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    LiveSample s;
+
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok); // no model object at all
+    EXPECT_FALSE(s.facing_valid);
+
+    w.setFacingBlock(0.5f, 0.5f);                  // length 0.707: not a unit direction
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+    EXPECT_FALSE(s.facing_valid);
+
+    w.setFacingBlock(0.6f, 0.8f, 0.3f, 0.f);       // x/z of the block must be ~0 for it to be a Y rotation
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+    EXPECT_FALSE(s.facing_valid);
+
+    w.setFacingBlock(std::numeric_limits<float>::quiet_NaN(), 1.f);
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+    EXPECT_FALSE(s.facing_valid);
+}
+
 TEST(SekiroLiveSampleTest, NotInWorldWhileManagersAreNull) {
     World w;
     LiveBinder binder(w.mem, kBase, kImageSize);
@@ -332,6 +375,25 @@ TEST(SekiroLiveMirrorTest, FillsMirrorAndDifferentiatesVelocity) {
     mirror.update(b, 0.02f, player, camera);
     EXPECT_NEAR(player.Velocity.Z, 5.f, 1e-3f);
     EXPECT_NEAR(player.Velocity.X, 0.f, 1e-4f);
+}
+
+TEST(SekiroLiveMirrorTest, CarriesTheFacingIntoTheMirrorOnlyWhileItIsValid) {
+    ChrIns player;
+    ChrCam camera;
+    LiveMirror mirror;
+    LiveSample s;
+    s.player_pos = {1.f, 2.f, 3.f};
+    s.facing_valid = true;
+    s.facing_x = 0.6f;
+    s.facing_z = 0.8f;
+    mirror.update(s, 0.016f, player, camera);
+    EXPECT_TRUE(player.bFacingValid);
+    EXPECT_FLOAT_EQ(player.Facing.X, 0.6f);
+    EXPECT_FLOAT_EQ(player.Facing.Z, 0.8f);
+
+    s.facing_valid = false;
+    mirror.update(s, 0.016f, player, camera);
+    EXPECT_FALSE(player.bFacingValid);
 }
 
 TEST(SekiroLiveMirrorTest, TeleportAndResetDoNotProduceVelocitySpikes) {

@@ -30,6 +30,12 @@ inline constexpr uint32_t kRipInstrLength = 7;
 inline constexpr uintptr_t kPlayerInsInWorldChrMan = 0x88;
 inline constexpr uintptr_t kChrPosition = 0x1050;     // float x,y,z (metres)
 inline constexpr uintptr_t kChrPositionCopy = 0x1060; // second copy, used as a consistency check
+// The player's model object ([ChrIns+0x48]) holds the body heading as (0, qy, 0, qw) at +0x2c. Measured on
+// the running game: walking straight ahead gave exactly the camera's forward vector as (-qw, -qy) in (x, z),
+// the block is stable while only the camera turns, and it follows the character when it turns.
+inline constexpr uintptr_t kChrModelInChrIns = 0x48;
+inline constexpr uintptr_t kFacingBlock = 0x2c; // float x, y, z, w
+inline constexpr float kFacingTolerance = 0.02f;
 inline constexpr uintptr_t kCameraMatrix = 0xea0;     // row-major 4x4: right, up, forward, position(w=1)
 inline constexpr uintptr_t kCameraFov = 0x160;        // float, returned by the camera getter the signature matches
 
@@ -68,6 +74,10 @@ struct LiveSample {
     native::FVector3 cam_up;
     native::FVector3 cam_forward;
     float cam_fov_y{0.0f}; // radians; 0 = unknown (caller picks a default)
+    // Body heading of the player as a horizontal unit vector (native X/Z). Optional: never fails a sample.
+    bool facing_valid{false};
+    float facing_x{0.0f};
+    float facing_z{1.0f};
 };
 
 enum class BindStatus { Searching, Ambiguous, Bound };
@@ -93,6 +103,7 @@ public:
 private:
     bool readPointer(uintptr_t address, uintptr_t& out) const;
     bool readCamera(uintptr_t object, LiveSample& out) const;
+    void readFacing(uintptr_t player, LiveSample& out) const;
 
     const IMemoryReader& reader_;
     uintptr_t base_;
