@@ -96,7 +96,7 @@ struct StateBackup {
         c->IAGetIndexBuffer(index_buffer.GetAddressOf(), &index_format, &index_offset);
         c->VSGetShader(vs.GetAddressOf(), nullptr, nullptr);
         c->PSGetShader(ps.GetAddressOf(), nullptr, nullptr);
-        c->GSGetShader(gs.GetAddressOf());
+        c->GSGetShader(gs.GetAddressOf(), nullptr, nullptr);
         c->HSGetShader(hs.GetAddressOf(), nullptr, nullptr);
         c->DSGetShader(ds.GetAddressOf(), nullptr, nullptr);
         ID3D11Buffer* cbs[2] = {};
