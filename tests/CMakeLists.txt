@@ -28,6 +28,7 @@ add_executable(mc_tests
     test_sekiro_damage_probe.cpp
     test_sekiro_steve.cpp
     test_sekiro_model.cpp
+    test_eldenring_live.cpp
 )
 
 target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source")
@@ -37,6 +38,7 @@ target_link_libraries(mc_tests
         mc_core
         wukong_adapter
         sekiro_adapter
+        eldenring_live
         GTest::gtest_main
 )
 

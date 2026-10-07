@@ -57,6 +57,7 @@ option(BUILD_ADAPTERS "Build game adapters." ON)
 if(BUILD_ADAPTERS AND CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     add_subdirectory(adapters/wukong)
     add_subdirectory(adapters/sekiro)
+    add_subdirectory(adapters/eldenring)
 endif()
 
 # Testing
