@@ -22,6 +22,7 @@ add_executable(mc_tests
     test_rig.cpp
     test_sekiro_live.cpp
     test_sekiro_enemies.cpp
+    test_sekiro_host_write.cpp
     test_sekiro_steve.cpp
     test_sekiro_model.cpp
 )
