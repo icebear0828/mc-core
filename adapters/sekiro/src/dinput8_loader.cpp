@@ -824,6 +824,14 @@ void TraceFrame(float dt) {
     }
 }
 
+// Our own key/button edges. GetAsyncKeyState's "pressed since the last call" bit is shared with the game (it
+// imports the same function) so the game could take a click before we saw it; levels cannot be taken.
+enum KeySlot : size_t { kKeyF6, kKeyF7, kKeyF8, kKeyLeft, kKeyRight, kKeySpace, kKeyDigit0, kKeyCount = kKeyDigit0 + 9 };
+sekiro::input::EdgeSet<kKeyCount> g_key_edges;
+bool KeyRising(size_t slot, int vk) {
+    return g_key_edges.rising(slot, (GetAsyncKeyState(vk) & 0x8000) != 0);
+}
+
 HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UINT flags) {
     if (!g_mod_initialized.load()) {
         Log("Initializing SekiroMod (no player bound yet; waiting for live game link)...");
@@ -838,7 +846,7 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
     }
 
     // F6 Hotkey toggle
-    if (GetAsyncKeyState(VK_F6) & 1) {
+    if (KeyRising(kKeyF6, VK_F6)) {
         bool current_active = SekiroMod_IsSteveModeActive();
         bool new_active = !current_active;
         SekiroMod_SetSteveMode(new_active);
@@ -846,7 +854,7 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
         Log(">>> Hotkey [F6] triggered! Steve Mode toggled to: %s", new_active ? "TRUE (ACTIVE)" : "FALSE (STANDBY)");
     }
 
-    if (GetAsyncKeyState(VK_F7) & 1) {
+    if (KeyRising(kKeyF7, VK_F7)) {
         g_screenshot_requested.store(true);
     }
     // Remote debugging: an external tool asks for a frame by creating mc_cmd_screenshot.txt in the game
@@ -860,7 +868,7 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
         DeleteFileW(L"mc_cmd_depth.txt");
         g_depth_dump_requested.store(true);
     }
-    if (GetAsyncKeyState(VK_F8) & 1) {
+    if (KeyRising(kKeyF8, VK_F8)) {
         g_show_debug_panel = !g_show_debug_panel;
     }
 
@@ -868,7 +876,7 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
     mc::InputSnapshot input_snapshot{};
     mc::HudEngine* global_hud = GetHud();
     for (int k = 0; k < 9; ++k) {
-        if (GetAsyncKeyState('1' + k) & 1) {
+        if (KeyRising(kKeyDigit0 + static_cast<size_t>(k), '1' + k)) {
             input_snapshot.hotbar_select = k;
             g_selected_slot = k;
             Log("Selected hotbar slot: %d (%s)", k + 1, global_hud ? mc::HudEngine::getItemDisplayName(global_hud->getSlot(k).item) : kHotbarItems[k]);
@@ -877,10 +885,10 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
     if (g_imgui_initialized.load() && ImGui::GetIO().MouseWheel != 0.0f) {
         input_snapshot.scroll = ImGui::GetIO().MouseWheel > 0.0f ? -1 : 1;
     }
-    input_snapshot.attack_pressed = (GetAsyncKeyState(VK_LBUTTON) & 1) != 0;
+    input_snapshot.attack_pressed = KeyRising(kKeyLeft, VK_LBUTTON);
     input_snapshot.attack_held = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-    input_snapshot.use_pressed = (GetAsyncKeyState(VK_RBUTTON) & 1) != 0;
-    input_snapshot.glide_toggle = (GetAsyncKeyState(VK_SPACE) & 1) != 0;
+    input_snapshot.use_pressed = KeyRising(kKeyRight, VK_RBUTTON);
+    input_snapshot.glide_toggle = KeyRising(kKeySpace, VK_SPACE);
 
     // Compute delta time
     auto now = std::chrono::steady_clock::now();

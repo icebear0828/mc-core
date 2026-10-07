@@ -145,3 +145,44 @@ TEST(SekiroInputFilterTest, TheSuppressedKeyListIsExactlyTheHealingGourd) {
     EXPECT_EQ(kSuppressedKeys[0], kDikR);
     EXPECT_EQ(kDikR, 0x13u); // DIK_R
 }
+
+
+// ---------------------------------------------------------------------------------------------
+// Our own click detection. GetAsyncKeyState's "pressed since the last call" bit is consumed by whoever calls
+// first, and the game calls it too, so clicks were missed. A level-based rising edge cannot be stolen.
+// ---------------------------------------------------------------------------------------------
+TEST(SekiroEdgeTrackerTest, ReportsEachPressOnceAtTheFirstFrameItIsDown) {
+    EdgeTracker t;
+    EXPECT_FALSE(t.rising(false));
+    EXPECT_TRUE(t.rising(true));   // pressed
+    EXPECT_FALSE(t.rising(true));  // held: no new press
+    EXPECT_FALSE(t.rising(true));
+    EXPECT_FALSE(t.rising(false)); // released
+    EXPECT_TRUE(t.rising(true));   // pressed again
+}
+
+TEST(SekiroEdgeTrackerTest, AKeyAlreadyDownWhenTrackingStartsDoesNotFireAPhantomPress) {
+    EdgeTracker t;
+    EXPECT_FALSE(t.rising(true, /*initial_sample=*/true)); // e.g. the button was held while the mod loaded
+    EXPECT_FALSE(t.rising(true));
+    EXPECT_FALSE(t.rising(false));
+    EXPECT_TRUE(t.rising(true));
+}
+
+TEST(SekiroEdgeTrackerTest, ResetForgetsTheHeldStateSoTheNextDownIsAPress) {
+    EdgeTracker t;
+    t.rising(true);
+    t.reset();
+    EXPECT_TRUE(t.rising(true));
+}
+
+TEST(SekiroEdgeTrackerTest, TheSetOfKeysTracksEachKeyIndependently) {
+    EdgeSet<4> keys;
+    EXPECT_TRUE(keys.rising(0, true));
+    EXPECT_TRUE(keys.rising(1, true));
+    EXPECT_FALSE(keys.rising(0, true));
+    EXPECT_TRUE(keys.rising(0, false) == false);
+    EXPECT_TRUE(keys.rising(0, true));
+    EXPECT_FALSE(keys.rising(1, true)); // 1 is still held
+    EXPECT_FALSE(keys.rising(9, true)) << "an out-of-range key never reports";
+}

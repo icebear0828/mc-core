@@ -33,4 +33,34 @@ void suppressBufferedKeys(void* elements, size_t count, size_t stride);
 // Button events for the two buttons get dwData = 0 (a release), so a held click never reaches the game.
 void suppressBufferedMouseButtons(void* elements, size_t count, size_t stride);
 
+// Rising edge of a key/button from its level, one sample per frame. Unlike GetAsyncKeyState's low bit nobody
+// else can consume it.
+class EdgeTracker {
+public:
+    // `initial_sample` marks the very first reading so a key that was already down is not reported as a press.
+    bool rising(bool down, bool initial_sample = false) {
+        const bool edge = down && !previous_down_ && !(initial_sample && !seen_);
+        previous_down_ = down;
+        seen_ = true;
+        return edge;
+    }
+    void reset() {
+        previous_down_ = false;
+        seen_ = false;
+    }
+
+private:
+    bool previous_down_{false};
+    bool seen_{false};
+};
+
+template <size_t N>
+class EdgeSet {
+public:
+    bool rising(size_t index, bool down) { return index < N && trackers_[index].rising(down); }
+
+private:
+    EdgeTracker trackers_[N];
+};
+
 } // namespace sekiro::input
