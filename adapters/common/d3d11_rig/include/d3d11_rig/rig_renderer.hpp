@@ -18,6 +18,10 @@ namespace mc::d3d11 {
 
 class RigRenderer {
 public:
+    // The figure is drawn at this many times the screen resolution and averaged down, which softens its
+    // edges the way the game's own anti-aliasing softens everything else.
+    static constexpr UINT kSupersample = 2;
+
     using PartMeshes = std::array<mc::rig::RigMesh, static_cast<size_t>(mc::StevePart::Count)>;
     using PartMatrices = std::array<mc::rig::Mat4, static_cast<size_t>(mc::StevePart::Count)>;
 
@@ -41,6 +45,10 @@ public:
     // empty mesh to take it away. The sheet is kept alive by the renderer.
     bool setHeldItem(const mc::rig::RigMesh& mesh, ID3D11ShaderResourceView* sprite_sheet);
     [[nodiscard]] bool hasHeldItem() const { return item_index_count_ > 0; }
+    // Minecraft's blob shadow on the ground under the feet: the flat mesh (mc::rig::buildGroundShadowMesh) once,
+    // then where the figure stands every frame. Without a mesh no shadow is drawn.
+    bool setGroundShadow(const mc::rig::RigMesh& mesh);
+    void setGroundShadowWorld(const mc::rig::Mat4& world) { shadow_world_ = world; }
     [[nodiscard]] bool sceneDepthActive() const { return scene_depth_srv_ != nullptr; }
     [[nodiscard]] bool ready() const { return ready_; }
 
@@ -50,6 +58,7 @@ public:
 
 private:
     bool ensureDepth(UINT width, UINT height);
+    bool ensureSupersample(UINT width, UINT height);
     bool captureFrame(ID3D11DeviceContext* context, ID3D11RenderTargetView* target);
 
     bool ready_{false};
@@ -67,6 +76,17 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Buffer> frame_cb_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> part_cb_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> scene_cb_;
+    Microsoft::WRL::ComPtr<ID3D11VertexShader> full_vs_;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> full_ps_;
+    Microsoft::WRL::ComPtr<ID3D11BlendState> composite_blend_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> ss_tex_;
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> ss_rtv_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ss_srv_;
+    UINT ss_w_{0}, ss_h_{0};
+    Microsoft::WRL::ComPtr<ID3D11Buffer> shadow_vertices_;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> shadow_indices_;
+    UINT shadow_index_count_{0};
+    mc::rig::Mat4 shadow_world_{};
     Microsoft::WRL::ComPtr<ID3D11SamplerState> linear_sampler_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> frame_tex_;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> frame_srv_;

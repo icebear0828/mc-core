@@ -18,10 +18,12 @@ cbuffer Part  : register(b1) { row_major float4x4 world; };
 cbuffer Scene : register(b0) {
     float4 scene; // x depth*z constant, y relative bias, z metre bias, w occlusion enabled
     float4 probe; // xy: uv of the scene around Steve, z: ambient matching enabled, w: hurt flash 0..1
+    float4 extra; // x: supersampling factor of the render target, y: 1 while the ground shadow is drawn
 };
 Texture2D skin : register(t0);
 Texture2D<float2> scene_depth : register(t1);
 Texture2D scene_color : register(t2);
+Texture2D ss_color : register(t3);
 SamplerState point_clamp : register(s0);
 SamplerState linear_clamp : register(s1);
 
@@ -37,12 +39,36 @@ VSOut VSMain(VSIn i) {
     return o;
 }
 
+struct FullOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };
+
+FullOut VSFull(uint id : SV_VertexID) {
+    FullOut o;
+    float2 uv = float2((id << 1) & 2, id & 2);
+    o.pos = float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+    o.uv = uv;
+    return o;
+}
+
+// The supersampled figure, averaged down to screen resolution (bilinear on exact 2x2 blocks) and laid over the
+// frame: colours are premultiplied and the alpha is the fraction of the pixel the figure covers, which is what
+// softens its edges.
+float4 PSFull(FullOut i) : SV_Target {
+    return ss_color.Sample(linear_clamp, i.uv);
+}
+
 float4 PSMain(VSOut i) : SV_Target {
+    float ss = max(extra.x, 1.0);
     if (scene.w > 0.5) {
         // Reverse-Z game depth: nearer = larger, 0 = far. SV_POSITION.w is 1 / view-space z in a pixel shader.
-        float gd = scene_depth.Load(int3(i.pos.xy, 0)).r;
+        float gd = scene_depth.Load(int3(i.pos.xy / ss, 0)).r;
         float steve_z = rcp(i.pos.w);
         if (gd > 0.0 && scene.x / gd < steve_z * (1.0 - scene.y) - scene.z) discard;
+    }
+    if (extra.y > 0.5) {
+        // Minecraft's blob shadow: a soft dark disc under the feet.
+        float r = length(i.uv * 2.0 - 1.0);
+        float a = saturate(1.0 - r);
+        return float4(0.0, 0.0, 0.0, a * a * 0.55);
     }
     float4 c = skin.Sample(point_clamp, i.uv);
     clip(c.a - 0.5);          // overlay layers (hat, jacket, sleeves, pants) are cut out, not blended
@@ -125,6 +151,7 @@ struct StateBackup {
     ComPtr<ID3D11ShaderResourceView> ps_srv;
     ComPtr<ID3D11ShaderResourceView> ps_srv1;
     ComPtr<ID3D11ShaderResourceView> ps_srv2;
+    ComPtr<ID3D11ShaderResourceView> ps_srv3;
     ComPtr<ID3D11SamplerState> ps_sampler1;
     ComPtr<ID3D11Buffer> ps_cb0;
     ComPtr<ID3D11SamplerState> ps_sampler;
@@ -151,6 +178,7 @@ struct StateBackup {
         c->PSGetShaderResources(0, 1, ps_srv.GetAddressOf());
         c->PSGetShaderResources(1, 1, ps_srv1.GetAddressOf());
         c->PSGetShaderResources(2, 1, ps_srv2.GetAddressOf());
+        c->PSGetShaderResources(3, 1, ps_srv3.GetAddressOf());
         c->PSGetSamplers(1, 1, ps_sampler1.GetAddressOf());
         c->PSGetConstantBuffers(0, 1, ps_cb0.GetAddressOf());
         c->PSGetSamplers(0, 1, ps_sampler.GetAddressOf());
@@ -181,6 +209,8 @@ struct StateBackup {
         c->PSSetShaderResources(1, 1, &srv1);
         ID3D11ShaderResourceView* srv2 = ps_srv2.Get();
         c->PSSetShaderResources(2, 1, &srv2);
+        ID3D11ShaderResourceView* srv3 = ps_srv3.Get();
+        c->PSSetShaderResources(3, 1, &srv3);
         ID3D11SamplerState* sampler1 = ps_sampler1.Get();
         c->PSSetSamplers(1, 1, &sampler1);
         ID3D11Buffer* cb0 = ps_cb0.Get();
@@ -198,6 +228,13 @@ bool RigRenderer::init(ID3D11Device* device, const PartMeshes& meshes) {
 
     ComPtr<ID3DBlob> vs_blob, ps_blob;
     if (!compile("VSMain", "vs_5_0", vs_blob) || !compile("PSMain", "ps_5_0", ps_blob)) return false;
+    ComPtr<ID3DBlob> full_vs_blob, full_ps_blob;
+    if (!compile("VSFull", "vs_5_0", full_vs_blob) || !compile("PSFull", "ps_5_0", full_ps_blob)) return false;
+    if (FAILED(device->CreateVertexShader(full_vs_blob->GetBufferPointer(), full_vs_blob->GetBufferSize(), nullptr, full_vs_.GetAddressOf())) ||
+        FAILED(device->CreatePixelShader(full_ps_blob->GetBufferPointer(), full_ps_blob->GetBufferSize(), nullptr, full_ps_.GetAddressOf()))) {
+        logLine("CreateShader (composite) failed");
+        return false;
+    }
     if (FAILED(device->CreateVertexShader(vs_blob->GetBufferPointer(), vs_blob->GetBufferSize(), nullptr, vs_.GetAddressOf())) ||
         FAILED(device->CreatePixelShader(ps_blob->GetBufferPointer(), ps_blob->GetBufferSize(), nullptr, ps_.GetAddressOf()))) {
         logLine("CreateShader failed");
@@ -248,7 +285,7 @@ bool RigRenderer::init(ID3D11Device* device, const PartMeshes& meshes) {
         logLine("CreateBuffer (constants) failed");
         return false;
     }
-    cb.ByteWidth = sizeof(float) * 8;
+    cb.ByteWidth = sizeof(float) * 12;
     if (FAILED(device->CreateBuffer(&cb, nullptr, scene_cb_.GetAddressOf()))) {
         logLine("CreateBuffer (constants) failed");
         return false;
@@ -260,6 +297,19 @@ bool RigRenderer::init(ID3D11Device* device, const PartMeshes& meshes) {
     rd.DepthClipEnable = TRUE;
     D3D11_BLEND_DESC bd{};
     bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    D3D11_BLEND_DESC cbd{};
+    cbd.RenderTarget[0].BlendEnable = TRUE;
+    cbd.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE; // premultiplied colour
+    cbd.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    cbd.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    cbd.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+    cbd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+    cbd.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    cbd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    if (FAILED(device->CreateBlendState(&cbd, composite_blend_.GetAddressOf()))) {
+        logLine("CreateBlendState (composite) failed");
+        return false;
+    }
     D3D11_DEPTH_STENCIL_DESC dd{};
     dd.DepthEnable = TRUE;
     dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
@@ -404,6 +454,59 @@ bool RigRenderer::setSkin(ID3D11Device* device, const std::vector<uint8_t>& rgba
     return true;
 }
 
+// The offscreen target the figure is drawn into at kSupersample times the screen resolution.
+bool RigRenderer::ensureSupersample(UINT width, UINT height) {
+    const UINT w = width * kSupersample, h = height * kSupersample;
+    if (ss_tex_ && ss_w_ == w && ss_h_ == h) return true;
+    ss_srv_.Reset();
+    ss_rtv_.Reset();
+    ss_tex_.Reset();
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = w;
+    td.Height = h;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    if (FAILED(device_->CreateTexture2D(&td, nullptr, ss_tex_.GetAddressOf())) ||
+        FAILED(device_->CreateRenderTargetView(ss_tex_.Get(), nullptr, ss_rtv_.GetAddressOf())) ||
+        FAILED(device_->CreateShaderResourceView(ss_tex_.Get(), nullptr, ss_srv_.GetAddressOf()))) {
+        logLine("supersample target creation failed");
+        ss_tex_.Reset();
+        return false;
+    }
+    ss_w_ = w;
+    ss_h_ = h;
+    return true;
+}
+
+bool RigRenderer::setGroundShadow(const mc::rig::RigMesh& mesh) {
+    shadow_vertices_.Reset();
+    shadow_indices_.Reset();
+    shadow_index_count_ = 0;
+    if (!device_ || mesh.vertices.empty() || mesh.indices.empty()) return mesh.vertices.empty();
+    D3D11_BUFFER_DESC vb{};
+    vb.ByteWidth = static_cast<UINT>(mesh.vertices.size() * sizeof(mc::rig::RigVertex));
+    vb.Usage = D3D11_USAGE_IMMUTABLE;
+    vb.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA vd{mesh.vertices.data(), 0, 0};
+    D3D11_BUFFER_DESC ib{};
+    ib.ByteWidth = static_cast<UINT>(mesh.indices.size() * sizeof(uint16_t));
+    ib.Usage = D3D11_USAGE_IMMUTABLE;
+    ib.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA id{mesh.indices.data(), 0, 0};
+    if (FAILED(device_->CreateBuffer(&vb, &vd, shadow_vertices_.GetAddressOf())) || FAILED(device_->CreateBuffer(&ib, &id, shadow_indices_.GetAddressOf()))) {
+        logLine("shadow buffer creation failed");
+        shadow_vertices_.Reset();
+        shadow_indices_.Reset();
+        return false;
+    }
+    shadow_index_count_ = static_cast<UINT>(mesh.indices.size());
+    return true;
+}
+
 bool RigRenderer::ensureDepth(UINT width, UINT height) {
     if (depth_view_ && depth_width_ == width && depth_height_ == height) return true;
     depth_view_.Reset();
@@ -429,7 +532,7 @@ bool RigRenderer::ensureDepth(UINT width, UINT height) {
 
 void RigRenderer::draw(ID3D11DeviceContext* context, ID3D11RenderTargetView* target, UINT width, UINT height,
                          const mc::rig::Mat4& view_projection, const PartMatrices& part_world) {
-    if (!ready_ || width == 0 || height == 0 || !ensureDepth(width, height)) return;
+    if (!ready_ || width == 0 || height == 0 || !ensureDepth(width * kSupersample, height * kSupersample) || !ensureSupersample(width, height)) return;
 
     auto upload = [&](ID3D11Buffer* buffer, const mc::rig::Mat4& m) {
         D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -440,24 +543,28 @@ void RigRenderer::draw(ID3D11DeviceContext* context, ID3D11RenderTargetView* tar
     };
     if (!upload(frame_cb_.Get(), view_projection)) return;
     const bool ambient = captureFrame(context, target);
-    {
+    auto setScene = [&](bool shadow_pass) {
         D3D11_MAPPED_SUBRESOURCE mapped{};
         if (SUCCEEDED(context->Map(scene_cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
             const bool occlude = scene_depth_srv_ && depth_conv_.reverse_z && depth_conv_.depth_times_distance > 0.0f;
-            const float params[8] = {depth_conv_.depth_times_distance, depth_conv_.relative_bias, depth_conv_.absolute_bias,
-                                     occlude ? 1.0f : 0.0f, probe_u_, probe_v_, ambient ? 1.0f : 0.0f, hurt_tint_};
+            const float params[12] = {depth_conv_.depth_times_distance, depth_conv_.relative_bias, depth_conv_.absolute_bias,
+                                      occlude ? 1.0f : 0.0f, probe_u_, probe_v_, ambient ? 1.0f : 0.0f, hurt_tint_,
+                                      static_cast<float>(kSupersample), shadow_pass ? 1.0f : 0.0f, 0.0f, 0.0f};
             std::memcpy(mapped.pData, params, sizeof(params));
             context->Unmap(scene_cb_.Get(), 0);
         }
-    }
+    };
+    setScene(false);
 
     StateBackup backup;
     backup.save(context);
 
-    ID3D11RenderTargetView* rtvs[1] = {target};
+    ID3D11RenderTargetView* rtvs[1] = {ss_rtv_.Get()};
     context->OMSetRenderTargets(1, rtvs, depth_view_.Get());
+    const FLOAT clear_colour[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    context->ClearRenderTargetView(ss_rtv_.Get(), clear_colour);
     context->ClearDepthStencilView(depth_view_.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
-    const D3D11_VIEWPORT vp{0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f};
+    const D3D11_VIEWPORT vp{0.0f, 0.0f, static_cast<float>(ss_w_), static_cast<float>(ss_h_), 0.0f, 1.0f};
     context->RSSetViewports(1, &vp);
     context->RSSetState(raster_.Get());
     const FLOAT no_factor[4] = {0, 0, 0, 0};
@@ -491,6 +598,18 @@ void RigRenderer::draw(ID3D11DeviceContext* context, ID3D11RenderTargetView* tar
     ID3D11SamplerState* sampler = sampler_.Get();
     context->PSSetSamplers(0, 1, &sampler);
 
+    // Minecraft's blob shadow under the feet first, so everything else is drawn over it.
+    if (shadow_index_count_ > 0 && shadow_vertices_ && shadow_indices_ && upload(part_cb_.Get(), shadow_world_)) {
+        setScene(true);
+        ID3D11Buffer* shadow_vb = shadow_vertices_.Get();
+        context->IASetVertexBuffers(0, 1, &shadow_vb, &stride, &offset);
+        context->IASetIndexBuffer(shadow_indices_.Get(), DXGI_FORMAT_R16_UINT, 0);
+        context->DrawIndexed(shadow_index_count_, 0, 0);
+        setScene(false);
+        context->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
+        context->IASetIndexBuffer(indices_.Get(), DXGI_FORMAT_R16_UINT, 0);
+    }
+
     for (size_t i = 0; i < part_world.size(); ++i) {
         if (!upload(part_cb_.Get(), part_world[i])) continue;
         context->DrawIndexed(indices_per_part_, static_cast<UINT>(i) * indices_per_part_, static_cast<INT>(i * vertices_per_part_));
@@ -507,6 +626,21 @@ void RigRenderer::draw(ID3D11DeviceContext* context, ID3D11RenderTargetView* tar
             context->DrawIndexed(item_index_count_, 0, 0);
         }
     }
+
+    // Average the supersampled figure down onto the frame.
+    ID3D11RenderTargetView* frame_rtv[1] = {target};
+    context->OMSetRenderTargets(1, frame_rtv, nullptr);
+    const D3D11_VIEWPORT full{0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f};
+    context->RSSetViewports(1, &full);
+    context->OMSetBlendState(composite_blend_.Get(), no_factor, 0xffffffff);
+    context->IASetInputLayout(nullptr);
+    context->VSSetShader(full_vs_.Get(), nullptr, 0);
+    context->PSSetShader(full_ps_.Get(), nullptr, 0);
+    ID3D11ShaderResourceView* ss_srv = ss_srv_.Get();
+    context->PSSetShaderResources(3, 1, &ss_srv);
+    context->Draw(3, 0);
+    ID3D11ShaderResourceView* none = nullptr;
+    context->PSSetShaderResources(3, 1, &none); // the target is about to be written again next frame
 
     backup.restore(context);
 }

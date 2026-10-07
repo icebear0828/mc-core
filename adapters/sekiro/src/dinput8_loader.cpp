@@ -812,6 +812,7 @@ void EnsureSteveRenderer() {
     mc::d3d11::RigRenderer::PartMeshes meshes;
     for (size_t i = 0; i < meshes.size(); ++i) meshes[i] = sekiro::render::buildPartMesh(static_cast<mc::StevePart>(i));
     renderer->setDepthConvention(sekiro::render::kSekiroDepth);
+    constexpr float kShadowRadiusCm = 50.0f; // Minecraft's entity shadow radius is half a block
     if (!renderer->init(g_d3d_device, meshes)) {
         Log("Steve renderer init failed; the 3D rig will not be drawn");
         return;
@@ -824,6 +825,7 @@ void EnsureSteveRenderer() {
     } else {
         Log("Steve skin: mods\\mc_adapter\\steve.png missing or not 64x64; using a neutral grey skin");
     }
+    renderer->setGroundShadow(mc::rig::buildGroundShadowMesh(sekiro::render::kSekiroBasis, kShadowRadiusCm));
     g_steve_renderer = std::move(renderer);
 }
 
@@ -900,6 +902,7 @@ void DrawSteveRig(ID3D11RenderTargetView* target, float screen_w, float screen_h
             g_steve_renderer->setAmbientProbe(clip[0] / clip[3] * 0.5f + 0.5f, 1.0f - (clip[1] / clip[3] * 0.5f + 0.5f));
         }
     }
+    g_steve_renderer->setGroundShadowWorld(sekiro::render::translation(root.position));
     if (const mc::Session* session = SekiroMod_GetSession()) g_steve_renderer->setHurtTint(session->feedback().hurt_flash);
     SyncHeldItem();
     g_steve_renderer->setSceneDepth(g_depth_capture.sceneDepth(static_cast<unsigned>(screen_w), static_cast<unsigned>(screen_h)));
