@@ -855,9 +855,9 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
             std::vector<sekiro::render::DepthCapture::Probe> probes;
             for (int i = 0; i < 12; ++i) {
                 sekiro::native::FVector3 p = g_last_sample.player_pos;
-                p.y += 0.15f + 0.14f * static_cast<float>(i);
+                p.Y += 0.15f + 0.14f * static_cast<float>(i);
                 const auto clip = sekiro::render::transform(vp, p);
-                const float vz = sekiro::render::transformPoint(view, p).z;
+                const float vz = sekiro::render::transformPoint(view, p).Z;
                 if (clip[3] <= 0.0f) continue;
                 const float nx = clip[0] / clip[3], ny = clip[1] / clip[3];
                 probes.push_back({static_cast<unsigned>(std::max(0.0f, (nx * 0.5f + 0.5f) * w)),
