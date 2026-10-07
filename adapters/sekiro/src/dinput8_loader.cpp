@@ -1163,11 +1163,27 @@ void* g_create_device_target = nullptr;
 void* g_device_state_target = nullptr;
 void* g_device_data_target = nullptr;
 std::mutex g_mouse_mutex;
-std::vector<void*> g_mouse_devices; // identity only: never dereferenced
+std::vector<void*> g_mouse_devices; // identity only: never dereferenced; the game recreates devices, addresses repeat
+std::vector<void*> g_keyboard_devices;
+std::atomic<unsigned> g_keyboard_calls{0}, g_suppressed_keys{0};
 std::atomic<unsigned> g_mouse_state_calls{0}, g_mouse_data_calls{0}, g_suppressed_clicks{0};
 
 // GUID_SysMouse {6F1D2B60-D5A0-11CF-BFC7-444553540000}
 constexpr GUID kGuidSysMouse = {0x6F1D2B60, 0xD5A0, 0x11CF, {0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00}};
+// GUID_SysKeyboard {6F1D2B61-D5A0-11CF-BFC7-444553540000}
+constexpr GUID kGuidSysKeyboard = {0x6F1D2B61, 0xD5A0, 0x11CF, {0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00}};
+
+void RememberDevice(std::vector<void*>& list, void* device) {
+    std::lock_guard<std::mutex> lock(g_mouse_mutex);
+    if (std::find(list.begin(), list.end(), device) != list.end()) return;
+    if (list.size() >= 64) list.erase(list.begin()); // the game recreates devices; keep the newest
+    list.push_back(device);
+}
+
+bool IsKeyboardDevice(void* device) {
+    std::lock_guard<std::mutex> lock(g_mouse_mutex);
+    return std::find(g_keyboard_devices.begin(), g_keyboard_devices.end(), device) != g_keyboard_devices.end();
+}
 
 bool IsMouseDevice(void* device) {
     std::lock_guard<std::mutex> lock(g_mouse_mutex);
@@ -1180,6 +1196,16 @@ void NoteSuppressed(bool had_click) {
 
 HRESULT STDMETHODCALLTYPE DetourGetDeviceState(void* self, DWORD cb, LPVOID data) {
     const HRESULT hr = g_original_get_device_state(self, cb, data);
+    if (SUCCEEDED(hr) && data && cb == 256 && IsKeyboardDevice(self)) {
+        if (g_keyboard_calls.fetch_add(1) == 0) Log("DirectInput: the game polls its keyboard with GetDeviceState");
+        if (SekiroMod_IsNativeInputSuppressed()) {
+            const auto* k = static_cast<const uint8_t*>(data);
+            const bool pressed = k[sekiro::input::kDikR] != 0;
+            sekiro::input::suppressKeyboardKeys(data, cb);
+            if (pressed && g_suppressed_keys.fetch_add(1) == 0) Log("DirectInput: suppressed a native key press (first time)");
+        }
+        return hr;
+    }
     if (SUCCEEDED(hr) && data && IsMouseDevice(self)) {
         if (g_mouse_state_calls.fetch_add(1) == 0) Log("DirectInput: the game polls its mouse with GetDeviceState (size %lu)", cb);
         if (SekiroMod_IsNativeInputSuppressed()) {
@@ -1194,6 +1220,10 @@ HRESULT STDMETHODCALLTYPE DetourGetDeviceState(void* self, DWORD cb, LPVOID data
 
 HRESULT STDMETHODCALLTYPE DetourGetDeviceData(void* self, DWORD cb, void* elements, LPDWORD in_out, DWORD flags) {
     const HRESULT hr = g_original_get_device_data(self, cb, elements, in_out, flags);
+    if (SUCCEEDED(hr) && elements && in_out && IsKeyboardDevice(self)) {
+        if (SekiroMod_IsNativeInputSuppressed()) sekiro::input::suppressBufferedKeys(elements, *in_out, cb);
+        return hr;
+    }
     if (SUCCEEDED(hr) && elements && in_out && IsMouseDevice(self)) {
         if (g_mouse_data_calls.fetch_add(1) == 0) Log("DirectInput: the game reads its mouse with GetDeviceData (element size %lu)", cb);
         if (SekiroMod_IsNativeInputSuppressed()) {
@@ -1227,12 +1257,16 @@ void HookMouseDeviceMethods(void* device) {
 HRESULT STDMETHODCALLTYPE DetourCreateDevice(void* self, REFGUID guid, void** out, LPUNKNOWN outer) {
     const HRESULT hr = g_original_create_device(self, guid, out, outer);
     if (SUCCEEDED(hr) && out && *out && IsEqualGUID(guid, kGuidSysMouse)) {
-        {
-            std::lock_guard<std::mutex> lock(g_mouse_mutex);
-            g_mouse_devices.push_back(*out);
-        }
-        Log("DirectInput: the game created its system mouse device (%p)", *out);
+        RememberDevice(g_mouse_devices, *out);
+        static int logged_mice = 0;
+        if (logged_mice++ < 2) Log("DirectInput: the game created its system mouse device (%p)", *out);
         HookMouseDeviceMethods(*out);
+    }
+    if (SUCCEEDED(hr) && out && *out && IsEqualGUID(guid, kGuidSysKeyboard)) {
+        RememberDevice(g_keyboard_devices, *out);
+        static int logged_keyboards = 0;
+        if (logged_keyboards++ < 2) Log("DirectInput: the game created its system keyboard device (%p)", *out);
+        HookMouseDeviceMethods(*out); // same IDirectInputDevice8 methods; installs them once
     }
     return hr;
 }

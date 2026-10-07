@@ -97,3 +97,51 @@ TEST(SekiroInputFilterTest, BufferedFilterRespectsTheElementStrideAndRefusesNons
     suppressBufferedMouseButtons(nullptr, 3, 24);
     suppressBufferedMouseButtons(raw.data(), 0, 24);
 }
+
+
+// ---------------------------------------------------------------------------------------------
+// Keyboard: the healing gourd is R. Only the listed DirectInput scan codes are cleared; everything else a
+// player types (movement, our own hotkeys, menus) is untouched.
+// ---------------------------------------------------------------------------------------------
+TEST(SekiroInputFilterTest, ClearsOnlyTheListedKeysOfAKeyboardState) {
+    std::vector<uint8_t> keys(256, 0);
+    keys[kDikR] = 0x80;
+    keys[0x11] = 0x80; // W
+    keys[0x12] = 0x80; // E
+    suppressKeyboardKeys(keys.data(), keys.size());
+    EXPECT_EQ(keys[kDikR], 0);
+    EXPECT_EQ(keys[0x11], 0x80);
+    EXPECT_EQ(keys[0x12], 0x80) << "E is interact/open door: not combat";
+}
+
+TEST(SekiroInputFilterTest, KeyboardFilterOnlyActsOnA256ByteState) {
+    std::vector<uint8_t> mouse(20, 0x80);
+    suppressKeyboardKeys(mouse.data(), mouse.size());
+    EXPECT_EQ(mouse[kDikR], 0x80) << "a mouse state must never be treated as a keyboard";
+    std::vector<uint8_t> shorter(100, 0x80);
+    suppressKeyboardKeys(shorter.data(), shorter.size());
+    EXPECT_EQ(shorter[kDikR], 0x80);
+    suppressKeyboardKeys(nullptr, 256);
+}
+
+TEST(SekiroInputFilterTest, BufferedKeyEventsForTheListedKeysBecomeReleases) {
+    BufferedElement e[3] = {
+        {kDikR, 0x80, {}},  // R down
+        {0x11, 0x80, {}},   // W down
+        {kDikR, 0x00, {}},  // R up
+    };
+    suppressBufferedKeys(e, 3, sizeof(BufferedElement));
+    EXPECT_EQ(e[0].data, 0u);
+    EXPECT_EQ(e[1].data, 0x80u);
+    EXPECT_EQ(e[2].data, 0u);
+    EXPECT_EQ(e[0].ofs, kDikR);
+    suppressBufferedKeys(nullptr, 3, 24);
+    suppressBufferedKeys(e, 0, 24);
+    suppressBufferedKeys(e, 3, 4);
+}
+
+TEST(SekiroInputFilterTest, TheSuppressedKeyListIsExactlyTheHealingGourd) {
+    EXPECT_EQ(kSuppressedKeyCount, 1u);
+    EXPECT_EQ(kSuppressedKeys[0], kDikR);
+    EXPECT_EQ(kDikR, 0x13u); // DIK_R
+}
