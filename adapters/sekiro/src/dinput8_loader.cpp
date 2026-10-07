@@ -26,6 +26,8 @@
 #include <wincodec.h>
 
 #include "sekiro_native.hpp"
+#include "mc/hud_atlas.hpp"
+#include "mc/item_model.hpp"
 #include "sekiro_hud_atlas.hpp"
 #include "sekiro_adapter.hpp"
 #include "sekiro_live.hpp"
@@ -94,6 +96,10 @@ std::chrono::steady_clock::time_point g_last_frame_time;
 ID3D11Device* g_d3d_device = nullptr;
 ID3D11DeviceContext* g_d3d_context = nullptr;
 ID3D11ShaderResourceView* g_hud_srv = nullptr;
+std::vector<BYTE> g_atlas_rgba; // the atlas the HUD was built from, kept so held items can be extruded from it
+UINT g_atlas_w = 0, g_atlas_h = 0;
+mc::ItemId g_held_item_applied = mc::ItemId::None;
+bool g_held_item_dirty = true;
 ID3D11SamplerState* g_point_sampler = nullptr;
 bool g_show_debug_panel = false;
 HWND g_game_hwnd = nullptr;
@@ -178,6 +184,10 @@ ID3D11ShaderResourceView* CreateHudTextureSRV(ID3D11Device* device) {
         Log("HUD atlas: failed to decode any atlas");
         return nullptr;
     }
+    g_atlas_rgba = pixels;
+    g_atlas_w = width;
+    g_atlas_h = height;
+    g_held_item_dirty = true;
     return CreateSrvFromRgba(device, pixels, width, height);
 }
 
@@ -699,6 +709,46 @@ void EnsureSteveRenderer() {
     g_steve_renderer = std::move(renderer);
 }
 
+// The HUD atlas cell holding an item's flat sprite (nullptr when the item has none).
+const mc::hud::HudUV* HeldItemUv(mc::ItemId item) {
+    switch (item) {
+        case mc::ItemId::DiamondSword: return &mc::hud::kUV_ITEM_DIAMOND_SWORD;
+        case mc::ItemId::DiamondPickaxe: return &mc::hud::kUV_ITEM_DIAMOND_PICKAXE;
+        case mc::ItemId::Bow: return &mc::hud::kUV_ITEM_BOW;
+        case mc::ItemId::GoldenApple: return &mc::hud::kUV_ITEM_GOLDEN_APPLE;
+        case mc::ItemId::TotemOfUndying: return &mc::hud::kUV_ITEM_TOTEM_OF_UNDYING;
+        default: return nullptr;
+    }
+}
+
+// Keeps the renderer's held item in step with the selected hotbar slot.
+void SyncHeldItem() {
+    if (!g_steve_renderer) return;
+    mc::HudEngine* hud = GetHud();
+    const mc::ItemId item = hud ? hud->getSelectedItem() : mc::ItemId::None;
+    if (item == g_held_item_applied && !g_held_item_dirty) return;
+    g_held_item_applied = item;
+    g_held_item_dirty = false;
+
+    const mc::hud::HudUV* uv = HeldItemUv(item);
+    if (!uv || !mc::rig::isHeldAsFlatSprite(item) || g_atlas_rgba.empty() || !g_hud_srv) {
+        g_steve_renderer->setHeldItem({}, nullptr);
+        return;
+    }
+    mc::rig::ItemSprite sprite;
+    sprite.rgba = g_atlas_rgba.data();
+    sprite.atlas_w = static_cast<int>(g_atlas_w);
+    sprite.atlas_h = static_cast<int>(g_atlas_h);
+    sprite.x = static_cast<int>(std::lround(uv->u0 * static_cast<float>(g_atlas_w)));
+    sprite.y = static_cast<int>(std::lround(uv->v0 * static_cast<float>(g_atlas_h)));
+    sprite.w = static_cast<int>(std::lround((uv->u1 - uv->u0) * static_cast<float>(g_atlas_w)));
+    sprite.h = static_cast<int>(std::lround((uv->v1 - uv->v0) * static_cast<float>(g_atlas_h)));
+    const mc::rig::RigMesh mesh = mc::rig::buildHeldItemMesh(sprite, mc::rig::heldItemStyle(item), sekiro::render::kSekiroBasis);
+    const bool ok = g_steve_renderer->setHeldItem(mesh, g_hud_srv);
+    Log("Held item %d: %zu vertices from atlas cell (%d,%d) %dx%d (%s)", static_cast<int>(item), mesh.vertices.size(), sprite.x,
+        sprite.y, sprite.w, sprite.h, ok ? "ok" : "FAILED");
+}
+
 // Draws the real 3D rig into the frame, positioned from the live camera matrix and player position.
 void DrawSteveRig(ID3D11RenderTargetView* target, float screen_w, float screen_h) {
     if (!g_in_world || !SekiroMod_IsSteveModeActive()) return;
@@ -732,6 +782,7 @@ void DrawSteveRig(ID3D11RenderTargetView* target, float screen_w, float screen_h
             g_steve_renderer->setAmbientProbe(clip[0] / clip[3] * 0.5f + 0.5f, 1.0f - (clip[1] / clip[3] * 0.5f + 0.5f));
         }
     }
+    SyncHeldItem();
     g_steve_renderer->setSceneDepth(g_depth_capture.sceneDepth(static_cast<unsigned>(screen_w), static_cast<unsigned>(screen_h)));
     g_steve_renderer->draw(g_d3d_context, target, static_cast<UINT>(screen_w), static_cast<UINT>(screen_h), view_proj, world);
 }

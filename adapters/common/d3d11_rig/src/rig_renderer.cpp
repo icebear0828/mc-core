@@ -352,6 +352,34 @@ void RigRenderer::setSceneDepth(ID3D11Texture2D* texture) {
     }
 }
 
+bool RigRenderer::setHeldItem(const mc::rig::RigMesh& mesh, ID3D11ShaderResourceView* sprite_sheet) {
+    item_vertices_.Reset();
+    item_indices_.Reset();
+    item_sheet_.Reset();
+    item_index_count_ = 0;
+    if (!device_ || mesh.vertices.empty() || mesh.indices.empty() || !sprite_sheet || mesh.vertices.size() > 65535) return mesh.vertices.empty();
+
+    D3D11_BUFFER_DESC vb{};
+    vb.ByteWidth = static_cast<UINT>(mesh.vertices.size() * sizeof(mc::rig::RigVertex));
+    vb.Usage = D3D11_USAGE_IMMUTABLE;
+    vb.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA vd{mesh.vertices.data(), 0, 0};
+    D3D11_BUFFER_DESC ib{};
+    ib.ByteWidth = static_cast<UINT>(mesh.indices.size() * sizeof(uint16_t));
+    ib.Usage = D3D11_USAGE_IMMUTABLE;
+    ib.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA id{mesh.indices.data(), 0, 0};
+    if (FAILED(device_->CreateBuffer(&vb, &vd, item_vertices_.GetAddressOf())) || FAILED(device_->CreateBuffer(&ib, &id, item_indices_.GetAddressOf()))) {
+        logLine("held item buffer creation failed");
+        item_vertices_.Reset();
+        item_indices_.Reset();
+        return false;
+    }
+    item_sheet_ = sprite_sheet;
+    item_index_count_ = static_cast<UINT>(mesh.indices.size());
+    return true;
+}
+
 bool RigRenderer::setSkin(ID3D11Device* device, const std::vector<uint8_t>& rgba, UINT width, UINT height) {
     if (rgba.size() != static_cast<size_t>(width) * height * 4) return false;
     D3D11_TEXTURE2D_DESC td{};
@@ -465,6 +493,18 @@ void RigRenderer::draw(ID3D11DeviceContext* context, ID3D11RenderTargetView* tar
     for (size_t i = 0; i < part_world.size(); ++i) {
         if (!upload(part_cb_.Get(), part_world[i])) continue;
         context->DrawIndexed(indices_per_part_, static_cast<UINT>(i) * indices_per_part_, static_cast<INT>(i * vertices_per_part_));
+    }
+
+    // The item in the right hand rides on the right arm's matrix.
+    if (item_index_count_ > 0 && item_vertices_ && item_indices_ && item_sheet_) {
+        if (upload(part_cb_.Get(), part_world[static_cast<size_t>(mc::StevePart::RightArm)])) {
+            ID3D11Buffer* item_vb = item_vertices_.Get();
+            context->IASetVertexBuffers(0, 1, &item_vb, &stride, &offset);
+            context->IASetIndexBuffer(item_indices_.Get(), DXGI_FORMAT_R16_UINT, 0);
+            ID3D11ShaderResourceView* sheet = item_sheet_.Get();
+            context->PSSetShaderResources(0, 1, &sheet);
+            context->DrawIndexed(item_index_count_, 0, 0);
+        }
     }
 
     backup.restore(context);

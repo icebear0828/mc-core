@@ -34,6 +34,11 @@ public:
     void setSceneDepth(ID3D11Texture2D* texture);
     // Where on screen (uv, 0..1) Steve stands: the frame around it lights him.
     void setAmbientProbe(float u, float v) { probe_u_ = u; probe_v_ = v; }
+    // An item in the right hand: its mesh (built in the rest pose of the right arm, see mc/item_model.hpp) and
+    // the sprite sheet its UVs address. It is drawn with the right arm's matrix, so it follows the arm. Pass an
+    // empty mesh to take it away. The sheet is kept alive by the renderer.
+    bool setHeldItem(const mc::rig::RigMesh& mesh, ID3D11ShaderResourceView* sprite_sheet);
+    [[nodiscard]] bool hasHeldItem() const { return item_index_count_ > 0; }
     [[nodiscard]] bool sceneDepthActive() const { return scene_depth_srv_ != nullptr; }
     [[nodiscard]] bool ready() const { return ready_; }
 
@@ -53,6 +58,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D11InputLayout> layout_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> vertices_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> indices_;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> item_vertices_;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> item_indices_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> item_sheet_;
+    UINT item_index_count_{0};
     Microsoft::WRL::ComPtr<ID3D11Buffer> frame_cb_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> part_cb_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> scene_cb_;
