@@ -86,6 +86,8 @@ public:
     SampleStatus sample(LiveSample& out) const;
 
     [[nodiscard]] uint32_t worldChrManGlobalRva() const { return wcm_global_rva_; }
+    [[nodiscard]] uintptr_t imageBase() const { return base_; }
+    [[nodiscard]] size_t imageSize() const { return size_; }
     [[nodiscard]] const std::vector<uint32_t>& cameraCandidateRvas() const { return camera_global_rvas_; }
 
 private:

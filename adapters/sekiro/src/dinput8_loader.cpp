@@ -28,6 +28,7 @@
 #include "sekiro_hud_atlas.hpp"
 #include "sekiro_adapter.hpp"
 #include "sekiro_live.hpp"
+#include "sekiro_model.hpp"
 #include "sekiro_steve.hpp"
 #include "mc/hud_layout.hpp"
 #include "steve_renderer.hpp"
@@ -309,7 +310,19 @@ public:
     }
 };
 
+// Writes into our own process through the OS so an unwritable page fails instead of faulting.
+class SelfMemoryWriter : public sekiro::live::IMemoryWriter {
+public:
+    bool write(uintptr_t address, const void* data, size_t size) override {
+        SIZE_T written = 0;
+        return WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<LPVOID>(address), data, size, &written) && written == size;
+    }
+};
+
 SelfMemoryReader g_memory;
+SelfMemoryWriter g_memory_writer;
+std::unique_ptr<sekiro::live::ModelHider> g_model_hider;
+sekiro::live::HideStatus g_last_hide_status = sekiro::live::HideStatus::Idle;
 std::unique_ptr<sekiro::live::LiveBinder> g_binder;
 std::atomic<bool> g_binder_ready{false};
 std::atomic<bool> g_stop{false};
@@ -321,7 +334,6 @@ sekiro::live::LiveSample g_last_sample{};
 std::unique_ptr<sekiro::render::SteveRenderer> g_steve_renderer;
 bool g_steve_renderer_tried = false;
 bool g_logged_fov = false;
-bool g_warned_model_hide = false;
 sekiro::live::SampleStatus g_last_sample_status = sekiro::live::SampleStatus::NotBound;
 
 const char* LinkStateText() {
@@ -347,6 +359,8 @@ void BindLiveGameState() {
         if (st == sekiro::live::BindStatus::Bound) {
             Log("Bound game structures after %d scan(s): WorldChrMan global RVA 0x%X, %zu camera candidate(s)",
                 attempt + 1, binder->worldChrManGlobalRva(), binder->cameraCandidateRvas().size());
+            g_model_hider = std::make_unique<sekiro::live::ModelHider>(
+                g_memory, g_memory_writer, binder->imageBase(), binder->imageSize(), binder->worldChrManGlobalRva());
             g_binder = std::move(binder);
             g_binder_ready.store(true);
             return;
@@ -381,21 +395,30 @@ bool SyncLiveGameState(float dt) {
     if (st == SampleStatus::Ok) {
         g_live_mirror.update(sample, dt, g_player_mirror, g_camera_mirror);
         g_last_sample = sample;
+        if (g_model_hider) {
+            const sekiro::live::HideStatus hs = g_model_hider->update(g_player_mirror.bModelHidden);
+            if (hs != g_last_hide_status) {
+                const char* name = hs == sekiro::live::HideStatus::Hidden ? "Hidden (Wolf draw mask = 0)"
+                                 : hs == sekiro::live::HideStatus::Idle ? "Idle (Wolf visible)"
+                                 : hs == sekiro::live::HideStatus::NotInWorld ? "NotInWorld"
+                                 : hs == sekiro::live::HideStatus::Rejected ? "REJECTED (entity or mask failed validation; nothing written)"
+                                 : "WriteFailed";
+                Log("Wolf model: %s", name);
+                g_last_hide_status = hs;
+            }
+        }
         if (!g_in_world) {
             g_in_world = true;
             SekiroMod_UpdatePointers(&g_player_mirror, &g_camera_mirror);
             Log("Entered world: player (%.2f, %.2f, %.2f) m", sample.player_pos.X, sample.player_pos.Y, sample.player_pos.Z);
-            if (!g_warned_model_hide) {
-                g_warned_model_hide = true;
-                Log("WARNING: hiding the native Wolf model is NOT wired to game memory yet (offsets unknown); "
-                    "only the mirror flag changes.");
-            }
         }
         return true;
     }
 
     if (g_in_world) {
         g_in_world = false;
+        if (g_model_hider) g_model_hider->forgetObject();
+        g_last_hide_status = sekiro::live::HideStatus::Idle;
         g_live_mirror.reset();
         SekiroMod_UpdatePointers(nullptr, nullptr);
         Log("Left world / link lost");
@@ -969,6 +992,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         break;
     case DLL_PROCESS_DETACH:
         g_stop.store(true);
+        if (g_model_hider) {
+            g_model_hider->restore();
+        }
         if (g_original_present) {
             MH_DisableHook(MH_ALL_HOOKS);
             MH_Uninitialize();

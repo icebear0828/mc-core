@@ -93,6 +93,7 @@ endif()
 add_library(sekiro_adapter SHARED
     src/sekiro_adapter.cpp
     src/sekiro_live.cpp
+    src/sekiro_model.cpp
     src/sekiro_steve.cpp
     src/plugin_entry.cpp
     ${SEKIRO_PLATFORM_SRCS}

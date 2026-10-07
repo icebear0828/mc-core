@@ -21,6 +21,7 @@ add_executable(mc_tests
     test_session.cpp
     test_sekiro_live.cpp
     test_sekiro_steve.cpp
+    test_sekiro_model.cpp
 )
 
 target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source")
