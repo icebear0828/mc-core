@@ -102,6 +102,9 @@ public:
     mc::Vec3 cam_fwd{1.f, 0.f, 0.f};
     bool has_facing{false};
     float facing_yaw{0.f};
+    bool has_eye{false};
+    mc::Vec3 eye{};
+    mc::Vec3 getEyePosition() const override { return has_eye ? eye : cam_pos; }
 
     bool getPlayerFacingYaw(float& out) const override {
         if (has_facing) out = facing_yaw;
@@ -947,4 +950,37 @@ TEST(HostFeatureTest, EveryFeatureHasADistinctNameAndBit) {
         EXPECT_STRNE(mc::hostFeatureName(f), "Unknown");
     }
     EXPECT_EQ(seen, mc::kAllHostFeatures);
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Third person: the camera floats behind the character, but vanilla Minecraft aims and reaches from the EYES.
+// ---------------------------------------------------------------------------------------------
+TEST_F(SessionTest, TheTargetRayStartsAtTheEyesNotAtACameraFloatingBehindTheCharacter) {
+    session.setActive(true);
+    input.cam_pos = {-500.f, 0.f, 220.f}; // 5 m behind and above
+    input.cam_fwd = {1.f, 0.f, 0.f};
+    input.has_eye = true;
+    input.eye = {0.f, 0.f, 162.f};
+    mc::InputSnapshot click;
+    click.attack_pressed = true;
+    session.tick(0.016f, click);
+
+    ASSERT_EQ(physics.raycast_calls, 1);
+    EXPECT_NEAR(physics.last_start.x, 0.f, 1e-3f);
+    EXPECT_NEAR(physics.last_start.z, 162.f, 1e-3f);
+    EXPECT_NEAR(physics.last_end.x, mc::Session::kReachCm, 1e-2f); // reach is measured from the eyes
+    EXPECT_EQ(physics.last_ignore, mc::EntityId::LocalPlayer);
+}
+
+TEST_F(SessionTest, HostsWithoutAnEyePositionKeepUsingTheCamera) {
+    session.setActive(true);
+    input.cam_pos = {10.f, 20.f, 160.f};
+    input.cam_fwd = {1.f, 0.f, 0.f};
+    mc::InputSnapshot click;
+    click.attack_pressed = true;
+    session.tick(0.016f, click);
+    ASSERT_EQ(physics.raycast_calls, 1);
+    EXPECT_NEAR(physics.last_start.x, 10.f, 1e-3f);
+    EXPECT_NEAR(physics.last_start.y, 20.f, 1e-3f);
 }

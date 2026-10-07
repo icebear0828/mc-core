@@ -311,6 +311,21 @@ TEST(SekiroAdapterTest, NativeCombatInputSuppressionIsAFlagTheLoaderReadsFromAno
     EXPECT_FALSE(adapter.nativeCombatInputSuppressed());
 }
 
+TEST(SekiroAdapterTest, EyesAre162CmAboveTheFeetNotAtTheFloatingCamera) {
+    ChrIns player;
+    ChrCam camera;
+    SekiroAdapter adapter(&player, &camera);
+    player.Position = FVector3{2.f, 0.5f, 10.f}; // native metres: right, up, forward
+    camera.Position = FVector3{2.f, 3.0f, 5.f};  // behind and above
+    const Vec3 eye = adapter.getEyePosition();
+    const Vec3 feet = adapter.getPlayerPosition();
+    EXPECT_NEAR(eye.x, feet.x, 1e-3f);
+    EXPECT_NEAR(eye.y, feet.y, 1e-3f);
+    EXPECT_NEAR(eye.z, feet.z + 162.f, 1e-3f);
+    EXPECT_GT((adapter.getCameraPosition() - eye).length(), 100.f);
+    EXPECT_NEAR(SekiroAdapter().getEyePosition().length(), SekiroAdapter().getCameraPosition().length(), 1e-3f); // unbound
+}
+
 TEST(SekiroAdapterTest, OnlyDeclaresTheHostFeaturesThatWereVerifiedInTheLiveGame) {
     SekiroAdapter adapter;
     // Add a bit here only together with its live-game verification (docs/REVERSE_INTERFACES.md).
@@ -714,7 +729,7 @@ TEST(SekiroSessionTest, UsePlacesBlockAlongNativeForwardAndRaysUseNativeAxes) {
     in.use_pressed = true;
     SekiroMod_Tick(0.05f, &in);
 
-    EXPECT_NEAR(seen_start.Y, 1.6f, 1e-4f);                           // camera height 1.6 m = native up
+    EXPECT_NEAR(seen_start.Y, 1.62f, 1e-4f);                          // the ray starts at the eyes: feet (0) + 1.62 m, native up
     EXPECT_NEAR(seen_end.Z, Session::kReachCm / 100.f, 1e-3f);       // 4.5 m reach along native forward
     EXPECT_NEAR(seen_end.X, 0.f, 1e-3f);
     EXPECT_EQ(seen_ignore, 321u); // Session ignores the player: mapped to its Havok handle, not an internal id

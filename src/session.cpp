@@ -143,7 +143,7 @@ void Session::tick(float dt, const InputSnapshot& in) {
     if (fwd.lengthSq() < 0.5f) {
         fwd = {1.f, 0.f, 0.f};
     }
-    const Vec3 cam_pos = ports_.input.getCameraPosition();
+    const Vec3 cam_pos = ports_.input.getEyePosition(); // origin of the pick ray and of projectiles
     const Vec3 player_pos = ports_.input.getPlayerPosition();
     const Vec3 player_vel = ports_.input.getPlayerVelocity();
     const float yaw = std::atan2(fwd.y, fwd.x);

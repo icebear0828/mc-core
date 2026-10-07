@@ -90,6 +90,8 @@ public:
     Vec3 getPlayerPosition() const override;
     Vec3 getPlayerVelocity() const override;
     bool getPlayerFacingYaw(float& out_yaw) const override;
+    // The Wolf's eyes (the camera floats 4 m behind): feet + 1.62 m. Attacks and arrows start here.
+    Vec3 getEyePosition() const override;
 
     // --- IHostGameplay (only what was verified in the live game) ---
     [[nodiscard]] uint32_t supportedFeatures() const override;

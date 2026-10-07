@@ -639,6 +639,12 @@ bool SekiroAdapter::getPlayerVitals(HostVitals& out) const {
     return true;
 }
 
+Vec3 SekiroAdapter::getEyePosition() const {
+    constexpr float kEyeHeightCm = 162.0f; // Minecraft's player eye height
+    if (!player_) return getCameraPosition();
+    return getPlayerPosition() + Vec3{0.f, 0.f, kEyeHeightCm};
+}
+
 bool SekiroAdapter::getPlayerFacingYaw(float& out_yaw) const {
     if (!player_ || !player_->bFacingValid) return false;
     const Vec3 dir = toMcDir(sekiro::native::FVector3{player_->Facing.X, 0.0f, player_->Facing.Z});
