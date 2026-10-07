@@ -28,6 +28,7 @@ struct Candidate {
     D3D11_TEXTURE2D_DESC desc{};
     uint32_t binds{0};
     uint32_t binds_with_color{0};
+    D3D11_DEVICE_CONTEXT_TYPE context_type{D3D11_DEVICE_CONTEXT_IMMEDIATE};
 };
 
 using ClearDSV_t = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11DepthStencilView*, UINT, FLOAT, UINT8);
@@ -38,41 +39,56 @@ void (*g_trace_log)(const char*, ...) = nullptr;
 std::atomic<int> g_trace_budget{0};
 void describeDepth(ID3D11Device*, ID3D11DeviceContext*, ID3D11Texture2D*, const D3D11_TEXTURE2D_DESC&,
                    void (*)(const char*, ...), const char*);
+using OMSetRTUAV_t = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, ID3D11RenderTargetView* const*, ID3D11DepthStencilView*,
+                                              UINT, UINT, ID3D11UnorderedAccessView* const*, const UINT*);
+OMSetRTUAV_t g_original_uav = nullptr;
+void* g_uav_target = nullptr;
 OMSetRenderTargets_t g_original = nullptr;
 void* g_target = nullptr;
 std::array<Candidate, kMaxCandidates> g_candidates;
 std::atomic<size_t> g_count{0};
 
-void STDMETHODCALLTYPE DetourOMSetRenderTargets(ID3D11DeviceContext* self, UINT num, ID3D11RenderTargetView* const* rtvs,
-                                                ID3D11DepthStencilView* dsv) {
-    if (dsv && self->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE) {
-        const size_t n = g_count.load();
-        size_t found = n;
-        for (size_t i = 0; i < n; ++i) {
-            if (g_candidates[i].dsv.Get() == dsv) {
-                found = i;
-                break;
-            }
-        }
-        if (found == n && n < kMaxCandidates) {
-            ComPtr<ID3D11Resource> res;
-            dsv->GetResource(res.GetAddressOf());
-            ComPtr<ID3D11Texture2D> tex;
-            if (res && SUCCEEDED(res.As(&tex))) {
-                g_candidates[n].dsv = dsv;
-                g_candidates[n].texture = tex;
-                tex->GetDesc(&g_candidates[n].desc);
-                g_count.store(n + 1);
-            } else {
-                found = kMaxCandidates; // not a 2D texture, ignore
-            }
-        }
-        if (found < g_count.load()) {
-            ++g_candidates[found].binds;
-            if (num > 0 && rtvs && rtvs[0]) ++g_candidates[found].binds_with_color;
+void record(ID3D11DeviceContext* self, UINT num, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv) {
+    if (!dsv) return;
+    const size_t n = g_count.load();
+    size_t found = n;
+    for (size_t i = 0; i < n; ++i) {
+        if (g_candidates[i].dsv.Get() == dsv) {
+            found = i;
+            break;
         }
     }
+    if (found == n && n < kMaxCandidates) {
+        ComPtr<ID3D11Resource> res;
+        dsv->GetResource(res.GetAddressOf());
+        ComPtr<ID3D11Texture2D> tex;
+        if (res && SUCCEEDED(res.As(&tex))) {
+            g_candidates[n].dsv = dsv;
+            g_candidates[n].texture = tex;
+            tex->GetDesc(&g_candidates[n].desc);
+            g_candidates[n].context_type = self->GetType();
+            g_count.store(n + 1);
+        } else {
+            found = kMaxCandidates; // not a 2D texture, ignore
+        }
+    }
+    if (found < g_count.load()) {
+        ++g_candidates[found].binds;
+        if (num > 0 && rtvs && rtvs[0]) ++g_candidates[found].binds_with_color;
+    }
+}
+
+void STDMETHODCALLTYPE DetourOMSetRenderTargets(ID3D11DeviceContext* self, UINT num, ID3D11RenderTargetView* const* rtvs,
+                                                ID3D11DepthStencilView* dsv) {
+    record(self, num, rtvs, dsv);
     g_original(self, num, rtvs, dsv);
+}
+
+void STDMETHODCALLTYPE DetourOMSetRenderTargetsAndUAVs(ID3D11DeviceContext* self, UINT num, ID3D11RenderTargetView* const* rtvs,
+                                                       ID3D11DepthStencilView* dsv, UINT uav_start, UINT num_uavs,
+                                                       ID3D11UnorderedAccessView* const* uavs, const UINT* counts) {
+    if (num != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) record(self, num, rtvs, dsv);
+    g_original_uav(self, num, rtvs, dsv, uav_start, num_uavs, uavs, counts);
 }
 
 void STDMETHODCALLTYPE DetourClearDSV(ID3D11DeviceContext* self, ID3D11DepthStencilView* dsv, UINT flags, FLOAT depth,
@@ -106,6 +122,11 @@ bool DepthCapture::install(ID3D11DeviceContext* immediate) {
         MH_EnableHook(g_clear_target) != MH_OK) {
         g_clear_target = nullptr;
     }
+    g_uav_target = vtable[34];
+    if (MH_CreateHook(g_uav_target, reinterpret_cast<void*>(&DetourOMSetRenderTargetsAndUAVs), reinterpret_cast<void**>(&g_original_uav)) != MH_OK ||
+        MH_EnableHook(g_uav_target) != MH_OK) {
+        g_uav_target = nullptr;
+    }
     return true;
 }
 
@@ -113,6 +134,11 @@ void DepthCapture::remove() {
     if (!g_target) return;
     MH_DisableHook(g_target);
     MH_RemoveHook(g_target);
+    if (g_uav_target) {
+        MH_DisableHook(g_uav_target);
+        MH_RemoveHook(g_uav_target);
+        g_uav_target = nullptr;
+    }
     if (g_clear_target) {
         MH_DisableHook(g_clear_target);
         MH_RemoveHook(g_clear_target);
@@ -185,8 +211,8 @@ void DepthCapture::dump(ID3D11Device* device, ID3D11DeviceContext* context, void
     for (size_t i = 0; i < n; ++i) {
         const Candidate& c = g_candidates[i];
         const D3D11_TEXTURE2D_DESC& d = c.desc;
-        log("  [%zu] %ux%u fmt=%u samples=%u bind=0x%x binds=%u", i, d.Width, d.Height, static_cast<unsigned>(d.Format),
-            d.SampleDesc.Count, d.BindFlags, c.binds);
+        log("  [%zu] %ux%u fmt=%u samples=%u bind=0x%x binds=%u ctx=%d", i, d.Width, d.Height, static_cast<unsigned>(d.Format),
+            d.SampleDesc.Count, d.BindFlags, c.binds, static_cast<int>(c.context_type));
         describeDepth(device, context, c.texture.Get(), d, log, "now");
     }
 }
