@@ -32,6 +32,7 @@
 #include "sekiro_adapter.hpp"
 #include "sekiro_live.hpp"
 #include "sekiro_enemies.hpp"
+#include "sekiro_damage_probe.hpp"
 #include "sekiro_host_write.hpp"
 #include "sekiro_input_filter.hpp"
 #include "sekiro_model.hpp"
@@ -392,6 +393,74 @@ DWORD WINAPI WolfGuardThread(LPVOID) {
     return 0;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Read-only probe of the game's DealDamage (see sekiro_damage_probe.hpp). Every call is passed through
+// unchanged; the first few are logged with both modules' class names and the DamageData before and after.
+// ---------------------------------------------------------------------------------------------
+using DealDamage_t = void(__fastcall*)(void*, void*, uint8_t*, uint8_t);
+DealDamage_t g_original_deal_damage = nullptr;
+uintptr_t g_probe_image_base = 0;
+size_t g_probe_image_size = 0;
+
+std::string ClassOf(void* object) {
+    if (!object) return "null";
+    const auto name = sekiro::live::rttiClassName(g_memory, g_probe_image_base, g_probe_image_size, reinterpret_cast<uintptr_t>(object));
+    return name ? *name : std::string("(no rtti)");
+}
+
+void AppendProbeFile(const std::string& text) {
+    FILE* f = nullptr;
+    if (fopen_s(&f, "mc_damage_probe.txt", "a") == 0 && f) {
+        fputs(text.c_str(), f);
+        fclose(f);
+    }
+}
+
+void __fastcall DetourDealDamage(void* target, void* attacker, uint8_t* data, uint8_t flag) {
+    static std::atomic<int> calls{0};
+    const int index = calls.fetch_add(1);
+    const bool record = index < 24;
+    std::string before;
+    if (record) {
+        uint8_t copy[sekiro::live::kDamageDataSize];
+        if (g_memory.read(reinterpret_cast<uintptr_t>(data), copy, sizeof(copy))) {
+            before = sekiro::live::describeDamageData(copy, sizeof(copy), g_memory, g_probe_image_base, g_probe_image_size);
+        } else {
+            before = "  (DamageData unreadable)\n";
+        }
+    }
+    g_original_deal_damage(target, attacker, data, flag);
+    if (!record) return;
+    std::string after;
+    uint8_t copy[sekiro::live::kDamageDataSize];
+    if (g_memory.read(reinterpret_cast<uintptr_t>(data), copy, sizeof(copy))) {
+        after = sekiro::live::describeDamageData(copy, sizeof(copy), g_memory, g_probe_image_base, g_probe_image_size);
+    }
+    char head[512];
+    std::snprintf(head, sizeof(head), "=== DealDamage call #%d: target module %p (%s) attacker %p (%s) data %p flag %u\n", index, target,
+                  ClassOf(target).c_str(), attacker, ClassOf(attacker).c_str(), static_cast<void*>(data), static_cast<unsigned>(flag));
+    AppendProbeFile(std::string(head) + "--- DamageData BEFORE the call\n" + before + "--- DamageData AFTER the call\n" + after);
+    Log("DealDamage probe: call #%d target=%s attacker=%s (details in mc_damage_probe.txt)", index, ClassOf(target).c_str(), ClassOf(attacker).c_str());
+}
+
+void InstallDamageProbe() {
+    MODULEINFO mi{};
+    if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleA(nullptr), &mi, sizeof(mi))) return;
+    g_probe_image_base = reinterpret_cast<uintptr_t>(mi.lpBaseOfDll);
+    g_probe_image_size = static_cast<size_t>(mi.SizeOfImage);
+    if (!sekiro::live::prologueMatches(g_memory, g_probe_image_base, sekiro::live::kDealDamageRva, sekiro::live::kDealDamagePrologue)) {
+        Log("Damage probe: DealDamage prologue does not match (another game version or the code is not unpacked yet); not hooking");
+        return;
+    }
+    void* target = reinterpret_cast<void*>(g_probe_image_base + sekiro::live::kDealDamageRva);
+    if (MH_CreateHook(target, reinterpret_cast<void*>(&DetourDealDamage), reinterpret_cast<void**>(&g_original_deal_damage)) != MH_OK ||
+        MH_EnableHook(target) != MH_OK) {
+        Log("Damage probe: could not hook DealDamage");
+        return;
+    }
+    Log("Damage probe: hooked DealDamage at %p (read-only, every call is passed through)", target);
+}
+
 // Runs on the loader thread: the Steam wrapper decrypts code lazily, so keep scanning until the
 // signatures show up. Refuses to bind on ambiguous matches instead of guessing.
 void BindLiveGameState() {
@@ -412,6 +481,7 @@ void BindLiveGameState() {
                 attempt + 1, binder->worldChrManGlobalRva(), binder->cameraCandidateRvas().size());
             g_model_hider = std::make_unique<sekiro::live::ModelHider>(
                 g_memory, g_memory_writer, binder->imageBase(), binder->imageSize(), binder->worldChrManGlobalRva());
+            InstallDamageProbe();
             g_health_writer = std::make_unique<sekiro::live::HostHealthWriter>(g_memory, g_memory_writer, binder->imageBase(), binder->imageSize());
             g_binder = std::move(binder);
             g_binder_ready.store(true);

@@ -98,6 +98,7 @@ add_library(sekiro_adapter SHARED
     src/sekiro_enemies.cpp
     src/sekiro_host_write.cpp
     src/sekiro_input_filter.cpp
+    src/sekiro_damage_probe.cpp
     src/sekiro_model.cpp
     src/sekiro_steve.cpp
     src/plugin_entry.cpp
