@@ -909,9 +909,9 @@ TEST(SekiroLiveEnemiesTest, FindChrDataModuleReportsTheOffsetAndHonoursTheHint) 
 // ---------------------------------------------------------------------------------------------
 TEST(SekiroLiveEnemiesTest, FindsAModuleThatTheEnemyObjectPointsAtDirectly) {
     World w;
-    w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .hp = 1572, .max_hp = 1572, .in_container = false, .direct_offset = 0x2288});
-    w.addEnemy(2, {.x = 2.f, .y = 1.f, .z = 2.f, .hp = 700, .max_hp = 756, .in_container = false, .direct_offset = 0x2228});
-    w.addEnemy(3, {.x = 3.f, .y = 1.f, .z = 3.f, .hp = 5, .max_hp = 9, .in_container = false, .direct_offset = 0x20b8});
+    w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .hp = 1572, .max_hp = 1572, .direct_offset = 0x2288, .in_container = false});
+    w.addEnemy(2, {.x = 2.f, .y = 1.f, .z = 2.f, .hp = 700, .max_hp = 756, .direct_offset = 0x2228, .in_container = false});
+    w.addEnemy(3, {.x = 3.f, .y = 1.f, .z = 3.f, .hp = 5, .max_hp = 9, .direct_offset = 0x20b8, .in_container = false});
     LiveBinder binder(w.mem, kBase, kImageSize);
     ASSERT_EQ(binder.scan(), BindStatus::Bound);
     std::vector<LiveEnemy> e;
@@ -937,7 +937,7 @@ TEST(SekiroLiveEnemiesTest, AModuleThatBelongsToAnotherCharacterIsNeverAccepted)
 
 TEST(SekiroLiveEnemiesTest, FindOwnedDataModuleReportsHowItWasFoundAndHonoursTheHint) {
     World w;
-    const uintptr_t direct = w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .in_container = false, .direct_offset = 0x2288});
+    const uintptr_t direct = w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .direct_offset = 0x2288, .in_container = false});
     const uintptr_t boxed = w.addEnemy(2, {.x = 2.f, .y = 1.f, .z = 2.f, .module_offset = 0x1b0});
 
     const auto a = findOwnedDataModule(w.mem, kBase, kImageSize, direct);
@@ -1000,7 +1000,7 @@ TEST(SekiroLiveEnemiesTest, ACharacterWithNoDataModuleIsNotRescannedEveryFrame) 
 
 TEST(SekiroLiveEnemiesTest, AModuleThatAppearsLaterIsFoundOnceTheMissIsRetried) {
     World w;
-    w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .module_ok = false, .in_container = false, .direct_offset = 0x2288});
+    w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .module_ok = false, .direct_offset = 0x2288, .in_container = false});
     LiveBinder binder(w.mem, kBase, kImageSize);
     ASSERT_EQ(binder.scan(), BindStatus::Bound);
     std::vector<LiveEnemy> e;
