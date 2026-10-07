@@ -449,7 +449,12 @@ void RunPendingNativeHits() {
         uint8_t data[sekiro::live::kDamageDataSize];
         uint32_t posture = 0;
         std::memcpy(&posture, g_native_template + sekiro::live::kDamagePosture, sizeof(posture));
-        sekiro::live::patchNativeHit(g_native_template, g_native_attacker, h.enemy, 0, posture, data);
+        // Replay the template's own hp (an hp-0 hit is probably dropped before the reaction) and a posture
+        // large enough to be felt; the enemy loses a few hp more than our direct write, which is harmless.
+        uint32_t hp = 0;
+        std::memcpy(&hp, g_native_template + sekiro::live::kDamageHp, sizeof(hp));
+        posture = posture < 20 ? 20 : posture;
+        sekiro::live::patchNativeHit(g_native_template, g_native_attacker, h.enemy, hp, posture, data);
         g_original_deal_damage(reinterpret_cast<void*>(h.module), reinterpret_cast<void*>(g_native_attacker), data, 0);
         static int logged = 0;
         if (logged < 20) Log("Native hit #%d: replayed DealDamage on enemy %llx (module %llx, posture %u)", ++logged,
