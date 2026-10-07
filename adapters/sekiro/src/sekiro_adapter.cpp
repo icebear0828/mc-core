@@ -64,7 +64,7 @@ SekiroAdapter::SekiroAdapter() = default;
 SekiroAdapter::SekiroAdapter(sekiro::native::ChrIns* player, sekiro::native::ChrCam* camera)
     : player_(player), camera_(camera) {
     if (player_) {
-        registerEntity(0, player_);
+        registerEntity(EntityId::LocalPlayer, player_);
     }
 }
 
@@ -82,7 +82,14 @@ SekiroAdapter::~SekiroAdapter() {
 void SekiroAdapter::setPlayerCharacter(sekiro::native::ChrIns* player) {
     player_ = player;
     if (player_) {
-        registerEntity(0, player_);
+        registerEntity(EntityId::LocalPlayer, player_);
+        if (native_player_hidden_) {
+            player_->bModelHidden = true;
+            player_->ModelAlpha = 0.0f;
+        } else {
+            player_->bModelHidden = false;
+            player_->ModelAlpha = (cached_player_alpha_ > 0.0f) ? cached_player_alpha_ : 1.0f;
+        }
     }
 }
 
@@ -90,17 +97,19 @@ void SekiroAdapter::setPlayerCamera(sekiro::native::ChrCam* camera) {
     camera_ = camera;
 }
 
-void SekiroAdapter::registerEntity(uint64_t entity_id, sekiro::native::ChrIns* entity) {
-    if (entity) {
-        registered_entities_[entity_id] = entity;
+bool SekiroAdapter::registerEntity(EntityId entity_id, sekiro::native::ChrIns* entity) {
+    if (entity_id == EntityId::None || !entity) {
+        return false;
     }
+    registered_entities_[entity_id] = entity;
+    return true;
 }
 
-void SekiroAdapter::unregisterEntity(uint64_t entity_id) {
+void SekiroAdapter::unregisterEntity(EntityId entity_id) {
     registered_entities_.erase(entity_id);
 }
 
-sekiro::native::ChrIns* SekiroAdapter::getRegisteredEntity(uint64_t entity_id) const {
+sekiro::native::ChrIns* SekiroAdapter::getRegisteredEntity(EntityId entity_id) const {
     auto it = registered_entities_.find(entity_id);
     return (it != registered_entities_.end()) ? it->second : nullptr;
 }
@@ -117,16 +126,22 @@ const sekiro::native::SekiroVisualMeshComponent* SekiroAdapter::getStevePartVisu
 // IPhysicsAdapter Implementation
 // =========================================================================
 
-RaycastResult SekiroAdapter::raycastWorld(const Vec3& start, const Vec3& end, uint64_t ignore_entity) {
+RaycastResult SekiroAdapter::raycastWorld(const Vec3& start, const Vec3& end, EntityId ignore_entity) {
     sekiro::native::FVector3 native_start = toNative(start);
     sekiro::native::FVector3 native_end = toNative(end);
     sekiro::native::HavokHitResult hit{};
+
+    // Havok knows its own handles, not our EntityIds
+    uint64_t ignore_handle = 0;
+    if (const sekiro::native::ChrIns* ignored = getRegisteredEntity(ignore_entity)) {
+        ignore_handle = ignored->Handle;
+    }
 
     bool bEngineHit = sekiro::native::DantelionEngineContext::RaycastWorld(
         native_start,
         native_end,
         hit,
-        ignore_entity
+        ignore_handle
     );
 
     if (bEngineHit && hit.bHit) {
@@ -139,22 +154,22 @@ RaycastResult SekiroAdapter::raycastWorld(const Vec3& start, const Vec3& end, ui
         for (const auto& [handle, record] : colliders_) {
             if (record->handle == hit.HitColliderHandle) {
                 res.is_block = true;
-                res.hit_entity_id = handle;
+                res.hit_collider_handle = handle;
                 return res;
             }
         }
 
         // Check if hit a registered character
         for (const auto& [id, chr] : registered_entities_) {
-            if (chr && chr->Handle == hit.HitEntityHandle) {
+            if (chr && hit.HitEntityHandle != 0 && chr->Handle == hit.HitEntityHandle) {
                 res.is_block = false;
-                res.hit_entity_id = id;
+                res.hit_entity = id;
                 return res;
             }
         }
 
+        // Terrain or an actor we do not track: never leak a raw host handle as an EntityId
         res.is_block = hit.bIsStaticBlock;
-        res.hit_entity_id = hit.HitEntityHandle;
         return res;
     }
 
@@ -220,7 +235,7 @@ RaycastResult SekiroAdapter::raycastWorld(const Vec3& start, const Vec3& end, ui
             best_result.has_hit = true;
             best_result.point = start + norm_dir * tmin;
             best_result.normal = hit_norm;
-            best_result.hit_entity_id = handle;
+            best_result.hit_collider_handle = handle;
             best_result.is_block = true;
         }
     }
@@ -257,10 +272,16 @@ void SekiroAdapter::destroyBlockCollider(uint64_t collider_handle) {
     }
 }
 
-void SekiroAdapter::applyLinearImpulse(uint64_t entity_id, const Vec3& impulse) {
+void SekiroAdapter::applyLinearImpulse(EntityId entity_id, const Vec3& impulse) {
     auto it = registered_entities_.find(entity_id);
     if (it != registered_entities_.end() && it->second) {
         it->second->ApplyImpulse(toNative(impulse));
+    }
+}
+
+void SekiroAdapter::setLinearVelocity(EntityId entity_id, const Vec3& velocity) {
+    if (sekiro::native::ChrIns* chr = getRegisteredEntity(entity_id)) {
+        chr->Velocity = toNative(velocity);
     }
 }
 
@@ -341,12 +362,13 @@ void SekiroAdapter::updateStevePartTransforms(const SteveAnimator::PartTransform
         if (steve_parts_[i]) {
             const auto& t = transforms[i];
             steve_parts_[i]->Position = toNative(t.pos);
-            // Convert quaternion / angles to Euler
-            float pitch = std::atan2(2.0f * (t.rot.w * t.rot.x + t.rot.y * t.rot.z),
-                                     1.0f - 2.0f * (t.rot.x * t.rot.x + t.rot.y * t.rot.y)) * (180.0f / 3.14159265f);
-            float yaw = std::asin(std::clamp(2.0f * (t.rot.w * t.rot.y - t.rot.z * t.rot.x), -1.0f, 1.0f)) * (180.0f / 3.14159265f);
-            float roll = std::atan2(2.0f * (t.rot.w * t.rot.z + t.rot.x * t.rot.y),
-                                    1.0f - 2.0f * (t.rot.y * t.rot.y + t.rot.z * t.rot.z)) * (180.0f / 3.14159265f);
+            const sekiro::native::FQuat q = toNativeQuat(t.rot);
+            steve_parts_[i]->RotationQuat = q;
+            // Debug-only Euler view of the converted quaternion (degrees)
+            constexpr float kRadToDeg = 180.0f / 3.14159265f;
+            const float pitch = std::atan2(2.0f * (q.W * q.X + q.Y * q.Z), 1.0f - 2.0f * (q.X * q.X + q.Y * q.Y)) * kRadToDeg;
+            const float yaw = std::asin(std::clamp(2.0f * (q.W * q.Y - q.Z * q.X), -1.0f, 1.0f)) * kRadToDeg;
+            const float roll = std::atan2(2.0f * (q.W * q.Z + q.X * q.Y), 1.0f - 2.0f * (q.Y * q.Y + q.Z * q.Z)) * kRadToDeg;
             steve_parts_[i]->RotationEuler = {pitch, yaw, roll};
         }
     }
@@ -449,15 +471,11 @@ bool SekiroAdapter::processHit(const HitIntent& intent) {
         victim->bIsDead = true;
     }
 
-    // Apply stagger & posture recoil
-    if (intent.knockback_force > 0.0f) {
-        triggerStaggerOrRagdoll(intent.victim_id, intent.knockback_vector, intent.knockback_force);
-    }
-
+    // Stagger / knockback is triggered by CombatEngine::executeHit after this returns true.
     return true;
 }
 
-float SekiroAdapter::getMaxHealth(uint64_t entity_id) {
+float SekiroAdapter::getMaxHealth(EntityId entity_id) {
     auto it = registered_entities_.find(entity_id);
     if (it != registered_entities_.end() && it->second) {
         return it->second->MaxHealth;
@@ -465,7 +483,7 @@ float SekiroAdapter::getMaxHealth(uint64_t entity_id) {
     return 100.0f;
 }
 
-void SekiroAdapter::triggerStaggerOrRagdoll(uint64_t entity_id, const Vec3& direction, float force) {
+void SekiroAdapter::triggerStaggerOrRagdoll(EntityId entity_id, const Vec3& direction, float force) {
     auto it = registered_entities_.find(entity_id);
     if (it != registered_entities_.end() && it->second) {
         it->second->StaggerLevel = static_cast<int32_t>(std::clamp(force * 0.5f, 1.0f, 5.0f));
@@ -512,6 +530,14 @@ Vec3 SekiroAdapter::getPlayerVelocity() const {
         return toMc(player_->Velocity);
     }
     return Vec3{};
+}
+
+bool SekiroAdapter::isPlayerOnGround() const {
+    constexpr float kAirborneVerticalSpeed = 200.0f;
+    if (!player_) {
+        return true;
+    }
+    return std::abs(player_->Velocity.Y) < kAirborneVerticalSpeed;
 }
 
 void SekiroAdapter::setEquippedItems(ItemId main, ItemId off) {

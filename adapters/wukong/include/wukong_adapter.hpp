@@ -42,14 +42,16 @@ public:
     // Host engine context setup
     void setPlayerController(b1::native::APlayerController* controller);
     void setWorld(b1::native::UWorld* world);
-    void registerEntity(uint64_t entity_id, b1::native::ABGUCharacter* character);
-    void unregisterEntity(uint64_t entity_id);
+    // false for EntityId::None. LocalPlayer is bound automatically by setPlayerController().
+    bool registerEntity(EntityId entity_id, b1::native::ABGUCharacter* character);
+    void unregisterEntity(EntityId entity_id);
 
     // --- IPhysicsAdapter ---
-    RaycastResult raycastWorld(const Vec3& start, const Vec3& end, uint64_t ignore_entity = 0) override;
+    RaycastResult raycastWorld(const Vec3& start, const Vec3& end, EntityId ignore_entity = EntityId::None) override;
     uint64_t createBlockCollider(const GridPos& grid_pos, BlockId block_id, const Vec3& world_pos) override;
     void destroyBlockCollider(uint64_t collider_handle) override;
-    void applyLinearImpulse(uint64_t entity_id, const Vec3& impulse) override;
+    void applyLinearImpulse(EntityId entity_id, const Vec3& impulse) override;
+    void setLinearVelocity(EntityId entity_id, const Vec3& velocity) override;
 
     // --- IRenderAdapter ---
     void setNativePlayerVisible(bool visible) override;
@@ -63,8 +65,8 @@ public:
 
     // --- ICombatAdapter ---
     bool processHit(const HitIntent& intent) override;
-    float getMaxHealth(uint64_t entity_id) override;
-    void triggerStaggerOrRagdoll(uint64_t entity_id, const Vec3& direction, float force) override;
+    float getMaxHealth(EntityId entity_id) override;
+    void triggerStaggerOrRagdoll(EntityId entity_id, const Vec3& direction, float force) override;
 
     // --- IInputAdapter ---
     ItemId getEquippedMainHand() const override;
@@ -81,8 +83,16 @@ public:
     [[nodiscard]] size_t getBlockColliderCount() const { return colliders_.size(); }
     [[nodiscard]] size_t getBlockVisualCount() const { return visuals_.size(); }
 
-    static b1::native::FVector toNative(const Vec3& v) { return {v.x, v.y, v.z}; }
-    static Vec3 toMc(const b1::native::FVector& v) { return {v.X, v.Y, v.Z}; }
+    // Vertical-velocity heuristic: the shadow native layer exposes no movement-mode query.
+    [[nodiscard]] bool isPlayerOnGround() const;
+    [[nodiscard]] const b1::native::UProceduralMeshComponent* getStevePartComponent(StevePart part) const;
+
+    // Canonical MC space (Z-up, right-handed, X=forward, Y=left)  <->  UE5 (Z-up, left-handed, X=forward, Y=right).
+    // Only Y flips. Units are centimetres on both sides.
+    static b1::native::FVector toNative(const Vec3& v) { return {v.x, -v.y, v.z}; }
+    static Vec3 toMc(const b1::native::FVector& v) { return {v.X, -v.Y, v.Z}; }
+    // Same physical rotation as an FRotator (degrees). Mirroring Y flips the pseudovector rotation axis.
+    static b1::native::FRotator toNativeRotator(const Quat& q);
 
 private:
     b1::native::APlayerController* controller_{nullptr};
@@ -93,7 +103,7 @@ private:
 
     std::unordered_map<uint64_t, std::unique_ptr<NativeBlockColliderRecord>> colliders_;
     std::unordered_map<uint64_t, std::unique_ptr<NativeBlockVisualRecord>> visuals_;
-    std::unordered_map<uint64_t, b1::native::ABGUCharacter*> registered_entities_;
+    std::unordered_map<EntityId, b1::native::ABGUCharacter*> registered_entities_;
 
     // 12 Steve parts
     bool steve_parts_spawned_{false};

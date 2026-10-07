@@ -48,3 +48,11 @@ Commit message 统一使用英文，遵循 Conventional Commits 格式：
 ### 2.3 跨平台与跨引擎隔离
 - `include/mc/` 下的所有头文件和核心类库严禁包含任何特定引擎（DirectX, RAGE, REDengine, RE Engine 等）专有头文件。
 - 依赖倒置：所有与宿主游戏交互的行为必须通过 `mc::contracts` 纯虚接口进行委托。
+
+### 2.4 宿主适配器开发铁律 (Adapter Anti-Pitfalls)
+所有新游戏适配器（`adapters/*`）必须严格遵守 [**《适配器工程设计与避坑规范》(docs/ADAPTER_SPECIFICATION.md)**](docs/ADAPTER_SPECIFICATION.md)：
+1. **图形生命周期**：商业游戏（Flip Model）必须每帧动态获取后备缓冲区 RTV；必须拦截 `ResizeBuffers` 防止主菜单与分辨率切换崩溃。
+2. **拒绝空指针假调用**：禁止硬编码 `nullptr` 初始化；必须具备 AOB 特征扫描或真实指针动态解析，且激活时原子化隐身原生角色模型。
+3. **高保真材质资产**：严禁使用 `<3`、`()`、`"Sword"` 等文本或粗劣线框糊弄 HUD；必须通过 `extract_mc_assets.py` 自动化图集与 D3D 纹理精确 UV 映射。
+4. **自动化准入测试**：提交前必须通过 `pytest tests/test_adapter_standards.py` 校验。
+

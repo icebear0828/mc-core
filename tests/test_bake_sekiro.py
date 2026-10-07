@@ -41,6 +41,9 @@ class TestSekiroAssetBaking(unittest.TestCase):
             self.assertTrue((map_dir / "stone.obj").exists())
             self.assertTrue((map_dir / "diamond_sword.obj").exists())
 
+            # Verify HUD atlas is staged in sekiro_dir
+            self.assertTrue((sekiro_dir / "mc_hud_atlas.png").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

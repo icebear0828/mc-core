@@ -21,72 +21,78 @@ if(NOT TARGET mc_core)
     add_subdirectory("${MC_CORE_DIR}" mc_core_build EXCLUDE_FROM_ALL)
 endif()
 
-include(FetchContent)
-FetchContent_Declare(
-    minhook
-    GIT_REPOSITORY https://github.com/TsudaKageyu/minhook.git
-    GIT_TAG        v1.3.3
-    GIT_SHALLOW    TRUE
-)
-FetchContent_GetProperties(minhook)
-if(NOT minhook_POPULATED)
-    FetchContent_Populate(minhook)
-endif()
-
-if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set(MINHOOK_HDE_SRC ${minhook_SOURCE_DIR}/src/hde/hde64.c)
-else()
-    set(MINHOOK_HDE_SRC ${minhook_SOURCE_DIR}/src/hde/hde32.c)
-endif()
-
-if(NOT TARGET minhook)
-    add_library(minhook STATIC
-        ${minhook_SOURCE_DIR}/src/buffer.c
-        ${minhook_SOURCE_DIR}/src/hook.c
-        ${minhook_SOURCE_DIR}/src/trampoline.c
-        ${MINHOOK_HDE_SRC}
+if(WIN32)
+    include(FetchContent)
+    FetchContent_Declare(
+        minhook
+        GIT_REPOSITORY https://github.com/TsudaKageyu/minhook.git
+        GIT_TAG        v1.3.3
+        GIT_SHALLOW    TRUE
     )
-    target_include_directories(minhook PUBLIC ${minhook_SOURCE_DIR}/include)
-    if(MSVC)
-        target_compile_options(minhook PRIVATE /W3 /WX-)
+    FetchContent_GetProperties(minhook)
+    if(NOT minhook_POPULATED)
+        FetchContent_Populate(minhook)
     endif()
-endif()
 
-# Dear ImGui for in-game diagnostic HUD and mode feedback
-FetchContent_Declare(
-    imgui
-    GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG        v1.90.4
-    GIT_SHALLOW    TRUE
-)
-FetchContent_GetProperties(imgui)
-if(NOT imgui_POPULATED)
-    FetchContent_Populate(imgui)
-endif()
-
-if(NOT TARGET imgui)
-    add_library(imgui STATIC
-        ${imgui_SOURCE_DIR}/imgui.cpp
-        ${imgui_SOURCE_DIR}/imgui_draw.cpp
-        ${imgui_SOURCE_DIR}/imgui_tables.cpp
-        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-        ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
-        ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp
-    )
-    target_include_directories(imgui PUBLIC
-        ${imgui_SOURCE_DIR}
-        ${imgui_SOURCE_DIR}/backends
-    )
-    if(MSVC)
-        target_compile_options(imgui PRIVATE /W3 /WX-)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(MINHOOK_HDE_SRC ${minhook_SOURCE_DIR}/src/hde/hde64.c)
+    else()
+        set(MINHOOK_HDE_SRC ${minhook_SOURCE_DIR}/src/hde/hde32.c)
     endif()
+
+    if(NOT TARGET minhook)
+        add_library(minhook STATIC
+            ${minhook_SOURCE_DIR}/src/buffer.c
+            ${minhook_SOURCE_DIR}/src/hook.c
+            ${minhook_SOURCE_DIR}/src/trampoline.c
+            ${MINHOOK_HDE_SRC}
+        )
+        target_include_directories(minhook PUBLIC ${minhook_SOURCE_DIR}/include)
+        if(MSVC)
+            target_compile_options(minhook PRIVATE /W3 /WX-)
+        endif()
+    endif()
+
+    # Dear ImGui for in-game diagnostic HUD and mode feedback
+    FetchContent_Declare(
+        imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG        v1.90.4
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_GetProperties(imgui)
+    if(NOT imgui_POPULATED)
+        FetchContent_Populate(imgui)
+    endif()
+
+    if(NOT TARGET imgui)
+        add_library(imgui STATIC
+            ${imgui_SOURCE_DIR}/imgui.cpp
+            ${imgui_SOURCE_DIR}/imgui_draw.cpp
+            ${imgui_SOURCE_DIR}/imgui_tables.cpp
+            ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp
+        )
+        target_include_directories(imgui PUBLIC
+            ${imgui_SOURCE_DIR}
+            ${imgui_SOURCE_DIR}/backends
+        )
+        if(MSVC)
+            target_compile_options(imgui PRIVATE /W3 /WX-)
+        endif()
+    endif()
+
+    set(SEKIRO_PLATFORM_SRCS
+        src/dinput8_loader.cpp
+        dinput8.def
+    )
 endif()
 
 add_library(sekiro_adapter SHARED
     src/sekiro_adapter.cpp
     src/plugin_entry.cpp
-    src/dinput8_loader.cpp
-    dinput8.def
+    ${SEKIRO_PLATFORM_SRCS}
 )
 
 target_include_directories(sekiro_adapter
@@ -94,20 +100,31 @@ target_include_directories(sekiro_adapter
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     PRIVATE
         "${MC_CORE_DIR}/include"
+)
+
+if(WIN32)
+    target_include_directories(sekiro_adapter PRIVATE
         ${minhook_SOURCE_DIR}/include
         ${imgui_SOURCE_DIR}
         ${imgui_SOURCE_DIR}/backends
-)
+    )
+endif()
 
 target_link_libraries(sekiro_adapter
     PUBLIC
         mc_core
-    PRIVATE
+)
+
+if(WIN32)
+    target_link_libraries(sekiro_adapter PRIVATE
         minhook
         imgui
         d3d11
         dxgi
-)
+        psapi
+        windowscodecs
+    )
+endif()
 
 if(WIN32)
     set_target_properties(sekiro_adapter PROPERTIES

@@ -160,15 +160,310 @@ def build_cube_block(texture: Image.Image, size_cm: float = 100.0) -> dict:
     }
 
 
+def create_canonical_sprite(name: str) -> Image.Image:
+    """Generate canonical pixel sprite when extracting without an official client.jar."""
+    if name == "crosshair":
+        img = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+        # Black outline + white cross in center
+        for i in range(16):
+            if 6 <= i <= 9:
+                img.putpixel((7, i), (255, 255, 255, 220))
+                img.putpixel((8, i), (255, 255, 255, 220))
+                img.putpixel((i, 7), (255, 255, 255, 220))
+                img.putpixel((i, 8), (255, 255, 255, 220))
+        return img
+
+    if name == "heart_full":
+        img = Image.new("RGBA", (9, 9), (0, 0, 0, 0))
+        c_blk, c_red, c_wht, c_drk = (0, 0, 0, 255), (235, 18, 18, 255), (255, 255, 255, 255), (145, 0, 0, 255)
+        pixels = {
+            (1, 0): c_blk, (2, 0): c_blk, (5, 0): c_blk, (6, 0): c_blk,
+            (0, 1): c_blk, (1, 1): c_red, (2, 1): c_wht, (3, 1): c_blk, (4, 1): c_blk, (5, 1): c_red, (6, 1): c_red, (7, 1): c_blk,
+            (0, 2): c_blk, (1, 2): c_wht, (2, 2): c_red, (3, 2): c_red, (4, 2): c_red, (5, 2): c_red, (6, 2): c_drk, (7, 2): c_blk,
+            (0, 3): c_blk, (1, 3): c_red, (2, 3): c_red, (3, 3): c_red, (4, 3): c_red, (5, 3): c_red, (6, 3): c_drk, (7, 3): c_blk,
+            (1, 4): c_blk, (2, 4): c_red, (3, 4): c_red, (4, 4): c_red, (5, 4): c_drk, (6, 4): c_blk,
+            (2, 5): c_blk, (3, 5): c_red, (4, 5): c_drk, (5, 5): c_blk,
+            (3, 6): c_blk, (4, 6): c_drk, (5, 6): c_blk,
+            (4, 7): c_blk,
+        }
+        for (x, y), col in pixels.items():
+            img.putpixel((x, y), col)
+        return img
+
+    if name == "hunger_full":
+        img = Image.new("RGBA", (9, 9), (0, 0, 0, 0))
+        c_blk, c_tan, c_car, c_drk = (35, 15, 5, 255), (225, 149, 79, 255), (189, 107, 34, 255), (109, 57, 14, 255)
+        c_bnw, c_bnd = (230, 230, 230, 255), (160, 160, 160, 255)
+        pixels = {
+            (4, 0): c_blk, (5, 0): c_blk, (6, 0): c_blk,
+            (3, 1): c_blk, (4, 1): c_tan, (5, 1): c_car, (6, 1): c_car, (7, 1): c_blk,
+            (2, 2): c_blk, (3, 2): c_tan, (4, 2): c_car, (5, 2): c_car, (6, 2): c_drk, (7, 2): c_blk,
+            (1, 3): c_blk, (2, 3): c_car, (3, 3): c_car, (4, 3): c_car, (5, 3): c_drk, (6, 3): c_drk, (7, 3): c_blk,
+            (0, 4): c_blk, (1, 4): c_car, (2, 4): c_car, (3, 4): c_car, (4, 4): c_drk, (5, 4): c_blk,
+            (0, 5): c_blk, (1, 5): c_bnw, (2, 5): c_car, (3, 5): c_drk, (4, 5): c_blk,
+            (1, 6): c_blk, (2, 6): c_bnd, (3, 6): c_bnw, (4, 6): c_blk,
+            (1, 7): c_blk, (2, 7): c_bnw, (3, 7): c_bnd, (4, 7): c_blk,
+            (2, 8): c_blk, (3, 8): c_blk,
+        }
+        for (x, y), col in pixels.items():
+            img.putpixel((x, y), col)
+        return img
+
+    if name == "hotbar_slot":
+        img = Image.new("RGBA", (24, 24), (45, 45, 45, 220))
+        # Bevel
+        c_dark = (55, 55, 55, 255)
+        c_lite = (240, 240, 240, 255)
+        for i in range(24):
+            img.putpixel((i, 0), c_dark)
+            img.putpixel((0, i), c_dark)
+            img.putpixel((i, 23), c_lite)
+            img.putpixel((23, i), c_lite)
+        return img
+
+    if name == "hotbar_cursor":
+        img = Image.new("RGBA", (24, 24), (0, 0, 0, 0))
+        c_wht = (255, 255, 255, 255)
+        c_blk = (0, 0, 0, 255)
+        for i in range(24):
+            img.putpixel((i, 0), c_wht)
+            img.putpixel((i, 1), c_wht)
+            img.putpixel((0, i), c_wht)
+            img.putpixel((1, i), c_wht)
+            img.putpixel((i, 22), c_wht)
+            img.putpixel((i, 23), c_wht)
+            img.putpixel((22, i), c_wht)
+            img.putpixel((23, i), c_wht)
+        return img
+
+    # 16x16 Items
+    img = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+    if name == "item_diamond_sword":
+        c_dm, c_dd, c_hi = (43, 235, 235, 255), (28, 163, 163, 255), (191, 255, 248, 255)
+        c_wd, c_gd, c_bk = (102, 66, 25, 255), (54, 34, 13, 255), (0, 0, 0, 255)
+        img.putpixel((13, 2), c_hi)
+        img.putpixel((14, 1), c_bk)
+        for d in range(7):
+            img.putpixel((12 - d, 3 + d), c_hi)
+            img.putpixel((13 - d, 4 + d), c_dm)
+            img.putpixel((14 - d, 5 + d), c_dd)
+        img.putpixel((6, 11), c_gd); img.putpixel((5, 10), c_gd); img.putpixel((7, 9), c_gd); img.putpixel((8, 10), c_gd)
+        img.putpixel((4, 11), c_bk); img.putpixel((4, 12), c_wd); img.putpixel((3, 13), c_wd)
+        img.putpixel((2, 14), c_gd); img.putpixel((1, 15), c_bk)
+    elif name == "item_diamond_pickaxe":
+        c_dm, c_dd, c_wd, c_bk = (43, 235, 235, 255), (28, 163, 163, 255), (102, 66, 25, 255), (0, 0, 0, 255)
+        for a in range(5):
+            img.putpixel((10 + a, 2 + (a - 2 if a > 2 else 0)), c_dm)
+            img.putpixel((5 - a, 7 + (a - 2 if a > 2 else 0)), c_dd)
+        for h in range(9):
+            img.putpixel((10 - h, 6 + h), c_wd)
+        img.putpixel((1, 15), c_bk)
+    elif name == "item_dirt":
+        c_grs, c_drt = (91, 135, 49, 255), (134, 96, 67, 255)
+        for r in range(2, 14):
+            for c in range(2, 14):
+                img.putpixel((c, r), c_grs if r < 6 else c_drt)
+    elif name == "item_stone":
+        c_st = (125, 125, 125, 255)
+        for r in range(2, 14):
+            for c in range(2, 14):
+                img.putpixel((c, r), c_st)
+    elif name == "item_tnt":
+        c_red, c_wht = (219, 51, 31, 255), (240, 240, 240, 255)
+        for r in range(2, 14):
+            for c in range(2, 14):
+                img.putpixel((c, r), c_wht if 6 <= r <= 9 else c_red)
+    elif name == "item_golden_apple":
+        c_gld, c_stm = (255, 215, 0, 255), (100, 60, 20, 255)
+        img.putpixel((8, 2), c_stm); img.putpixel((9, 1), c_stm)
+        for y in range(4, 14):
+            for x in range(4, 14):
+                if (x - 8)**2 + (y - 8)**2 <= 25:
+                    img.putpixel((x, y), c_gld)
+    elif name == "item_bow":
+        c_wd, c_st = (139, 90, 43, 255), (230, 230, 230, 255)
+        for b in range(9):
+            img.putpixel((12 - abs(b - 4), 3 + b), c_wd)
+            img.putpixel((8, 3 + b), c_st)
+    elif name == "item_elytra":
+        c_w1, c_w2 = (108, 98, 117, 255), (76, 68, 84, 255)
+        for e in range(10):
+            img.putpixel((6 - e // 3, 3 + e), c_w1)
+            img.putpixel((9 + e // 3, 3 + e), c_w2)
+    elif name == "item_totem_of_undying":
+        c_gld, c_emr = (255, 199, 0, 255), (64, 219, 112, 255)
+        for y in range(3, 14):
+            for x in range(5, 11):
+                img.putpixel((x, y), c_gld)
+        img.putpixel((6, 5), c_emr); img.putpixel((9, 5), c_emr)
+
+    return img
+
+
+def build_hud_atlas(client_jar: Path | None = None) -> tuple[Image.Image, dict[str, tuple[float, float, float, float]]]:
+    """Build unified 256x256 RGBA HUD texture atlas and return (atlas_image, uv_mapping)."""
+    atlas_size = 256
+    atlas = Image.new("RGBA", (atlas_size, atlas_size), (0, 0, 0, 0))
+    uv_map: dict[str, tuple[float, float, float, float]] = {}
+
+    sprites_to_pack = [
+        ("crosshair", (16, 16)),
+        ("heart_full", (9, 9)),
+        ("hunger_full", (9, 9)),
+        ("hotbar_slot", (24, 24)),
+        ("hotbar_cursor", (24, 24)),
+        ("item_diamond_sword", (16, 16)),
+        ("item_diamond_pickaxe", (16, 16)),
+        ("item_dirt", (16, 16)),
+        ("item_stone", (16, 16)),
+        ("item_tnt", (16, 16)),
+        ("item_golden_apple", (16, 16)),
+        ("item_bow", (16, 16)),
+        ("item_elytra", (16, 16)),
+        ("item_totem_of_undying", (16, 16)),
+    ]
+
+    curr_x, curr_y = 2, 2
+    row_height = 0
+
+    jar_zip = None
+    if client_jar and client_jar.is_file():
+        try:
+            jar_zip = zipfile.ZipFile(client_jar, "r")
+        except Exception:
+            jar_zip = None
+
+    for name, (w, h) in sprites_to_pack:
+        if curr_x + w + 2 > atlas_size:
+            curr_x = 2
+            curr_y += row_height + 2
+            row_height = 0
+
+        sprite_img = None
+        # Try reading from jar if possible
+        if jar_zip:
+            jar_paths = {
+                "crosshair": "assets/minecraft/textures/gui/sprites/hud/crosshair.png",
+                "heart_full": "assets/minecraft/textures/gui/sprites/hud/heart/full.png",
+                "hunger_full": "assets/minecraft/textures/gui/sprites/hud/food_full.png",
+                "item_diamond_sword": "assets/minecraft/textures/item/diamond_sword.png",
+                "item_diamond_pickaxe": "assets/minecraft/textures/item/diamond_pickaxe.png",
+                "item_dirt": "assets/minecraft/textures/block/dirt.png",
+                "item_stone": "assets/minecraft/textures/block/stone.png",
+                "item_tnt": "assets/minecraft/textures/block/tnt_side.png",
+                "item_golden_apple": "assets/minecraft/textures/item/golden_apple.png",
+                "item_bow": "assets/minecraft/textures/item/bow.png",
+                "item_elytra": "assets/minecraft/textures/item/elytra.png",
+                "item_totem_of_undying": "assets/minecraft/textures/item/totem_of_undying.png",
+            }
+            if name in jar_paths and jar_paths[name] in jar_zip.namelist():
+                try:
+                    with jar_zip.open(jar_paths[name]) as zf:
+                        sprite_img = Image.open(io.BytesIO(zf.read())).convert("RGBA")
+                        if sprite_img.size != (w, h):
+                            sprite_img = sprite_img.resize((w, h), Image.Resampling.NEAREST)
+                except Exception:
+                    sprite_img = None
+
+        if sprite_img is None:
+            sprite_img = create_canonical_sprite(name)
+
+        atlas.paste(sprite_img, (curr_x, curr_y), sprite_img)
+
+        u0 = curr_x / float(atlas_size)
+        v0 = curr_y / float(atlas_size)
+        u1 = (curr_x + w) / float(atlas_size)
+        v1 = (curr_y + h) / float(atlas_size)
+        uv_map[name] = (u0, v0, u1, v1)
+
+        curr_x += w + 2
+        row_height = max(row_height, h)
+
+    if jar_zip:
+        jar_zip.close()
+
+    return atlas, uv_map
+
+
+def export_hud_atlas_header(atlas: Image.Image, uv_map: dict[str, tuple[float, float, float, float]], output_header: Path) -> None:
+    """Export C++ header containing atlas UV definitions and embedded PNG data."""
+    png_io = io.BytesIO()
+    atlas.save(png_io, format="PNG")
+    png_bytes = png_io.getvalue()
+
+    hex_bytes = ", ".join(f"0x{b:02x}" for b in png_bytes)
+
+    lines = [
+        "// Auto-generated by extract_mc_assets.py - DO NOT EDIT MANUALLY",
+        "#pragma once",
+        "",
+        "#include <cstdint>",
+        "#include <cstddef>",
+        "",
+        "namespace sekiro::hud {",
+        "",
+        "struct HudUV {",
+        "    float u0{0.0f};",
+        "    float v0{0.0f};",
+        "    float u1{1.0f};",
+        "    float v1{1.0f};",
+        "};",
+        "",
+    ]
+
+    for key, (u0, v0, u1, v1) in uv_map.items():
+        var_name = f"kUV_{key.upper()}"
+        lines.append(f"constexpr HudUV {var_name} = {{{u0:.6f}f, {v0:.6f}f, {u1:.6f}f, {v1:.6f}f}};")
+
+    lines.extend([
+        "",
+        "constexpr HudUV kUV_ITEMS[9] = {",
+        "    kUV_ITEM_DIAMOND_SWORD,",
+        "    kUV_ITEM_DIAMOND_PICKAXE,",
+        "    kUV_ITEM_DIRT,",
+        "    kUV_ITEM_STONE,",
+        "    kUV_ITEM_TNT,",
+        "    kUV_ITEM_GOLDEN_APPLE,",
+        "    kUV_ITEM_BOW,",
+        "    kUV_ITEM_ELYTRA,",
+        "    kUV_ITEM_TOTEM_OF_UNDYING,",
+        "};",
+        "",
+        f"constexpr uint32_t kHudAtlasWidth = {atlas.width};",
+        f"constexpr uint32_t kHudAtlasHeight = {atlas.height};",
+        f"constexpr size_t kHudAtlasPngSize = {len(png_bytes)};",
+        f"constexpr uint8_t kHudAtlasPngData[{len(png_bytes)}] = {{ {hex_bytes} }};",
+        "",
+        "} // namespace sekiro::hud",
+        "",
+    ])
+
+    output_header.parent.mkdir(parents=True, exist_ok=True)
+    output_header.write_text("\n".join(lines), encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Extract MC Java assets to standard OBJ/PNG models.")
     parser.add_argument("--client-jar", type=Path, help="Path to Minecraft Java client.jar")
     parser.add_argument("--out-dir", type=Path, default=Path("assets/exported"), help="Output directory")
+    parser.add_argument("--export-hud-atlas", action="store_true", help="Export mc_hud_atlas.png and UV JSON")
+    parser.add_argument("--export-header", type=Path, help="Export C++ header file for HUD atlas")
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    if args.export_hud_atlas or args.export_header:
+        atlas_img, uv_map = build_hud_atlas(args.client_jar)
+        atlas_path = args.out_dir / "mc_hud_atlas.png"
+        atlas_img.save(atlas_path)
+        print(f"Exported HUD atlas to {atlas_path} with {len(uv_map)} UV regions.")
+
+        if args.export_header:
+            export_hud_atlas_header(atlas_img, uv_map, args.export_header)
+            print(f"Exported C++ HUD header to {args.export_header}")
+
     print(f"MC asset exporter ready. Output: {args.out_dir}")
 
 
 if __name__ == "__main__":
     main()
+

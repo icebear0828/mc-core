@@ -19,14 +19,24 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cmath>
+#include <psapi.h>
+#include <wincodec.h>
+
+#include "sekiro_native.hpp"
+#include "sekiro_hud_atlas.hpp"
+#include "sekiro_adapter.hpp"
+#include "mc/hud.hpp"
+#include "mc/session.hpp"
 
 // Declare external plugin entry lifecycle functions
 extern "C" {
-void SekiroMod_Initialize(void* player, void* camera);
+void SekiroMod_Initialize(sekiro::native::ChrIns* player, sekiro::native::ChrCam* camera);
 void SekiroMod_Shutdown();
 void SekiroMod_SetSteveMode(bool active);
 bool SekiroMod_IsSteveModeActive();
-void SekiroMod_Tick(float delta_time);
+void SekiroMod_Tick(float delta_time, const mc::InputSnapshot* input);
+void SekiroMod_UpdatePointers(sekiro::native::ChrIns* player, sekiro::native::ChrCam* camera);
+mc::Session* SekiroMod_GetSession();
 }
 
 // Forward declare ImGui Win32 handler
@@ -66,13 +76,107 @@ std::chrono::steady_clock::time_point g_last_frame_time;
 
 ID3D11Device* g_d3d_device = nullptr;
 ID3D11DeviceContext* g_d3d_context = nullptr;
+ID3D11ShaderResourceView* g_hud_srv = nullptr;
 HWND g_game_hwnd = nullptr;
 WNDPROC g_original_wndproc = nullptr;
+
+ID3D11ShaderResourceView* CreateHudTextureSRV(ID3D11Device* device) {
+    if (!device) return nullptr;
+
+    IWICImagingFactory* pFactory = nullptr;
+    HRESULT hr = CoCreateInstance(
+        CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&pFactory)
+    );
+    if (FAILED(hr) || !pFactory) return nullptr;
+
+    IWICStream* pStream = nullptr;
+    hr = pFactory->CreateStream(&pStream);
+    if (FAILED(hr)) { pFactory->Release(); return nullptr; }
+
+    hr = pStream->InitializeFromMemory(
+        const_cast<BYTE*>(sekiro::hud::kHudAtlasPngData),
+        static_cast<DWORD>(sekiro::hud::kHudAtlasPngSize)
+    );
+    if (FAILED(hr)) { pStream->Release(); pFactory->Release(); return nullptr; }
+
+    IWICBitmapDecoder* pDecoder = nullptr;
+    hr = pFactory->CreateDecoderFromStream(
+        pStream, nullptr, WICDecodeMetadataCacheOnDemand, &pDecoder
+    );
+    if (FAILED(hr)) { pStream->Release(); pFactory->Release(); return nullptr; }
+
+    IWICBitmapFrameDecode* pFrame = nullptr;
+    hr = pDecoder->GetFrame(0, &pFrame);
+    if (FAILED(hr)) { pDecoder->Release(); pStream->Release(); pFactory->Release(); return nullptr; }
+
+    IWICFormatConverter* pConverter = nullptr;
+    hr = pFactory->CreateFormatConverter(&pConverter);
+    if (FAILED(hr)) { pFrame->Release(); pDecoder->Release(); pStream->Release(); pFactory->Release(); return nullptr; }
+
+    hr = pConverter->Initialize(
+        pFrame, GUID_WICPixelFormat32bppRGBA,
+        WICBitmapDitherTypeNone, nullptr, 0.0f, WICBitmapPaletteTypeCustom
+    );
+    if (FAILED(hr)) {
+        pConverter->Release(); pFrame->Release(); pDecoder->Release(); pStream->Release(); pFactory->Release();
+        return nullptr;
+    }
+
+    UINT width = 256, height = 256;
+    pConverter->GetSize(&width, &height);
+
+    std::vector<BYTE> pixels(width * height * 4);
+    pConverter->CopyPixels(nullptr, width * 4, static_cast<UINT>(pixels.size()), pixels.data());
+
+    pConverter->Release();
+    pFrame->Release();
+    pDecoder->Release();
+    pStream->Release();
+    pFactory->Release();
+
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = width;
+    desc.Height = height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA sub{};
+    sub.pSysMem = pixels.data();
+    sub.SysMemPitch = width * 4;
+
+    ID3D11Texture2D* pTex = nullptr;
+    hr = device->CreateTexture2D(&desc, &sub, &pTex);
+    if (FAILED(hr) || !pTex) return nullptr;
+
+    ID3D11ShaderResourceView* pSrv = nullptr;
+    hr = device->CreateShaderResourceView(pTex, nullptr, &pSrv);
+    pTex->Release();
+
+    if (FAILED(hr)) return nullptr;
+    return pSrv;
+}
 
 int g_frame_log_count = 0;
 int g_selected_slot = 0; // 0..8
 float g_anim_timer = 0.0f;
-float g_attack_anim = 0.0f; // 0..1 swing progress
+
+mc::HudEngine* GetHud() {
+    mc::Session* session = SekiroMod_GetSession();
+    return session ? &session->hud() : nullptr;
+}
+
+// Legacy viewmodel convention: 1 at swing start decaying to 0. Session reports progress 0 -> 1.
+float CurrentAttackAnim() {
+    const mc::Session* session = SekiroMod_GetSession();
+    if (!session) return 0.0f;
+    const float progress = session->lastAnimInput().swing_progress;
+    return progress > 0.0f ? 1.0f - progress : 0.0f;
+}
 
 const char* kHotbarItems[9] = {
     "Diamond Sword",
@@ -85,6 +189,105 @@ const char* kHotbarItems[9] = {
     "Elytra",
     "Totem of Undying"
 };
+
+// Persistent Dantelion game entity pointers & fallback shadow instances
+sekiro::native::ChrIns g_shadow_player;
+sekiro::native::ChrCam g_shadow_camera;
+sekiro::native::ChrIns* g_live_player = &g_shadow_player;
+sekiro::native::ChrCam* g_live_camera = &g_shadow_camera;
+uintptr_t g_world_chr_man_addr = 0;
+uintptr_t g_cam_man_addr = 0;
+
+uintptr_t FindPattern(HMODULE module, const uint8_t* pattern, const char* mask) {
+    if (!module) return 0;
+    MODULEINFO mod_info{};
+    if (!GetModuleInformation(GetCurrentProcess(), module, &mod_info, sizeof(mod_info))) {
+        return 0;
+    }
+    const uint8_t* base = reinterpret_cast<const uint8_t*>(mod_info.lpBaseOfDll);
+    const size_t size = mod_info.SizeOfImage;
+    const size_t pattern_len = strlen(mask);
+    if (size < pattern_len) return 0;
+
+    for (size_t i = 0; i <= size - pattern_len; ++i) {
+        bool match = true;
+        for (size_t j = 0; j < pattern_len; ++j) {
+            if (mask[j] == 'x' && base[i + j] != pattern[j]) {
+                match = false;
+                break;
+            }
+        }
+        if (match) {
+            return reinterpret_cast<uintptr_t>(base + i);
+        }
+    }
+    return 0;
+}
+
+void ScanSekiroSignatures() {
+    HMODULE game_mod = GetModuleHandleA(nullptr);
+    if (!game_mod) return;
+
+    // Pattern for WorldChrMan in Sekiro 1.04-1.06:
+    // 48 8B 05 ?? ?? ?? ?? 48 85 C0 74 ?? 48 8B 58 38
+    const uint8_t p_wcm[] = {0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48, 0x85, 0xC0, 0x74, 0x00, 0x48, 0x8B, 0x58, 0x38};
+    uintptr_t match_wcm = FindPattern(game_mod, p_wcm, "xxx????xxxx?xxxx");
+    if (match_wcm) {
+        int32_t rel = *reinterpret_cast<const int32_t*>(match_wcm + 3);
+        g_world_chr_man_addr = match_wcm + 7 + rel;
+        Log("Resolved Sekiro WorldChrMan static pointer at %p", reinterpret_cast<void*>(g_world_chr_man_addr));
+    }
+
+    // Pattern for CamMan / FieldArea:
+    // 48 8B 05 ?? ?? ?? ?? 48 85 C0 74 ?? F3 0F 10
+    const uint8_t p_cam[] = {0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48, 0x85, 0xC0, 0x74, 0x00, 0xF3, 0x0F, 0x10};
+    uintptr_t match_cam = FindPattern(game_mod, p_cam, "xxx????xxxx?xxx");
+    if (match_cam) {
+        int32_t rel = *reinterpret_cast<const int32_t*>(match_cam + 3);
+        g_cam_man_addr = match_cam + 7 + rel;
+        Log("Resolved Sekiro CamMan static pointer at %p", reinterpret_cast<void*>(g_cam_man_addr));
+    }
+}
+
+void TryUpdateLiveGameEntities() {
+    sekiro::native::ChrIns* resolved_player = nullptr;
+    sekiro::native::ChrCam* resolved_camera = nullptr;
+
+    if (g_world_chr_man_addr) {
+        uintptr_t wcm = *reinterpret_cast<uintptr_t*>(g_world_chr_man_addr);
+        if (wcm) {
+            // Main player ChrIns is at offset +0x88 (or +0x80 / +0x38 depending on game version)
+            uintptr_t p = *reinterpret_cast<uintptr_t*>(wcm + 0x88);
+            if (!p) p = *reinterpret_cast<uintptr_t*>(wcm + 0x80);
+            if (!p) p = *reinterpret_cast<uintptr_t*>(wcm + 0x38);
+            if (p) {
+                resolved_player = reinterpret_cast<sekiro::native::ChrIns*>(p);
+            }
+        }
+    }
+
+    if (g_cam_man_addr) {
+        uintptr_t cam_man = *reinterpret_cast<uintptr_t*>(g_cam_man_addr);
+        if (cam_man) {
+            uintptr_t c = *reinterpret_cast<uintptr_t*>(cam_man + 0x60);
+            if (c) {
+                resolved_camera = reinterpret_cast<sekiro::native::ChrCam*>(c);
+            }
+        }
+    }
+
+    if (!resolved_player) resolved_player = &g_shadow_player;
+    if (!resolved_camera) resolved_camera = &g_shadow_camera;
+
+    if (resolved_player != g_live_player || resolved_camera != g_live_camera) {
+        g_live_player = resolved_player;
+        g_live_camera = resolved_camera;
+        SekiroMod_UpdatePointers(g_live_player, g_live_camera);
+        Log("Sekiro entities linked: LivePlayer=%p (Real: %s), LiveCamera=%p (Real: %s)",
+            g_live_player, (g_live_player != &g_shadow_player) ? "YES" : "FALLBACK",
+            g_live_camera, (g_live_camera != &g_shadow_camera) ? "YES" : "FALLBACK");
+    }
+}
 
 LRESULT CALLBACK DetourWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     if (g_imgui_initialized.load()) {
@@ -227,87 +430,118 @@ void DrawVoxelBox(
 void RenderMinecraftHUD(float screen_w, float screen_h, bool is_steve_mode) {
     ImDrawList* draw = ImGui::GetForegroundDrawList();
 
+    // Ensure HUD Texture Atlas SRV is created
+    if (!g_hud_srv && g_d3d_device) {
+        g_hud_srv = CreateHudTextureSRV(g_d3d_device);
+        if (g_hud_srv) {
+            Log("Successfully created D3D11 ShaderResourceView for Minecraft HUD Atlas!");
+        }
+    }
+
     // 1. Crosshair in screen center
     if (is_steve_mode) {
         float cx = screen_w * 0.5f;
         float cy = screen_h * 0.5f;
-        ImU32 ch_col = IM_COL32(255, 255, 255, 220);
-        ImU32 ch_bg = IM_COL32(0, 0, 0, 180);
-
-        // Black outline cross
-        draw->AddRectFilled(ImVec2(cx - 9, cy - 2), ImVec2(cx + 9, cy + 2), ch_bg);
-        draw->AddRectFilled(ImVec2(cx - 2, cy - 9), ImVec2(cx + 2, cy + 9), ch_bg);
-        // White cross
-        draw->AddRectFilled(ImVec2(cx - 8, cy - 1), ImVec2(cx + 8, cy + 1), ch_col);
-        draw->AddRectFilled(ImVec2(cx - 1, cy - 8), ImVec2(cx + 1, cy + 8), ch_col);
+        float ch_sz = 16.0f;
+        if (g_hud_srv) {
+            draw->AddImage(reinterpret_cast<ImTextureID>(g_hud_srv),
+                ImVec2(cx - ch_sz * 0.5f, cy - ch_sz * 0.5f),
+                ImVec2(cx + ch_sz * 0.5f, cy + ch_sz * 0.5f),
+                ImVec2(sekiro::hud::kUV_CROSSHAIR.u0, sekiro::hud::kUV_CROSSHAIR.v0),
+                ImVec2(sekiro::hud::kUV_CROSSHAIR.u1, sekiro::hud::kUV_CROSSHAIR.v1));
+        } else {
+            ImU32 ch_col = IM_COL32(255, 255, 255, 220);
+            draw->AddRectFilled(ImVec2(cx - 8, cy - 1), ImVec2(cx + 8, cy + 1), ch_col);
+            draw->AddRectFilled(ImVec2(cx - 1, cy - 8), ImVec2(cx + 1, cy + 8), ch_col);
+        }
     }
 
     // 2. Hotbar at bottom center
     if (is_steve_mode) {
         float slot_size = 46.0f;
         float bar_w = slot_size * 9.0f;
-        float bar_h = slot_size;
         float start_x = (screen_w - bar_w) * 0.5f;
         float start_y = screen_h - 70.0f;
 
-        // Hotbar background
-        draw->AddRectFilled(ImVec2(start_x - 4, start_y - 4), ImVec2(start_x + bar_w + 4, start_y + bar_h + 4), IM_COL32(30, 30, 30, 220), 4.0f);
-        draw->AddRect(ImVec2(start_x - 4, start_y - 4), ImVec2(start_x + bar_w + 4, start_y + bar_h + 4), IM_COL32(80, 80, 80, 255), 4.0f, 0, 2.0f);
+        mc::HudEngine* hud = GetHud();
+        int active_slot = hud ? hud->getSelectedSlot() : g_selected_slot;
 
         for (int i = 0; i < 9; ++i) {
             float sx = start_x + i * slot_size;
             float sy = start_y;
-            bool selected = (i == g_selected_slot);
+            bool selected = (i == active_slot);
 
-            // Slot background
-            ImU32 bg_col = selected ? IM_COL32(70, 70, 70, 240) : IM_COL32(45, 45, 45, 200);
-            draw->AddRectFilled(ImVec2(sx + 2, sy + 2), ImVec2(sx + slot_size - 2, sy + slot_size - 2), bg_col, 2.0f);
+            if (g_hud_srv) {
+                // Official Minecraft Slot Texture
+                draw->AddImage(reinterpret_cast<ImTextureID>(g_hud_srv),
+                    ImVec2(sx, sy), ImVec2(sx + slot_size, sy + slot_size),
+                    ImVec2(sekiro::hud::kUV_HOTBAR_SLOT.u0, sekiro::hud::kUV_HOTBAR_SLOT.v0),
+                    ImVec2(sekiro::hud::kUV_HOTBAR_SLOT.u1, sekiro::hud::kUV_HOTBAR_SLOT.v1));
 
-            // Slot border
-            if (selected) {
-                draw->AddRect(ImVec2(sx, sy), ImVec2(sx + slot_size, sy + slot_size), IM_COL32(255, 255, 255, 255), 2.0f, 0, 3.5f);
+                // Official Minecraft 16x16 Item Texture Icon
+                const auto& item_uv = sekiro::hud::kUV_ITEMS[i];
+                float pad = 7.0f;
+                draw->AddImage(reinterpret_cast<ImTextureID>(g_hud_srv),
+                    ImVec2(sx + pad, sy + pad), ImVec2(sx + slot_size - pad, sy + slot_size - pad),
+                    ImVec2(item_uv.u0, item_uv.v0), ImVec2(item_uv.u1, item_uv.v1));
+
+                // If selected, render official Minecraft cursor frame
+                if (selected) {
+                    float ext = 4.0f;
+                    draw->AddImage(reinterpret_cast<ImTextureID>(g_hud_srv),
+                        ImVec2(sx - ext, sy - ext), ImVec2(sx + slot_size + ext, sy + slot_size + ext),
+                        ImVec2(sekiro::hud::kUV_HOTBAR_CURSOR.u0, sekiro::hud::kUV_HOTBAR_CURSOR.v0),
+                        ImVec2(sekiro::hud::kUV_HOTBAR_CURSOR.u1, sekiro::hud::kUV_HOTBAR_CURSOR.v1));
+                }
             } else {
-                draw->AddRect(ImVec2(sx + 2, sy + 2), ImVec2(sx + slot_size - 2, sy + slot_size - 2), IM_COL32(100, 100, 100, 255), 2.0f, 0, 1.0f);
+                draw->AddRectFilled(ImVec2(sx, sy), ImVec2(sx + slot_size, sy + slot_size), IM_COL32(40, 40, 40, 220));
             }
 
             // Key number
             char key_str[4];
             snprintf(key_str, sizeof(key_str), "%d", i + 1);
-            draw->AddText(ImVec2(sx + 5, sy + 4), IM_COL32(200, 200, 200, 255), key_str);
-
-            // Item abbreviation
-            char abbr[8];
-            if (i == 0) snprintf(abbr, sizeof(abbr), "Sword");
-            else if (i == 1) snprintf(abbr, sizeof(abbr), "Pick");
-            else if (i == 2) snprintf(abbr, sizeof(abbr), "Dirt");
-            else if (i == 3) snprintf(abbr, sizeof(abbr), "Stone");
-            else if (i == 4) snprintf(abbr, sizeof(abbr), "TNT");
-            else if (i == 5) snprintf(abbr, sizeof(abbr), "Apple");
-            else if (i == 6) snprintf(abbr, sizeof(abbr), "Bow");
-            else if (i == 7) snprintf(abbr, sizeof(abbr), "Wing");
-            else snprintf(abbr, sizeof(abbr), "Totem");
-
-            ImU32 txt_col = selected ? IM_COL32(0, 255, 255, 255) : IM_COL32(220, 220, 220, 255);
-            draw->AddText(ImVec2(sx + 6, sy + 24), txt_col, abbr);
+            draw->AddText(ImVec2(sx + 3.0f, sy + 2.0f), IM_COL32(220, 220, 220, 220), key_str);
         }
 
         // Active item label above hotbar
+        const char* item_name = hud ? hud->getSelectedItemDisplayName() : kHotbarItems[active_slot];
         char active_info[128];
-        snprintf(active_info, sizeof(active_info), "Selected: [%d] %s", g_selected_slot + 1, kHotbarItems[g_selected_slot]);
+        if (item_name && item_name[0] != '\0') {
+            snprintf(active_info, sizeof(active_info), "[%d] %s", active_slot + 1, item_name);
+        } else {
+            snprintf(active_info, sizeof(active_info), "[%d]", active_slot + 1);
+        }
         float info_w = ImGui::CalcTextSize(active_info).x;
-        draw->AddText(ImVec2((screen_w - info_w) * 0.5f, start_y - 24.0f), IM_COL32(255, 255, 80, 255), active_info);
+        draw->AddText(ImVec2((screen_w - info_w) * 0.5f + 1.0f, start_y - 42.0f + 1.0f), IM_COL32(0, 0, 0, 220), active_info);
+        draw->AddText(ImVec2((screen_w - info_w) * 0.5f, start_y - 42.0f), IM_COL32(255, 255, 255, 255), active_info);
 
-        // 10 Red Hearts (Health)
+        // 10 Red Hearts
+        mc::HeartContainers hearts = hud ? hud->computeHearts() : mc::HeartContainers{10, false, 0};
         float heart_start_x = start_x;
-        float heart_start_y = start_y - 42.0f;
-        for (int h = 0; h < 10; ++h) {
-            draw->AddText(ImVec2(heart_start_x + h * 16.0f, heart_start_y), IM_COL32(255, 40, 40, 255), "<3");
+        float heart_start_y = start_y - 24.0f;
+        int drawn_hearts = 0;
+        for (int h = 0; h < hearts.full_hearts && drawn_hearts < 10; ++h, ++drawn_hearts) {
+            float hx = heart_start_x + drawn_hearts * 18.0f;
+            if (g_hud_srv) {
+                draw->AddImage(reinterpret_cast<ImTextureID>(g_hud_srv),
+                    ImVec2(hx, heart_start_y), ImVec2(hx + 18.0f, heart_start_y + 18.0f),
+                    ImVec2(sekiro::hud::kUV_HEART_FULL.u0, sekiro::hud::kUV_HEART_FULL.v0),
+                    ImVec2(sekiro::hud::kUV_HEART_FULL.u1, sekiro::hud::kUV_HEART_FULL.v1));
+            }
         }
 
         // 10 Food drumsticks (Hunger)
-        float food_start_x = start_x + bar_w - 160.0f;
-        for (int fd = 0; fd < 10; ++fd) {
-            draw->AddText(ImVec2(food_start_x + fd * 16.0f, heart_start_y), IM_COL32(230, 160, 40, 255), "()");
+        mc::HungerContainers hunger = hud ? hud->computeHunger() : mc::HungerContainers{10, false, 0};
+        float food_start_x = start_x + bar_w - 180.0f;
+        int drawn_food = 0;
+        for (int fd = 0; fd < hunger.full_drumsticks && drawn_food < 10; ++fd, ++drawn_food) {
+            float fx = food_start_x + drawn_food * 18.0f;
+            if (g_hud_srv) {
+                draw->AddImage(reinterpret_cast<ImTextureID>(g_hud_srv),
+                    ImVec2(fx, heart_start_y), ImVec2(fx + 18.0f, heart_start_y + 18.0f),
+                    ImVec2(sekiro::hud::kUV_HUNGER_FULL.u0, sekiro::hud::kUV_HUNGER_FULL.v0),
+                    ImVec2(sekiro::hud::kUV_HUNGER_FULL.u1, sekiro::hud::kUV_HUNGER_FULL.v1));
+            }
         }
     }
 
@@ -360,7 +594,7 @@ void RenderMinecraftHUD(float screen_w, float screen_h, bool is_steve_mode) {
 
         // Bobbing & Attack swing
         float bob = sinf(g_anim_timer * 6.0f) * 8.0f;
-        float swing_rot = g_attack_anim * 1.2f;
+        float swing_rot = CurrentAttackAnim() * 1.2f;
 
         std::vector<ProjectedFace> hand_faces;
         ImU32 col_arm = IM_COL32(0, 168, 168, 255);    // Cyan sleeve
@@ -394,13 +628,22 @@ HRESULT WINAPI DetourResizeBuffers(
     UINT swap_chain_flags
 ) {
     Log("DetourResizeBuffers called (Width: %u, Height: %u)", width, height);
+    if (g_hud_srv) {
+        g_hud_srv->Release();
+        g_hud_srv = nullptr;
+    }
+    if (g_d3d_context) {
+        g_d3d_context->OMSetRenderTargets(0, nullptr, nullptr);
+    }
     return g_original_resize_buffers(pSwapChain, buffer_count, width, height, new_format, swap_chain_flags);
 }
 
 HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UINT flags) {
+    TryUpdateLiveGameEntities();
+
     if (!g_mod_initialized.load()) {
-        Log("Initializing SekiroMod in DetourPresent...");
-        SekiroMod_Initialize(nullptr, nullptr);
+        Log("Initializing SekiroMod in DetourPresent with Player=%p, Camera=%p...", g_live_player, g_live_camera);
+        SekiroMod_Initialize(g_live_player, g_live_camera);
         g_last_frame_time = std::chrono::steady_clock::now();
         g_mod_initialized.store(true);
         Log("SekiroMod initialized successfully.");
@@ -419,18 +662,23 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
         Log(">>> Hotkey [F6] triggered! Steve Mode toggled to: %s", new_active ? "TRUE (ACTIVE)" : "FALSE (STANDBY)");
     }
 
-    // Hotbar 1-9 switch keys
+    // Gather this frame's input events for the mc-core Session
+    mc::InputSnapshot input_snapshot{};
+    mc::HudEngine* global_hud = GetHud();
     for (int k = 0; k < 9; ++k) {
         if (GetAsyncKeyState('1' + k) & 1) {
+            input_snapshot.hotbar_select = k;
             g_selected_slot = k;
-            Log("Selected hotbar slot: %d (%s)", k + 1, kHotbarItems[k]);
+            Log("Selected hotbar slot: %d (%s)", k + 1, global_hud ? mc::HudEngine::getItemDisplayName(global_hud->getSlot(k).item) : kHotbarItems[k]);
         }
     }
-
-    // Left click attack swing trigger
-    if (GetAsyncKeyState(VK_LBUTTON) & 1) {
-        g_attack_anim = 1.0f;
+    if (g_imgui_initialized.load() && ImGui::GetIO().MouseWheel != 0.0f) {
+        input_snapshot.scroll = ImGui::GetIO().MouseWheel > 0.0f ? -1 : 1;
     }
+    input_snapshot.attack_pressed = (GetAsyncKeyState(VK_LBUTTON) & 1) != 0;
+    input_snapshot.attack_held = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    input_snapshot.use_pressed = (GetAsyncKeyState(VK_RBUTTON) & 1) != 0;
+    input_snapshot.glide_toggle = (GetAsyncKeyState(VK_SPACE) & 1) != 0;
 
     // Compute delta time
     auto now = std::chrono::steady_clock::now();
@@ -441,12 +689,9 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
     }
 
     g_anim_timer += dt;
-    if (g_attack_anim > 0.0f) {
-        g_attack_anim = std::max(0.0f, g_attack_anim - dt * 4.0f);
-    }
 
     // Tick mc-core engine
-    SekiroMod_Tick(dt);
+    SekiroMod_Tick(dt, &input_snapshot);
 
     // Get screen dimensions from SwapChain Desc
     DXGI_SWAP_CHAIN_DESC sc_desc{};
@@ -467,6 +712,7 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
         ImGui::NewFrame();
 
         const bool is_active = SekiroMod_IsSteveModeActive();
+        global_hud = GetHud();
 
         // 1. Status Panel Window
         ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_Always);
@@ -478,7 +724,9 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
             ImGui::Begin("Minecraft Core Mod (mc-core)", nullptr, flags_win);
             ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.4f, 1.0f), "[ACTIVE] Minecraft Steve Mode Engaged!");
             ImGui::Separator();
-            ImGui::Text("Item: [%d] %s  |  Attack Swing: LMB", g_selected_slot + 1, kHotbarItems[g_selected_slot]);
+            const char* cur_name = global_hud ? global_hud->getSelectedItemDisplayName() : kHotbarItems[g_selected_slot];
+            int cur_slot = global_hud ? global_hud->getSelectedSlot() : g_selected_slot;
+            ImGui::Text("Item: [%d] %s  |  Attack Swing: LMB", cur_slot + 1, cur_name);
             ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Press [F6] to Exit Minecraft Mode  |  Keys [1-9] Change Slot");
             ImGui::End();
             ImGui::PopStyleColor();
@@ -618,6 +866,8 @@ DWORD WINAPI LoaderThread(LPVOID) {
     Log("LoaderThread started. Waiting 1500ms for Sekiro process initialization...");
     Sleep(1500);
 
+    ScanSekiroSignatures();
+
     MH_STATUS status = MH_Initialize();
     if (status != MH_OK && status != MH_ERROR_ALREADY_INITIALIZED) {
         Log("MinHook initialization failed (Code: %d)", static_cast<int>(status));
@@ -708,6 +958,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             ImGui_ImplDX11_Shutdown();
             ImGui_ImplWin32_Shutdown();
             ImGui::DestroyContext();
+        }
+        if (g_hud_srv) {
+            g_hud_srv->Release();
+            g_hud_srv = nullptr;
         }
         if (g_system_dinput8) {
             FreeLibrary(g_system_dinput8);

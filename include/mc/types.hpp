@@ -100,11 +100,23 @@ struct ActiveEffect {
     float duration{0.f}; // seconds
 };
 
+// Identity of a gameplay entity. Distinct from host pointers/handles and from block collider
+// handles: nothing converts to it implicitly, so those namespaces cannot be mixed by accident.
+// Adapters assign ids >= 2 to other entities; 0 means "no entity" and 1 is always the local player.
+enum class EntityId : uint64_t {
+    None = 0,
+    LocalPlayer = 1,
+};
+
 struct RaycastResult {
     bool has_hit{false};
     Vec3 point{};
     Vec3 normal{};
-    uint64_t hit_entity_id{0};
+    // Registered entity that was hit; None for terrain, unregistered actors and our own blocks.
+    EntityId hit_entity{EntityId::None};
+    // Collider handle (from createBlockCollider) when one of our voxel blocks was hit, else 0.
+    uint64_t hit_collider_handle{0};
+    // True for any block-like static hit (our voxel colliders or host static geometry).
     bool is_block{false};
 };
 

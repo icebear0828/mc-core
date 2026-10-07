@@ -30,6 +30,14 @@ struct FVector3 {
     }
 };
 
+// Hamilton quaternion in Dantelion axes (X=right, Y=up, Z=forward).
+struct FQuat {
+    float X{0.0f};
+    float Y{0.0f};
+    float Z{0.0f};
+    float W{1.0f};
+};
+
 struct FMatrix4 {
     float M[4][4]{
         {1, 0, 0, 0},
@@ -69,6 +77,7 @@ public:
     uint64_t Handle{0};
     FVector3 Position{};
     FVector3 RotationEuler{};
+    FQuat RotationQuat{};
     FVector3 Scale{1.0f, 1.0f, 1.0f};
     std::string ModelName;
     int32_t CrackStage{-1};

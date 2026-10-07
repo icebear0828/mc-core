@@ -89,3 +89,37 @@ def test_build_cube_block_dimensions():
     assert pytest.approx(max(ys), abs=0.1) == 50.0
     assert pytest.approx(min(zs), abs=0.1) == -50.0
     assert pytest.approx(max(zs), abs=0.1) == 50.0
+
+
+def test_build_hud_atlas_contains_expected_uvs():
+    from extract_mc_assets import build_hud_atlas
+
+    atlas_img, uv_map = build_hud_atlas()
+    assert isinstance(atlas_img, Image.Image)
+    assert atlas_img.width >= 128
+    assert atlas_img.height >= 128
+    assert atlas_img.mode == "RGBA"
+
+    required_keys = [
+        "crosshair",
+        "heart_full",
+        "hunger_full",
+        "hotbar_slot",
+        "hotbar_cursor",
+        "item_diamond_sword",
+        "item_diamond_pickaxe",
+        "item_dirt",
+        "item_stone",
+        "item_tnt",
+        "item_golden_apple",
+        "item_bow",
+        "item_elytra",
+        "item_totem_of_undying",
+    ]
+
+    for key in required_keys:
+        assert key in uv_map, f"Missing UV mapping for {key}"
+        u0, v0, u1, v1 = uv_map[key]
+        assert 0.0 <= u0 < u1 <= 1.0, f"Invalid U range for {key}: {u0}..{u1}"
+        assert 0.0 <= v0 < v1 <= 1.0, f"Invalid V range for {key}: {v0}..{v1}"
+

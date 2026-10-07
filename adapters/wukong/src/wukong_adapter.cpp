@@ -46,7 +46,7 @@ WukongAdapter::WukongAdapter() = default;
 WukongAdapter::WukongAdapter(b1::native::APlayerController* controller)
     : controller_(controller) {
     if (controller_ && controller_->ControlledPawn) {
-        registerEntity(0, controller_->ControlledPawn);
+        registerEntity(EntityId::LocalPlayer, controller_->ControlledPawn);
     }
 }
 
@@ -64,7 +64,7 @@ WukongAdapter::~WukongAdapter() {
 void WukongAdapter::setPlayerController(b1::native::APlayerController* controller) {
     controller_ = controller;
     if (controller_ && controller_->ControlledPawn) {
-        registerEntity(0, controller_->ControlledPawn);
+        registerEntity(EntityId::LocalPlayer, controller_->ControlledPawn);
     }
 }
 
@@ -72,13 +72,15 @@ void WukongAdapter::setWorld(b1::native::UWorld* world) {
     world_ = world;
 }
 
-void WukongAdapter::registerEntity(uint64_t entity_id, b1::native::ABGUCharacter* character) {
-    if (character) {
-        registered_entities_[entity_id] = character;
+bool WukongAdapter::registerEntity(EntityId entity_id, b1::native::ABGUCharacter* character) {
+    if (entity_id == EntityId::None || !character) {
+        return false;
     }
+    registered_entities_[entity_id] = character;
+    return true;
 }
 
-void WukongAdapter::unregisterEntity(uint64_t entity_id) {
+void WukongAdapter::unregisterEntity(EntityId entity_id) {
     registered_entities_.erase(entity_id);
 }
 
@@ -86,7 +88,7 @@ void WukongAdapter::unregisterEntity(uint64_t entity_id) {
 // IPhysicsAdapter Implementation
 // =========================================================================
 
-RaycastResult WukongAdapter::raycastWorld(const Vec3& start, const Vec3& end, uint64_t ignore_entity) {
+RaycastResult WukongAdapter::raycastWorld(const Vec3& start, const Vec3& end, EntityId ignore_entity) {
     b1::native::FVector native_start = toNative(start);
     b1::native::FVector native_end = toNative(end);
     b1::native::FHitResult hit{};
@@ -119,7 +121,7 @@ RaycastResult WukongAdapter::raycastWorld(const Vec3& start, const Vec3& end, ui
         for (const auto& [handle, record] : colliders_) {
             if (record->box_component == hit.Component || record->actor.get() == hit.Actor) {
                 res.is_block = true;
-                res.hit_entity_id = handle;
+                res.hit_collider_handle = handle;
                 return res;
             }
         }
@@ -128,13 +130,13 @@ RaycastResult WukongAdapter::raycastWorld(const Vec3& start, const Vec3& end, ui
         for (const auto& [id, char_ptr] : registered_entities_) {
             if (char_ptr == hit.Actor) {
                 res.is_block = false;
-                res.hit_entity_id = id;
+                res.hit_entity = id;
                 return res;
             }
         }
 
+        // Terrain or an actor we do not track: never leak a host pointer as an EntityId
         res.is_block = false;
-        res.hit_entity_id = reinterpret_cast<uint64_t>(hit.Actor);
         return res;
     }
 
@@ -200,7 +202,7 @@ RaycastResult WukongAdapter::raycastWorld(const Vec3& start, const Vec3& end, ui
             best_result.has_hit = true;
             best_result.point = start + norm_dir * tmin;
             best_result.normal = hit_norm;
-            best_result.hit_entity_id = handle;
+            best_result.hit_collider_handle = handle;
             best_result.is_block = true;
         }
     }
@@ -252,10 +254,18 @@ void WukongAdapter::destroyBlockCollider(uint64_t collider_handle) {
     }
 }
 
-void WukongAdapter::applyLinearImpulse(uint64_t entity_id, const Vec3& impulse) {
+void WukongAdapter::applyLinearImpulse(EntityId entity_id, const Vec3& impulse) {
     auto it = registered_entities_.find(entity_id);
     if (it != registered_entities_.end() && it->second) {
         b1::native::UBGUFunctionLibrary::BGUApplyImpulse(it->second, toNative(impulse));
+    }
+}
+
+void WukongAdapter::setLinearVelocity(EntityId entity_id, const Vec3& velocity) {
+    auto it = registered_entities_.find(entity_id);
+    if (it != registered_entities_.end() && it->second) {
+        // UE5 semantics: XY/Z override flags replace the component instead of adding to it
+        it->second->LaunchCharacter(toNative(velocity), true, true);
     }
 }
 
@@ -360,13 +370,7 @@ void WukongAdapter::updateStevePartTransforms(const SteveAnimator::PartTransform
         if (steve_parts_[i]) {
             const auto& t = transforms[i];
             b1::native::FVector loc = toNative(t.pos);
-            // Convert quaternion / angles to FRotator
-            float pitch = std::atan2(2.0f * (t.rot.w * t.rot.x + t.rot.y * t.rot.z),
-                                     1.0f - 2.0f * (t.rot.x * t.rot.x + t.rot.y * t.rot.y)) * (180.0f / 3.14159265f);
-            float yaw = std::asin(std::clamp(2.0f * (t.rot.w * t.rot.y - t.rot.z * t.rot.x), -1.0f, 1.0f)) * (180.0f / 3.14159265f);
-            float roll = std::atan2(2.0f * (t.rot.w * t.rot.z + t.rot.x * t.rot.y),
-                                    1.0f - 2.0f * (t.rot.y * t.rot.y + t.rot.z * t.rot.z)) * (180.0f / 3.14159265f);
-            steve_parts_[i]->SetRelativeLocationAndRotation(loc, {pitch, yaw, roll});
+            steve_parts_[i]->SetRelativeLocationAndRotation(loc, toNativeRotator(t.rot));
         }
     }
 }
@@ -467,15 +471,11 @@ bool WukongAdapter::processHit(const HitIntent& intent) {
         victim->bIsDead = true;
     }
 
-    // Apply stagger & knockback
-    if (intent.knockback_force > 0.0f) {
-        triggerStaggerOrRagdoll(intent.victim_id, intent.knockback_vector, intent.knockback_force);
-    }
-
+    // Stagger / knockback is triggered by CombatEngine::executeHit after this returns true.
     return true;
 }
 
-float WukongAdapter::getMaxHealth(uint64_t entity_id) {
+float WukongAdapter::getMaxHealth(EntityId entity_id) {
     auto it = registered_entities_.find(entity_id);
     if (it != registered_entities_.end() && it->second) {
         return b1::native::UBGUFunctionLibrary::BGUGetFloatAttr(it->second, b1::native::EBGUAttrFloat::HpMax);
@@ -483,7 +483,7 @@ float WukongAdapter::getMaxHealth(uint64_t entity_id) {
     return 100.0f;
 }
 
-void WukongAdapter::triggerStaggerOrRagdoll(uint64_t entity_id, const Vec3& direction, float force) {
+void WukongAdapter::triggerStaggerOrRagdoll(EntityId entity_id, const Vec3& direction, float force) {
     auto it = registered_entities_.find(entity_id);
     if (it != registered_entities_.end() && it->second) {
         it->second->LastStaggerLevel = static_cast<int32_t>(std::clamp(force * 0.5f, 1.0f, 5.0f));
@@ -531,6 +531,56 @@ Vec3 WukongAdapter::getPlayerVelocity() const {
         return toMc(controller_->ControlledPawn->GetVelocity());
     }
     return Vec3{};
+}
+
+bool WukongAdapter::isPlayerOnGround() const {
+    constexpr float kAirborneVerticalSpeed = 200.0f;
+    if (!controller_ || !controller_->ControlledPawn) {
+        return true;
+    }
+    return std::abs(controller_->ControlledPawn->GetVelocity().Z) < kAirborneVerticalSpeed;
+}
+
+const b1::native::UProceduralMeshComponent* WukongAdapter::getStevePartComponent(StevePart part) const {
+    const size_t idx = static_cast<size_t>(part);
+    return idx < steve_parts_.size() ? steve_parts_[idx].get() : nullptr;
+}
+
+b1::native::FRotator WukongAdapter::toNativeRotator(const Quat& q) {
+    // Quaternion in UE axes: vector part = -M * v (M = diag(1,-1,1), det -1), w unchanged.
+    const float x = -q.x;
+    const float y = q.y;
+    const float z = -q.z;
+    const float w = q.w;
+    constexpr float kRadToDeg = 180.0f / 3.14159265f;
+    constexpr float kSingularity = 0.4999995f;
+
+    // Mirrors FQuat::Rotator()
+    const float singularity_test = z * x - w * y;
+    const float yaw_y = 2.0f * (w * z + x * y);
+    const float yaw_x = 1.0f - 2.0f * (y * y + z * z);
+
+    auto wrap = [](float deg) {
+        while (deg > 180.0f) deg -= 360.0f;
+        while (deg < -180.0f) deg += 360.0f;
+        return deg;
+    };
+
+    b1::native::FRotator r;
+    if (singularity_test < -kSingularity) {
+        r.Pitch = -90.0f;
+        r.Yaw = std::atan2(yaw_y, yaw_x) * kRadToDeg;
+        r.Roll = wrap(-r.Yaw - 2.0f * std::atan2(x, w) * kRadToDeg);
+    } else if (singularity_test > kSingularity) {
+        r.Pitch = 90.0f;
+        r.Yaw = std::atan2(yaw_y, yaw_x) * kRadToDeg;
+        r.Roll = wrap(r.Yaw - 2.0f * std::atan2(x, w) * kRadToDeg);
+    } else {
+        r.Pitch = std::asin(std::clamp(2.0f * singularity_test, -1.0f, 1.0f)) * kRadToDeg;
+        r.Yaw = std::atan2(yaw_y, yaw_x) * kRadToDeg;
+        r.Roll = std::atan2(-2.0f * (w * x + y * z), 1.0f - 2.0f * (x * x + y * y)) * kRadToDeg;
+    }
+    return r;
 }
 
 void WukongAdapter::setEquippedItems(ItemId main, ItemId off) {

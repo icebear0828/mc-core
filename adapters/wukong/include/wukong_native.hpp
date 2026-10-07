@@ -206,8 +206,10 @@ public:
     USceneComponent* GetMesh() const { return MeshComponent; }
     FVector GetVelocity() const { return Velocity; }
     void LaunchCharacter(const FVector& launchVelocity, bool bXYOverride, bool bZOverride) {
-        (void)bXYOverride; (void)bZOverride;
-        Velocity = Velocity + launchVelocity;
+        // UE5 semantics: an override flag replaces that component, otherwise it is added
+        Velocity.X = bXYOverride ? launchVelocity.X : Velocity.X + launchVelocity.X;
+        Velocity.Y = bXYOverride ? launchVelocity.Y : Velocity.Y + launchVelocity.Y;
+        Velocity.Z = bZOverride ? launchVelocity.Z : Velocity.Z + launchVelocity.Z;
     }
 };
 

@@ -9,7 +9,7 @@ namespace mc::adapter {
 // IPhysicsAdapter Implementation
 // =========================================================================
 
-RaycastResult {{GAME_NAME}}Adapter::raycastWorld(const Vec3& start, const Vec3& end, uint64_t ignore_entity) {
+RaycastResult {{GAME_NAME}}Adapter::raycastWorld(const Vec3& start, const Vec3& end, EntityId ignore_entity) {
     // TODO: Call native game engine raycast API (e.g. RAGE ShapeTest / REDengine SpatialQueries)
     (void)start; (void)end; (void)ignore_entity;
     return RaycastResult{};
@@ -26,9 +26,14 @@ void {{GAME_NAME}}Adapter::destroyBlockCollider(uint64_t collider_handle) {
     (void)collider_handle;
 }
 
-void {{GAME_NAME}}Adapter::applyLinearImpulse(uint64_t entity_id, const Vec3& impulse) {
+void {{GAME_NAME}}Adapter::applyLinearImpulse(EntityId entity_id, const Vec3& impulse) {
     // TODO: Apply physics force to target entity
     (void)entity_id; (void)impulse;
+}
+
+void {{GAME_NAME}}Adapter::setLinearVelocity(EntityId entity_id, const Vec3& velocity) {
+    // TODO: REPLACE (do not add to) the entity's velocity; velocity is canonical MC space, cm/s
+    (void)entity_id; (void)velocity;
 }
 
 // =========================================================================
@@ -80,18 +85,20 @@ void {{GAME_NAME}}Adapter::destroyBlockVisual(uint64_t block_handle) {
 // =========================================================================
 
 bool {{GAME_NAME}}Adapter::processHit(const HitIntent& intent) {
-    // TODO: Trigger native damage system event
+    // TODO: Apply damage / death / posture to the host entity.
+    // Do NOT trigger knockback or stagger here: CombatEngine::executeHit calls
+    // triggerStaggerOrRagdoll() exactly once after this returns true.
     (void)intent;
     return true;
 }
 
-float {{GAME_NAME}}Adapter::getMaxHealth(uint64_t entity_id) {
+float {{GAME_NAME}}Adapter::getMaxHealth(EntityId entity_id) {
     // TODO: Read max health from entity state
     (void)entity_id;
     return 100.0f;
 }
 
-void {{GAME_NAME}}Adapter::triggerStaggerOrRagdoll(uint64_t entity_id, const Vec3& direction, float force) {
+void {{GAME_NAME}}Adapter::triggerStaggerOrRagdoll(EntityId entity_id, const Vec3& direction, float force) {
     // TODO: Trigger native stagger animation or ragdoll
     (void)entity_id; (void)direction; (void)force;
 }

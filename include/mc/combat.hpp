@@ -7,8 +7,8 @@ namespace mc {
 class ICombatAdapter;
 
 struct HitIntent {
-    uint64_t attacker_id{0};
-    uint64_t victim_id{0};
+    EntityId attacker_id{EntityId::None};
+    EntityId victim_id{EntityId::None};
     float damage{0.f};
     float max_hp_percent{0.f}; // Dynamic balance for Bosses
     Vec3 hit_location{};
@@ -23,8 +23,8 @@ public:
     explicit CombatEngine(ICombatAdapter& combat);
 
     HitIntent calculateMeleeHit(
-        uint64_t attacker_id,
-        uint64_t victim_id,
+        EntityId attacker_id,
+        EntityId victim_id,
         ItemId weapon,
         float attack_cooldown, // [0, 1] 1 = fully charged
         bool is_falling,       // critical condition

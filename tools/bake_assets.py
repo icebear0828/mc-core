@@ -97,6 +97,17 @@ def bake_sekiro(source_dir: Path, output_dir: Path) -> bool:
         if not f.name.startswith("steve"):
             shutil.copy(f, map_out)
 
+    # Build and stage HUD atlas texture for D3D11 overlay
+    try:
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent))
+        from extract_mc_assets import build_hud_atlas
+        atlas_img, _ = build_hud_atlas()
+        atlas_img.save(sekiro_out / "mc_hud_atlas.png")
+        print("         Staged mc_hud_atlas.png for Sekiro D3D11 HUD overlay.")
+    except Exception as e:
+        print(f"         Notice: HUD atlas generation skipped: {e}")
+
     print(f"[SEKIRO] Staged {len(list(parts_out.glob('*')))} part files and {len(list(map_out.glob('*')))} map files.")
     return True
 

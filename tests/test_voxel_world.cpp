@@ -7,7 +7,7 @@ namespace {
 
 class MockVoxelPhysicsAdapter : public mc::IPhysicsAdapter {
 public:
-    mc::RaycastResult raycastWorld(const mc::Vec3&, const mc::Vec3&, uint64_t) override {
+    mc::RaycastResult raycastWorld(const mc::Vec3&, const mc::Vec3&, mc::EntityId) override {
         return mc::RaycastResult{};
     }
     uint64_t createBlockCollider(const mc::GridPos&, mc::BlockId, const mc::Vec3&) override {
@@ -16,7 +16,8 @@ public:
     void destroyBlockCollider(uint64_t) override {
         --collider_count_;
     }
-    void applyLinearImpulse(uint64_t, const mc::Vec3&) override {}
+    void applyLinearImpulse(mc::EntityId, const mc::Vec3&) override {}
+    void setLinearVelocity(mc::EntityId, const mc::Vec3&) override {}
 
     uint64_t collider_count_{0};
 };

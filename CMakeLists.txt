@@ -23,16 +23,21 @@ add_library(mc_core STATIC
     include/mc/combat.hpp
     include/mc/consumables.hpp
     include/mc/elytra.hpp
+    include/mc/hud.hpp
+    include/mc/session.hpp
     include/mc/contracts/physics_adapter.hpp
     include/mc/contracts/render_adapter.hpp
     include/mc/contracts/combat_adapter.hpp
     include/mc/contracts/input_adapter.hpp
+    include/mc/contracts/hud_renderer.hpp
     src/animator.cpp
     src/voxel_world.cpp
     src/ballistics.cpp
     src/combat.cpp
     src/consumables.cpp
     src/elytra.cpp
+    src/hud.cpp
+    src/session.cpp
 )
 
 target_include_directories(mc_core

@@ -42,15 +42,17 @@ public:
     // Host engine context setup
     void setPlayerCharacter(sekiro::native::ChrIns* player);
     void setPlayerCamera(sekiro::native::ChrCam* camera);
-    void registerEntity(uint64_t entity_id, sekiro::native::ChrIns* entity);
-    void unregisterEntity(uint64_t entity_id);
-    sekiro::native::ChrIns* getRegisteredEntity(uint64_t entity_id) const;
+    // false for EntityId::None. LocalPlayer is bound automatically by setPlayerCharacter().
+    bool registerEntity(EntityId entity_id, sekiro::native::ChrIns* entity);
+    void unregisterEntity(EntityId entity_id);
+    sekiro::native::ChrIns* getRegisteredEntity(EntityId entity_id) const;
 
     // --- IPhysicsAdapter ---
-    RaycastResult raycastWorld(const Vec3& start, const Vec3& end, uint64_t ignore_entity = 0) override;
+    RaycastResult raycastWorld(const Vec3& start, const Vec3& end, EntityId ignore_entity = EntityId::None) override;
     uint64_t createBlockCollider(const GridPos& grid_pos, BlockId block_id, const Vec3& world_pos) override;
     void destroyBlockCollider(uint64_t collider_handle) override;
-    void applyLinearImpulse(uint64_t entity_id, const Vec3& impulse) override;
+    void applyLinearImpulse(EntityId entity_id, const Vec3& impulse) override;
+    void setLinearVelocity(EntityId entity_id, const Vec3& velocity) override;
 
     // --- IRenderAdapter ---
     void setNativePlayerVisible(bool visible) override;
@@ -64,8 +66,8 @@ public:
 
     // --- ICombatAdapter ---
     bool processHit(const HitIntent& intent) override;
-    float getMaxHealth(uint64_t entity_id) override;
-    void triggerStaggerOrRagdoll(uint64_t entity_id, const Vec3& direction, float force) override;
+    float getMaxHealth(EntityId entity_id) override;
+    void triggerStaggerOrRagdoll(EntityId entity_id, const Vec3& direction, float force) override;
 
     // --- IInputAdapter ---
     ItemId getEquippedMainHand() const override;
@@ -83,14 +85,21 @@ public:
     [[nodiscard]] size_t getBlockVisualCount() const { return visuals_.size(); }
     const sekiro::native::SekiroVisualMeshComponent* getStevePartVisual(StevePart part) const;
 
-    // Coordinate conversions between MC coordinate space (Z-up) and Dantelion space (Y-up)
-    // MC: X=lateral, Y=depth/forward, Z=vertical
-    // Dantelion: X=lateral, Y=vertical, Z=depth/forward
+    // Vertical-velocity heuristic: Dantelion exposes no grounded flag we can read yet.
+    [[nodiscard]] bool isPlayerOnGround() const;
+
+    // Canonical MC space (Z-up, right-handed, X=forward, Y=left)  <->  Dantelion (Y-up, X=right, Z=forward).
+    // Dantelion is treated as left-handed, so this is a proper change of basis. Unit scale is 1:1 (cm).
     static sekiro::native::FVector3 toNative(const Vec3& v) {
-        return {v.x, v.z, v.y};
+        return {-v.y, v.z, v.x};
     }
     static Vec3 toMc(const sekiro::native::FVector3& v) {
-        return {v.X, v.Z, v.Y};
+        return {v.Z, -v.X, v.Y};
+    }
+    // Same physical rotation expressed in Dantelion axes. The basis change is a reflection, so the
+    // rotation axis (a pseudovector) flips sign relative to the mapped vector part.
+    static sekiro::native::FQuat toNativeQuat(const Quat& q) {
+        return {q.y, -q.z, -q.x, q.w};
     }
 
 private:
@@ -102,7 +111,7 @@ private:
 
     std::unordered_map<uint64_t, std::unique_ptr<SekiroBlockColliderRecord>> colliders_;
     std::unordered_map<uint64_t, std::unique_ptr<SekiroBlockVisualRecord>> visuals_;
-    std::unordered_map<uint64_t, sekiro::native::ChrIns*> registered_entities_;
+    std::unordered_map<EntityId, sekiro::native::ChrIns*> registered_entities_;
 
     // 12 Steve parts
     bool steve_parts_spawned_{false};

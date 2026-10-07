@@ -61,3 +61,13 @@
 - **赛博朋克 2077 (REDengine)**：通过 WolvenKit 转换为 `.mesh`。
 - **生化危机 (RE Engine)**：通过 RE Mesh Tools 转换为 `.mesh`。
 - **艾尔登法环 (Dantelion)**：通过 FLVER Editor 转换为 `.flver`。
+
+---
+
+## 5. 适配器工程实现避坑与准入规范
+
+在实现任何特定宿主引擎适配器时，必须遵循 [**《适配器工程设计与避坑规范》(ADAPTER_SPECIFICATION.md)**](ADAPTER_SPECIFICATION.md)：
+1. **图形管线**：支持 Flip Model 逐帧获取与释放 RTV，强制拦截 `ResizeBuffers` 处理分辨率与 CG 切换。
+2. **指针生命周期**：杜绝伪调用（`nullptr`），使用 AOB 特征扫描与实体热重连机制，激活即时同步原角色网格隐身。
+3. **UI 与材质**：通过 `tools/extract_mc_assets.py` 自动化提取生成 256×256 图集与精确 UV 坐标，杜绝字符或低质几何占位。
+
