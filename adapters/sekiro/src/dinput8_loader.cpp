@@ -660,6 +660,13 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
     if (GetAsyncKeyState(VK_F7) & 1) {
         g_screenshot_requested.store(true);
     }
+    // Remote debugging: an external tool asks for a frame by creating mc_cmd_screenshot.txt in the game
+    // folder (it cannot press F7 for us). Polled every few frames so the cost is negligible.
+    static unsigned poll_counter = 0;
+    if ((++poll_counter % 6u) == 0u && GetFileAttributesW(L"mc_cmd_screenshot.txt") != INVALID_FILE_ATTRIBUTES) {
+        DeleteFileW(L"mc_cmd_screenshot.txt");
+        g_screenshot_requested.store(true);
+    }
     if (GetAsyncKeyState(VK_F8) & 1) {
         g_show_debug_panel = !g_show_debug_panel;
     }
