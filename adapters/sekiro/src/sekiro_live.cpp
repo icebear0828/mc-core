@@ -181,6 +181,11 @@ SampleStatus LiveBinder::sample(LiveSample& out) const {
     pos = {a[0], a[1], a[2]};
     copy = {b[0], b[1], b[2]};
     if (!finiteAndBounded(pos) || !finiteAndBounded(copy)) return SampleStatus::Invalid;
+    // Both copies exactly at the origin: the object exists but has not been placed yet (seen for one
+    // frame while a world loads). Not a position we should drive anything from.
+    if (pos.X == 0.0f && pos.Y == 0.0f && pos.Z == 0.0f && copy.X == 0.0f && copy.Y == 0.0f && copy.Z == 0.0f) {
+        return SampleStatus::NotInWorld;
+    }
     if ((pos - copy).Length() > layout::kMaxPositionCopyDelta) return SampleStatus::Invalid;
 
     LiveSample s;

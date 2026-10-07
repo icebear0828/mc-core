@@ -227,6 +227,20 @@ TEST(SekiroLiveSampleTest, NotInWorldWhileManagersAreNull) {
     EXPECT_EQ(binder.sample(s), SampleStatus::Ok);
 }
 
+TEST(SekiroLiveSampleTest, AllZeroPositionMeansThePlayerIsNotPlacedYet) {
+    World w;
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    LiveSample s;
+
+    // Observed in-game: on world load the object exists for a frame before its position is written.
+    w.setPlayer(0.f, 0.f, 0.f);
+    EXPECT_EQ(binder.sample(s), SampleStatus::NotInWorld);
+
+    w.setPlayer(0.f, -36.f, 0.f); // a single zero coordinate is perfectly normal
+    EXPECT_EQ(binder.sample(s), SampleStatus::Ok);
+}
+
 TEST(SekiroLiveSampleTest, InvalidWhenPositionCopiesDisagreeOrAreNotFinite) {
     World w;
     LiveBinder binder(w.mem, kBase, kImageSize);
