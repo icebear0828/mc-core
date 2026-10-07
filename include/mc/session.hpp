@@ -51,6 +51,7 @@ public:
     static constexpr float kSwingDurationSec = 0.3f;
     static constexpr float kAttackRechargeSec = 0.625f; // diamond sword, 1.6 attacks/s
     static constexpr float kMaxHeadYawRad = 0.8726646f; // 50 degrees: further and the body turns too
+    static constexpr float kVelocitySmoothingSec = 0.12f; // host positions advance in steps; limbs must not follow the steps
 
     explicit Session(const Ports& ports);
     ~Session();
@@ -90,6 +91,9 @@ private:
 
     SteveAnimInput last_anim_input_{};
     float body_yaw_{0.f};
+    float head_side_{1.f};       // which side the head is parked on while the camera is behind the body
+    Vec3 smoothed_vel_{};        // animation-only low-pass of the host velocity (cm/s)
+    bool smoothed_vel_seeded_{false};
     bool body_yaw_seeded_{false}; // re-seeded from the camera each time the session is activated
     float swing_elapsed_{-1.f}; // <0 = idle
     float attack_cooldown_{1.f};

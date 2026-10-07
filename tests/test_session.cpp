@@ -771,3 +771,64 @@ TEST_F(SessionTest, HostFacingAppearingOrVanishingMidSessionIsHandled) {
     session.tick(0.05f, {});
     EXPECT_NEAR(render.root_yaw, 1.0f, 0.2f);
 }
+
+TEST_F(SessionTest, HeadDoesNotFlipSidesWhenTheCameraSwingsPastTheBackOfTheBody) {
+    input.has_facing = true;
+    input.facing_yaw = 0.f;
+    session.setActive(true);
+    auto look = [&](float deg) {
+        input.cam_fwd = {std::cos(deg * kPi / 180.f), std::sin(deg * kPi / 180.f), 0.f};
+        session.tick(0.016f, {});
+        return session.lastAnimInput().look_yaw;
+    };
+    look(100.f); // head parked at +50 degrees on the left
+    EXPECT_NEAR(look(170.f), 50.f * kPi / 180.f, 1e-4f);
+    EXPECT_NEAR(look(179.f), 50.f * kPi / 180.f, 1e-4f);
+    EXPECT_NEAR(look(-179.f), 50.f * kPi / 180.f, 1e-4f); // directly behind: no snap to the other side
+    EXPECT_NEAR(look(-170.f), 50.f * kPi / 180.f, 1e-4f);
+    EXPECT_NEAR(look(-100.f), -50.f * kPi / 180.f, 1e-4f); // clearly on the right again: now it may switch
+}
+
+TEST_F(SessionTest, WalkAnimationIsMeasuredAlongTheHostBodyNotTheCamera) {
+    input.has_facing = true;
+    input.facing_yaw = kPi / 2.f;         // body faces +Y
+    input.cam_fwd = {1.f, 0.f, 0.f};      // camera looks along +X
+    session.setActive(true);
+    for (int i = 0; i < 60; ++i) {
+        input.player_vel = {0.f, 432.f, 0.f}; // 4.32 m/s along the body
+        session.tick(0.016f, {});
+    }
+    EXPECT_NEAR(session.lastAnimInput().forward_speed, 4.32f, 0.05f);
+    EXPECT_NEAR(session.lastAnimInput().strafe_speed, 0.f, 0.05f);
+}
+
+TEST_F(SessionTest, StepwisePositionUpdatesDoNotMakeTheLimbsFlutter) {
+    // The game moves its character in fixed steps while frames come faster: differenced velocity alternates
+    // between 0 and twice the real speed. The animation must see roughly the real speed.
+    input.has_facing = true;
+    input.facing_yaw = 0.f;
+    session.setActive(true);
+    float lo = 1e9f, hi = -1e9f;
+    for (int i = 0; i < 120; ++i) {
+        input.player_vel = {(i % 2 == 0) ? 0.f : 864.f, 0.f, 0.f}; // mean 4.32 m/s
+        session.tick(0.008f, {});
+        if (i > 60) {
+            lo = std::min(lo, session.lastAnimInput().forward_speed);
+            hi = std::max(hi, session.lastAnimInput().forward_speed);
+        }
+    }
+    EXPECT_GT(lo, 3.4f);
+    EXPECT_LT(hi, 5.2f);
+}
+
+TEST_F(SessionTest, AnimationSpeedStartsFromTheCurrentVelocityAfterReactivation) {
+    input.has_facing = true;
+    session.setActive(true);
+    input.player_vel = {432.f, 0.f, 0.f};
+    for (int i = 0; i < 30; ++i) session.tick(0.016f, {});
+    session.setActive(false);
+    input.player_vel = {0.f, 0.f, 0.f};
+    session.setActive(true);
+    session.tick(0.016f, {});
+    EXPECT_NEAR(session.lastAnimInput().forward_speed, 0.f, 0.05f); // no stale run carried over
+}

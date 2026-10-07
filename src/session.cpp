@@ -67,6 +67,7 @@ void Session::setActive(bool active) {
         elytra_->stopGliding();
         swing_elapsed_ = -1.f;
         body_yaw_seeded_ = false;
+        smoothed_vel_seeded_ = false;
         ports_.render.destroySteveParts();
         ports_.render.setNativePlayerVisible(true);
     }
@@ -230,19 +231,31 @@ void Session::tick(float dt, const InputSnapshot& in) {
     }
 
     // --- Animation + projectiles -----------------------------------------
-    const Vec3 right{std::sin(yaw), -std::cos(yaw), 0.f};
-    const Vec3 forward_h{std::cos(yaw), std::sin(yaw), 0.f};
+    // Animation speed comes from a smoothed velocity: hosts advance their character in fixed steps while frames
+    // arrive faster, so the raw per-frame difference alternates between 0 and twice the real speed.
+    if (!smoothed_vel_seeded_) {
+        smoothed_vel_ = player_vel;
+        smoothed_vel_seeded_ = true;
+    } else {
+        const float alpha = 1.f - std::exp(-dt / kVelocitySmoothingSec);
+        smoothed_vel_ = smoothed_vel_ + (player_vel - smoothed_vel_) * alpha;
+    }
+
     SteveAnimInput anim{};
-    anim.forward_speed = (player_vel.x * forward_h.x + player_vel.y * forward_h.y) / kCmPerMeter;
-    anim.strafe_speed = (player_vel.x * right.x + player_vel.y * right.y) / kCmPerMeter;
-    // Minecraft turns the head freely up to 50 degrees off the body's heading, then drags the body along.
     float host_yaw = 0.f;
-    if (ports_.input.getPlayerFacingYaw(host_yaw) && std::isfinite(host_yaw)) {
+    const bool host_owns_body = ports_.input.getPlayerFacingYaw(host_yaw) && std::isfinite(host_yaw);
+    if (host_owns_body) {
         // The native character owns its heading; only the head is ours.
         body_yaw_ = wrapPi(host_yaw);
         body_yaw_seeded_ = true;
-        anim.look_yaw = std::clamp(wrapPi(yaw - body_yaw_), -kMaxHeadYawRad, kMaxHeadYawRad);
+        const float offset = wrapPi(yaw - body_yaw_);
+        // Camera (nearly) behind the body: either side is as good, so stay on the current one instead of
+        // snapping across as the wrapped angle changes sign.
+        const bool behind = std::fabs(offset) > kPi - 0.4f;
+        if (!behind) head_side_ = offset < 0.f ? -1.f : 1.f;
+        anim.look_yaw = behind ? head_side_ * kMaxHeadYawRad : std::clamp(offset, -kMaxHeadYawRad, kMaxHeadYawRad);
     } else {
+        // Minecraft turns the head freely up to 50 degrees off the body's heading, then drags the body along.
         if (!body_yaw_seeded_) {
             body_yaw_ = yaw;
             body_yaw_seeded_ = true;
@@ -253,6 +266,12 @@ void Session::tick(float dt, const InputSnapshot& in) {
         }
         anim.look_yaw = wrapPi(yaw - body_yaw_);
     }
+    // Walking is measured along the body that is drawn (the host's, else the camera-driven one).
+    const float ref_yaw = host_owns_body ? body_yaw_ : yaw;
+    const Vec3 right{std::sin(ref_yaw), -std::cos(ref_yaw), 0.f};
+    const Vec3 forward_h{std::cos(ref_yaw), std::sin(ref_yaw), 0.f};
+    anim.forward_speed = (smoothed_vel_.x * forward_h.x + smoothed_vel_.y * forward_h.y) / kCmPerMeter;
+    anim.strafe_speed = (smoothed_vel_.x * right.x + smoothed_vel_.y * right.y) / kCmPerMeter;
     anim.look_pitch = -pitch; // our canonical pitch is positive-up; the rig expects positive-down
     anim.swing_progress = swing_progress;
     anim.eating_progress = consumables_->getProgress();
