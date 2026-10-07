@@ -110,7 +110,7 @@ struct HookSet {
         if (g_trace_budget.load() > 0 && dsv) {
             const size_t n = g_count.load();
             for (size_t i = 0; i < n; ++i) {
-                if (g_candidates[i].dsv.Get() == dsv && g_trace_budget.fetch_sub(1) > 0) {
+                if (g_candidates[i].dsv.Get() == dsv && g_candidates[i].desc.Width >= 1920 && g_trace_budget.fetch_sub(1) > 0) {
                     g_trace_log("  clear #%d (set %d) flags=%u value=%.3f; contents before:", 12 - g_trace_budget.load(), N,
                                 flags, depth);
                     describeDepth(g_trace_device, self, g_candidates[i].texture.Get(), g_candidates[i].desc, g_trace_log, "pre-clear");
@@ -205,31 +205,64 @@ void describeDepth(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Tex
         log("      map failed");
         return;
     }
-    if (d.Format != DXGI_FORMAT_D32_FLOAT && d.Format != DXGI_FORMAT_R32_TYPELESS && d.Format != DXGI_FORMAT_R32_FLOAT) {
-        log("      format not decoded");
+    // Texel size and how to read the depth part of it.
+    enum class Kind { Float32, Float32Stencil, Unorm24, None } kind = Kind::None;
+    size_t texel_bytes = 4;
+    switch (d.Format) {
+        case DXGI_FORMAT_D32_FLOAT:
+        case DXGI_FORMAT_R32_TYPELESS:
+        case DXGI_FORMAT_R32_FLOAT: kind = Kind::Float32; break;
+        case DXGI_FORMAT_R32G8X24_TYPELESS:
+        case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+            kind = Kind::Float32Stencil;
+            texel_bytes = 8;
+            break;
+        case DXGI_FORMAT_R24G8_TYPELESS:
+        case DXGI_FORMAT_D24_UNORM_S8_UINT: kind = Kind::Unorm24; break;
+        default: break;
+    }
+    if (kind == Kind::None) {
+        log("      format %u not decoded", static_cast<unsigned>(d.Format));
         context->Unmap(staging.Get(), 0);
         return;
     }
+    auto at = [&](UINT x, UINT y) -> double {
+        const auto* p = static_cast<const uint8_t*>(m.pData) + y * m.RowPitch + x * texel_bytes;
+        if (kind == Kind::Unorm24) {
+            uint32_t v;
+            std::memcpy(&v, p, 4);
+            return (v & 0xFFFFFF) / 16777215.0;
+        }
+        float f;
+        std::memcpy(&f, p, 4);
+        return f;
+    };
     double lo = 1e30, hi = -1e30;
-    size_t one = 0, total = 0;
+    size_t zero = 0, one = 0, total = 0;
     for (UINT y = 0; y < d.Height; y += 4) {
-        const auto* row = reinterpret_cast<const float*>(static_cast<const uint8_t*>(m.pData) + y * m.RowPitch);
         for (UINT x = 0; x < d.Width; x += 4) {
-            const double v = row[x];
+            const double v = at(x, y);
             lo = (std::min)(lo, v);
             hi = (std::max)(hi, v);
+            if (v == 0.0) ++zero;
             if (v == 1.0) ++one;
             ++total;
         }
     }
-    std::string line;
-    char buf[48];
-    for (int k = 1; k <= 8; ++k) {
-        const auto* row = reinterpret_cast<const float*>(static_cast<const uint8_t*>(m.pData) + (d.Height * k / 9) * m.RowPitch);
-        std::snprintf(buf, sizeof(buf), " %.5f", row[d.Width / 2]);
-        line += buf;
+    log("      %s min=%.6g max=%.6g zeros=%.1f%% ones=%.1f%%", tag, lo, hi, 100.0 * zero / (std::max<size_t>)(total, 1),
+        100.0 * one / (std::max<size_t>)(total, 1));
+    if (d.Width >= 1920) {
+        // 16x9 grid of the whole frame, to compare against what is on screen.
+        for (UINT gy = 0; gy < 9; ++gy) {
+            std::string line;
+            char buf[24];
+            for (UINT gx = 0; gx < 16; ++gx) {
+                std::snprintf(buf, sizeof(buf), " %.4f", at((gx * 2 + 1) * d.Width / 32, (gy * 2 + 1) * d.Height / 18));
+                line += buf;
+            }
+            log("      grid%u:%s", gy, line.c_str());
+        }
     }
-    log("      %s min=%.6f max=%.6f ones=%.1f%% centre:%s", tag, lo, hi, 100.0 * one / (std::max<size_t>)(total, 1), line.c_str());
     context->Unmap(staging.Get(), 0);
 }
 
@@ -247,7 +280,7 @@ void DepthCapture::dump(ID3D11Device* device, ID3D11DeviceContext* context, void
         const D3D11_TEXTURE2D_DESC& d = c.desc;
         log("  [%zu] %ux%u fmt=%u samples=%u bind=0x%x binds=%u ctx=%d", i, d.Width, d.Height, static_cast<unsigned>(d.Format),
             d.SampleDesc.Count, d.BindFlags, c.binds, static_cast<int>(c.context_type));
-        describeDepth(device, context, c.texture.Get(), d, log, "now");
+        if (d.Width >= 1920) describeDepth(device, context, c.texture.Get(), d, log, "now");
     }
 }
 
