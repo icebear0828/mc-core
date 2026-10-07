@@ -58,6 +58,16 @@
 
 ---
 
+### 2.7 Steve 绘制层（`mc/rig.hpp` + `adapters/common/d3d11_rig`）
+
+绘制自绘 Steve 所需的一切都分成游戏无关和游戏相关两半：
+
+- **核心（平台无关）**：`mc/rig.hpp` 提供 12 部位模型表、皮肤 UV、行向量矩阵数学、左手透视、遮挡规则。游戏用 `HostBasis`（轴、单位、手性）和 `DepthConvention`（深度缓冲换算）描述自己，网格由 `buildPartMesh(part, basis)` 直接生成宿主空间版本。
+- **公共 D3D11 层（Windows）**：`adapters/common/d3d11_rig` 的 `RigRenderer`（场景深度遮挡、环境光匹配）和 `DepthCapture`（找游戏深度缓冲的探针），任何 D3D11 游戏共用。
+- **游戏适配器**：只保留自己的常量（`kSekiroBasis`、`kSekiroDepth`）、类型互转，以及相机/深度缓冲在哪。
+
+DX12/Vulkan 游戏需要另写渲染器（几何与数学照用）；UE/Unity 类游戏应生成引擎原生网格组件，只复用 `buildPartMesh` 的几何。详见 [PORTING_PLAYBOOK.md](PORTING_PLAYBOOK.md) §6.0。
+
 ## 3. 跨引擎接口契约清单
 
 | 接口类 | 核心方法 | 职责说明 |

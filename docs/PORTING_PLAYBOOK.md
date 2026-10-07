@@ -48,7 +48,8 @@
 | 绑定层 | `<game>_live.*` | 通过 `IMemoryReader` 读真实内存，**校验**后填镜像 | 猜偏移；校验失败时用兜底对象 |
 | 模型隐藏 | `<game>_model.*` | 经 `IMemoryWriter` 写**一个**已验证字段 | 写未验证的字段 |
 | 3D/渲染数学 | `<game>_steve.*` | 矩阵、投影、网格、骨架矩阵，**平台无关可测** | 依赖 D3D |
-| 渲染器/loader | `steve_renderer.*`、`dinput8_loader.cpp` | Present hook、D3D11 绘制、热键、截图、HUD 绘制 | 含规则或坐标换算 |
+| 渲染器 | `adapters/common/d3d11_rig/`（`rig_renderer`、`depth_capture`） | 游戏无关的 D3D11 绘制：遮挡、环境光、深度探针 | 含任何游戏的偏移/坐标 |
+| loader | `dinput8_loader.cpp` | Present hook、热键、截图、HUD 绘制，把游戏数据喂给渲染器 | 含规则或坐标换算 |
 | 插件入口 | `plugin_entry.cpp` | `Session` + 适配器 + 少量 `extern "C"` 导出 | 手写 tick 编排（会漂移，旧设计的教训） |
 
 **为什么要有镜像结构：** 旧版 loader 把游戏内存 `reinterpret_cast` 成项目自己的 C++ 结构（含 `std::string`），再往里写字段，等于按一个假布局往真实内存写，会损坏游戏。正确做法是：适配器永远工作在**镜像**上；loader 每帧把**校验过的**真实读数填进镜像，需要写回游戏时只写**单个已验证字段**。
@@ -253,6 +254,17 @@ uv run --with capstone python tools/reverse/vtable_dump.py --process game.exe --
 - **完整保存/恢复管线状态**（RS/Blend/DepthStencil/RTV/DSV/IA/各阶段着色器与常量/SRV/采样器，含 GS/HS/DS 置空），否则会干扰游戏下一帧。
 - 覆盖层用 `clip(alpha-0.5)` 做镂空，不做混合。点采样保持像素风。
 
+### 6.0 复用现有建模：新游戏只需要两个"约定"对象
+
+模型、动画、投影和 D3D11 渲染都是游戏无关的，新游戏只提供两样东西：
+
+1. **`mc::rig::HostBasis`**：宿主的轴与单位怎么对应规范骨架（X 前、Y 左、Z 上、厘米）。填 `forward`、`left`、`up` 三个宿主方向向量和 `units_per_cm`。行列式为负就是镜像（左手系宿主），`yawMatrix` 会自动处理转向方向。只狼：`{{0,0,1},{-1,0,0},{0,1,0},0.01}`。
+2. **`mc::rig::DepthConvention`**：宿主深度缓冲怎么换算距离（§6.5 实测）。没标定前保持 `depth_times_distance = 0`，遮挡自动关闭。
+
+然后：`buildPartMesh(part, basis)` 得到宿主空间网格 → `mc::d3d11::RigRenderer::init(device, meshes)` → 每帧 `partMatrix(...)` 与 `viewProjection(camera, fov, aspect)`（相机用 `mc::rig::Camera` 描述右/上/前/位置）→ `setSceneDepth(...)` → `draw(...)`。核心里有 5 种宿主基的参数化测试（`tests/test_rig.cpp`），新宿主的基加进 `kBases` 即可获得同一组保证（贴地、1.8 m、朝向、缠绕、转向、枢轴）。
+
+**不适用的情形**：DirectX 12 / Vulkan 游戏（渲染器要重写，几何与数学仍可用）；UE/Unity 等自带场景图的游戏更适合生成引擎原生网格组件（遮挡、光照、阴影免费，参考 `~/wukong-steve`），只复用 `buildPartMesh` 的几何和皮肤 UV。
+
 ### 6.5 被场景遮挡：找到并使用游戏的深度缓冲
 
 只狼实测的方法与坑，换游戏照做：
@@ -369,8 +381,9 @@ uv run --with pillow python tools/extract_mc_assets.py --client-jar <client.jar>
 | `adapters/sekiro/include/sekiro_adapter.hpp` / `adapters/sekiro/src/sekiro_adapter.cpp` | 4 个端口的实现；`toNativePoint/Dir`、`toMcPoint/Dir`、`toNativeQuat` |
 | `adapters/sekiro/include/sekiro_live.hpp` / `adapters/sekiro/src/sekiro_live.cpp` | `LiveBinder`（扫描+校验）、`LiveMirror`（填镜像、差分速度）、`IMemoryReader` |
 | `adapters/sekiro/include/sekiro_model.hpp` / `adapters/sekiro/src/sekiro_model.cpp` | `ModelHider`、`rttiClassName`、`IMemoryWriter` |
-| `adapters/sekiro/include/sekiro_steve.hpp` / `adapters/sekiro/src/sekiro_steve.cpp` | 12 部位模型表、矩阵数学、投影、骨架矩阵 |
-| `adapters/sekiro/include/steve_renderer.hpp` / `adapters/sekiro/src/steve_renderer.cpp` | D3D11 渲染器（Windows） |
+| `include/mc/rig.hpp` / `src/rig.cpp` | **游戏无关**的 Steve 几何：12 部位模型表、皮肤 UV、矩阵数学、投影、骨架矩阵、遮挡规则（由 `HostBasis`、`DepthConvention` 参数化） |
+| `adapters/sekiro/include/sekiro_steve.hpp` / `adapters/sekiro/src/sekiro_steve.cpp` | 只狼的薄封装：`kSekiroBasis`、`kSekiroDepth`、`FVector3`/`FQuat`/`LiveSample` 与核心类型互转 |
+| `adapters/common/d3d11_rig/` | **游戏无关**的 D3D11 渲染器与深度探针（Windows） |
 | `adapters/sekiro/src/dinput8_loader.cpp` | Present/ResizeBuffers hook、热键、截图、HUD 绘制、把各部分接起来 |
 | `adapters/sekiro/src/plugin_entry.cpp` | `Session` + 适配器 + `extern "C"` 导出 |
 
