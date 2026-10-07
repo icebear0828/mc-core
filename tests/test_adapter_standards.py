@@ -67,3 +67,40 @@ def test_hud_atlas_header_exists_and_valid():
     assert "kUV_HEART_FULL" in content
     assert "kUV_HUNGER_FULL" in content
     assert "kUV_CROSSHAIR" in content
+
+
+SKILL_ASSETS = REPO_ROOT / "skills" / "mc-game-adapter" / "assets"
+
+
+def test_plugin_entry_template_is_built_on_session_not_singletons():
+    """A new game must start from the Session-based entry, not the old hand-written tick."""
+    template = (SKILL_ASSETS / "plugin-entry.template.cpp").read_text(encoding="utf-8")
+    assert "mc::Session" in template
+    assert "GetGlobal" not in template
+    assert "SteveAnimator" not in template, "tick orchestration belongs to Session"
+    assert "on_ground_is_estimate" in template
+
+
+def test_adapter_templates_implement_the_current_contract():
+    header = (SKILL_ASSETS / "adapter-header.template.hpp").read_text(encoding="utf-8")
+    source = (SKILL_ASSETS / "adapter-source.template.cpp").read_text(encoding="utf-8")
+    for method in ("setSteveRoot", "setLinearVelocity"):
+        assert method in header and method in source, f"template is missing {method}"
+    assert "uint64_t entity_id" not in header and "uint64_t entity_id" not in source, "ids are EntityId now"
+
+
+def test_docs_point_new_games_at_the_playbook():
+    playbook = REPO_ROOT / "docs" / "PORTING_PLAYBOOK.md"
+    assert playbook.exists()
+    for doc in (REPO_ROOT / "docs" / "ARCHITECTURE.md", REPO_ROOT / "docs" / "ADAPTER_SPECIFICATION.md",
+                REPO_ROOT / "skills" / "mc-game-adapter" / "SKILL.md"):
+        assert "PORTING_PLAYBOOK" in doc.read_text(encoding="utf-8"), f"{doc.name} should link the playbook"
+
+
+def test_playbook_references_only_files_that_exist():
+    text = (REPO_ROOT / "docs" / "PORTING_PLAYBOOK.md").read_text(encoding="utf-8")
+    for ref in sorted(set(re.findall(r"`((?:docs|tools|include|src|tests|skills)/[A-Za-z0-9_./-]+)`", text))):
+        if "*" in ref or ref.endswith("/"):
+            continue
+        assert (REPO_ROOT / ref).exists(), f"playbook mentions a path that does not exist: {ref}"
+

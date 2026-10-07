@@ -155,3 +155,7 @@ uv run --with pytest --with pillow pytest tests/test_extract_assets.py
 
 本项目采用 [PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/) 许可，仅供非商业及学习研究使用。
 Minecraft 游戏资产与音效版权均归 Mojang Studios / Microsoft 所有。
+
+## 接入新游戏
+
+完整流程、真机逆向方法、踩坑清单与只狼案例见 [docs/PORTING_PLAYBOOK.md](docs/PORTING_PLAYBOOK.md)；逆向工具在 `tools/reverse/`。
