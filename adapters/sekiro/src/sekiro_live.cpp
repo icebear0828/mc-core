@@ -209,6 +209,19 @@ void LiveBinder::readVitals(uintptr_t player, LiveSample& out) const {
     out.vitals_valid = true;
 }
 
+void LiveBinder::readGrounded(uintptr_t player, LiveSample& out) const {
+    out.grounded_valid = false;
+    out.grounded = true;
+    uintptr_t container = 0, module = 0, vtable = 0;
+    if (!readPointer(player + layout::kModuleContainerInChrIns, container) || container == 0) return;
+    if (!readPointer(container + layout::kFallModuleInContainer, module) || module == 0) return;
+    if (!readPointer(module, vtable) || vtable != base_ + layout::kFallModuleVtableRva) return;
+    int32_t state = 0;
+    if (!reader_.read(module + layout::kFallState, &state, sizeof(state))) return;
+    out.grounded_valid = true;
+    out.grounded = state == -1;
+}
+
 SampleStatus LiveBinder::sample(LiveSample& out) const {
     if (status_ != BindStatus::Bound) return SampleStatus::NotBound;
 
@@ -237,6 +250,7 @@ SampleStatus LiveBinder::sample(LiveSample& out) const {
     s.player_pos = pos;
     readFacing(player, s);
     readVitals(player, s);
+    readGrounded(player, s);
 
     // Try the candidate that worked last time first, then the others.
     const size_t count = camera_global_rvas_.size();
@@ -330,6 +344,8 @@ void LiveMirror::update(const LiveSample& sample, float dt, native::ChrIns& play
 
     player.Position = sample.player_pos;
     player.Velocity = velocity;
+    player.bGroundedValid = sample.grounded_valid;
+    player.bOnGround = sample.grounded;
     player.bVitalsValid = sample.vitals_valid;
     if (sample.vitals_valid) {
         player.Health = sample.hp;

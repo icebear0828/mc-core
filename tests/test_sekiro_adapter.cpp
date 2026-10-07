@@ -303,7 +303,8 @@ TEST(SekiroAdapterTest, ReportsRealPlayerVitalsOnlyWhenTheLiveReadIsValid) {
 TEST(SekiroAdapterTest, OnlyDeclaresTheHostFeaturesThatWereVerifiedInTheLiveGame) {
     SekiroAdapter adapter;
     // Add a bit here only together with its live-game verification (docs/REVERSE_INTERFACES.md).
-    EXPECT_EQ(adapter.supportedFeatures(), static_cast<uint32_t>(mc::HostFeature::PlayerVitals));
+    EXPECT_EQ(adapter.supportedFeatures(), static_cast<uint32_t>(mc::HostFeature::PlayerVitals) |
+                                               static_cast<uint32_t>(mc::HostFeature::GroundedFlag));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -640,6 +641,26 @@ TEST(SekiroAdapterTest, OnGroundHeuristicUsesVerticalVelocity) {
     player.Velocity = FVector3{0.f, -2.5f, 0.f};
     EXPECT_FALSE(adapter.isPlayerOnGround());
     EXPECT_TRUE(SekiroAdapter().isPlayerOnGround()); // no player bound
+}
+
+TEST(SekiroAdapterTest, RealGroundFlagBeatsTheVelocityEstimateWhenTheGameReportsIt) {
+    ChrIns player;
+    SekiroAdapter adapter(&player, nullptr);
+    EXPECT_FALSE(adapter.hasRealGroundFlag());
+
+    player.bGroundedValid = true;
+    player.bOnGround = false;
+    player.Velocity = FVector3{0.f, 0.f, 3.f}; // flat velocity: the estimate would say grounded
+    EXPECT_TRUE(adapter.hasRealGroundFlag());
+    EXPECT_FALSE(adapter.isPlayerOnGround());
+
+    player.bOnGround = true;
+    player.Velocity = FVector3{0.f, 5.f, 0.f}; // rising fast: the estimate would say airborne
+    EXPECT_TRUE(adapter.isPlayerOnGround());
+
+    player.bGroundedValid = false; // sample went invalid: back to the estimate
+    EXPECT_FALSE(adapter.hasRealGroundFlag());
+    EXPECT_FALSE(adapter.isPlayerOnGround());
 }
 
 // ---------------------------------------------------------------------------

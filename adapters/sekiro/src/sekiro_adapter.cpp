@@ -629,7 +629,7 @@ Vec3 SekiroAdapter::getPlayerVelocity() const {
 
 uint32_t SekiroAdapter::supportedFeatures() const {
     // Add a bit only together with its live-game verification (docs/REVERSE_INTERFACES.md).
-    return static_cast<uint32_t>(HostFeature::PlayerVitals);
+    return static_cast<uint32_t>(HostFeature::PlayerVitals) | static_cast<uint32_t>(HostFeature::GroundedFlag);
 }
 
 bool SekiroAdapter::getPlayerVitals(HostVitals& out) const {
@@ -651,6 +651,9 @@ bool SekiroAdapter::isPlayerOnGround() const {
     constexpr float kAirborneVerticalSpeed = 2.0f; // m/s
     if (!player_) {
         return true;
+    }
+    if (player_->bGroundedValid) {
+        return player_->bOnGround; // the game's own flag
     }
     return std::abs(player_->Velocity.Y) < kAirborneVerticalSpeed;
 }

@@ -29,6 +29,8 @@ constexpr uintptr_t kSlots = 0x7ff400710000ull;       // slot array, stride 0x38
 constexpr uintptr_t kEnemyBase = 0x7ff400800000ull;   // enemies are kEnemyBase + n * kEnemyStride
 constexpr uintptr_t kEnemyStride = 0x20000;
 constexpr uint32_t kBlockVtableRva = 0x2A2EB10;
+constexpr uintptr_t kFallModule = 0x7ff400900000ull; // [container+0x240], SprjPlayerFallModule
+constexpr uint32_t kFallModuleVtableRva = 0x2A821F0;
 constexpr uint32_t kEnemyVtableRva = 0x2A27F28;
 
 constexpr uint32_t kWcmPatternRva = 0x100;
@@ -154,6 +156,16 @@ struct World {
         mem.put<uint64_t>(kDataModule, kBase + (right_class ? kDataModuleVtableRva : 0x1234));
         mem.put<int32_t>(kDataModule + 0x130, hp);
         mem.put<int32_t>(kDataModule + 0x138, max_hp);
+    }
+    // Fall state as measured on the real game: [[player+0x10b8]+0x240] is SprjPlayerFallModule; its int32 at +0x40
+    // is -1 while standing or running and >= 0 while airborne.
+    void setFallState(int32_t state, bool right_class = true) {
+        if (!mem.regions.count(kModuleContainer)) mem.region(kModuleContainer, 0x400);
+        if (!mem.regions.count(kFallModule)) mem.region(kFallModule, 0x100);
+        mem.put<uint64_t>(kPlayer + 0x10b8, kModuleContainer);
+        mem.put<uint64_t>(kModuleContainer + 0x240, kFallModule);
+        mem.put<uint64_t>(kFallModule, kBase + (right_class ? kFallModuleVtableRva : 0x4242));
+        mem.put<int32_t>(kFallModule + 0x40, state);
     }
     // ---- enemies: WorldChrMan+0xC8 -> block (+0x80 slot count, +0x88 slot array, stride 0x38, enemy at +0) ----
     struct EnemySpec {
@@ -769,4 +781,57 @@ TEST(SekiroLiveEnemiesTest, HonoursTheMaxEntriesLimit) {
     ASSERT_EQ(binder.scan(), BindStatus::Bound);
     std::vector<LiveEnemy> e;
     EXPECT_EQ(binder.enumerateEnemies(e, 4), 4u);
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Real grounded flag: SprjPlayerFallModule + 0x40 is -1 on the ground
+// ---------------------------------------------------------------------------------------------
+TEST(SekiroLiveGroundedTest, MinusOneMeansGroundedAndNonNegativeMeansAirborne) {
+    World w;
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    LiveSample s;
+
+    w.setFallState(-1);
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+    EXPECT_TRUE(s.grounded_valid);
+    EXPECT_TRUE(s.grounded);
+
+    for (int32_t airborne : {0, 1, 3, 12}) {
+        w.setFallState(airborne);
+        ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+        EXPECT_TRUE(s.grounded_valid);
+        EXPECT_FALSE(s.grounded) << airborne;
+    }
+}
+
+TEST(SekiroLiveGroundedTest, MissingOrWrongClassModuleMeansUnknownNotAirborne) {
+    World w;
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    LiveSample s;
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+    EXPECT_FALSE(s.grounded_valid);
+
+    w.setFallState(5, /*right_class=*/false);
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+    EXPECT_FALSE(s.grounded_valid);
+    EXPECT_TRUE(s.grounded) << "unknown defaults to grounded so nothing starts gliding by accident";
+}
+
+TEST(SekiroLiveMirrorTest, CarriesTheGroundedFlagOnlyWhileValid) {
+    ChrIns player;
+    ChrCam camera;
+    LiveMirror mirror;
+    LiveSample s;
+    s.player_pos = {1.f, 2.f, 3.f};
+    s.grounded_valid = true;
+    s.grounded = false;
+    mirror.update(s, 0.016f, player, camera);
+    EXPECT_TRUE(player.bGroundedValid);
+    EXPECT_FALSE(player.bOnGround);
+    s.grounded_valid = false;
+    mirror.update(s, 0.016f, player, camera);
+    EXPECT_FALSE(player.bGroundedValid);
 }

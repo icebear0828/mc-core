@@ -107,6 +107,8 @@ public:
     // Horizontal heading of the character's body (unit vector in X/Z), mirrored from the live game.
     FVector3 Facing{0.f, 0.f, 1.f};
     bool bFacingValid{false};
+    bool bGroundedValid{false}; // the game's own fall-state flag was read this frame
+    bool bOnGround{true};
     bool bVitalsValid{false}; // Health/MaxHealth were read from the live game this frame
     int32_t StaggerLevel{0};
 

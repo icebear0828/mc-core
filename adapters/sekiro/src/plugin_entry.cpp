@@ -65,7 +65,7 @@ void SekiroMod_Tick(float delta_time, const mc::InputSnapshot* input) {
     }
     mc::InputSnapshot snapshot = input ? *input : mc::InputSnapshot{};
     snapshot.on_ground = g_adapter->isPlayerOnGround();
-    snapshot.on_ground_is_estimate = true; // vertical-speed heuristic, see InputSnapshot
+    snapshot.on_ground_is_estimate = !g_adapter->hasRealGroundFlag(); // else a vertical-speed heuristic, see InputSnapshot
     g_session->tick(delta_time, snapshot);
 }
 

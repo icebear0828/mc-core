@@ -63,6 +63,10 @@ inline constexpr uintptr_t kEnemyTeam = 0x70;       // uint32: 0/1 player side, 
 inline constexpr uint32_t kTeamHostile = 5;
 inline constexpr uintptr_t kEnemyDataModuleInContainer = 0x1f8; // enemies: +0x1f8 (the player's is +0x1e8)
 inline constexpr uintptr_t kEnemyMaxHp = 0x160;                 // enemies: max hp at +0x160 (the player's is +0x138)
+// Fall module: [container+0x240] is SprjPlayerFallModule; int32 at +0x40 is -1 on the ground and >= 0 airborne.
+inline constexpr uintptr_t kFallModuleInContainer = 0x240;
+inline constexpr uint32_t kFallModuleVtableRva = 0x2A821F0;
+inline constexpr uintptr_t kFallState = 0x40;
 inline constexpr uintptr_t kCameraMatrix = 0xea0;     // row-major 4x4: right, up, forward, position(w=1)
 inline constexpr uintptr_t kCameraFov = 0x160;        // float, returned by the camera getter the signature matches
 
@@ -109,6 +113,9 @@ struct LiveSample {
     bool vitals_valid{false};
     float hp{0.0f};
     float max_hp{0.0f};
+    // The game's own ground flag. Optional: unknown reads as "grounded" so nothing glides by accident.
+    bool grounded_valid{false};
+    bool grounded{true};
 };
 
 // One loaded character of the world block, as read from the live game this frame.
@@ -154,6 +161,7 @@ private:
     bool readCamera(uintptr_t object, LiveSample& out) const;
     void readFacing(uintptr_t player, LiveSample& out) const;
     void readVitals(uintptr_t player, LiveSample& out) const;
+    void readGrounded(uintptr_t player, LiveSample& out) const;
 
     const IMemoryReader& reader_;
     uintptr_t base_;

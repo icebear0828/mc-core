@@ -112,6 +112,8 @@ public:
 
     // Vertical-velocity heuristic: Dantelion exposes no grounded flag we can read yet.
     [[nodiscard]] bool isPlayerOnGround() const;
+    // True when isPlayerOnGround() comes from the game's own flag rather than the velocity estimate.
+    [[nodiscard]] bool hasRealGroundFlag() const { return player_ && player_->bGroundedValid; }
 
     // Dantelion units are metres (verified in-game: sprint ~5.6 u/s); MC space is centimetres.
     static constexpr float kCmPerNativeUnit = 100.0f;
