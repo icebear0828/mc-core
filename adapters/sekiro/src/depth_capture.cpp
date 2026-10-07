@@ -196,3 +196,5 @@ void DepthCapture::armTrace(ID3D11Device* device, void (*log)(const char*, ...))
     g_trace_log = log;
     g_trace_budget.store(12);
 }
+
+} // namespace sekiro::render
