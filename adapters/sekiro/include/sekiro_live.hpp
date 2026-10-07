@@ -119,6 +119,26 @@ private:
 
 // Copies live readings into the adapter-side mirror structures. Only touches position, velocity and
 // camera; model visibility flags stay owned by the adapter.
+// The game's camera object only changes every other frame (measured: 232 of 360 frames repeat the previous
+// camera) while the player moves every frame. On a frame where the camera did not change, keep it at the
+// same offset from the player as when it last did. Never extrapolates for more than a couple of frames, so a
+// camera that really stopped following is not dragged along.
+class CameraStabilizer {
+public:
+    static constexpr int kMaxCarriedFrames = 2;
+    static constexpr float kMaxJump = 5.0f; // metres of player motion between frames above which we reset
+
+    void apply(LiveSample& sample);
+    void reset() { have_previous_ = false; carried_ = 0; }
+
+private:
+    bool have_previous_{false};
+    int carried_{0};
+    native::FVector3 last_player_{};
+    native::FVector3 last_camera_{};
+    native::FVector3 offset_{};
+};
+
 class LiveMirror {
 public:
     void update(const LiveSample& sample, float dt, native::ChrIns& player, native::ChrCam& camera);

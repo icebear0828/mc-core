@@ -330,6 +330,7 @@ std::atomic<bool> g_stop{false};
 sekiro::native::ChrIns g_player_mirror;
 sekiro::native::ChrCam g_camera_mirror;
 sekiro::live::LiveMirror g_live_mirror;
+sekiro::live::CameraStabilizer g_camera_stabilizer;
 bool g_in_world = false;
 sekiro::live::LiveSample g_last_sample{};
 std::unique_ptr<sekiro::render::SteveRenderer> g_steve_renderer;
@@ -396,6 +397,7 @@ bool SyncLiveGameState(float dt) {
     }
 
     if (st == SampleStatus::Ok) {
+        g_camera_stabilizer.apply(sample);
         g_live_mirror.update(sample, dt, g_player_mirror, g_camera_mirror);
         g_last_sample = sample;
         if (g_model_hider) {
@@ -423,6 +425,7 @@ bool SyncLiveGameState(float dt) {
         if (g_model_hider) g_model_hider->forgetObject();
         g_last_hide_status = sekiro::live::HideStatus::Idle;
         g_live_mirror.reset();
+        g_camera_stabilizer.reset();
         SekiroMod_UpdatePointers(nullptr, nullptr);
         Log("Left world / link lost");
     }

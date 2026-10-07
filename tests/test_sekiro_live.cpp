@@ -448,3 +448,96 @@ TEST(SekiroLiveMirrorTest, LeavesAdapterOwnedModelFlagsAlone) {
     EXPECT_TRUE(player.bModelHidden);
     EXPECT_FLOAT_EQ(player.ModelAlpha, 0.f);
 }
+
+// ---------------------------------------------------------------------------------------------
+// The game's camera object only changes every other frame (30 Hz) while the player moves every frame.
+// Projecting with the stale camera makes the rig bounce on screen, so the camera is carried along with the
+// player on the frames where it did not update.
+// ---------------------------------------------------------------------------------------------
+namespace {
+LiveSample frameSample(int frame, bool camera_updates_this_frame, float speed_m_per_frame = 0.06f) {
+    LiveSample s;
+    s.player_pos = {0.f, 0.f, speed_m_per_frame * static_cast<float>(frame)};
+    const int camera_frame = camera_updates_this_frame ? frame : frame - (frame % 2);
+    s.cam_pos = {0.f, 1.5f, speed_m_per_frame * static_cast<float>(camera_frame) - 4.f};
+    s.cam_forward = {0.f, 0.f, 1.f};
+    return s;
+}
+float cameraToPlayerDistance(const LiveSample& s) {
+    return s.player_pos.Z - s.cam_pos.Z;
+}
+} // namespace
+
+TEST(SekiroCameraStabilizerTest, KeepsTheCameraRigidlyBehindThePlayerWhenTheCameraOnlyUpdatesEveryOtherFrame) {
+    CameraStabilizer stabilizer;
+    float lo = 1e9f, hi = -1e9f;
+    for (int frame = 0; frame < 60; ++frame) {
+        LiveSample s = frameSample(frame, frame % 2 == 0);
+        stabilizer.apply(s);
+        if (frame >= 2) {
+            lo = std::min(lo, cameraToPlayerDistance(s));
+            hi = std::max(hi, cameraToPlayerDistance(s));
+        }
+    }
+    EXPECT_NEAR(hi - lo, 0.f, 1e-4f) << "raw data wobbles by one frame of motion (0.06 m)";
+}
+
+TEST(SekiroCameraStabilizerTest, LeavesACameraThatUpdatesEveryFrameAlone) {
+    CameraStabilizer stabilizer;
+    for (int frame = 0; frame < 20; ++frame) {
+        LiveSample s = frameSample(frame, true);
+        const LiveSample raw = s;
+        stabilizer.apply(s);
+        EXPECT_FLOAT_EQ(s.cam_pos.Z, raw.cam_pos.Z);
+        EXPECT_FLOAT_EQ(s.cam_pos.Y, raw.cam_pos.Y);
+    }
+}
+
+TEST(SekiroCameraStabilizerTest, FirstSampleAndStationaryPlayerPassThroughUnchanged) {
+    CameraStabilizer stabilizer;
+    LiveSample a = frameSample(0, true, 0.f);
+    const LiveSample raw = a;
+    stabilizer.apply(a);
+    EXPECT_FLOAT_EQ(a.cam_pos.Z, raw.cam_pos.Z);
+    for (int i = 0; i < 10; ++i) {
+        LiveSample s = frameSample(0, true, 0.f); // nothing moves, the camera repeats forever
+        stabilizer.apply(s);
+        EXPECT_FLOAT_EQ(s.cam_pos.Z, raw.cam_pos.Z);
+    }
+}
+
+TEST(SekiroCameraStabilizerTest, DoesNotDragAFrozenCameraAlongForever) {
+    // The camera stops following (cutscene, lock): after a couple of repeats the raw value must win again.
+    CameraStabilizer stabilizer;
+    LiveSample first = frameSample(0, true);
+    stabilizer.apply(first);
+    LiveSample s;
+    for (int frame = 1; frame <= 8; ++frame) {
+        s = frameSample(frame, true);
+        s.cam_pos = first.cam_pos; // identical camera every frame while the player walks away
+        stabilizer.apply(s);
+    }
+    EXPECT_NEAR(s.cam_pos.Z, first.cam_pos.Z, 1e-5f);
+}
+
+TEST(SekiroCameraStabilizerTest, TeleportResetsTheOffset) {
+    CameraStabilizer stabilizer;
+    LiveSample a = frameSample(0, true);
+    stabilizer.apply(a);
+    LiveSample b = frameSample(1, false);
+    b.player_pos = {500.f, 0.f, 500.f}; // loaded another area; camera not updated yet
+    b.cam_pos = a.cam_pos;
+    stabilizer.apply(b);
+    EXPECT_NEAR(b.cam_pos.Z, a.cam_pos.Z, 1e-5f); // not shifted by 700 m
+}
+
+TEST(SekiroCameraStabilizerTest, ResetForgetsThePreviousFrame) {
+    CameraStabilizer stabilizer;
+    LiveSample a = frameSample(0, true);
+    stabilizer.apply(a);
+    stabilizer.reset();
+    LiveSample b = frameSample(5, false); // stale camera, but there is nothing to extrapolate from
+    const LiveSample raw = b;
+    stabilizer.apply(b);
+    EXPECT_FLOAT_EQ(b.cam_pos.Z, raw.cam_pos.Z);
+}

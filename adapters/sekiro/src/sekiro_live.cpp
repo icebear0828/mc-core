@@ -235,6 +235,23 @@ SampleStatus LiveBinder::sample(LiveSample& out) const {
     return SampleStatus::Invalid;
 }
 
+void CameraStabilizer::apply(LiveSample& sample) {
+    const native::FVector3 raw_camera = sample.cam_pos;
+    if (!have_previous_ || (sample.player_pos - last_player_).Length() > kMaxJump) {
+        offset_ = raw_camera - sample.player_pos;
+        carried_ = 0;
+    } else if ((raw_camera - last_camera_).Length() > 1e-6f) {
+        offset_ = raw_camera - sample.player_pos; // the camera really moved: remember where it is relative to the player
+        carried_ = 0;
+    } else if (carried_ < kMaxCarriedFrames && (sample.player_pos - last_player_).Length() > 1e-6f) {
+        ++carried_;
+        sample.cam_pos = sample.player_pos + offset_;
+    }
+    have_previous_ = true;
+    last_player_ = sample.player_pos;
+    last_camera_ = raw_camera;
+}
+
 void LiveMirror::update(const LiveSample& sample, float dt, native::ChrIns& player, native::ChrCam& camera) {
     native::FVector3 velocity{};
     if (have_previous_ && dt > 1e-4f) {
