@@ -54,6 +54,11 @@ void {{GAME_NAME}}Adapter::destroySteveParts() {
     // TODO: Destroy 12 mesh parts
 }
 
+void {{GAME_NAME}}Adapter::setSteveRoot(const Vec3& feet_position, float body_yaw) {
+    // TODO: Place the rig root: feet position (canonical MC cm) and body yaw (radians, 0=+X, CCW positive)
+    (void)feet_position; (void)body_yaw;
+}
+
 void {{GAME_NAME}}Adapter::updateStevePartTransforms(const SteveAnimator::PartTransforms& transforms) {
     // TODO: Write relative rotations and pivots to each of the 12 parts
     (void)transforms;

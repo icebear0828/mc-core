@@ -19,6 +19,13 @@ namespace mc {
 namespace {
 
 constexpr float kCmPerMeter = 100.f;
+constexpr float kPi = 3.14159265358979f;
+
+float wrapPi(float a) {
+    while (a > kPi) a -= 2.f * kPi;
+    while (a < -kPi) a += 2.f * kPi;
+    return a;
+}
 constexpr float kFireworkBoostSec = 2.0f;
 
 BlockId blockForItem(ItemId item) {
@@ -59,6 +66,7 @@ void Session::setActive(bool active) {
         consumables_->cancel();
         elytra_->stopGliding();
         swing_elapsed_ = -1.f;
+        body_yaw_seeded_ = false;
         ports_.render.destroySteveParts();
         ports_.render.setNativePlayerVisible(true);
     }
@@ -227,8 +235,17 @@ void Session::tick(float dt, const InputSnapshot& in) {
     SteveAnimInput anim{};
     anim.forward_speed = (player_vel.x * forward_h.x + player_vel.y * forward_h.y) / kCmPerMeter;
     anim.strafe_speed = (player_vel.x * right.x + player_vel.y * right.y) / kCmPerMeter;
-    anim.look_yaw = yaw;
-    anim.look_pitch = pitch;
+    // Minecraft turns the head freely up to 50 degrees off the body's heading, then drags the body along.
+    if (!body_yaw_seeded_) {
+        body_yaw_ = yaw;
+        body_yaw_seeded_ = true;
+    }
+    const float head_offset = wrapPi(yaw - body_yaw_);
+    if (std::fabs(head_offset) > kMaxHeadYawRad) {
+        body_yaw_ = wrapPi(body_yaw_ + head_offset - std::copysign(kMaxHeadYawRad, head_offset));
+    }
+    anim.look_yaw = wrapPi(yaw - body_yaw_);
+    anim.look_pitch = -pitch; // our canonical pitch is positive-up; the rig expects positive-down
     anim.swing_progress = swing_progress;
     anim.eating_progress = consumables_->getProgress();
     anim.is_gliding = elytra_->getState().is_gliding;
@@ -236,6 +253,7 @@ void Session::tick(float dt, const InputSnapshot& in) {
     last_anim_input_ = anim;
 
     animator_->update(dt, anim);
+    ports_.render.setSteveRoot(player_pos, body_yaw_);
     ports_.render.updateStevePartTransforms(animator_->getTransforms());
     ballistics_->update(dt, player_pos);
 }

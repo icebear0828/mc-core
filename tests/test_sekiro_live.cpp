@@ -210,6 +210,23 @@ TEST(SekiroLiveSampleTest, ReadsPlayerPositionAndCameraBasisInNativeMetres) {
     EXPECT_FLOAT_EQ(s.cam_pos.Y, -34.f);
 }
 
+TEST(SekiroLiveSampleTest, ReadsVerticalFovWhenPlausibleAndReportsZeroOtherwise) {
+    World w;
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    LiveSample s;
+
+    w.mem.put<float>(kCamera + 0x160, 0.92f);
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+    EXPECT_FLOAT_EQ(s.cam_fov_y, 0.92f);
+
+    for (float bad : {0.0f, -1.0f, 9.0f, std::numeric_limits<float>::quiet_NaN()}) {
+        w.mem.put<float>(kCamera + 0x160, bad);
+        ASSERT_EQ(binder.sample(s), SampleStatus::Ok); // an odd FOV never invalidates the whole sample
+        EXPECT_FLOAT_EQ(s.cam_fov_y, 0.f) << "fov " << bad << " must be reported as unknown";
+    }
+}
+
 TEST(SekiroLiveSampleTest, NotInWorldWhileManagersAreNull) {
     World w;
     LiveBinder binder(w.mem, kBase, kImageSize);

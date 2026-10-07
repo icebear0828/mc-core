@@ -27,6 +27,7 @@ public:
     void setNativePlayerVisible(bool) override {}
     bool spawnSteveParts() override { return true; }
     void destroySteveParts() override {}
+    void setSteveRoot(const mc::Vec3&, float) override {}
     void updateStevePartTransforms(const mc::SteveAnimator::PartTransforms&) override {}
     void setHeldItemVisual(mc::ItemId, bool) override {}
     uint64_t spawnBlockVisual(const mc::GridPos&, mc::BlockId, const mc::Vec3&) override {

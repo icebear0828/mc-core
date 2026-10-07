@@ -361,6 +361,11 @@ void WukongAdapter::destroySteveParts() {
     steve_parts_spawned_ = false;
 }
 
+void WukongAdapter::setSteveRoot(const Vec3& feet_position, float body_yaw) {
+    steve_root_.position = toNative(feet_position);
+    steve_root_.yaw_degrees = -body_yaw * (180.0f / 3.14159265f); // canonical CCW (left) = UE negative yaw
+}
+
 void WukongAdapter::updateStevePartTransforms(const SteveAnimator::PartTransforms& transforms) {
     if (!steve_parts_spawned_) {
         return;

@@ -694,3 +694,14 @@ TEST(SekiroSessionTest, GlidingWritesVelocityToPlayerAndEstimatedGroundDoesNotCa
 
     SekiroMod_Shutdown();
 }
+
+TEST(SekiroAdapterTest, SteveRootIsMetresInDantelionSpaceAndYawFlipsSign) {
+    SekiroAdapter adapter;
+    // 10 m ahead, 2 m to the right (canonical Y is left, so -200), feet on the ground; facing left (+90deg CCW)
+    adapter.setSteveRoot(Vec3{1000.f, -200.f, 0.f}, 3.14159265f * 0.5f);
+    const auto& root = adapter.getSteveRoot();
+    EXPECT_NEAR(root.position.X, 2.f, 1e-4f);   // right
+    EXPECT_NEAR(root.position.Y, 0.f, 1e-4f);
+    EXPECT_NEAR(root.position.Z, 10.f, 1e-4f);  // forward
+    EXPECT_NEAR(root.yaw, -3.14159265f * 0.5f, 1e-5f); // a turn to the left is negative about Dantelion +Y
+}

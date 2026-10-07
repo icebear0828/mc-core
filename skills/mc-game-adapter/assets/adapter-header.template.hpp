@@ -26,6 +26,7 @@ public:
     void setNativePlayerVisible(bool visible) override;
     bool spawnSteveParts() override;
     void destroySteveParts() override;
+    void setSteveRoot(const Vec3& feet_position, float body_yaw) override;
     void updateStevePartTransforms(const SteveAnimator::PartTransforms& transforms) override;
     void setHeldItemVisual(ItemId item, bool is_offhand = false) override;
     uint64_t spawnBlockVisual(const GridPos& grid_pos, BlockId block_id, const Vec3& world_pos) override;

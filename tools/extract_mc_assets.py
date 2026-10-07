@@ -488,15 +488,35 @@ def export_hud_atlas_header(atlas: Image.Image, uv_map: dict[str, tuple[float, f
     output_header.write_text("\n".join(lines), encoding="utf-8")
 
 
+def export_steve_skin(client_jar: Path, out_dir: Path) -> Path:
+    """Copy the real wide-arm Steve skin (64x64) out of a local client.jar as steve.png."""
+    entry = _JAR_TEXTURES + "entity/player/wide/steve.png"
+    with zipfile.ZipFile(client_jar, "r") as jar:
+        if entry not in jar.namelist():
+            raise FileNotFoundError(f"{entry} not found in {client_jar}")
+        skin = Image.open(io.BytesIO(jar.read(entry))).convert("RGBA")
+    if skin.size != (64, 64):
+        raise ValueError(f"expected a 64x64 skin, got {skin.size}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / "steve.png"
+    skin.save(out)
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description="Extract MC Java assets to standard OBJ/PNG models.")
     parser.add_argument("--client-jar", type=Path, help="Path to Minecraft Java client.jar")
     parser.add_argument("--out-dir", type=Path, default=Path("assets/exported"), help="Output directory")
     parser.add_argument("--export-hud-atlas", action="store_true", help="Export mc_hud_atlas.png and UV JSON")
     parser.add_argument("--export-header", type=Path, help="Export C++ header file for HUD atlas")
+    parser.add_argument("--export-steve-skin", action="store_true", help="Export the real Steve skin as steve.png (needs --client-jar)")
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    if args.export_steve_skin:
+        if not args.client_jar:
+            parser.error("--export-steve-skin requires --client-jar")
+        print(f"Exported Steve skin to {export_steve_skin(args.client_jar, args.out_dir)}")
     if args.export_hud_atlas or args.export_header:
         atlas_img, uv_map = build_hud_atlas(args.client_jar)
         atlas_path = args.out_dir / "mc_hud_atlas.png"

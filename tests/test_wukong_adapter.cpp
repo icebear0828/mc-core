@@ -639,3 +639,12 @@ TEST(WukongSessionTest, GlidingWritesVelocityToPlayerAndEstimatedGroundDoesNotCa
 
     WukongMod_Shutdown();
 }
+
+TEST(WukongAdapterTest, SteveRootIsCentimetresInUeSpaceAndYawIsPositiveToTheRight) {
+    WukongAdapter adapter;
+    adapter.setSteveRoot(Vec3{1000.f, -200.f, 0.f}, 3.14159265f * 0.5f); // 2 m to the right, facing left
+    const auto& root = adapter.getSteveRoot();
+    EXPECT_NEAR(root.position.X, 1000.f, 1e-3f);
+    EXPECT_NEAR(root.position.Y, 200.f, 1e-3f);
+    EXPECT_NEAR(root.yaw_degrees, -90.f, 1e-3f);
+}

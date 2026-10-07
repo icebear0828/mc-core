@@ -19,7 +19,10 @@ add_executable(mc_tests
     test_hud.cpp
     test_session.cpp
     test_sekiro_live.cpp
+    test_sekiro_steve.cpp
 )
+
+target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source")
 
 target_link_libraries(mc_tests
     PRIVATE

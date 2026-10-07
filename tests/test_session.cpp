@@ -57,6 +57,9 @@ public:
     int spawn_steve_calls{0};
     int destroy_steve_calls{0};
     int transform_updates{0};
+    int root_updates{0};
+    mc::Vec3 root_pos{};
+    float root_yaw{0.f};
     mc::ItemId held{mc::ItemId::None};
     int last_crack_stage{-1};
     int visuals{0};
@@ -64,6 +67,11 @@ public:
     void setNativePlayerVisible(bool v) override { native_visible_calls.push_back(v); }
     bool spawnSteveParts() override { ++spawn_steve_calls; return true; }
     void destroySteveParts() override { ++destroy_steve_calls; }
+    void setSteveRoot(const mc::Vec3& p, float yaw) override {
+        ++root_updates;
+        root_pos = p;
+        root_yaw = yaw;
+    }
     void updateStevePartTransforms(const mc::SteveAnimator::PartTransforms&) override { ++transform_updates; }
     void setHeldItemVisual(mc::ItemId item, bool offhand) override {
         if (!offhand) held = item;
@@ -200,7 +208,8 @@ TEST_F(SessionTest, ActiveTickPushesTransformsAndCanonicalAnimInput) {
 
     EXPECT_EQ(render.transform_updates, 1);
     const auto& a = session.lastAnimInput();
-    EXPECT_NEAR(a.look_yaw, kPi / 2.f, 1e-4f);
+    EXPECT_NEAR(render.root_yaw, kPi / 2.f, 1e-4f); // the body takes the camera's heading on the first tick
+    EXPECT_NEAR(a.look_yaw, 0.f, 1e-4f);            // head yaw is relative to the body
     EXPECT_NEAR(a.look_pitch, 0.f, 1e-4f);
     EXPECT_NEAR(a.forward_speed, 2.f, 1e-3f);
     EXPECT_NEAR(a.strafe_speed, 0.f, 1e-3f);
@@ -640,4 +649,72 @@ TEST_F(SessionTest, EstimatedGroundDoesNotCancelGlide_ButTrustedGroundDoes) {
     trusted.on_ground = true;
     session.tick(0.05f, trusted);
     EXPECT_FALSE(session.elytra().getState().is_gliding);
+}
+
+// ---------------------------------------------------------------- rig root and head/body split
+
+TEST_F(SessionTest, RootFollowsThePlayerAndOnlyWhileActive) {
+    input.player_pos = {120.f, -40.f, 5.f};
+    session.tick(0.05f, {});
+    EXPECT_EQ(render.root_updates, 0);
+
+    session.setActive(true);
+    session.tick(0.05f, {});
+    EXPECT_EQ(render.root_updates, 1);
+    EXPECT_FLOAT_EQ(render.root_pos.x, 120.f);
+    EXPECT_FLOAT_EQ(render.root_pos.y, -40.f);
+    EXPECT_FLOAT_EQ(render.root_pos.z, 5.f);
+}
+
+TEST_F(SessionTest, HeadTurnsRelativeToTheBodyUpToFiftyDegreesThenTheBodyFollows) {
+    session.setActive(true);
+    auto look = [&](float deg) {
+        input.cam_fwd = {std::cos(deg * kPi / 180.f), std::sin(deg * kPi / 180.f), 0.f};
+        session.tick(0.05f, {});
+    };
+    look(0.f);
+    EXPECT_NEAR(render.root_yaw, 0.f, 1e-4f);
+
+    look(30.f);  // within the limit: only the head turns
+    EXPECT_NEAR(render.root_yaw, 0.f, 1e-4f);
+    EXPECT_NEAR(session.lastAnimInput().look_yaw, 30.f * kPi / 180.f, 1e-4f);
+
+    look(90.f);  // beyond 50 degrees: the body follows, the head stays at the limit
+    EXPECT_NEAR(render.root_yaw, 40.f * kPi / 180.f, 1e-4f);
+    EXPECT_NEAR(session.lastAnimInput().look_yaw, 50.f * kPi / 180.f, 1e-4f);
+}
+
+TEST_F(SessionTest, HeadYawIsWrappedSoTurningAcrossThePiBoundaryTakesTheShortWay) {
+    session.setActive(true);
+    auto look = [&](float deg) {
+        input.cam_fwd = {std::cos(deg * kPi / 180.f), std::sin(deg * kPi / 180.f), 0.f};
+        session.tick(0.05f, {});
+    };
+    look(170.f);
+    look(-170.f); // only 20 degrees away through +/-180
+    EXPECT_NEAR(session.lastAnimInput().look_yaw, 20.f * kPi / 180.f, 1e-3f);
+    EXPECT_NEAR(std::cos(render.root_yaw), std::cos(170.f * kPi / 180.f), 1e-3f);
+}
+
+TEST_F(SessionTest, PitchUsesTheMinecraftConventionPositiveIsLookingDown) {
+    session.setActive(true);
+    input.cam_fwd = {std::cos(kPi / 6.f), 0.f, std::sin(kPi / 6.f)}; // looking up 30 degrees
+    session.tick(0.05f, {});
+    EXPECT_NEAR(session.lastAnimInput().look_pitch, -kPi / 6.f, 1e-4f);
+
+    input.cam_fwd = {std::cos(kPi / 4.f), 0.f, -std::sin(kPi / 4.f)}; // looking down 45 degrees
+    session.tick(0.05f, {});
+    EXPECT_NEAR(session.lastAnimInput().look_pitch, kPi / 4.f, 1e-4f);
+}
+
+TEST_F(SessionTest, ReactivatingReseedsTheBodyYawFromTheCamera) {
+    session.setActive(true);
+    input.cam_fwd = {1.f, 0.f, 0.f};
+    session.tick(0.05f, {});
+    session.setActive(false);
+
+    input.cam_fwd = {0.f, 1.f, 0.f};
+    session.setActive(true);
+    session.tick(0.05f, {});
+    EXPECT_NEAR(render.root_yaw, kPi / 2.f, 1e-4f); // not stuck at the old heading
 }

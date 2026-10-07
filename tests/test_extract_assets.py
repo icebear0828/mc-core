@@ -216,3 +216,45 @@ def test_hud_atlas_crosshair_is_centred_not_stretched(tmp_path):
     assert ch.size == (16, 16)
     colored = [(x, y) for x in range(16) for y in range(16) if ch.getpixel((x, y))[3] > 0]
     assert len(colored) == 15 * 15  # 15x15 source pasted 1:1, no resampling holes or doubled rows
+
+
+# --- Steve skin export (real skin from the local client.jar, never committed) ---------------------
+
+def _jar_with_skin(path: Path, skin: Image.Image, slim: bool = False) -> Path:
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("assets/minecraft/textures/entity/player/wide/steve.png", _png(skin))
+        if slim:
+            z.writestr("assets/minecraft/textures/entity/player/slim/steve.png", _png(_solid((64, 64), (9, 9, 9, 255))))
+    return path
+
+
+def test_export_steve_skin_writes_the_wide_skin_unchanged(tmp_path):
+    from extract_mc_assets import export_steve_skin
+
+    skin = _solid((64, 64), (12, 34, 56, 255))
+    skin.putpixel((8, 8), (200, 100, 50, 255))
+    jar = _jar_with_skin(tmp_path / "client.jar", skin, slim=True)
+
+    out = export_steve_skin(jar, tmp_path / "out")
+    assert out == tmp_path / "out" / "steve.png"
+    written = Image.open(out).convert("RGBA")
+    assert written.size == (64, 64)
+    assert written.getpixel((8, 8)) == (200, 100, 50, 255)
+    assert written.getpixel((0, 0)) == (12, 34, 56, 255)  # the wide model, not the slim one
+
+
+def test_export_steve_skin_rejects_missing_or_wrong_size(tmp_path):
+    import zipfile
+    from extract_mc_assets import export_steve_skin
+
+    empty = tmp_path / "empty.jar"
+    with zipfile.ZipFile(empty, "w") as z:
+        z.writestr("readme.txt", "x")
+    with pytest.raises(FileNotFoundError):
+        export_steve_skin(empty, tmp_path / "out")
+
+    legacy = _jar_with_skin(tmp_path / "legacy.jar", _solid((64, 32), (1, 2, 3, 255)))
+    with pytest.raises(ValueError):
+        export_steve_skin(legacy, tmp_path / "out")  # the rig's UV table assumes the 64x64 layout

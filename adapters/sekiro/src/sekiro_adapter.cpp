@@ -353,6 +353,11 @@ void SekiroAdapter::destroySteveParts() {
     steve_parts_spawned_ = false;
 }
 
+void SekiroAdapter::setSteveRoot(const Vec3& feet_position, float body_yaw) {
+    steve_root_.position = toNativePoint(feet_position);
+    steve_root_.yaw = -body_yaw;
+}
+
 void SekiroAdapter::updateStevePartTransforms(const SteveAnimator::PartTransforms& transforms) {
     if (!steve_parts_spawned_) {
         return;

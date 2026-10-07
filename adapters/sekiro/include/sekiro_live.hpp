@@ -31,11 +31,14 @@ inline constexpr uintptr_t kPlayerInsInWorldChrMan = 0x88;
 inline constexpr uintptr_t kChrPosition = 0x1050;     // float x,y,z (metres)
 inline constexpr uintptr_t kChrPositionCopy = 0x1060; // second copy, used as a consistency check
 inline constexpr uintptr_t kCameraMatrix = 0xea0;     // row-major 4x4: right, up, forward, position(w=1)
+inline constexpr uintptr_t kCameraFov = 0x160;        // float, returned by the camera getter the signature matches
 
 inline constexpr float kMaxCoordinate = 1.0e5f;
 inline constexpr float kMaxPositionCopyDelta = 1.0f;
 inline constexpr float kBasisTolerance = 0.02f;
 inline constexpr float kMaxPlausibleSpeed = 200.0f; // m/s; faster is a teleport, not motion
+inline constexpr float kMinFov = 0.2f;              // radians; outside [kMinFov, kMaxFov] the value is not trusted
+inline constexpr float kMaxFov = 2.6f;
 
 } // namespace layout
 
@@ -64,6 +67,7 @@ struct LiveSample {
     native::FVector3 cam_right;
     native::FVector3 cam_up;
     native::FVector3 cam_forward;
+    float cam_fov_y{0.0f}; // radians; 0 = unknown (caller picks a default)
 };
 
 enum class BindStatus { Searching, Ambiguous, Bound };

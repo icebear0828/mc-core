@@ -161,6 +161,12 @@ bool LiveBinder::readCamera(uintptr_t object, LiveSample& out) const {
     out.cam_up = up;
     out.cam_forward = fwd;
     out.cam_pos = pos;
+
+    float fov = 0.0f;
+    out.cam_fov_y = (reader_.read(object + layout::kCameraFov, &fov, sizeof(fov)) && std::isfinite(fov) &&
+                     fov >= layout::kMinFov && fov <= layout::kMaxFov)
+                        ? fov
+                        : 0.0f;
     return true;
 }
 

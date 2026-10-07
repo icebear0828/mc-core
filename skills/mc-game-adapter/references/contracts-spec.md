@@ -55,6 +55,9 @@ public:
 
     // 3. 每 Tick 同步 12 个方块部件的相对变换
     // transforms 数组包含纯数学计算好的相对旋转与位移
+    // 把 Steve 骨架放进世界：脚的位置（规范 MC 空间 cm）与身体 yaw（弧度，0=+X，逆时针为正）；部位变换相对该根节点
+    virtual void setSteveRoot(const Vec3& feet_position, float body_yaw) = 0;
+
     virtual void updateStevePartTransforms(const SteveAnimator::PartTransforms& transforms) = 0;
 
     // 4. 手持物品视觉挂载

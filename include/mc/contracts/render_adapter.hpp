@@ -16,6 +16,10 @@ public:
     virtual bool spawnSteveParts() = 0;
     virtual void destroySteveParts() = 0;
 
+    // Place the rig in the world: feet position (canonical MC space, cm) and body yaw (radians,
+    // 0 = +X, counter-clockwise positive). Part transforms below are relative to this root.
+    virtual void setSteveRoot(const Vec3& feet_position, float body_yaw) = 0;
+
     // Update 12 Steve parts relative transforms computed by SteveAnimator
     virtual void updateStevePartTransforms(const SteveAnimator::PartTransforms& transforms) = 0;
 

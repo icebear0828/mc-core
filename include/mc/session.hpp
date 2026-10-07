@@ -50,6 +50,7 @@ public:
     static constexpr float kReachCm = 450.f;
     static constexpr float kSwingDurationSec = 0.3f;
     static constexpr float kAttackRechargeSec = 0.625f; // diamond sword, 1.6 attacks/s
+    static constexpr float kMaxHeadYawRad = 0.8726646f; // 50 degrees: further and the body turns too
 
     explicit Session(const Ports& ports);
     ~Session();
@@ -88,6 +89,8 @@ private:
     std::unique_ptr<HudEngine> hud_;
 
     SteveAnimInput last_anim_input_{};
+    float body_yaw_{0.f};
+    bool body_yaw_seeded_{false}; // re-seeded from the camera each time the session is activated
     float swing_elapsed_{-1.f}; // <0 = idle
     float attack_cooldown_{1.f};
 };

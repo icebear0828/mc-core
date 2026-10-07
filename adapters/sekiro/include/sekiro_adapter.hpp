@@ -58,6 +58,7 @@ public:
     void setNativePlayerVisible(bool visible) override;
     bool spawnSteveParts() override;
     void destroySteveParts() override;
+    void setSteveRoot(const Vec3& feet_position, float body_yaw) override;
     void updateStevePartTransforms(const SteveAnimator::PartTransforms& transforms) override;
     void setHeldItemVisual(ItemId item, bool is_offhand = false) override;
     uint64_t spawnBlockVisual(const GridPos& grid_pos, BlockId block_id, const Vec3& world_pos) override;
@@ -84,6 +85,14 @@ public:
     [[nodiscard]] size_t getBlockColliderCount() const { return colliders_.size(); }
     [[nodiscard]] size_t getBlockVisualCount() const { return visuals_.size(); }
     const sekiro::native::SekiroVisualMeshComponent* getStevePartVisual(StevePart part) const;
+
+    // Rig root in Dantelion space: feet in metres and the rotation about +Y (+Z turns toward +X).
+    // A counter-clockwise canonical yaw is a turn to the left, which is a negative Dantelion yaw.
+    struct SteveRoot {
+        sekiro::native::FVector3 position{};
+        float yaw{0.0f};
+    };
+    [[nodiscard]] const SteveRoot& getSteveRoot() const { return steve_root_; }
 
     // Vertical-velocity heuristic: Dantelion exposes no grounded flag we can read yet.
     [[nodiscard]] bool isPlayerOnGround() const;
@@ -118,6 +127,7 @@ private:
 
     // 12 Steve parts
     bool steve_parts_spawned_{false};
+    SteveRoot steve_root_{};
     std::array<std::unique_ptr<sekiro::native::SekiroVisualMeshComponent>, SteveAnimator::kPartCount> steve_parts_{};
     std::unique_ptr<sekiro::native::SekiroVisualMeshComponent> weapon_mesh_;
     std::unique_ptr<sekiro::native::SekiroVisualMeshComponent> prosthetic_offhand_mesh_;
