@@ -7,8 +7,8 @@ CombatEngine::CombatEngine(ICombatAdapter& combat)
     : combat_(combat) {}
 
 HitIntent CombatEngine::calculateMeleeHit(
-    uint64_t attacker_id,
-    uint64_t victim_id,
+    EntityId attacker_id,
+    EntityId victim_id,
     ItemId weapon,
     float attack_cooldown,
     bool is_falling,
@@ -56,7 +56,7 @@ HitIntent CombatEngine::calculateMeleeHit(
 }
 
 bool CombatEngine::executeHit(const HitIntent& intent) {
-    if (intent.victim_id == 0) {
+    if (intent.victim_id == EntityId::None) {
         return false;
     }
 

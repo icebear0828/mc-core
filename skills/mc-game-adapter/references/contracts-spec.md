@@ -7,13 +7,19 @@
 ## 1. IPhysicsAdapter
 
 ```cpp
+// 实体身份：强类型，禁止与宿主指针/句柄/碰撞体句柄混用。
+// None(0) = 无实体；LocalPlayer(1) = 本地玩家（适配器在绑定玩家时自动注册）；其余实体由适配器分配 >= 2 的 id。
+enum class EntityId : uint64_t { None = 0, LocalPlayer = 1 };
+
+// RaycastResult：hit_entity 仅放已注册实体（地形/未注册 actor 为 None，禁止把宿主指针转成 id）；
+// hit_collider_handle 仅放我们放置的方块碰撞体句柄。ignore_entity 需由适配器映射为宿主自己的句柄/Actor。
 class IPhysicsAdapter {
 public:
     virtual ~IPhysicsAdapter() = default;
 
     // 1. 世界视线与射击射线探测
     // 返回命中点坐标、表面法线以及命中的实体句柄
-    virtual RaycastResult raycastWorld(const Vec3& start, const Vec3& end, uint64_t ignore_entity = 0) = 0;
+    virtual RaycastResult raycastWorld(const Vec3& start, const Vec3& end, EntityId ignore_entity = EntityId::None) = 0;
 
     // 2. 动态创建 1x1x1m 方块物理碰撞体
     // 必须确保宿主角色、NPC、载具能够踩踏站立和产生刚体阻挡
@@ -23,7 +29,10 @@ public:
     virtual void destroyBlockCollider(uint64_t collider_handle) = 0;
 
     // 4. 对物理实体施加线性冲量（用于 TNT 爆炸、三叉戟击退）
-    virtual void applyLinearImpulse(uint64_t entity_id, const Vec3& impulse) = 0;
+    virtual void applyLinearImpulse(EntityId entity_id, const Vec3& impulse) = 0;
+
+    // 替换（非叠加）实体速度，MC 规范空间 cm/s；用于滑翔时驱动本地玩家。未知实体为空操作
+    virtual void setLinearVelocity(EntityId entity_id, const Vec3& velocity) = 0;
 };
 ```
 
@@ -46,6 +55,9 @@ public:
 
     // 3. 每 Tick 同步 12 个方块部件的相对变换
     // transforms 数组包含纯数学计算好的相对旋转与位移
+    // 把 Steve 骨架放进世界：脚的位置（规范 MC 空间 cm）与身体 yaw（弧度，0=+X，逆时针为正）；部位变换相对该根节点
+    virtual void setSteveRoot(const Vec3& feet_position, float body_yaw) = 0;
+
     virtual void updateStevePartTransforms(const SteveAnimator::PartTransforms& transforms) = 0;
 
     // 4. 手持物品视觉挂载
@@ -67,14 +79,15 @@ class ICombatAdapter {
 public:
     virtual ~ICombatAdapter() = default;
 
-    // 1. 将 MC 攻击意图转换为宿主原生受击管线（扣血、受击动作、削韧）
+    // 1. 将 MC 攻击意图转换为宿主原生状态变更（扣血、死亡、削韧）。
+    //    禁止在此触发击退/硬直：CombatEngine::executeHit 在返回 true 后统一调用第 3 项，且只调用一次。
     virtual bool processHit(const HitIntent& intent) = 0;
 
     // 2. 查询目标最大生命值（用于 Boss 动态百分比平衡）
-    virtual float getMaxHealth(uint64_t entity_id) = 0;
+    virtual float getMaxHealth(EntityId entity_id) = 0;
 
-    // 3. 触发宿主原生的受击硬直、趔趄或布娃娃（Ragdoll）
-    virtual void triggerStaggerOrRagdoll(uint64_t entity_id, const Vec3& direction, float force) = 0;
+    // 3. 触发宿主原生的受击硬直、趔趄或布娃娃（Ragdoll）；仅由核心调用，适配器不得在 processHit 内自行调用
+    virtual void triggerStaggerOrRagdoll(EntityId entity_id, const Vec3& direction, float force) = 0;
 };
 ```
 

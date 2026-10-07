@@ -77,8 +77,9 @@ mc-core/
 │   └── test_extract_assets.py
 ├── tools/                         # 资产提取与转换工具
 │   └── extract_mc_assets.py
-├── docs/                          # 架构、烘焙与安装使用指南
+├── docs/                          # 架构、避坑规范、烘焙与安装使用指南
 │   ├── ARCHITECTURE.md            # 跨引擎架构与接口规格
+│   ├── ADAPTER_SPECIFICATION.md   # 宿主适配器工程避坑与上屏准入规范
 │   ├── BAKING_GUIDE.md            # 各引擎模型一键封包实操
 │   └── INSTALL.md                 # 玩家安装目录与按键指南
 ├── CMakeLists.txt                 # CMake 构建脚本 (C++20, 零警告策略)
@@ -154,3 +155,7 @@ uv run --with pytest --with pillow pytest tests/test_extract_assets.py
 
 本项目采用 [PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/) 许可，仅供非商业及学习研究使用。
 Minecraft 游戏资产与音效版权均归 Mojang Studios / Microsoft 所有。
+
+## 接入新游戏
+
+完整流程、真机逆向方法、踩坑清单与只狼案例见 [docs/PORTING_PLAYBOOK.md](docs/PORTING_PLAYBOOK.md)；逆向工具在 `tools/reverse/`。

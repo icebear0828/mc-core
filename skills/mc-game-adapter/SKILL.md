@@ -19,7 +19,9 @@ Scaffold, engineer, and verify game-specific adapter plugins for `mc-core` in pr
 
 ## Overview
 
-This skill guides the end-to-end integration of `mc-core` into any game. It handles engine reconnaissance, asset cooking pipelines, C++ adapter scaffolding across the four core contracts (`IPhysics`, `IRender`, `ICombat`, `IInput`), and verification against the quality gates.
+This skill guides the end-to-end integration of `mc-core` into any game. It handles engine reconnaissance, runtime reverse engineering of the host, C++ adapter scaffolding across the four core contracts (`IPhysics`, `IRender`, `ICombat`, `IInput`) on top of `mc::Session`, and verification against the quality gates.
+
+**Read `docs/PORTING_PLAYBOOK.md` first.** It is the full, evidence-based procedure learned from the Sekiro port (phases, reverse-engineering method, binding rules, coordinate/unit/handedness conventions, pitfalls). `tools/reverse/` holds the reusable inspection scripts.
 
 ## When to Use
 
@@ -29,12 +31,20 @@ This skill guides the end-to-end integration of `mc-core` into any game. It hand
 
 ## Important Rules
 
-1. **NEVER modify `include/mc/` core interfaces** to suit a specific game. Adapt the game to the contracts, not the contracts to the game.
+1. **Do not bend `include/mc/` to one game.** A contract change is only acceptable when it is generic (true for every game), covered by tests, and applied to every adapter and template in the same change (`setSteveRoot`, `setLinearVelocity`, `EntityId` were added this way).
 2. **ALWAYS read the engine matrix first**: Load `references/engine-matrix.md` before writing adapter code.
 3. **NEVER bind Steve to realistic humanoid skeletons**. Always use the 12 rigid-box mount approach with native player mesh hiding.
 4. **ALWAYS verify against `references/validation-checklist.md`** before declaring an adapter complete.
+5. **Adapters never orchestrate gameplay.** Build the plugin entry on `mc::Session` (`assets/plugin-entry.template.cpp`); only fill `InputSnapshot` and implement the ports.
+6. **Never guess host memory.** Signatures are found in the *running, decrypted* image, must match exactly once and pass structural validation; there is no fallback object. Write only fields justified by RTTI / setter disassembly / current value, remember the original, and never batch-write unknown fields (it crashed the game twice).
+7. **Never `reinterpret_cast` game memory to your own struct.** Work on mirror structs and move validated readings across.
+8. **Real Mojang assets stay local** (generated from the user's jar, never committed).
 
 ## Key Workflows
+
+### Phase 0: Offline-first
+
+Write the adapter against mirror structs and unit tests on macOS/Linux first (mock host); `plugin_entry` is just `Session` + adapter. Only then go to the real game.
 
 ### Phase 1: Engine Reconnaissance & Hook Selection
 
@@ -49,6 +59,10 @@ This skill guides the end-to-end integration of `mc-core` into any game. It hand
    - Mod Loader / Hook SDK: ScriptHookV, Cyber Engine Tweaks, REFramework, ModEngine2.
    - Native Player Mesh Hide Method: Engine entity visibility function or material alpha override.
    - Native Raycast Method: Line trace or probe API.
+   - Packed executable? (`.text` entropy ~8.0) → scan the live process, not the file.
+   - RTTI kept? → `tools/reverse/rtti_survey.py` names every object.
+   - Anti-cheat present? → stop; only offline single-player games are in scope.
+3. For the reverse-engineering phase (signatures, player, camera, units, handedness, visibility field) follow `docs/PORTING_PLAYBOOK.md` §4 and use `tools/reverse/`.
 
 ### Phase 2: Asset Cooking Pipeline
 
@@ -56,7 +70,8 @@ This skill guides the end-to-end integration of `mc-core` into any game. It hand
 
 1. Run the asset extractor to generate standard OBJ and PNG files:
    ```bash
-   uv run tools/extract_mc_assets.py --out-dir assets/exported/
+   uv run --with pillow python tools/extract_mc_assets.py --client-jar <local client.jar> --export-hud-atlas --out-dir <game>/mods/mc_adapter
+   uv run --with pillow python tools/extract_mc_assets.py --client-jar <local client.jar> --export-steve-skin --out-dir <game>/mods/mc_adapter
    ```
 2. Guide the user on converting generated OBJs to the target engine format:
    - **GTA V**: Use Sollumz / OpenIV to convert to `.ydr`.
@@ -105,3 +120,8 @@ This skill guides the end-to-end integration of `mc-core` into any game. It hand
    - Placed blocks allow character and NPC walking/collision.
    - Mining crack stages (0..9) progress and destroy both mesh and collider.
 3. Report checklist status to user.
+
+
+## 动作系统的宿主接口
+
+要让攻击、盾牌、弓箭、受伤、第一人称在新游戏里工作，需要逆向的宿主接口已整理在 `docs/REVERSE_INTERFACES.md`（每项：契约、解锁的行为、怎么找、怎么验证、风险）。实现 `IHostGameplay` 里已经找到的部分，`supportedFeatures()` 只声明真实游戏里验证过的特性。

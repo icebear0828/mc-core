@@ -12,6 +12,7 @@
 | **《赛博朋克2077》** | REDengine 4 | **CET** (C++/Lua) + **Redscript** | `puppet:GetMeshComponent():SetVisible(false)` | `SpatialQueriesSystem:SyncRaycast` / 动态创建 static physics actor | `GameInstance.GetDamageSystem():QueueHitEvent` |
 | **《生化危机》系列 (RE2/3/4R, 7/8)** | RE Engine | **REFramework** (C++ / Lua) | 遍历 Mesh 材质并设置 Alpha 为 0 或调用 `app.HumanCharacter:set_Draw` | `app.collision.CollisionSystem:raycast` / 动态生成 Prefab Object | `app.HitController:addDamage` |
 | **《艾尔登法环》** | Dantelion (FromSoftware) | **ModEngine2** (C++ DLL Hook) | 隐藏角色部件 Parts (`partsbnd` alpha 或内存标记) | Havok Physics 内存射线探针 / SpEffect 触发 | 注入 `SpEffect` 或调用内部 `ApplyDamage` 虚函数 |
+| **《只狼：影逝二度》** | Dantelion (FromSoftware) | **ModEngine** / **dinput8.dll** 代理 | 隐藏 Wolf 部件 Parts (`ChrIns` ModelAlpha=0 / Parts 隐藏) | Havok World Raycast / 静态 Box 碰撞体 | 伤害计算、躯干值 (Posture) 削减、忍杀红点与 Stagger |
 | **虚幻5游戏 (UE5 / UE4)** | Unreal Engine 5 / 4 | **UE4SS** (C++ / Lua) 或原生 DLL Hook | `Character->GetMesh()->SetVisibility(false)` | `UKismetSystemLibrary::LineTraceSingle` / `UBoxComponent` | `UGameplayStatics::ApplyDamage` 或原生战斗接口 |
 
 ---
@@ -55,3 +56,18 @@
 - **方块与射线**：
   - 射线检测直接调用 `UKismetSystemLibrary::LineTraceSingle`。
   - 生成 `AActor` + `UBoxComponent` (49x49x49 cm) 作为物理方块。
+
+### 2.5 只狼：影逝二度 (Dantelion / ModEngine / dinput8.dll)
+- **工程产物**：`sekiro_adapter.dll` / `dinput8.dll`。
+- **生命周期**：挂钩 `IDXGISwapChain::Present` 或 ModEngine Tick 周期，固定 20 TPS 逻辑与 Present 渲染插值。
+- **12 部位挂载**：
+  - 调用 `player->ModelAlpha = 0.0f` 彻底隐藏原主角“狼”的写实网格，保留 Havok 物理胶囊体。
+  - 动态实例化 12 个独立方块网格部件 (`steve_head`, `steve_body`, `steve_left_arm` 等) 并挂接变换。
+  - 每帧将 `mc::SteveAnimator` 输出更新到各部位局部相对位置与姿态。
+- **方块与射线**：
+  - 射线检测接入 Havok World Raycast 或 AABB 连续体素探针。
+  - 放置方块生成 100cm 静态刚体碰撞盒，阻挡主角与敌人，支持 0..9 裂纹递进与挖掘移除。
+- **战斗与韧性**：
+  - 注入攻击判定，计算基础伤害与百分比平衡伤害，同步驱动躯干值 (Posture) 积累。
+  - 躯干满值或生命归零时激活忍杀 (Deathblow) 状态与受击硬直 (Stagger)。
+

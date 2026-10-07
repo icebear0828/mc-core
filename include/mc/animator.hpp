@@ -24,8 +24,8 @@ enum class StevePart : uint8_t {
 struct SteveAnimInput {
     float forward_speed{0.f}; // m/s
     float strafe_speed{0.f};  // m/s
-    float look_yaw{0.f};      // radians
-    float look_pitch{0.f};    // radians
+    float look_yaw{0.f};      // radians, head yaw RELATIVE to the body (0 = facing the body's heading)
+    float look_pitch{0.f};    // radians, Minecraft convention: positive = looking DOWN
     float swing_progress{0.f};// [0, 1] 0 = idle, 1 = completed
     bool is_crouching{false};
     bool is_blocking{false};

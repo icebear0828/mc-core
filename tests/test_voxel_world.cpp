@@ -3,9 +3,11 @@
 #include "mc/contracts/physics_adapter.hpp"
 #include "mc/contracts/render_adapter.hpp"
 
-class MockPhysicsAdapter : public mc::IPhysicsAdapter {
+namespace {
+
+class MockVoxelPhysicsAdapter : public mc::IPhysicsAdapter {
 public:
-    mc::RaycastResult raycastWorld(const mc::Vec3&, const mc::Vec3&, uint64_t) override {
+    mc::RaycastResult raycastWorld(const mc::Vec3&, const mc::Vec3&, mc::EntityId) override {
         return mc::RaycastResult{};
     }
     uint64_t createBlockCollider(const mc::GridPos&, mc::BlockId, const mc::Vec3&) override {
@@ -14,16 +16,18 @@ public:
     void destroyBlockCollider(uint64_t) override {
         --collider_count_;
     }
-    void applyLinearImpulse(uint64_t, const mc::Vec3&) override {}
+    void applyLinearImpulse(mc::EntityId, const mc::Vec3&) override {}
+    void setLinearVelocity(mc::EntityId, const mc::Vec3&) override {}
 
     uint64_t collider_count_{0};
 };
 
-class MockRenderAdapter : public mc::IRenderAdapter {
+class MockVoxelRenderAdapter : public mc::IRenderAdapter {
 public:
     void setNativePlayerVisible(bool) override {}
     bool spawnSteveParts() override { return true; }
     void destroySteveParts() override {}
+    void setSteveRoot(const mc::Vec3&, float) override {}
     void updateStevePartTransforms(const mc::SteveAnimator::PartTransforms&) override {}
     void setHeldItemVisual(mc::ItemId, bool) override {}
     uint64_t spawnBlockVisual(const mc::GridPos&, mc::BlockId, const mc::Vec3&) override {
@@ -40,6 +44,8 @@ public:
     int last_stage_{-1};
 };
 
+} // namespace
+
 TEST(VoxelWorldTest, GridQuantization) {
     mc::Vec3 pos1{49.9f, -149.0f, 201.2f};
     mc::GridPos grid = mc::VoxelWorld::worldToGrid(pos1);
@@ -55,8 +61,8 @@ TEST(VoxelWorldTest, GridQuantization) {
 }
 
 TEST(VoxelWorldTest, PlaceAndMineCycle) {
-    MockPhysicsAdapter physics;
-    MockRenderAdapter render;
+    MockVoxelPhysicsAdapter physics;
+    MockVoxelRenderAdapter render;
     mc::VoxelWorld world(physics, render);
 
     mc::GridPos target{1, 2, 0};

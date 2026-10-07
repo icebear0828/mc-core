@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 
-SUPPORTED_TARGETS = ["ue5", "cp2077", "gta5", "eldenring", "re_engine"]
+SUPPORTED_TARGETS = ["ue5", "cp2077", "gta5", "eldenring", "re_engine", "sekiro"]
 
 
 def check_tool(tool_name: str) -> bool:
@@ -75,6 +75,43 @@ def bake_gta5(source_dir: Path, output_dir: Path) -> bool:
     return True
 
 
+def bake_sekiro(source_dir: Path, output_dir: Path) -> bool:
+    print(f"\n[SEKIRO] Baking Sekiro (Dantelion / ModEngine) asset package...")
+    sekiro_out = output_dir / "sekiro"
+    parts_out = sekiro_out / "parts"
+    map_out = sekiro_out / "map"
+    parts_out.mkdir(parents=True, exist_ok=True)
+    map_out.mkdir(parents=True, exist_ok=True)
+
+    print("         Staging 12 Steve parts for FLVER character parts conversion...")
+    for f in source_dir.glob("models/steve*.obj"):
+        shutil.copy(f, parts_out)
+    for f in source_dir.glob("textures/steve*.png"):
+        shutil.copy(f, parts_out)
+
+    print("         Staging blocks and weapons for map / parts container...")
+    for f in source_dir.glob("models/*.obj"):
+        if not f.name.startswith("steve"):
+            shutil.copy(f, map_out)
+    for f in source_dir.glob("textures/*.png"):
+        if not f.name.startswith("steve"):
+            shutil.copy(f, map_out)
+
+    # Build and stage HUD atlas texture for D3D11 overlay
+    try:
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent))
+        from extract_mc_assets import build_hud_atlas
+        atlas_img, _ = build_hud_atlas()
+        atlas_img.save(sekiro_out / "mc_hud_atlas.png")
+        print("         Staged mc_hud_atlas.png for Sekiro D3D11 HUD overlay.")
+    except Exception as e:
+        print(f"         Notice: HUD atlas generation skipped: {e}")
+
+    print(f"[SEKIRO] Staged {len(list(parts_out.glob('*')))} part files and {len(list(map_out.glob('*')))} map files.")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Bake source assets into engine-specific binary packages.")
     parser.add_argument("--source-dir", type=Path, default=Path("assets/source"), help="Path to source OBJ/PNG assets")
@@ -97,6 +134,8 @@ def main():
             bake_cp2077(args.source_dir, args.output_dir)
         elif t == "gta5":
             bake_gta5(args.source_dir, args.output_dir)
+        elif t == "sekiro":
+            bake_sekiro(args.source_dir, args.output_dir)
         elif t in ["eldenring", "re_engine"]:
             dest = args.output_dir / t
             dest.mkdir(parents=True, exist_ok=True)

@@ -13,14 +13,25 @@ add_executable(mc_tests
     test_combat.cpp
     test_ballistics.cpp
     test_wukong_adapter.cpp
+    test_sekiro_adapter.cpp
     test_consumables.cpp
     test_elytra.cpp
+    test_hud.cpp
+    test_hud_layout.cpp
+    test_session.cpp
+    test_rig.cpp
+    test_sekiro_live.cpp
+    test_sekiro_steve.cpp
+    test_sekiro_model.cpp
 )
+
+target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source")
 
 target_link_libraries(mc_tests
     PRIVATE
         mc_core
         wukong_adapter
+        sekiro_adapter
         GTest::gtest_main
 )
 

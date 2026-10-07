@@ -2,19 +2,24 @@
 #include "mc/ballistics.hpp"
 #include "mc/contracts/physics_adapter.hpp"
 
-class MockPhysicsAdapter : public mc::IPhysicsAdapter {
+namespace {
+
+class MockBallisticsPhysics : public mc::IPhysicsAdapter {
 public:
-    mc::RaycastResult raycastWorld(const mc::Vec3&, const mc::Vec3&, uint64_t) override {
+    mc::RaycastResult raycastWorld(const mc::Vec3&, const mc::Vec3&, mc::EntityId) override {
         // No obstacle hit in this test
         return mc::RaycastResult{};
     }
     uint64_t createBlockCollider(const mc::GridPos&, mc::BlockId, const mc::Vec3&) override { return 0; }
     void destroyBlockCollider(uint64_t) override {}
-    void applyLinearImpulse(uint64_t, const mc::Vec3&) override {}
+    void applyLinearImpulse(mc::EntityId, const mc::Vec3&) override {}
+    void setLinearVelocity(mc::EntityId, const mc::Vec3&) override {}
 };
 
+} // namespace
+
 TEST(BallisticsEngineTest, ArrowTrajectoryDropsWithGravity) {
-    MockPhysicsAdapter physics;
+    MockBallisticsPhysics physics;
     mc::BallisticsEngine engine(physics);
 
     const mc::Vec3 origin{0.f, 0.f, 200.f};

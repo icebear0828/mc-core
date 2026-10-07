@@ -16,15 +16,17 @@ public:
     ~{{GAME_NAME}}Adapter() override;
 
     // --- IPhysicsAdapter ---
-    RaycastResult raycastWorld(const Vec3& start, const Vec3& end, uint64_t ignore_entity = 0) override;
+    RaycastResult raycastWorld(const Vec3& start, const Vec3& end, EntityId ignore_entity = EntityId::None) override;
     uint64_t createBlockCollider(const GridPos& grid_pos, BlockId block_id, const Vec3& world_pos) override;
     void destroyBlockCollider(uint64_t collider_handle) override;
-    void applyLinearImpulse(uint64_t entity_id, const Vec3& impulse) override;
+    void applyLinearImpulse(EntityId entity_id, const Vec3& impulse) override;
+    void setLinearVelocity(EntityId entity_id, const Vec3& velocity) override;
 
     // --- IRenderAdapter ---
     void setNativePlayerVisible(bool visible) override;
     bool spawnSteveParts() override;
     void destroySteveParts() override;
+    void setSteveRoot(const Vec3& feet_position, float body_yaw) override;
     void updateStevePartTransforms(const SteveAnimator::PartTransforms& transforms) override;
     void setHeldItemVisual(ItemId item, bool is_offhand = false) override;
     uint64_t spawnBlockVisual(const GridPos& grid_pos, BlockId block_id, const Vec3& world_pos) override;
@@ -33,8 +35,8 @@ public:
 
     // --- ICombatAdapter ---
     bool processHit(const HitIntent& intent) override;
-    float getMaxHealth(uint64_t entity_id) override;
-    void triggerStaggerOrRagdoll(uint64_t entity_id, const Vec3& direction, float force) override;
+    float getMaxHealth(EntityId entity_id) override;
+    void triggerStaggerOrRagdoll(EntityId entity_id, const Vec3& direction, float force) override;
 
     // --- IInputAdapter ---
     ItemId getEquippedMainHand() const override;
