@@ -455,8 +455,22 @@ void RunPendingNativeHits() {
         std::memcpy(&hp, g_native_template + sekiro::live::kDamageHp, sizeof(hp));
         posture = posture < 20 ? 20 : posture;
         sekiro::live::patchNativeHit(g_native_template, g_native_attacker, h.enemy, hp, posture, data);
-        g_original_deal_damage(reinterpret_cast<void*>(h.module), reinterpret_cast<void*>(g_native_attacker), data, 0);
+        // Diagnostic: did the game's apply stage run? (hp +0x130, posture +0x148, last damage +0x170/+0x174)
+        const auto dm = sekiro::live::findOwnedDataModule(g_memory, g_probe_image_base, g_probe_image_size, h.enemy, nullptr);
+        int32_t before[4]{}, after[4]{};
+        auto snap = [&](int32_t* out) {
+            if (!dm) return;
+            g_memory.read(dm->module + 0x130, &out[0], 4);
+            g_memory.read(dm->module + 0x148, &out[1], 4);
+            g_memory.read(dm->module + 0x170, &out[2], 4);
+            g_memory.read(dm->module + 0x174, &out[3], 4);
+        };
+        snap(before);
+        g_original_deal_damage(reinterpret_cast<void*>(h.module), reinterpret_cast<void*>(g_native_attacker), data, 1);
+        snap(after);
         static int logged = 0;
+        if (logged < 20) Log("Native hit state hp/posture/lastdmg/lastposture: %d/%d/%d/%d -> %d/%d/%d/%d (hp=%u posture=%u)", before[0], before[1], before[2],
+                             before[3], after[0], after[1], after[2], after[3], hp, posture);
         if (logged < 20) Log("Native hit #%d: replayed DealDamage on enemy %llx (module %llx, posture %u)", ++logged,
                              static_cast<unsigned long long>(h.enemy), static_cast<unsigned long long>(h.module), posture);
     }
