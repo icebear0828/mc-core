@@ -47,6 +47,7 @@ OMSetRenderTargets_t g_original = nullptr;
 void* g_target = nullptr;
 std::array<Candidate, kMaxCandidates> g_candidates;
 std::atomic<size_t> g_count{0};
+std::atomic<uint64_t> g_calls_om{0}, g_calls_om_uav{0}, g_calls_om_uav_keep{0}, g_calls_om_dsv{0}, g_calls_clear{0};
 
 void record(ID3D11DeviceContext* self, UINT num, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv) {
     if (!dsv) return;
@@ -80,6 +81,8 @@ void record(ID3D11DeviceContext* self, UINT num, ID3D11RenderTargetView* const* 
 
 void STDMETHODCALLTYPE DetourOMSetRenderTargets(ID3D11DeviceContext* self, UINT num, ID3D11RenderTargetView* const* rtvs,
                                                 ID3D11DepthStencilView* dsv) {
+    ++g_calls_om;
+    if (dsv) ++g_calls_om_dsv;
     record(self, num, rtvs, dsv);
     g_original(self, num, rtvs, dsv);
 }
@@ -87,12 +90,15 @@ void STDMETHODCALLTYPE DetourOMSetRenderTargets(ID3D11DeviceContext* self, UINT 
 void STDMETHODCALLTYPE DetourOMSetRenderTargetsAndUAVs(ID3D11DeviceContext* self, UINT num, ID3D11RenderTargetView* const* rtvs,
                                                        ID3D11DepthStencilView* dsv, UINT uav_start, UINT num_uavs,
                                                        ID3D11UnorderedAccessView* const* uavs, const UINT* counts) {
+    ++g_calls_om_uav;
+    if (num == D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) ++g_calls_om_uav_keep;
     if (num != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) record(self, num, rtvs, dsv);
     g_original_uav(self, num, rtvs, dsv, uav_start, num_uavs, uavs, counts);
 }
 
 void STDMETHODCALLTYPE DetourClearDSV(ID3D11DeviceContext* self, ID3D11DepthStencilView* dsv, UINT flags, FLOAT depth,
                                       UINT8 stencil) {
+    ++g_calls_clear;
     if (g_trace_budget.load() > 0 && dsv) {
         const size_t n = g_count.load();
         for (size_t i = 0; i < n; ++i) {
@@ -207,7 +213,10 @@ void describeDepth(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Tex
 
 void DepthCapture::dump(ID3D11Device* device, ID3D11DeviceContext* context, void (*log)(const char*, ...)) {
     const size_t n = g_count.load();
-    log("depth dump: %zu candidate(s)", n);
+    log("depth dump: %zu candidate(s); calls OM=%llu (with dsv %llu) OM+UAV=%llu (keep %llu) ClearDSV=%llu", n,
+        static_cast<unsigned long long>(g_calls_om.load()), static_cast<unsigned long long>(g_calls_om_dsv.load()),
+        static_cast<unsigned long long>(g_calls_om_uav.load()), static_cast<unsigned long long>(g_calls_om_uav_keep.load()),
+        static_cast<unsigned long long>(g_calls_clear.load()));
     for (size_t i = 0; i < n; ++i) {
         const Candidate& c = g_candidates[i];
         const D3D11_TEXTURE2D_DESC& d = c.desc;
