@@ -138,15 +138,15 @@ void DepthCapture::dump(ID3D11Device* device, ID3D11DeviceContext* context, void
                     } else {
                         v = (row[x] & 0xFFFFFF) / 16777215.0;
                     }
-                    lo = std::min(lo, v);
-                    hi = std::max(hi, v);
+                    lo = (std::min)(lo, v);
+                    hi = (std::max)(hi, v);
                     if (v == 0.0) ++zero;
                     if (v == 1.0) ++one;
                     ++total;
                 }
             }
-            log("      depth min=%.6f max=%.6f zeros=%.1f%% ones=%.1f%%", lo, hi, 100.0 * zero / std::max<size_t>(total, 1),
-                100.0 * one / std::max<size_t>(total, 1));
+            log("      depth min=%.6f max=%.6f zeros=%.1f%% ones=%.1f%%", lo, hi, 100.0 * zero / (std::max<size_t>)(total, 1),
+                100.0 * one / (std::max<size_t>)(total, 1));
             // Centre column, to compare against what is visible there.
             std::string line;
             char buf[48];
