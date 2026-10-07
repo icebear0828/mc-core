@@ -30,6 +30,10 @@ inline constexpr uintptr_t kDrawMask = 0x70;               // int, 4 while drawn
 inline constexpr uint32_t kHiddenMask = 0;
 inline constexpr uint32_t kMaxPlausibleMask = 0xFF;        // a visible mask is a small non-zero number
 inline constexpr std::string_view kAsmDrawEntityClass = "SprjAsmModelDrawEntity";
+// ChrModel (RTTI vtable RVA) carries two 64-bit draw masks, all ones while drawn (user-verified).
+inline constexpr uint32_t kChrModelVtableRva = 0x29F7CE8;
+inline constexpr uintptr_t kChrModelDrawMask1 = 0x90;
+inline constexpr uintptr_t kChrModelDrawMask2 = 0x98;
 } // namespace layout
 
 // MSVC RTTI class name of a polymorphic object, e.g. "SprjAsmModelDrawEntity@NS_SPRJ"; nullopt when the
@@ -62,6 +66,11 @@ public:
 
 private:
     std::optional<uintptr_t> resolveEntity() const;
+    std::optional<uintptr_t> resolveChrModel() const; // class-checked by vtable
+    HideStatus updateDrawEntity(bool want_hidden);    // NotInWorld = this path is unavailable
+    HideStatus updateChrModelMasks(bool want_hidden); // NotInWorld = this path is unavailable
+    void restoreChrModelMasks();
+    void restoreDrawEntity();
 
     const IMemoryReader& reader_;
     IMemoryWriter& writer_;
@@ -72,6 +81,9 @@ private:
     uintptr_t entity_{0};            // entity we hid (the remembered value belongs to it)
     uint32_t original_mask_{0};
     bool have_original_{false};
+    uintptr_t masks_model_{0};       // the ChrModel whose masks we zeroed
+    uint64_t masks_original_[2]{0, 0};
+    bool have_masks_original_{false};
 };
 
 } // namespace sekiro::live
