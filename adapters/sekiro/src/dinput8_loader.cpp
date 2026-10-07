@@ -843,6 +843,7 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
 
     if (g_depth_dump_requested.exchange(false) && g_d3d_device && g_d3d_context) {
         g_depth_capture.dump(g_d3d_device, g_d3d_context, Log);
+        g_depth_capture.armTrace(g_d3d_device, Log);
     }
     if (g_screenshot_requested.exchange(false) && g_d3d_device && g_d3d_context) {
         SaveFramePng(pSwapChain, L"mc_screenshot.png");
