@@ -305,13 +305,13 @@ RaycastResult SekiroAdapter::raycastWorld(const Vec3& start, const Vec3& end, En
     for (const auto& [id, chr] : registered_entities_) {
         if (!chr || chr->bIsDead || id == ignore_entity || id == EntityId::LocalPlayer) continue;
         const Vec3 feet = toMcPoint(chr->Position);
-        if (const auto hit = rayVsCapsule(start, norm_dir, closest_t, feet)) {
-            if (hit->t < closest_t) {
-                closest_t = hit->t;
+        if (const auto capsule = rayVsCapsule(start, norm_dir, closest_t, feet)) {
+            if (capsule->t < closest_t) {
+                closest_t = capsule->t;
                 best_result = RaycastResult{};
                 best_result.has_hit = true;
-                best_result.point = start + norm_dir * hit->t;
-                best_result.normal = hit->normal;
+                best_result.point = start + norm_dir * capsule->t;
+                best_result.normal = capsule->normal;
                 best_result.hit_entity = id;
                 best_result.is_block = false;
             }
