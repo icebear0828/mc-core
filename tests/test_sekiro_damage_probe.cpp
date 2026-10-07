@@ -48,7 +48,7 @@ TEST(SekiroDamageProbeTest, OnlyHooksWhenThePrologueIsTheOneWeAnalysed) {
 }
 
 TEST(SekiroDamageProbeTest, DescribesTheKnownFieldsAndEveryNonZeroWord) {
-    std::vector<uint8_t> data(0x200, 0);
+    std::vector<uint8_t> data(0x300, 0);
     const float hp = 123.0f;
     const int32_t posture = 46, stagger = 2;
     std::memcpy(&data[0x24], &hp, 4);
@@ -66,7 +66,7 @@ TEST(SekiroDamageProbeTest, DescribesTheKnownFieldsAndEveryNonZeroWord) {
 }
 
 TEST(SekiroDamageProbeTest, MarksPointerLikeWordsSoDanglingReferencesCanBeSpotted) {
-    std::vector<uint8_t> data(0x200, 0);
+    std::vector<uint8_t> data(0x300, 0);
     const uint64_t heap = 0x7ff4f6e05490ull, image = kBase + 0x1234, small = 7;
     std::memcpy(&data[0x40], &heap, 8);
     std::memcpy(&data[0x48], &image, 8);
@@ -81,7 +81,7 @@ TEST(SekiroDamageProbeTest, MarksPointerLikeWordsSoDanglingReferencesCanBeSpotte
 }
 
 TEST(SekiroDamageProbeTest, AnUnreadableHeapPointerIsFlaggedAsDangling) {
-    std::vector<uint8_t> data(0x200, 0);
+    std::vector<uint8_t> data(0x300, 0);
     const uint64_t heap = 0x7ff4deadbeefull;
     std::memcpy(&data[0x80], &heap, 8);
     FakeMemory mem;
