@@ -86,6 +86,7 @@ if(WIN32)
     set(SEKIRO_PLATFORM_SRCS
         src/dinput8_loader.cpp
         src/steve_renderer.cpp
+        src/depth_capture.cpp
         dinput8.def
     )
 endif()

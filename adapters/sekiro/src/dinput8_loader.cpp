@@ -32,6 +32,7 @@
 #include "sekiro_steve.hpp"
 #include "mc/hud_layout.hpp"
 #include "steve_renderer.hpp"
+#include "depth_capture.hpp"
 #include "mc/hud.hpp"
 #include "mc/session.hpp"
 
@@ -332,6 +333,8 @@ sekiro::live::LiveMirror g_live_mirror;
 bool g_in_world = false;
 sekiro::live::LiveSample g_last_sample{};
 std::unique_ptr<sekiro::render::SteveRenderer> g_steve_renderer;
+sekiro::render::DepthCapture g_depth_capture;
+std::atomic<bool> g_depth_dump_requested{false};
 bool g_steve_renderer_tried = false;
 bool g_logged_fov = false;
 sekiro::live::SampleStatus g_last_sample_status = sekiro::live::SampleStatus::NotBound;
@@ -453,6 +456,7 @@ void InitImGui(IDXGISwapChain* pSwapChain) {
     }
 
     g_d3d_device->GetImmediateContext(&g_d3d_context);
+    Log(g_depth_capture.install(g_d3d_context) ? "Depth capture hook installed" : "Depth capture hook FAILED");
 
     // Hook WndProc for input
     if (g_game_hwnd) {
@@ -604,6 +608,7 @@ HRESULT WINAPI DetourResizeBuffers(
         g_hud_srv->Release();
         g_hud_srv = nullptr;
     }
+    g_depth_capture.reset();
     if (g_d3d_context) {
         g_d3d_context->OMSetRenderTargets(0, nullptr, nullptr);
     }
@@ -689,6 +694,10 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
     if ((++poll_counter % 6u) == 0u && GetFileAttributesW(L"mc_cmd_screenshot.txt") != INVALID_FILE_ATTRIBUTES) {
         DeleteFileW(L"mc_cmd_screenshot.txt");
         g_screenshot_requested.store(true);
+    }
+    if ((poll_counter % 6u) == 3u && GetFileAttributesW(L"mc_cmd_depth.txt") != INVALID_FILE_ATTRIBUTES) {
+        DeleteFileW(L"mc_cmd_depth.txt");
+        g_depth_dump_requested.store(true);
     }
     if (GetAsyncKeyState(VK_F8) & 1) {
         g_show_debug_panel = !g_show_debug_panel;
@@ -832,6 +841,9 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
         }
     }
 
+    if (g_depth_dump_requested.exchange(false) && g_d3d_device && g_d3d_context) {
+        g_depth_capture.dump(g_d3d_device, g_d3d_context, Log);
+    }
     if (g_screenshot_requested.exchange(false) && g_d3d_device && g_d3d_context) {
         SaveFramePng(pSwapChain, L"mc_screenshot.png");
     }
