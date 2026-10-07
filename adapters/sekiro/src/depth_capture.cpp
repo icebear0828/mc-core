@@ -284,6 +284,43 @@ void DepthCapture::dump(ID3D11Device* device, ID3D11DeviceContext* context, void
     }
 }
 
+void DepthCapture::probe(ID3D11Device* device, ID3D11DeviceContext* context, const Probe* probes, size_t count,
+                         void (*log)(const char*, ...)) {
+    const size_t n = g_count.load();
+    size_t best = n;
+    for (size_t i = 0; i < n; ++i) {
+        if (g_candidates[i].desc.Width >= 1920 && (best == n || g_candidates[i].binds > g_candidates[best].binds)) best = i;
+    }
+    if (best == n) {
+        log("depth probe: no full-size candidate");
+        return;
+    }
+    const Candidate& c = g_candidates[best];
+    D3D11_TEXTURE2D_DESC sd = c.desc;
+    sd.Usage = D3D11_USAGE_STAGING;
+    sd.BindFlags = 0;
+    sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    sd.MiscFlags = 0;
+    ComPtr<ID3D11Texture2D> staging;
+    D3D11_MAPPED_SUBRESOURCE m{};
+    if (sd.SampleDesc.Count != 1 || FAILED(device->CreateTexture2D(&sd, nullptr, staging.GetAddressOf()))) return;
+    context->CopyResource(staging.Get(), c.texture.Get());
+    if (FAILED(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &m))) return;
+    const size_t texel = (c.desc.Format == DXGI_FORMAT_R32G8X24_TYPELESS || c.desc.Format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT) ? 8 : 4;
+    log("depth probe on candidate %zu (%ux%u fmt=%u):", best, c.desc.Width, c.desc.Height, static_cast<unsigned>(c.desc.Format));
+    for (size_t i = 0; i < count; ++i) {
+        const Probe& pr = probes[i];
+        if (pr.x >= c.desc.Width || pr.y >= c.desc.Height) {
+            log("  pixel (%u,%u) z=%.3f m: off screen", pr.x, pr.y, pr.view_z);
+            continue;
+        }
+        float f;
+        std::memcpy(&f, static_cast<const uint8_t*>(m.pData) + pr.y * m.RowPitch + pr.x * texel, 4);
+        log("  pixel (%u,%u) z=%.4f m depth=%.6f depth*z=%.6f", pr.x, pr.y, pr.view_z, f, f * pr.view_z);
+    }
+    context->Unmap(staging.Get(), 0);
+}
+
 void DepthCapture::armTrace(ID3D11Device* device, void (*log)(const char*, ...)) {
     g_trace_device = device;
     g_trace_log = log;

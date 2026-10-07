@@ -843,6 +843,28 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
 
     if (g_depth_dump_requested.exchange(false) && g_d3d_device && g_d3d_context) {
         g_depth_capture.dump(g_d3d_device, g_d3d_context, Log);
+        // Calibration: project points on the player's vertical axis and read the game's depth there. With a
+        // reverse-Z projection depth*z is constant when the far plane is at infinity.
+        if (g_in_world) {
+            DXGI_SWAP_CHAIN_DESC scd{};
+            pSwapChain->GetDesc(&scd);
+            const float w = static_cast<float>(scd.BufferDesc.Width), h = static_cast<float>(scd.BufferDesc.Height);
+            const float fov = g_last_sample.cam_fov_y > 0.0f ? g_last_sample.cam_fov_y : 1.0f;
+            const auto vp = sekiro::render::viewProjection(g_last_sample, fov, w / h);
+            const auto view = sekiro::render::viewFromCamera(g_last_sample);
+            std::vector<sekiro::render::DepthCapture::Probe> probes;
+            for (int i = 0; i < 12; ++i) {
+                sekiro::native::FVector3 p = g_last_sample.player_pos;
+                p.y += 0.15f + 0.14f * static_cast<float>(i);
+                const auto clip = sekiro::render::transform(vp, p);
+                const float vz = sekiro::render::transformPoint(view, p).z;
+                if (clip[3] <= 0.0f) continue;
+                const float nx = clip[0] / clip[3], ny = clip[1] / clip[3];
+                probes.push_back({static_cast<unsigned>(std::max(0.0f, (nx * 0.5f + 0.5f) * w)),
+                                  static_cast<unsigned>(std::max(0.0f, (1.0f - (ny * 0.5f + 0.5f)) * h)), vz});
+            }
+            g_depth_capture.probe(g_d3d_device, g_d3d_context, probes.data(), probes.size(), Log);
+        }
         g_depth_capture.armTrace(g_d3d_device, Log);
     }
     if (g_screenshot_requested.exchange(false) && g_d3d_device && g_d3d_context) {
