@@ -18,6 +18,7 @@
 #include <vector>
 #include <algorithm>
 #include <mutex>
+#include <set>
 #include <atomic>
 #include <cstdio>
 #include <cstdarg>
@@ -529,6 +530,27 @@ void __fastcall DetourDealDamage(void* target, void* attacker, uint8_t* data, ui
         *reinterpret_cast<uint32_t*>(copy + 0x24), *reinterpret_cast<uint32_t*>(copy + 0x28), *reinterpret_cast<uint32_t*>(copy + 0x54));
 }
 
+// Read-only probe of the game's ApplySpEffect(ChrIns*, int id) at RVA 0x9F54A0 (found through the sekiro-coop
+// signature 44 89 70 9C 45 33 C0 4C 89 70 A0 at +107, then checked by disassembly). Logs each distinct
+// (target class, id) pair once, so the log shows which effects the game applies when a hit lands.
+constexpr uint32_t kApplySpEffectRva = 0x9F54A0;
+constexpr uint8_t kApplySpEffectPrologue[] = {0x48, 0x8b, 0xc4, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89, 0x70, 0x18, 0x48, 0x89, 0x78, 0x20};
+using ApplySpEffect_t = bool(__fastcall*)(void*, int32_t);
+ApplySpEffect_t g_original_apply_sp_effect = nullptr;
+
+bool __fastcall DetourApplySpEffect(void* target, int32_t id) {
+    static std::mutex seen_mutex;
+    static std::set<std::pair<std::string, int32_t>> seen;
+    const std::string cls = ClassOf(target);
+    if (cls.rfind("PlayerIns", 0) == 0 || cls.rfind("EnemyIns", 0) == 0) {
+        std::lock_guard<std::mutex> lock(seen_mutex);
+        if (seen.size() < 300 && seen.insert({cls.substr(0, cls.find('@')), id}).second) {
+            Log("ApplySpEffect probe: target=%s id=%d thread=%lu", cls.substr(0, cls.find('@')).c_str(), id, GetCurrentThreadId());
+        }
+    }
+    return g_original_apply_sp_effect(target, id);
+}
+
 void InstallDamageProbe() {
     MODULEINFO mi{};
     if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleA(nullptr), &mi, sizeof(mi))) return;
@@ -550,6 +572,16 @@ void InstallDamageProbe() {
             fclose(f);
             g_native_hit_enabled.store(true);
             Log("Native hit reactions ENABLED (mc_native_hit.txt present)");
+        }
+    }
+    {
+        void* sp = reinterpret_cast<void*>(g_probe_image_base + kApplySpEffectRva);
+        if (sekiro::live::prologueMatches(g_memory, g_probe_image_base, kApplySpEffectRva, kApplySpEffectPrologue) &&
+            MH_CreateHook(sp, reinterpret_cast<void*>(&DetourApplySpEffect), reinterpret_cast<void**>(&g_original_apply_sp_effect)) == MH_OK &&
+            MH_EnableHook(sp) == MH_OK) {
+            Log("ApplySpEffect probe: hooked %p (read-only)", sp);
+        } else {
+            Log("ApplySpEffect probe: not hooked (prologue mismatch or hook failure)");
         }
     }
     Log("Damage probe: hooked DealDamage at %p (read-only, every call is passed through)", target);
