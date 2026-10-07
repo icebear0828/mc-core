@@ -34,6 +34,8 @@ public:
     void setSceneDepth(ID3D11Texture2D* texture);
     // Where on screen (uv, 0..1) Steve stands: the frame around it lights him.
     void setAmbientProbe(float u, float v) { probe_u_ = u; probe_v_ = v; }
+    // 0..1: how much the figure is flashed red (the character just took damage).
+    void setHurtTint(float amount) { hurt_tint_ = amount < 0.f ? 0.f : (amount > 1.f ? 1.f : amount); }
     // An item in the right hand: its mesh (built in the rest pose of the right arm, see mc/item_model.hpp) and
     // the sprite sheet its UVs address. It is drawn with the right arm's matrix, so it follows the arm. Pass an
     // empty mesh to take it away. The sheet is kept alive by the renderer.
@@ -71,6 +73,7 @@ private:
     UINT frame_w_{0}, frame_h_{0};
     DXGI_FORMAT frame_fmt_{DXGI_FORMAT_UNKNOWN};
     float probe_u_{0.5f}, probe_v_{0.5f};
+    float hurt_tint_{0.f};
     Microsoft::WRL::ComPtr<ID3D11Texture2D> scene_depth_tex_;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> scene_depth_srv_;
     Microsoft::WRL::ComPtr<ID3D11RasterizerState> raster_;

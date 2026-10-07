@@ -984,3 +984,87 @@ TEST_F(SessionTest, HostsWithoutAnEyePositionKeepUsingTheCamera) {
     EXPECT_NEAR(physics.last_start.x, 10.f, 1e-3f);
     EXPECT_NEAR(physics.last_start.y, 20.f, 1e-3f);
 }
+
+
+// ---------------------------------------------------------------------------------------------
+// Feedback: a hit marker when an attack connects, a hurt flash when the player's real health drops
+// ---------------------------------------------------------------------------------------------
+TEST_F(SessionTest, AConnectingAttackShowsAHitMarkerThatFadesAndAMissDoesNot) {
+    session.setActive(true);
+    EXPECT_FLOAT_EQ(session.feedback().hit_marker, 0.f);
+
+    mc::InputSnapshot click;
+    click.attack_pressed = true;
+    session.tick(0.016f, click); // nothing under the crosshair
+    EXPECT_FLOAT_EQ(session.feedback().hit_marker, 0.f);
+
+    physics.next_hit.has_hit = true;
+    physics.next_hit.hit_entity = mc::EntityId{5};
+    physics.next_hit.point = {300.f, 0.f, 100.f};
+    session.tick(1.0f, {}); // let the weapon recharge
+    session.tick(0.016f, click);
+    EXPECT_GT(session.feedback().hit_marker, 0.9f);
+
+    session.tick(0.1f, {});
+    EXPECT_GT(session.feedback().hit_marker, 0.f);
+    EXPECT_LT(session.feedback().hit_marker, 0.9f);
+    session.tick(0.5f, {});
+    EXPECT_FLOAT_EQ(session.feedback().hit_marker, 0.f);
+}
+
+TEST_F(SessionGameplayTest, LosingRealHealthFlashesTheScreenAndRecoveryDoesNot) {
+    gameplay.vitals_ok = true;
+    gameplay.vitals = {1000.f, 1120.f};
+    with_gameplay.setActive(true);
+    with_gameplay.tick(0.016f, {});
+    EXPECT_FLOAT_EQ(with_gameplay.feedback().hurt_flash, 0.f) << "the first reading is a baseline, not damage";
+
+    gameplay.vitals = {1000.f, 1120.f};
+    with_gameplay.tick(0.016f, {});
+    EXPECT_FLOAT_EQ(with_gameplay.feedback().hurt_flash, 0.f);
+
+    gameplay.vitals = {814.f, 1120.f}; // took 186
+    with_gameplay.tick(0.016f, {});
+    EXPECT_GT(with_gameplay.feedback().hurt_flash, 0.9f);
+    EXPECT_GT(with_gameplay.feedback().hurt_amount, 0.15f) << "186 of 1120 is about a sixth of full health";
+
+    with_gameplay.tick(0.2f, {});
+    EXPECT_GT(with_gameplay.feedback().hurt_flash, 0.f);
+    EXPECT_LT(with_gameplay.feedback().hurt_flash, 0.9f);
+    with_gameplay.tick(1.0f, {});
+    EXPECT_FLOAT_EQ(with_gameplay.feedback().hurt_flash, 0.f);
+
+    gameplay.vitals = {1000.f, 1120.f}; // healed
+    with_gameplay.tick(0.016f, {});
+    EXPECT_FLOAT_EQ(with_gameplay.feedback().hurt_flash, 0.f);
+}
+
+TEST_F(SessionGameplayTest, FeedbackIsClearedWhenTheSessionIsSwitchedOff) {
+    gameplay.vitals_ok = true;
+    gameplay.vitals = {1000.f, 1120.f};
+    with_gameplay.setActive(true);
+    with_gameplay.tick(0.016f, {});
+    gameplay.vitals = {500.f, 1120.f};
+    with_gameplay.tick(0.016f, {});
+    ASSERT_GT(with_gameplay.feedback().hurt_flash, 0.f);
+    with_gameplay.setActive(false);
+    EXPECT_FLOAT_EQ(with_gameplay.feedback().hurt_flash, 0.f);
+    with_gameplay.setActive(true);
+    gameplay.vitals = {400.f, 1120.f}; // a drop that happened while we were off is not new damage
+    with_gameplay.tick(0.016f, {});
+    EXPECT_FLOAT_EQ(with_gameplay.feedback().hurt_flash, 0.f);
+}
+
+TEST_F(SessionGameplayTest, UnreadableVitalsNeverFlashAndKeepTheBaseline) {
+    gameplay.vitals_ok = true;
+    gameplay.vitals = {1000.f, 1120.f};
+    with_gameplay.setActive(true);
+    with_gameplay.tick(0.016f, {});
+    gameplay.vitals_ok = false; // loading screen
+    with_gameplay.tick(0.016f, {});
+    EXPECT_FLOAT_EQ(with_gameplay.feedback().hurt_flash, 0.f);
+    gameplay.vitals_ok = true;
+    gameplay.vitals = {1000.f, 1120.f}; // unchanged after the gap
+    with_gameplay.tick(0.016f, {});
+    EXPECT_FLOAT_EQ(with_gameplay.feedback().hurt_flash, 0.f);
+}

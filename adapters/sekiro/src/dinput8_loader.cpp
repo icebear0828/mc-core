@@ -581,6 +581,36 @@ void ShadowText(ImDrawList* draw, float size, ImVec2 pos, ImU32 color, float sha
     draw->AddText(ImGui::GetFont(), size, pos, color, text);
 }
 
+// Hurt flash (red screen edges, stronger for bigger hits) and the hit marker around the crosshair.
+void DrawFeedbackOverlay(ImDrawList* draw, const mc::HudLayout& layout, float screen_w, float screen_h, float gui_scale) {
+    const mc::Session* session = SekiroMod_GetSession();
+    if (!session) return;
+    const mc::Session::Feedback& fb = session->feedback();
+
+    if (fb.hurt_flash > 0.f) {
+        const float strength = std::min(1.f, 0.35f + fb.hurt_amount * 4.f); // a scratch is faint, a big hit is not
+        const float a = fb.hurt_flash * strength * 0.75f;
+        const ImU32 edge = IM_COL32(200, 0, 0, static_cast<int>(a * 255.f));
+        const ImU32 clear = IM_COL32(200, 0, 0, 0);
+        const float t = std::min(screen_w, screen_h) * 0.22f; // thickness of the vignette
+        draw->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(screen_w, t), edge, edge, clear, clear);
+        draw->AddRectFilledMultiColor(ImVec2(0, screen_h - t), ImVec2(screen_w, screen_h), clear, clear, edge, edge);
+        draw->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(t, screen_h), edge, clear, clear, edge);
+        draw->AddRectFilledMultiColor(ImVec2(screen_w - t, 0), ImVec2(screen_w, screen_h), clear, edge, edge, clear);
+    }
+    if (fb.hit_marker > 0.f) {
+        const mc::HudRect c = layout.crosshair();
+        const float cx = c.x + c.w * 0.5f, cy = c.y + c.h * 0.5f;
+        const float inner = 4.f * gui_scale, outer = 9.f * gui_scale;
+        const ImU32 col = IM_COL32(255, 255, 255, static_cast<int>(fb.hit_marker * 255.f));
+        for (const float sx : {-1.f, 1.f}) {
+            for (const float sy : {-1.f, 1.f}) {
+                draw->AddLine(ImVec2(cx + sx * inner, cy + sy * inner), ImVec2(cx + sx * outer, cy + sy * outer), col, std::max(1.f, gui_scale * 0.75f));
+            }
+        }
+    }
+}
+
 void RenderMinecraftHUD(float screen_w, float screen_h, bool is_steve_mode, float dt) {
     if (!g_hud_srv && g_d3d_device) {
         g_hud_srv = CreateHudTextureSRV(g_d3d_device);
@@ -606,6 +636,7 @@ void RenderMinecraftHUD(float screen_w, float screen_h, bool is_steve_mode, floa
     draw->AddCallback(UsePointSampler, nullptr);
 
     Blit(draw, sekiro::hud::kUV_CROSSHAIR, layout.crosshair());
+    DrawFeedbackOverlay(draw, layout, screen_w, screen_h, s);
     Blit(draw, sekiro::hud::kUV_HOTBAR, layout.hotbar());
 
     const int active = hud->getSelectedSlot();
@@ -782,6 +813,7 @@ void DrawSteveRig(ID3D11RenderTargetView* target, float screen_w, float screen_h
             g_steve_renderer->setAmbientProbe(clip[0] / clip[3] * 0.5f + 0.5f, 1.0f - (clip[1] / clip[3] * 0.5f + 0.5f));
         }
     }
+    if (const mc::Session* session = SekiroMod_GetSession()) g_steve_renderer->setHurtTint(session->feedback().hurt_flash);
     SyncHeldItem();
     g_steve_renderer->setSceneDepth(g_depth_capture.sceneDepth(static_cast<unsigned>(screen_w), static_cast<unsigned>(screen_h)));
     g_steve_renderer->draw(g_d3d_context, target, static_cast<UINT>(screen_w), static_cast<UINT>(screen_h), view_proj, world);

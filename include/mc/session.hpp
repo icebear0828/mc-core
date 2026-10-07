@@ -52,6 +52,8 @@ public:
     static constexpr float kReachCm = 450.f;
     static constexpr float kSwingDurationSec = 0.3f;
     static constexpr float kAttackRechargeSec = 0.625f; // diamond sword, 1.6 attacks/s
+    static constexpr float kHitMarkerSec = 0.25f;
+    static constexpr float kHurtFlashSec = 0.6f;
     static constexpr float kMaxHeadYawRad = 0.8726646f; // 50 degrees: further and the body turns too
     static constexpr float kVelocitySmoothingSec = 0.12f; // host positions advance in steps; limbs must not follow the steps
 
@@ -69,6 +71,14 @@ public:
 
     // No-op while inactive.
     void tick(float dt, const InputSnapshot& in);
+
+    // Visual feedback state for the host's overlay, all in 0..1 and fading by itself.
+    struct Feedback {
+        float hit_marker{0.f};  // 1 right after one of our attacks connected
+        float hurt_flash{0.f};  // 1 right after the player lost real health
+        float hurt_amount{0.f}; // that loss as a fraction of maximum health (the flash is stronger for bigger hits)
+    };
+    [[nodiscard]] const Feedback& feedback() const { return feedback_; }
 
     // HostFeature bits the adapter has not implemented (all of them when there is no gameplay port).
     [[nodiscard]] uint32_t missingHostFeatures() const;
@@ -95,6 +105,9 @@ private:
     std::unique_ptr<HudEngine> hud_;
 
     SteveAnimInput last_anim_input_{};
+    Feedback feedback_{};
+    float last_hp_{0.f};
+    bool have_last_hp_{false};
     float body_yaw_{0.f};
     float head_side_{1.f};       // which side the head is parked on while the camera is behind the body
     Vec3 smoothed_vel_{};        // animation-only low-pass of the host velocity (cm/s)

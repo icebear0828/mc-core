@@ -17,7 +17,7 @@ cbuffer Frame : register(b0) { row_major float4x4 view_proj; };
 cbuffer Part  : register(b1) { row_major float4x4 world; };
 cbuffer Scene : register(b0) {
     float4 scene; // x depth*z constant, y relative bias, z metre bias, w occlusion enabled
-    float4 probe; // xy: uv of the scene around Steve, z: ambient matching enabled
+    float4 probe; // xy: uv of the scene around Steve, z: ambient matching enabled, w: hurt flash 0..1
 };
 Texture2D skin : register(t0);
 Texture2D<float2> scene_depth : register(t1);
@@ -71,6 +71,7 @@ float4 PSMain(VSOut i) : SV_Target {
         rgb = lerp(float3(g, g, g), rgb, 0.82);                // the game is desaturated; pure MC colours are not
         rgb = rgb * face * exposure * tint;
     }
+    rgb = lerp(rgb, float3(1.0, 0.15, 0.15), probe.w * 0.6);   // the red flash when the character is hurt
     return float4(rgb, 1.0);
 }
 )hlsl";
@@ -444,7 +445,7 @@ void RigRenderer::draw(ID3D11DeviceContext* context, ID3D11RenderTargetView* tar
         if (SUCCEEDED(context->Map(scene_cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
             const bool occlude = scene_depth_srv_ && depth_conv_.reverse_z && depth_conv_.depth_times_distance > 0.0f;
             const float params[8] = {depth_conv_.depth_times_distance, depth_conv_.relative_bias, depth_conv_.absolute_bias,
-                                     occlude ? 1.0f : 0.0f, probe_u_, probe_v_, ambient ? 1.0f : 0.0f, 0.0f};
+                                     occlude ? 1.0f : 0.0f, probe_u_, probe_v_, ambient ? 1.0f : 0.0f, hurt_tint_};
             std::memcpy(mapped.pData, params, sizeof(params));
             context->Unmap(scene_cb_.Get(), 0);
         }
