@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -62,7 +63,8 @@ inline constexpr uintptr_t kEnemyCharId = 0x68;     // uint32, e.g. 10010000
 inline constexpr uintptr_t kEnemyTeam = 0x70;       // uint32: 0/1 player side, 5 hostile, 9 neutral
 inline constexpr uint32_t kTeamHostile = 5;
 inline constexpr uintptr_t kEnemyDataModuleInContainer = 0x1f8; // enemies: +0x1f8 (the player's is +0x1e8)
-inline constexpr uintptr_t kEnemyMaxHp = 0x160;                 // enemies: max hp at +0x160 (the player's is +0x138)
+inline constexpr uintptr_t kEnemyMaxHp = 0x160;                 // max hp at +0x160 (read 1120 on the player and 2101 on an enemy)
+inline constexpr uintptr_t kModuleScanLimit = 0x400;            // how far into a module container to look for the data module
 // Fall module: [container+0x240] is SprjPlayerFallModule; int32 at +0x40 is -1 on the ground and >= 0 airborne.
 inline constexpr uintptr_t kFallModuleInContainer = 0x240;
 inline constexpr uint32_t kFallModuleVtableRva = 0x2A821F0;
@@ -97,6 +99,16 @@ public:
 // RVAs of every match, or nullopt when part of the image could not be read (e.g. not mapped yet).
 std::optional<std::vector<uint32_t>> findPattern(const IMemoryReader& reader, uintptr_t base, size_t size,
                                                  const Pattern& pattern, size_t chunk = 1u << 20);
+
+// A character's SprjChrDataModule inside its module container. The player's hangs at +0x1e8 and some enemies'
+// at +0x1f8, but most soldiers have something else at those offsets, so the container is searched for a
+// pointer to an object with the data module's vtable; `hint_offset` (a previous result) is tried first.
+struct DataModuleRef {
+    uintptr_t module{0};
+    uintptr_t offset{0}; // within the container
+};
+std::optional<DataModuleRef> findChrDataModule(const IMemoryReader& reader, uintptr_t image_base, uintptr_t container,
+                                               uintptr_t hint_offset = 0);
 
 struct LiveSample {
     native::FVector3 player_pos;
@@ -160,6 +172,8 @@ private:
     bool readPointer(uintptr_t address, uintptr_t& out) const;
     bool readCamera(uintptr_t object, LiveSample& out) const;
     void readFacing(uintptr_t player, LiveSample& out) const;
+    // Where the data module was last found per enemy address (a search hint; always re-validated by vtable).
+    mutable std::map<uintptr_t, uintptr_t> module_offset_hints_;
     void readVitals(uintptr_t player, LiveSample& out) const;
     void readGrounded(uintptr_t player, LiveSample& out) const;
 

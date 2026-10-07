@@ -178,6 +178,8 @@ struct World {
         bool right_class{true};
         bool module_ok{true};
         bool active{true}; // live position (+0x1050) non-zero; inactive ones only have a spawn position (+0xE0)
+        uintptr_t module_offset{0x1f8}; // where in the module container the data module hangs; differs between characters
+        bool decoy_at_1f8{false};       // a pointer to some other object sits at +0x1f8 (seen on real soldiers)
     };
     void ensureBlock(int32_t slots = 144) {
         if (!mem.regions.count(kBlock)) mem.region(kBlock, 0x200);
@@ -205,7 +207,8 @@ struct World {
             mem.put(enemy + 0x1060, live);
         }
         mem.put<uint64_t>(enemy + 0x10b8, container);
-        mem.put<uint64_t>(container + 0x1f8, module);
+        if (e.decoy_at_1f8) mem.put<uint64_t>(container + 0x1f8, enemy); // points back at an EnemyIns, not a data module
+        mem.put<uint64_t>(container + e.module_offset, module);
         mem.put<uint64_t>(module, kBase + (e.module_ok ? kDataModuleVtableRva : 0x999));
         mem.put<int32_t>(module + 0x130, e.hp);
         mem.put<int32_t>(module + 0x160, e.max_hp);
@@ -834,4 +837,62 @@ TEST(SekiroLiveMirrorTest, CarriesTheGroundedFlagOnlyWhileValid) {
     s.grounded_valid = false;
     mirror.update(s, 0.016f, player, camera);
     EXPECT_FALSE(player.bGroundedValid);
+}
+
+
+TEST(SekiroLiveEnemiesTest, FindsTheDataModuleWhereverItHangsInTheContainer) {
+    World w;
+    w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .hp = 700, .max_hp = 900, .module_offset = 0x2A0});
+    w.addEnemy(2, {.x = 2.f, .y = 1.f, .z = 2.f, .hp = 300, .max_hp = 322, .module_offset = 0x1e8});
+    w.addEnemy(3, {.x = 3.f, .y = 1.f, .z = 3.f, .hp = 50, .max_hp = 60, .module_offset = 0x30});
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    ASSERT_EQ(binder.enumerateEnemies(e), 3u);
+    EXPECT_TRUE(e[0].hp_valid);
+    EXPECT_FLOAT_EQ(e[0].hp, 700.f);
+    EXPECT_FLOAT_EQ(e[0].max_hp, 900.f);
+    EXPECT_TRUE(e[1].hp_valid);
+    EXPECT_FLOAT_EQ(e[1].hp, 300.f);
+    EXPECT_TRUE(e[2].hp_valid);
+    EXPECT_FLOAT_EQ(e[2].hp, 50.f);
+}
+
+TEST(SekiroLiveEnemiesTest, SkipsPointersThatAreNotDataModulesAndStillFindsTheRealOne) {
+    World w;
+    w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .hp = 400, .max_hp = 500, .module_offset = 0x240, .decoy_at_1f8 = true});
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    ASSERT_EQ(binder.enumerateEnemies(e), 1u);
+    EXPECT_TRUE(e[0].hp_valid);
+    EXPECT_FLOAT_EQ(e[0].hp, 400.f);
+}
+
+TEST(SekiroLiveEnemiesTest, ACharacterWithoutAnyDataModuleHasUnknownHealth) {
+    World w;
+    w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .module_ok = false, .module_offset = 0x260});
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    ASSERT_EQ(binder.enumerateEnemies(e), 1u);
+    EXPECT_FALSE(e[0].hp_valid);
+}
+
+TEST(SekiroLiveEnemiesTest, FindChrDataModuleReportsTheOffsetAndHonoursTheHint) {
+    World w;
+    const uintptr_t enemy = w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .module_offset = 0x2C8});
+    const uintptr_t container = enemy + 0x10000;
+    const auto found = findChrDataModule(w.mem, kBase, container);
+    ASSERT_TRUE(found.has_value());
+    EXPECT_EQ(found->offset, 0x2C8u);
+    EXPECT_EQ(found->module, enemy + 0x11000);
+    const auto hinted = findChrDataModule(w.mem, kBase, container, 0x2C8);
+    ASSERT_TRUE(hinted.has_value());
+    EXPECT_EQ(hinted->offset, 0x2C8u);
+    const auto wrong_hint = findChrDataModule(w.mem, kBase, container, 0x40); // stale hint: falls back to a scan
+    ASSERT_TRUE(wrong_hint.has_value());
+    EXPECT_EQ(wrong_hint->offset, 0x2C8u);
+    EXPECT_FALSE(findChrDataModule(w.mem, kBase, 0).has_value());
+    EXPECT_FALSE(findChrDataModule(w.mem, kBase, 0xdead0000ull).has_value());
 }

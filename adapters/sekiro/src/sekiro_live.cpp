@@ -266,6 +266,26 @@ SampleStatus LiveBinder::sample(LiveSample& out) const {
     return SampleStatus::Invalid;
 }
 
+std::optional<DataModuleRef> findChrDataModule(const IMemoryReader& reader, uintptr_t image_base, uintptr_t container,
+                                               uintptr_t hint_offset) {
+    if (container == 0) return std::nullopt;
+    auto check = [&](uintptr_t offset) -> std::optional<DataModuleRef> {
+        uint64_t module = 0, vtable = 0;
+        if (!reader.read(container + offset, &module, sizeof(module)) || module == 0) return std::nullopt;
+        if (!reader.read(static_cast<uintptr_t>(module), &vtable, sizeof(vtable))) return std::nullopt;
+        if (vtable != image_base + layout::kChrDataModuleVtableRva) return std::nullopt;
+        return DataModuleRef{static_cast<uintptr_t>(module), offset};
+    };
+    if (hint_offset != 0) {
+        if (const auto hit = check(hint_offset)) return hit;
+    }
+    for (uintptr_t offset = 0; offset < layout::kModuleScanLimit; offset += sizeof(uint64_t)) {
+        if (offset == hint_offset) continue;
+        if (const auto hit = check(offset)) return hit;
+    }
+    return std::nullopt;
+}
+
 size_t LiveBinder::enumerateEnemies(std::vector<LiveEnemy>& out, size_t max_entries) const {
     out.clear();
     if (status_ != BindStatus::Bound) return 0;
@@ -298,17 +318,21 @@ size_t LiveBinder::enumerateEnemies(std::vector<LiveEnemy>& out, size_t max_entr
         reader_.read(enemy + layout::kEnemyTeam, &e.team, sizeof(e.team));
         e.hostile = e.team == layout::kTeamHostile;
 
-        uintptr_t container = 0, module = 0, module_vtable = 0;
-        if (readPointer(enemy + layout::kModuleContainerInChrIns, container) && container != 0 &&
-            readPointer(container + layout::kEnemyDataModuleInContainer, module) && module != 0 &&
-            readPointer(module, module_vtable) && module_vtable == base_ + layout::kChrDataModuleVtableRva) {
-            int32_t hp = 0, max_hp = 0;
-            if (reader_.read(module + layout::kDataHp, &hp, sizeof(hp)) && reader_.read(module + layout::kEnemyMaxHp, &max_hp, sizeof(max_hp)) &&
-                max_hp > 0 && max_hp <= layout::kMaxPlausibleMaxHp && hp >= 0 && hp <= max_hp) {
-                e.hp_valid = true;
-                e.hp = static_cast<float>(hp);
-                e.max_hp = static_cast<float>(max_hp);
-                e.dead = hp == 0;
+        uintptr_t container = 0;
+        if (readPointer(enemy + layout::kModuleContainerInChrIns, container) && container != 0) {
+            const auto hint = module_offset_hints_.find(enemy);
+            const auto ref = findChrDataModule(reader_, base_, container, hint == module_offset_hints_.end() ? 0 : hint->second);
+            if (ref) {
+                module_offset_hints_[enemy] = ref->offset; // a character's layout does not change while it lives
+                int32_t hp = 0, max_hp = 0;
+                if (reader_.read(ref->module + layout::kDataHp, &hp, sizeof(hp)) &&
+                    reader_.read(ref->module + layout::kEnemyMaxHp, &max_hp, sizeof(max_hp)) && max_hp > 0 &&
+                    max_hp <= layout::kMaxPlausibleMaxHp && hp >= 0 && hp <= max_hp) {
+                    e.hp_valid = true;
+                    e.hp = static_cast<float>(hp);
+                    e.max_hp = static_cast<float>(max_hp);
+                    e.dead = hp == 0;
+                }
             }
         }
         out.push_back(e);

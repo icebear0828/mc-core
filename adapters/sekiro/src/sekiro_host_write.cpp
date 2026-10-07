@@ -28,11 +28,12 @@ HostHealthWriter::Result HostHealthWriter::apply(uintptr_t character, uint32_t c
         return true;
     };
 
-    uintptr_t vtable = 0, container = 0, module = 0, module_vtable = 0;
+    uintptr_t vtable = 0, container = 0;
     if (!readPtr(character, vtable) || vtable != base_ + character_vtable_rva) return Result::Rejected;
     if (!readPtr(character + layout::kModuleContainerInChrIns, container) || container == 0) return Result::Rejected;
-    if (!readPtr(container + module_offset, module) || module == 0) return Result::Rejected;
-    if (!readPtr(module, module_vtable) || module_vtable != base_ + layout::kChrDataModuleVtableRva) return Result::Rejected;
+    const auto ref = findChrDataModule(reader_, base_, container, module_offset);
+    if (!ref) return Result::Rejected;
+    const uintptr_t module = ref->module;
 
     int32_t hp = 0, max_hp = 0;
     if (!reader_.read(module + layout::kDataHp, &hp, sizeof(hp)) || !reader_.read(module + max_hp_offset, &max_hp, sizeof(max_hp))) {
