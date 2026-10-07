@@ -280,6 +280,32 @@ TEST(SekiroAdapterTest, FacingYawIsTheCanonicalHeadingOfTheNativeFacingDirection
     EXPECT_FALSE(adapter.getPlayerFacingYaw(yaw));
 }
 
+TEST(SekiroAdapterTest, ReportsRealPlayerVitalsOnlyWhenTheLiveReadIsValid) {
+    sekiro::native::ChrIns player;
+    sekiro::native::ChrCam camera;
+    SekiroAdapter adapter(&player, &camera);
+    mc::HostVitals v;
+
+    EXPECT_NE(adapter.supportedFeatures() & static_cast<uint32_t>(mc::HostFeature::PlayerVitals), 0u);
+    EXPECT_FALSE(adapter.getPlayerVitals(v)); // nothing read yet
+
+    player.bVitalsValid = true;
+    player.Health = 1024.f;
+    player.MaxHealth = 1120.f;
+    ASSERT_TRUE(adapter.getPlayerVitals(v));
+    EXPECT_FLOAT_EQ(v.health, 1024.f);
+    EXPECT_FLOAT_EQ(v.max_health, 1120.f);
+
+    player.bVitalsValid = false;
+    EXPECT_FALSE(adapter.getPlayerVitals(v));
+}
+
+TEST(SekiroAdapterTest, OnlyDeclaresTheHostFeaturesThatWereVerifiedInTheLiveGame) {
+    SekiroAdapter adapter;
+    // Add a bit here only together with its live-game verification (docs/REVERSE_INTERFACES.md).
+    EXPECT_EQ(adapter.supportedFeatures(), static_cast<uint32_t>(mc::HostFeature::PlayerVitals));
+}
+
 TEST(SekiroAdapterTest, VoxelWorldIntegrationCycle) {
     SekiroAdapter adapter;
     VoxelWorld world(adapter, adapter);

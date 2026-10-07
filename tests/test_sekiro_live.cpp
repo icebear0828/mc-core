@@ -21,6 +21,9 @@ constexpr uintptr_t kPlayer = 0x7ff400100000ull;  // player ChrIns
 constexpr uintptr_t kCamera = 0x7ff400200000ull;  // camera object
 constexpr uintptr_t kCameraDecoy = 0x7ff400300000ull;
 constexpr uintptr_t kChrModel = 0x7ff400400000ull;  // player ChrIns+0x48 object
+constexpr uintptr_t kModuleContainer = 0x7ff400500000ull; // [player+0x10b8]
+constexpr uintptr_t kDataModule = 0x7ff400600000ull;      // [container+0x1e8], SprjChrDataModule
+constexpr uint32_t kDataModuleVtableRva = 0x2A8BE18;
 
 constexpr uint32_t kWcmPatternRva = 0x100;
 constexpr uint32_t kWcmGlobalRva = 0x1000;
@@ -134,6 +137,17 @@ struct World {
                              0.f, 1.f, 0.f, py,
                              s, 0.f, -c, pz};
         mem.put(kChrModel + 0x30, m);
+    }
+    // Player vitals as measured on the real game: ChrIns+0x10b8 -> container +0x1e8 -> SprjChrDataModule,
+    // hp at +0x130, max at +0x138, identified by its vtable.
+    void setVitals(int32_t hp, int32_t max_hp, bool right_class = true) {
+        if (!mem.regions.count(kModuleContainer)) mem.region(kModuleContainer, 0x400);
+        if (!mem.regions.count(kDataModule)) mem.region(kDataModule, 0x400);
+        mem.put<uint64_t>(kPlayer + 0x10b8, kModuleContainer);
+        mem.put<uint64_t>(kModuleContainer + 0x1e8, kDataModule);
+        mem.put<uint64_t>(kDataModule, kBase + (right_class ? kDataModuleVtableRva : 0x1234));
+        mem.put<int32_t>(kDataModule + 0x130, hp);
+        mem.put<int32_t>(kDataModule + 0x138, max_hp);
     }
     void setCamera(const Mat& m, uintptr_t obj = kCamera) { mem.put(obj + 0xea0, m); }
 };
@@ -288,6 +302,43 @@ TEST(SekiroLiveSampleTest, MissingOrImplausibleFacingNeverInvalidatesTheSample) 
     EXPECT_FALSE(s.facing_valid);
 }
 
+TEST(SekiroLiveSampleTest, ReadsThePlayersRealHealthFromTheDataModule) {
+    World w;
+    w.setVitals(1024, 1120);
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    LiveSample s;
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+    EXPECT_TRUE(s.vitals_valid);
+    EXPECT_FLOAT_EQ(s.hp, 1024.f);
+    EXPECT_FLOAT_EQ(s.max_hp, 1120.f);
+
+    w.setVitals(0, 1120); // dead: zero is a real reading, not "unknown"
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+    EXPECT_TRUE(s.vitals_valid);
+    EXPECT_FLOAT_EQ(s.hp, 0.f);
+}
+
+TEST(SekiroLiveSampleTest, ImplausibleOrUnidentifiedVitalsNeverInvalidateTheSample) {
+    World w;
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    LiveSample s;
+
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok); // no module container at all
+    EXPECT_FALSE(s.vitals_valid);
+
+    w.setVitals(500, 1120, /*right_class=*/false); // pointer chain leads to something else
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+    EXPECT_FALSE(s.vitals_valid);
+
+    for (auto [hp, max_hp] : {std::pair<int32_t, int32_t>{500, 0}, {500, -5}, {-1, 1120}, {1121, 1120}, {500, 5000000}}) {
+        w.setVitals(hp, max_hp);
+        ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+        EXPECT_FALSE(s.vitals_valid) << hp << "/" << max_hp;
+    }
+}
+
 TEST(SekiroLiveSampleTest, NotInWorldWhileManagersAreNull) {
     World w;
     LiveBinder binder(w.mem, kBase, kImageSize);
@@ -412,6 +463,27 @@ TEST(SekiroLiveMirrorTest, CarriesTheFacingIntoTheMirrorOnlyWhileItIsValid) {
     s.facing_valid = false;
     mirror.update(s, 0.016f, player, camera);
     EXPECT_FALSE(player.bFacingValid);
+}
+
+TEST(SekiroLiveMirrorTest, CarriesVitalsIntoTheMirrorOnlyWhileValid) {
+    ChrIns player;
+    ChrCam camera;
+    LiveMirror mirror;
+    LiveSample s;
+    s.player_pos = {1.f, 2.f, 3.f};
+    s.vitals_valid = true;
+    s.hp = 700.f;
+    s.max_hp = 1120.f;
+    mirror.update(s, 0.016f, player, camera);
+    EXPECT_TRUE(player.bVitalsValid);
+    EXPECT_FLOAT_EQ(player.Health, 700.f);
+    EXPECT_FLOAT_EQ(player.MaxHealth, 1120.f);
+
+    s.vitals_valid = false;
+    s.hp = 0.f;
+    mirror.update(s, 0.016f, player, camera);
+    EXPECT_FALSE(player.bVitalsValid);
+    EXPECT_FLOAT_EQ(player.Health, 700.f); // last good value kept, flagged unusable
 }
 
 TEST(SekiroLiveMirrorTest, TeleportAndResetDoNotProduceVelocitySpikes) {

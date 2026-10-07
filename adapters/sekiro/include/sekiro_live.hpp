@@ -38,6 +38,15 @@ inline constexpr uintptr_t kChrModelInChrIns = 0x48;
 inline constexpr uintptr_t kModelTransform = 0x30;
 inline constexpr float kFacingTolerance = 0.02f;
 inline constexpr float kMaxModelPositionDelta = 1.0f;
+// Vitals: ChrIns+0x10b8 -> module container, container+0x1e8 -> SprjChrDataModule (RTTI vtable RVA below, used as
+// the class check), int32 current hp at +0x130 and max hp at +0x138. Verified in the live game with damage and
+// healing: 1120 -> 934 -> 748 ... -> 128, healing -> 1024; max stayed 1120.
+inline constexpr uintptr_t kModuleContainerInChrIns = 0x10b8;
+inline constexpr uintptr_t kChrDataModuleInContainer = 0x1e8;
+inline constexpr uint32_t kChrDataModuleVtableRva = 0x2A8BE18;
+inline constexpr uintptr_t kDataHp = 0x130;
+inline constexpr uintptr_t kDataMaxHp = 0x138;
+inline constexpr int32_t kMaxPlausibleMaxHp = 100000;
 inline constexpr uintptr_t kCameraMatrix = 0xea0;     // row-major 4x4: right, up, forward, position(w=1)
 inline constexpr uintptr_t kCameraFov = 0x160;        // float, returned by the camera getter the signature matches
 
@@ -80,6 +89,10 @@ struct LiveSample {
     bool facing_valid{false};
     float facing_x{0.0f};
     float facing_z{1.0f};
+    // The player's real health points. Optional: never fails a sample.
+    bool vitals_valid{false};
+    float hp{0.0f};
+    float max_hp{0.0f};
 };
 
 enum class BindStatus { Searching, Ambiguous, Bound };
@@ -106,6 +119,7 @@ private:
     bool readPointer(uintptr_t address, uintptr_t& out) const;
     bool readCamera(uintptr_t object, LiveSample& out) const;
     void readFacing(uintptr_t player, LiveSample& out) const;
+    void readVitals(uintptr_t player, LiveSample& out) const;
 
     const IMemoryReader& reader_;
     uintptr_t base_;

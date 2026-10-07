@@ -16,7 +16,7 @@ extern "C" {
 void SekiroMod_Initialize(sekiro::native::ChrIns* player, sekiro::native::ChrCam* camera) {
     g_session.reset();
     g_adapter = std::make_unique<mc::adapter::SekiroAdapter>(player, camera);
-    g_session = std::make_unique<mc::Session>(mc::Ports{*g_adapter, *g_adapter, *g_adapter, *g_adapter});
+    g_session = std::make_unique<mc::Session>(mc::Ports{*g_adapter, *g_adapter, *g_adapter, *g_adapter, g_adapter.get()});
 
     g_session->loadDefaultHotbar();
 }

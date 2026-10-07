@@ -538,6 +538,18 @@ Vec3 SekiroAdapter::getPlayerVelocity() const {
     return Vec3{};
 }
 
+uint32_t SekiroAdapter::supportedFeatures() const {
+    // Add a bit only together with its live-game verification (docs/REVERSE_INTERFACES.md).
+    return static_cast<uint32_t>(HostFeature::PlayerVitals);
+}
+
+bool SekiroAdapter::getPlayerVitals(HostVitals& out) const {
+    if (!player_ || !player_->bVitalsValid) return false;
+    out.health = player_->Health;
+    out.max_health = player_->MaxHealth;
+    return true;
+}
+
 bool SekiroAdapter::getPlayerFacingYaw(float& out_yaw) const {
     if (!player_ || !player_->bFacingValid) return false;
     const Vec3 dir = toMcDir(sekiro::native::FVector3{player_->Facing.X, 0.0f, player_->Facing.Z});

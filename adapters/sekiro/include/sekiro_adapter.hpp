@@ -3,6 +3,7 @@
 #include "mc/contracts/physics_adapter.hpp"
 #include "mc/contracts/render_adapter.hpp"
 #include "mc/contracts/combat_adapter.hpp"
+#include "mc/contracts/host_gameplay.hpp"
 #include "mc/contracts/input_adapter.hpp"
 #include "mc/animator.hpp"
 #include "sekiro_native.hpp"
@@ -33,7 +34,8 @@ struct SekiroBlockVisualRecord {
 class SekiroAdapter : public IPhysicsAdapter,
                       public IRenderAdapter,
                       public ICombatAdapter,
-                      public IInputAdapter {
+                      public IInputAdapter,
+                      public IHostGameplay {
 public:
     SekiroAdapter();
     explicit SekiroAdapter(sekiro::native::ChrIns* player, sekiro::native::ChrCam* camera = nullptr);
@@ -78,6 +80,10 @@ public:
     Vec3 getPlayerPosition() const override;
     Vec3 getPlayerVelocity() const override;
     bool getPlayerFacingYaw(float& out_yaw) const override;
+
+    // --- IHostGameplay (only what was verified in the live game) ---
+    [[nodiscard]] uint32_t supportedFeatures() const override;
+    bool getPlayerVitals(HostVitals& out) const override;
 
     // Auxiliary methods & inspections
     void setEquippedItems(ItemId main, ItemId off);

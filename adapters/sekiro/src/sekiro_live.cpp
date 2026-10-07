@@ -193,6 +193,22 @@ void LiveBinder::readFacing(uintptr_t player, LiveSample& out) const {
     out.facing_valid = true;
 }
 
+void LiveBinder::readVitals(uintptr_t player, LiveSample& out) const {
+    out.vitals_valid = false;
+    uintptr_t container = 0, module = 0, vtable = 0;
+    if (!readPointer(player + layout::kModuleContainerInChrIns, container) || container == 0) return;
+    if (!readPointer(container + layout::kChrDataModuleInContainer, module) || module == 0) return;
+    if (!readPointer(module, vtable) || vtable != base_ + layout::kChrDataModuleVtableRva) return; // class check
+    int32_t hp = 0, max_hp = 0;
+    if (!reader_.read(module + layout::kDataHp, &hp, sizeof(hp)) || !reader_.read(module + layout::kDataMaxHp, &max_hp, sizeof(max_hp))) {
+        return;
+    }
+    if (max_hp <= 0 || max_hp > layout::kMaxPlausibleMaxHp || hp < 0 || hp > max_hp) return;
+    out.hp = static_cast<float>(hp);
+    out.max_hp = static_cast<float>(max_hp);
+    out.vitals_valid = true;
+}
+
 SampleStatus LiveBinder::sample(LiveSample& out) const {
     if (status_ != BindStatus::Bound) return SampleStatus::NotBound;
 
@@ -220,6 +236,7 @@ SampleStatus LiveBinder::sample(LiveSample& out) const {
     LiveSample s;
     s.player_pos = pos;
     readFacing(player, s);
+    readVitals(player, s);
 
     // Try the candidate that worked last time first, then the others.
     const size_t count = camera_global_rvas_.size();
@@ -263,6 +280,11 @@ void LiveMirror::update(const LiveSample& sample, float dt, native::ChrIns& play
 
     player.Position = sample.player_pos;
     player.Velocity = velocity;
+    player.bVitalsValid = sample.vitals_valid;
+    if (sample.vitals_valid) {
+        player.Health = sample.hp;
+        player.MaxHealth = sample.max_hp;
+    }
     player.bFacingValid = sample.facing_valid;
     if (sample.facing_valid) player.Facing = {sample.facing_x, 0.0f, sample.facing_z};
     camera.Position = sample.cam_pos;
