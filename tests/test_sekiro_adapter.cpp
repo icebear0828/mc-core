@@ -306,6 +306,131 @@ TEST(SekiroAdapterTest, OnlyDeclaresTheHostFeaturesThatWereVerifiedInTheLiveGame
     EXPECT_EQ(adapter.supportedFeatures(), static_cast<uint32_t>(mc::HostFeature::PlayerVitals));
 }
 
+// ---------------------------------------------------------------------------------------------
+// Enemies are targeted geometrically (the game's own raycast is not hooked): an upright capsule per tracked
+// character, 45 cm radius and 190 cm tall by default.
+// ---------------------------------------------------------------------------------------------
+namespace {
+ChrIns makeEnemy(float native_right, float native_up, float native_forward, float hp = 2101.f) {
+    ChrIns e;
+    e.Position = {native_right, native_up, native_forward};
+    e.Health = hp;
+    e.MaxHealth = 2101.f;
+    e.TeamId = 1;
+    return e;
+}
+} // namespace
+
+TEST(SekiroAdapterEnemyTest, ARayAtChestHeightHitsTheEnemyAndNamesItsEntityId) {
+    SekiroAdapter adapter;
+    ChrIns enemy = makeEnemy(0.f, 0.f, 3.f); // 3 m ahead of the origin (MC +X)
+    ASSERT_TRUE(adapter.registerEntity(static_cast<EntityId>(7), &enemy));
+
+    const RaycastResult hit = adapter.raycastWorld({0.f, 0.f, 100.f}, {450.f, 0.f, 100.f});
+    ASSERT_TRUE(hit.has_hit);
+    EXPECT_EQ(hit.hit_entity, static_cast<EntityId>(7));
+    EXPECT_FALSE(hit.is_block);
+    EXPECT_NEAR(hit.point.x, 300.f - 45.f, 1.f); // front of the 45 cm capsule
+    EXPECT_NEAR(hit.point.z, 100.f, 1e-2f);
+    EXPECT_NEAR(hit.normal.length(), 1.f, 1e-3f);
+    EXPECT_LT(hit.normal.x, -0.9f); // faces back toward the shooter
+}
+
+TEST(SekiroAdapterEnemyTest, MissesBesideAboveAndBelowAndBeyondTheRay) {
+    SekiroAdapter adapter;
+    ChrIns enemy = makeEnemy(0.f, 0.f, 3.f);
+    adapter.registerEntity(static_cast<EntityId>(7), &enemy);
+    EXPECT_FALSE(adapter.raycastWorld({0.f, 100.f, 100.f}, {450.f, 100.f, 100.f}).has_hit);  // 1 m to the side
+    EXPECT_FALSE(adapter.raycastWorld({0.f, 0.f, 260.f}, {450.f, 0.f, 260.f}).has_hit);      // above the head (190 cm)
+    EXPECT_FALSE(adapter.raycastWorld({0.f, 0.f, -20.f}, {450.f, 0.f, -20.f}).has_hit);      // under the feet
+    EXPECT_FALSE(adapter.raycastWorld({0.f, 0.f, 100.f}, {200.f, 0.f, 100.f}).has_hit);      // short of it
+    EXPECT_FALSE(adapter.raycastWorld({0.f, 0.f, 100.f}, {-450.f, 0.f, 100.f}).has_hit);     // looking away
+}
+
+TEST(SekiroAdapterEnemyTest, HeadAndFeetCapsAreSolidToo) {
+    SekiroAdapter adapter;
+    ChrIns enemy = makeEnemy(0.f, 0.f, 3.f);
+    adapter.registerEntity(static_cast<EntityId>(7), &enemy);
+    EXPECT_TRUE(adapter.raycastWorld({0.f, 0.f, 185.f}, {450.f, 0.f, 185.f}).has_hit); // just under the top
+    EXPECT_TRUE(adapter.raycastWorld({0.f, 0.f, 8.f}, {450.f, 0.f, 8.f}).has_hit);     // just above the feet
+    EXPECT_TRUE(adapter.raycastWorld({300.f, 0.f, 400.f}, {300.f, 0.f, 100.f}).has_hit); // straight down onto the head
+}
+
+TEST(SekiroAdapterEnemyTest, ABlockInFrontOfTheEnemyWinsAndTheNearestEnemyWins) {
+    SekiroAdapter adapter;
+    ChrIns near_enemy = makeEnemy(0.f, 0.f, 2.f);
+    ChrIns far_enemy = makeEnemy(0.f, 0.f, 4.f);
+    adapter.registerEntity(static_cast<EntityId>(3), &far_enemy);
+    adapter.registerEntity(static_cast<EntityId>(2), &near_enemy);
+    const RaycastResult both = adapter.raycastWorld({0.f, 0.f, 100.f}, {450.f, 0.f, 100.f});
+    EXPECT_EQ(both.hit_entity, static_cast<EntityId>(2));
+
+    adapter.createBlockCollider({1, 0, 1}, BlockId::Stone, {100.f, 0.f, 100.f}); // a block at 50..150 cm
+    const RaycastResult blocked = adapter.raycastWorld({0.f, 0.f, 100.f}, {450.f, 0.f, 100.f});
+    EXPECT_TRUE(blocked.is_block);
+    EXPECT_EQ(blocked.hit_entity, EntityId::None);
+}
+
+TEST(SekiroAdapterEnemyTest, TheShooterTheDeadAndTheUnplacedAreNeverTargets) {
+    SekiroAdapter adapter;
+    ChrIns self = makeEnemy(0.f, 0.f, 0.f);
+    ChrIns corpse = makeEnemy(0.f, 0.f, 3.f);
+    corpse.bIsDead = true;
+    adapter.registerEntity(static_cast<EntityId>(5), &corpse);
+    adapter.setPlayerCharacter(&self); // registers the local player at the origin
+    // the ray starts inside the local player's own capsule and passes through a corpse
+    const RaycastResult r = adapter.raycastWorld({0.f, 0.f, 100.f}, {450.f, 0.f, 100.f}, EntityId::LocalPlayer);
+    EXPECT_FALSE(r.has_hit);
+}
+
+TEST(SekiroAdapterEnemyTest, HitsAreAppliedAsAFractionOfMaxHealthAndQueuedForTheHost) {
+    SekiroAdapter adapter;
+    ChrIns enemy = makeEnemy(0.f, 0.f, 3.f);
+    const EntityId id = static_cast<EntityId>(7);
+    adapter.registerEntity(id, &enemy);
+
+    HitIntent hit;
+    hit.victim_id = id;
+    hit.max_hp_percent = 0.05f; // the diamond sword
+    ASSERT_TRUE(adapter.processHit(hit));
+    EXPECT_NEAR(enemy.Health, 2101.f * 0.95f, 0.5f);
+
+    auto writes = adapter.drainHostHealthWrites();
+    ASSERT_EQ(writes.size(), 1u);
+    EXPECT_EQ(writes[0].id, id);
+    EXPECT_NEAR(writes[0].health, 2101.f * 0.95f, 0.5f);
+    EXPECT_TRUE(adapter.drainHostHealthWrites().empty()); // drained
+
+    // two hits before the host gets to write: only the final health matters
+    adapter.processHit(hit);
+    adapter.processHit(hit);
+    writes = adapter.drainHostHealthWrites();
+    ASSERT_EQ(writes.size(), 1u);
+    EXPECT_NEAR(writes[0].health, 2101.f * (1.f - 3 * 0.05f), 1.f); // each hit is 5 % of MAX health
+}
+
+TEST(SekiroAdapterEnemyTest, ALethalHitQueuesZeroAndTheLocalPlayerIsNeverWrittenByHits) {
+    SekiroAdapter adapter;
+    ChrIns enemy = makeEnemy(0.f, 0.f, 3.f, 50.f);
+    const EntityId id = static_cast<EntityId>(7);
+    adapter.registerEntity(id, &enemy);
+    HitIntent hit;
+    hit.victim_id = id;
+    hit.damage = 500.f;
+    ASSERT_TRUE(adapter.processHit(hit));
+    auto writes = adapter.drainHostHealthWrites();
+    ASSERT_EQ(writes.size(), 1u);
+    EXPECT_FLOAT_EQ(writes[0].health, 0.f);
+
+    ChrIns self = makeEnemy(0.f, 0.f, 0.f);
+    adapter.setPlayerCharacter(&self);
+    HitIntent crash;
+    crash.victim_id = EntityId::LocalPlayer; // e.g. elytra crash damage: handled by the player-side path
+    crash.damage = 10.f;
+    adapter.processHit(crash);
+    EXPECT_TRUE(adapter.drainHostHealthWrites().empty());
+}
+
 TEST(SekiroAdapterTest, VoxelWorldIntegrationCycle) {
     SekiroAdapter adapter;
     VoxelWorld world(adapter, adapter);

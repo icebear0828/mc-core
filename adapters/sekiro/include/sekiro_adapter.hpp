@@ -8,6 +8,7 @@
 #include "mc/animator.hpp"
 #include "sekiro_native.hpp"
 
+#include <map>
 #include <unordered_map>
 #include <vector>
 #include <memory>
@@ -48,6 +49,14 @@ public:
     bool registerEntity(EntityId entity_id, sekiro::native::ChrIns* entity);
     void unregisterEntity(EntityId entity_id);
     sekiro::native::ChrIns* getRegisteredEntity(EntityId entity_id) const;
+
+    // Health the core decided a tracked enemy should have after hits this frame, for the loader to write
+    // into the game (latest value per enemy). Drained: a second call returns nothing until the next hit.
+    struct HostHealthWrite {
+        EntityId id{EntityId::None};
+        float health{0.0f};
+    };
+    [[nodiscard]] std::vector<HostHealthWrite> drainHostHealthWrites();
 
     // --- IPhysicsAdapter ---
     RaycastResult raycastWorld(const Vec3& start, const Vec3& end, EntityId ignore_entity = EntityId::None) override;
@@ -131,6 +140,7 @@ private:
     std::unordered_map<uint64_t, std::unique_ptr<SekiroBlockColliderRecord>> colliders_;
     std::unordered_map<uint64_t, std::unique_ptr<SekiroBlockVisualRecord>> visuals_;
     std::unordered_map<EntityId, sekiro::native::ChrIns*> registered_entities_;
+    std::map<EntityId, float> pending_health_writes_;
 
     // 12 Steve parts
     bool steve_parts_spawned_{false};

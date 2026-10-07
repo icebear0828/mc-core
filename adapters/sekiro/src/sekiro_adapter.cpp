@@ -126,6 +126,67 @@ const sekiro::native::SekiroVisualMeshComponent* SekiroAdapter::getStevePartVisu
 // IPhysicsAdapter Implementation
 // =========================================================================
 
+namespace {
+
+// Tracked characters are approximated by an upright capsule (canonical space: Z up), feet at `base`.
+constexpr float kEnemyRadiusCm = 45.0f;
+constexpr float kEnemyHeightCm = 190.0f;
+
+struct CapsuleHit {
+    float t{0.0f};
+    Vec3 normal{};
+};
+
+// Nearest intersection of the ray start + dir * t (dir unit length, 0 <= t <= max_t) with the capsule.
+// A ray that starts inside counts as a hit at t = 0 so point-blank swings still connect.
+std::optional<CapsuleHit> rayVsCapsule(const Vec3& start, const Vec3& dir, float max_t, const Vec3& base) {
+    const float r = kEnemyRadiusCm;
+    const float z0 = base.z + r, z1 = base.z + kEnemyHeightCm - r; // centres of the two end spheres
+    const Vec3 s = start - base;
+
+    {
+        // starts inside?
+        const float zc = std::clamp(start.z, z0, z1);
+        const Vec3 nearest{base.x, base.y, zc};
+        if ((start - nearest).lengthSq() <= r * r) {
+            return CapsuleHit{0.0f, dir * -1.0f};
+        }
+    }
+
+    std::optional<CapsuleHit> best;
+    auto consider = [&](float t, const Vec3& normal) {
+        if (t >= 0.0f && t <= max_t && (!best || t < best->t)) best = CapsuleHit{t, normal.normalized()};
+    };
+
+    // side: infinite cylinder around the vertical axis, clipped to the straight part
+    const float a = dir.x * dir.x + dir.y * dir.y;
+    if (a > 1e-8f) {
+        const float b = 2.0f * (s.x * dir.x + s.y * dir.y);
+        const float c = s.x * s.x + s.y * s.y - r * r;
+        const float disc = b * b - 4.0f * a * c;
+        if (disc >= 0.0f) {
+            const float t = (-b - std::sqrt(disc)) / (2.0f * a);
+            const Vec3 p = start + dir * t;
+            if (p.z >= z0 && p.z <= z1) consider(t, Vec3{p.x - base.x, p.y - base.y, 0.0f});
+        }
+    }
+    // caps: the two end spheres, only the outward halves
+    for (const float zc : {z0, z1}) {
+        const Vec3 centre{base.x, base.y, zc};
+        const Vec3 oc = start - centre;
+        const float b = 2.0f * (oc.x * dir.x + oc.y * dir.y + oc.z * dir.z);
+        const float c = oc.lengthSq() - r * r;
+        const float disc = b * b - 4.0f * c;
+        if (disc < 0.0f) continue;
+        const float t = (-b - std::sqrt(disc)) * 0.5f;
+        const Vec3 p = start + dir * t;
+        if ((zc == z0 && p.z < z0) || (zc == z1 && p.z > z1)) consider(t, p - centre);
+    }
+    return best;
+}
+
+} // namespace
+
 RaycastResult SekiroAdapter::raycastWorld(const Vec3& start, const Vec3& end, EntityId ignore_entity) {
     sekiro::native::FVector3 native_start = toNativePoint(start);
     sekiro::native::FVector3 native_end = toNativePoint(end);
@@ -237,6 +298,23 @@ RaycastResult SekiroAdapter::raycastWorld(const Vec3& start, const Vec3& end, En
             best_result.normal = hit_norm;
             best_result.hit_collider_handle = handle;
             best_result.is_block = true;
+        }
+    }
+
+    // Tracked characters (the game's own raycast is not hooked). Blocks that are nearer win.
+    for (const auto& [id, chr] : registered_entities_) {
+        if (!chr || chr->bIsDead || id == ignore_entity || id == EntityId::LocalPlayer) continue;
+        const Vec3 feet = toMcPoint(chr->Position);
+        if (const auto hit = rayVsCapsule(start, norm_dir, closest_t, feet)) {
+            if (hit->t < closest_t) {
+                closest_t = hit->t;
+                best_result = RaycastResult{};
+                best_result.has_hit = true;
+                best_result.point = start + norm_dir * hit->t;
+                best_result.normal = hit->normal;
+                best_result.hit_entity = id;
+                best_result.is_block = false;
+            }
         }
     }
 
@@ -444,6 +522,14 @@ void SekiroAdapter::destroyBlockVisual(uint64_t block_handle) {
 // ICombatAdapter Implementation
 // =========================================================================
 
+std::vector<SekiroAdapter::HostHealthWrite> SekiroAdapter::drainHostHealthWrites() {
+    std::vector<HostHealthWrite> out;
+    out.reserve(pending_health_writes_.size());
+    for (const auto& [id, health] : pending_health_writes_) out.push_back({id, health});
+    pending_health_writes_.clear();
+    return out;
+}
+
 bool SekiroAdapter::processHit(const HitIntent& intent) {
     auto it = registered_entities_.find(intent.victim_id);
     if (it == registered_entities_.end() || !it->second) {
@@ -462,6 +548,9 @@ bool SekiroAdapter::processHit(const HitIntent& intent) {
     }
 
     victim->Health = std::max(0.0f, victim->Health - damage_to_apply);
+    if (intent.victim_id != EntityId::LocalPlayer) {
+        pending_health_writes_[intent.victim_id] = victim->Health; // the loader writes it into the game
+    }
 
     // Sekiro specific: Accumulate Posture (躯干值) based on attack force & damage
     float posture_damage = std::max(10.0f, damage_to_apply * 0.25f + intent.knockback_force * 5.0f);
