@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "eldenring_sigscan.hpp"
+#include "eldenring_model.hpp"
 #include "eldenring_world.hpp"
 
 #include <cmath>
@@ -422,4 +423,39 @@ TEST(EldenRingEnv, MissingSteamAppIdRefusesToBind) {
 
 TEST(EldenRingEnv, EacTakesPriorityOverMissingAppId) {
     EXPECT_EQ(checkEnvironment({"EasyAntiCheat_EOS.dll"}, false), EnvVerdict::EacLoaded);
+}
+
+// ---- native model parts -------------------------------------------------------------------------------------
+
+TEST(EldenRingModel, CollectsTheDispFlagAddressesOfEveryAttachedPart) {
+    FakeMemory m = makeWorld();
+    const uintptr_t model = 0x7ff500700000ull, part_a = 0x7ff500710000ull, part_b = 0x7ff500720000ull;
+    const uintptr_t disp_a = 0x7ff500730000ull, disp_b = 0x7ff500740000ull;
+    m.region(model - 8, 0x400);
+    m.region(kBase + layout::kAsmModelVtableRva, 8);
+    for (uintptr_t r : {part_a, part_b, disp_a, disp_b}) m.region(r, 0x100);
+    m.put<uint64_t>(model, kBase + layout::kAsmModelVtableRva);
+    m.put<uint64_t>(kPlayer + layout::kAsmModelInPlayerIns, model);
+    m.put<uint64_t>(model + layout::kAsmPartPointers + 2 * 8, part_a);
+    m.put<uint64_t>(model + layout::kAsmPartPointers + 9 * 8, part_b);
+    m.put<uint64_t>(part_a + layout::kPartDispEntity, disp_a);
+    m.put<uint64_t>(part_b + layout::kPartDispEntity, disp_b);
+    m.put<uint32_t>(disp_a + layout::kDispFlags1, 0x000100A1);
+    m.put<uint32_t>(disp_b + layout::kDispFlags1, 0x000100A1);
+    const auto addrs = collectDispFlagAddresses(m, kBase, kPlayer);
+    ASSERT_EQ(addrs.size(), 2u);
+    EXPECT_EQ(addrs[0], disp_a + layout::kDispFlags1);
+    EXPECT_EQ(addrs[1], disp_b + layout::kDispFlags1);
+}
+
+TEST(EldenRingModel, RefusesAnObjectOfAnotherClassAndSkipsEmptySlots) {
+    FakeMemory m = makeWorld();
+    const uintptr_t model = 0x7ff500700000ull;
+    m.region(model, 0x400);
+    m.put<uint64_t>(model, kBase + 0x1234); // wrong vtable
+    m.put<uint64_t>(kPlayer + layout::kAsmModelInPlayerIns, model);
+    EXPECT_TRUE(collectDispFlagAddresses(m, kBase, kPlayer).empty());
+    EXPECT_TRUE(collectDispFlagAddresses(m, kBase, 0).empty());
+    m.put<uint64_t>(kPlayer + layout::kAsmModelInPlayerIns, 0);
+    EXPECT_TRUE(collectDispFlagAddresses(m, kBase, kPlayer).empty());
 }

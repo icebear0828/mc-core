@@ -66,3 +66,69 @@ TEST(EldenRingSteve, TurningTheFigureMovesAForwardPointTowardTheHeading) {
     EXPECT_GT(front.x - origin.x, 0.9f);
     EXPECT_NEAR(front.z - origin.z, 0.f, 0.1f);
 }
+
+TEST(EldenRingSteve, HostQuatKeepsTheIdentityAndMapsACanonicalYawToARotationAboutTheHostUpAxis) {
+    const mc::Quat id = hostQuat({0.f, 0.f, 0.f, 1.f});
+    EXPECT_FLOAT_EQ(id.w, 1.f);
+    EXPECT_FLOAT_EQ(id.x, 0.f);
+    // A canonical turn about Z (up) becomes a turn about the host's Y (up), with the sign flipped by the reflection.
+    const float s = std::sin(0.4f), c = std::cos(0.4f);
+    const mc::Quat q = hostQuat({0.f, 0.f, s, c});
+    EXPECT_NEAR(q.y, -s, 1e-6);
+    EXPECT_NEAR(q.x, 0.f, 1e-6);
+    EXPECT_NEAR(q.z, 0.f, 1e-6);
+}
+
+TEST(EldenRingSteve, MotionReportsForwardSpeedFromTheHeading) {
+    SteveMotion m;
+    float feet[3] = {0.f, 0.f, 0.f};
+    m.update(0.016f, feet, 0.f); // first sample: no speed yet
+    mc::SteveAnimInput in;
+    for (int i = 0; i < 40; ++i) {
+        feet[2] += 4.f * 0.016f; // 4 m/s along +Z while facing +Z
+        in = m.update(0.016f, feet, 0.f);
+    }
+    EXPECT_NEAR(in.forward_speed, 4.f, 0.1f);
+    EXPECT_NEAR(in.strafe_speed, 0.f, 0.1f);
+    // Walking the same way while facing +X is a sideways movement for the character.
+    SteveMotion side;
+    float f2[3] = {0.f, 0.f, 0.f};
+    side.update(0.016f, f2, 1.5707963f);
+    for (int i = 0; i < 40; ++i) {
+        f2[2] += 3.f * 0.016f;
+        in = side.update(0.016f, f2, 1.5707963f);
+    }
+    EXPECT_NEAR(in.forward_speed, 0.f, 0.1f);
+    EXPECT_GT(std::abs(in.strafe_speed), 2.5f);
+}
+
+TEST(EldenRingSteve, MotionIgnoresATeleportOrOriginRebase) {
+    SteveMotion m;
+    float feet[3] = {0.f, 0.f, 0.f};
+    m.update(0.016f, feet, 0.f);
+    for (int i = 0; i < 10; ++i) {
+        feet[2] += 0.06f;
+        m.update(0.016f, feet, 0.f);
+    }
+    feet[0] += 32.f; // the floating origin moved
+    const mc::SteveAnimInput in = m.update(0.016f, feet, 0.f);
+    EXPECT_NEAR(in.forward_speed, 0.f, 1e-6);
+    EXPECT_NEAR(in.strafe_speed, 0.f, 1e-6);
+}
+
+TEST(EldenRingSteve, PosedMatricesFollowTheAnimatorAndStayFinite) {
+    mc::SteveAnimator anim;
+    mc::SteveAnimInput in;
+    in.forward_speed = 4.f;
+    for (int i = 0; i < 30; ++i) anim.update(0.016f, in);
+    const PartMatrices posed = posedMatrices(anim.getTransforms(), {1.f, 2.f, 3.f}, 0.5f);
+    const PartMatrices rest = restPoseMatrices({1.f, 2.f, 3.f}, 0.5f);
+    bool any_different = false;
+    for (size_t i = 0; i < posed.size(); ++i) {
+        for (size_t k = 0; k < 16; ++k) {
+            EXPECT_TRUE(std::isfinite(posed[i].m[k]));
+            if (std::abs(posed[i].m[k] - rest[i].m[k]) > 1e-4f) any_different = true;
+        }
+    }
+    EXPECT_TRUE(any_different); // legs and arms swing while walking
+}

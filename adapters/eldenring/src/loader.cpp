@@ -22,12 +22,14 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "input_hook.hpp"
 #include "overlay_d3d12.hpp"
 #include "eldenring_camera.hpp"
 #include "eldenring_damage.hpp"
+#include "eldenring_model.hpp"
 #include "eldenring_pick.hpp"
 #include "eldenring_steve.hpp"
 #include "eldenring_singletons.hpp"
@@ -90,6 +92,16 @@ bool SafeCopy(uintptr_t address, void* out, size_t size) {
     if (address < 0x10000) return false;
     __try {
         std::memcpy(out, reinterpret_cast<const void*>(address), size);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool SafeWrite32(uintptr_t address, uint32_t value) {
+    if (address < 0x10000) return false;
+    __try {
+        *reinterpret_cast<volatile uint32_t*>(address) = value;
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -202,6 +214,8 @@ std::atomic<bool> g_input_enabled{false};
 std::atomic<bool> g_click_attack{false};
 std::atomic<int> g_selected_slot{0};
 std::atomic<bool> g_steve_enabled{false};
+std::atomic<bool> g_hide_native{false};
+std::unordered_map<uintptr_t, uint32_t> g_hidden_flags; // disp_flags1 addresses we cleared -> their original value
 float g_steve_yaw_offset = 0.f;
 std::atomic<bool> g_require_victim_updating{true};
 DamageQueue g_queue;
@@ -458,6 +472,30 @@ void SetupDamage() {
 // ---- overlay -------------------------------------------------------------------------------------------------
 
 // Runs on the Present thread. The HUD is hidden whenever the game shows its own full-screen UI.
+// Clears (hide) or restores (show) the "drawn" bit of every part of the player's native model. Called every frame from
+// the Present thread while the feature is on; the part list is re-read each time, so parts the game replaced are
+// never written through a stale address.
+void UpdateNativeModel(uintptr_t player, bool hide) {
+    if (!hide && g_hidden_flags.empty()) return;
+    const std::vector<uintptr_t> addrs = collectDispFlagAddresses(g_reader, g_img.base, player);
+    for (uintptr_t a : addrs) {
+        uint32_t flags = 0;
+        if (!SafeCopy(a, &flags, sizeof(flags))) continue;
+        if (hide) {
+            if ((flags & layout::kDispVisibleBit) != 0) {
+                g_hidden_flags.emplace(a, flags);
+                SafeWrite32(a, flags & ~layout::kDispVisibleBit);
+            }
+        } else {
+            const auto it = g_hidden_flags.find(a);
+            if (it != g_hidden_flags.end()) {
+                SafeWrite32(a, flags | (it->second & layout::kDispVisibleBit));
+            }
+        }
+    }
+    if (!hide) g_hidden_flags.clear();
+}
+
 bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
     if (world == 0) return false;
@@ -478,6 +516,8 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     out.max_hp = v.max_hp;
     out.selected_slot = g_selected_slot.load();
     out.show = have_state && !ms.menu_focused && !ms.popup_open && !ls.screen_loading && fade < 0.02f;
+
+    if (g_hide_native.load()) UpdateNativeModel(static_cast<uintptr_t>(player), out.show && out.mc_mode);
 
     steve.draw = false;
     CameraPose cam;
@@ -531,10 +571,12 @@ void SetupOverlay() {
                 else if (key == "abs_bias") cfg.abs_bias = value;
                 else if (key == "scene_height") cfg.scene_height = value;
                 else if (key == "yaw_offset_deg") g_steve_yaw_offset = value * 3.14159265f / 180.f;
+                else if (key == "hide_native") g_hide_native.store(value != 0.f);
             }
         }
         erov::SetSteveConfig(cfg);
         g_steve_enabled.store(true);
+        Log("steve: hide_native=%d", g_hide_native.load() ? 1 : 0);
         Log("steve: enabled (occlusion=%d depth_const=%.4f rel_bias=%.3f abs_bias=%.3f scene_height=%.0f yaw_offset=%.1f deg)",
             cfg.occlusion ? 1 : 0, cfg.depth_const, cfg.rel_bias, cfg.abs_bias, cfg.scene_height, g_steve_yaw_offset * 180.f / 3.14159265f);
     }

@@ -5,6 +5,9 @@
 
 #include "mc/rig.hpp"
 
+#include "mc/animator.hpp"
+
+#include <algorithm>
 #include <array>
 #include <cmath>
 
@@ -31,5 +34,54 @@ inline PartMatrices restPoseMatrices(const mc::Vec3& feet, float yaw) {
     }
     return out;
 }
+
+// The same rotation as the canonical quaternion, expressed in the game's axes (the basis change is a reflection, so the
+// rotation axis flips: the same mapping the Sekiro adapter uses).
+inline mc::Quat hostQuat(const mc::Quat& q) { return {q.y, -q.z, -q.x, q.w}; }
+
+// Every part posed by the animator (canonical rotations), standing at `feet`, facing `yaw`.
+inline PartMatrices posedMatrices(const mc::SteveAnimator::PartTransforms& t, const mc::Vec3& feet, float yaw) {
+    PartMatrices out;
+    for (size_t i = 0; i < out.size(); ++i) {
+        out[i] = mc::rig::partMatrix(static_cast<mc::StevePart>(i), hostQuat(t[i].rot), feet, yaw, kBasis);
+    }
+    return out;
+}
+
+// Walking speed of the player from successive standing points, relative to the heading. A jump of more than 1.5 m in
+// one update (floating origin re-base, teleport) is not movement: it resets the state.
+class SteveMotion {
+public:
+    mc::SteveAnimInput update(float dt, const float feet[3], float yaw) {
+        mc::SteveAnimInput in;
+        dt = std::clamp(dt, 1.f / 240.f, 0.1f);
+        if (have_prev_) {
+            const float dx = feet[0] - prev_[0], dz = feet[2] - prev_[2];
+            if (std::sqrt(dx * dx + dz * dz) <= 1.5f) {
+                const float vx = dx / dt, vz = dz / dt;
+                const float fwd_x = std::sin(yaw), fwd_z = std::cos(yaw);
+                const float forward = vx * fwd_x + vz * fwd_z;
+                const float strafe = vx * fwd_z - vz * fwd_x; // along the heading's right-hand side (+X at yaw 0)
+                smooth_forward_ += (forward - smooth_forward_) * 0.35f;
+                smooth_strafe_ += (strafe - smooth_strafe_) * 0.35f;
+            } else {
+                smooth_forward_ = smooth_strafe_ = 0.f;
+            }
+        }
+        prev_[0] = feet[0];
+        prev_[1] = feet[1];
+        prev_[2] = feet[2];
+        have_prev_ = true;
+        in.forward_speed = smooth_forward_;
+        in.strafe_speed = smooth_strafe_;
+        return in;
+    }
+    void reset() { have_prev_ = false; smooth_forward_ = smooth_strafe_ = 0.f; }
+
+private:
+    bool have_prev_{false};
+    float prev_[3]{};
+    float smooth_forward_{0.f}, smooth_strafe_{0.f};
+};
 
 } // namespace eldenring::render
