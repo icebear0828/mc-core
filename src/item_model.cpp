@@ -181,7 +181,8 @@ RigMesh buildFlatItemMesh(const ItemSprite& s) {
     auto emit = [&](const Vec3 (&c)[4], float u, float v) {
         const uint16_t base = static_cast<uint16_t>(mesh.vertices.size());
         for (const Vec3& p : c) mesh.vertices.push_back({p.x, p.y, p.z, u, v});
-        for (uint16_t idx : {0, 1, 2, 0, 2, 3}) mesh.indices.push_back(static_cast<uint16_t>(base + idx));
+        const uint16_t tri[6] = {0, 1, 2, 0, 2, 3};
+        for (uint16_t idx : tri) mesh.indices.push_back(static_cast<uint16_t>(base + idx));
     };
     for (int j = 0; j < s.h; ++j) {
         for (int i = 0; i < s.w; ++i) {
