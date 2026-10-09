@@ -2348,6 +2348,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
             out.inv_item[i] = static_cast<uint16_t>(inv.slot(i).item);
             out.inv_count[i] = static_cast<uint8_t>(std::min(255u, inv.slot(i).count));
         }
+        out.no_focus = !GameInForeground();
         out.food = g_hunger.food();
         out.food_shaking = g_hunger.shaking();
         out.regen = g_survival.regenerating();

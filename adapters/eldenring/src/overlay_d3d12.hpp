@@ -38,6 +38,7 @@ struct HudState {
     bool regen{false};
     int xp_level{0};
     float xp_progress{0.f};
+    bool no_focus{false}; // the game is not the foreground window: its keyboard reads stop (shown as a red notice)
 };
 
 // The 3D figure for this frame: camera, standing point (feet, game metres) and heading (rotation about +Y).
