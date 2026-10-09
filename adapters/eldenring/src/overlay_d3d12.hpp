@@ -30,6 +30,7 @@ struct SteveState {
     float feet[3]{};
     float yaw{0.f};
     float swing{0.f}; // arm swing progress 0..1 (0 = idle)
+    bool dead{false}; // the player's HP is 0: the figure falls over (Minecraft death flip)
 };
 
 // Tuning read from mc_er_steve.txt (key=value lines).

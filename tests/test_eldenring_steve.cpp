@@ -132,3 +132,31 @@ TEST(EldenRingSteve, PosedMatricesFollowTheAnimatorAndStayFinite) {
     }
     EXPECT_TRUE(any_different); // legs and arms swing while walking
 }
+
+TEST(EldenRingSteve, DeathFlipFollowsMinecraftsCurve) {
+    using namespace eldenring::render;
+    EXPECT_FLOAT_EQ(deathFlipFraction(0.f), 0.f);
+    EXPECT_FLOAT_EQ(deathFlipFraction(-1.f), 0.f);
+    EXPECT_NEAR(deathFlipFraction(0.05f), 0.f, 1e-3);                     // 1 tick: (1 - 1) / 20 * 1.6 = 0
+    EXPECT_NEAR(deathFlipFraction(0.25f), std::sqrt(4.f / 20.f * 1.6f), 1e-5); // 5 ticks
+    EXPECT_FLOAT_EQ(deathFlipFraction(0.7f), 1.f);                         // fully flipped from about 0.68 s
+    EXPECT_FLOAT_EQ(deathFlipFraction(5.f), 1.f);
+    EXPECT_LT(deathFlipFraction(0.2f), deathFlipFraction(0.4f));           // monotonic
+}
+
+TEST(EldenRingSteve, DeathFallLaysTheFigureOnItsSide) {
+    using namespace eldenring::render;
+    const mc::Vec3 feet{4.f, 1.f, 7.f};
+    const float yaw = 0.6f;
+    const mc::Vec3 head{4.f, 2.8f, 7.f}; // 1.8 m straight above the feet
+    const auto none = mc::rig::transformPoint(deathFallMatrix(feet, yaw, 0.f), head);
+    EXPECT_NEAR(none.x, head.x, 1e-4);
+    EXPECT_NEAR(none.y, head.y, 1e-4);
+    EXPECT_NEAR(none.z, head.z, 1e-4);
+    const auto lying = mc::rig::transformPoint(deathFallMatrix(feet, yaw, 1.f), head);
+    EXPECT_NEAR(lying.y, 1.f, 1e-3);                                       // at the height of the feet
+    const float dx = lying.x - feet.x, dz = lying.z - feet.z;
+    EXPECT_NEAR(std::sqrt(dx * dx + dz * dz), 1.8f, 1e-3);                 // 1.8 m to the side
+    // the side is perpendicular to the heading
+    EXPECT_NEAR(dx * std::sin(yaw) + dz * std::cos(yaw), 0.f, 1e-3);
+}

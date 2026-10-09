@@ -857,6 +857,15 @@ void UpdateNativeModel(uintptr_t player, bool hide) {
         return;
     }
     const std::vector<uintptr_t> addrs = collectDispFlagAddresses(g_reader, g_img.base, player, g_hide_slots.load());
+    {
+        static std::vector<uintptr_t> last_set;
+        if (addrs != last_set) {
+            size_t fresh = 0;
+            for (uintptr_t a : addrs) fresh += std::find(last_set.begin(), last_set.end(), a) == last_set.end() ? 1 : 0;
+            if (!last_set.empty()) Log("native: part set changed: %zu parts, %zu new address(es) (was %zu)", addrs.size(), fresh, last_set.size());
+            last_set = addrs;
+        }
+    }
     const uint32_t masks[2] = {g_hide_mask1.load(), g_hide_mask2.load()};
     for (uintptr_t base : addrs) {
         for (unsigned w = 0; w < 2; ++w) {
@@ -931,6 +940,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.feet[2] = feet[2];
         steve.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) + g_steve_yaw_offset;
     }
+    steve.dead = v.max_hp > 0 && v.hp <= 0;
     if (g_slot_probe.load() >= 0 || g_first_person.load()) steve.draw = false; // slot probing: show only the native model, with the one slot missing
     return true;
 }

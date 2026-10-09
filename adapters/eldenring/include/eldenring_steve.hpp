@@ -48,6 +48,20 @@ inline PartMatrices posedMatrices(const mc::SteveAnimator::PartTransforms& t, co
     return out;
 }
 
+// Minecraft's death flip: after `seconds` of dying the body has turned sqrt((ticks - 1) / 20 * 1.6) of the way to lying on
+// its side (20 ticks per second), clamped to 0..1 (LivingEntityRenderer.setupRotations).
+inline float deathFlipFraction(float seconds) {
+    if (!(seconds > 0.f)) return 0.f;
+    const float f = (seconds * 20.f - 1.f) / 20.f * 1.6f;
+    return f <= 0.f ? 0.f : std::min(1.f, std::sqrt(f));
+}
+
+// Turns the whole figure about its forward axis through the feet (fraction 1 = 90 degrees, lying on its side).
+inline mc::rig::Mat4 deathFallMatrix(const mc::Vec3& feet, float yaw, float fraction) {
+    const mc::Vec3 forward{std::sin(yaw), 0.f, std::cos(yaw)};
+    return mc::rig::translation(feet * -1.0f) * mc::rig::rotationAboutAxis(forward, fraction * 1.5707963f) * mc::rig::translation(feet);
+}
+
 // Walking speed of the player from successive standing points, relative to the heading. A jump of more than 1.5 m in
 // one update (floating origin re-base, teleport) is not movement: it resets the state.
 class SteveMotion {

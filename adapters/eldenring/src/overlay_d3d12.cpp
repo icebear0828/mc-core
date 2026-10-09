@@ -47,6 +47,7 @@ SteveConfig g_steve_cfg;
 SteveRenderer g_steve;
 mc::SteveAnimator g_anim;
 eldenring::render::SteveMotion g_motion;
+float g_death_seconds = 0.f; // how long the figure has been dying (0 = alive)
 std::mutex g_depth_mutex;
 ID3D12Resource* g_depth_res = nullptr; // AddRef'd scene depth in use (R32G8X24_TYPELESS), guarded by g_depth_mutex
 std::vector<ID3D12Resource*> g_depth_candidates; // AddRef'd, oldest first, guarded by g_depth_mutex
@@ -370,7 +371,13 @@ void RenderFrame(IDXGISwapChain* sc) {
         mc::SteveAnimInput anim_in = g_motion.update(dt, steve.feet, steve.yaw);
         anim_in.swing_progress = steve.swing;
         g_anim.update(dt, anim_in);
-        const auto parts = eldenring::render::posedMatrices(g_anim.getTransforms(), {steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw);
+        auto parts = eldenring::render::posedMatrices(g_anim.getTransforms(), {steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw);
+        g_death_seconds = steve.dead ? g_death_seconds + dt : 0.f;
+        if (g_death_seconds > 0.f) {
+            const mc::rig::Mat4 fall = eldenring::render::deathFallMatrix({steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw,
+                                                                         eldenring::render::deathFlipFraction(g_death_seconds));
+            for (auto& m : parts) m = m * fall;
+        }
         SteveParams sp;
         sp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.debug == 2 ? 3.f : (g_steve_cfg.debug != 0 ? 2.f : (g_steve_cfg.occlusion ? 1.f : 0.f)));
         sp.depth_const = g_steve_cfg.depth_const;
