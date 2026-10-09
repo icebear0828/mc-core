@@ -1212,7 +1212,7 @@ bool AimRay(float eye[3], float dir[3]) {
     for (int i = 0; i < 3; ++i) dir[i] = cam.forward[i];
     const float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
     if (!(len > 0.5f)) return false;
-    for (float& c : dir) c /= len;
+    for (int i = 0; i < 3; ++i) dir[i] /= len;
     return true;
 }
 
