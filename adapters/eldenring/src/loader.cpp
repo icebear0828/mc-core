@@ -1411,7 +1411,7 @@ float FallTimer(uintptr_t chr) {
 // moving the player from the keys. Writing it EVERY frame is just as bad (0 makes the player crawl, a constant 1.0 freezes the movement
 // even with the keys down): the game advances the timer itself and switches state on how it changes. So the game's own behaviour is imitated:
 // reset once on our landing, and pull it back to 0 only when it has grown past `fall_hold` seconds; otherwise it is left alone.
-std::atomic<bool> g_fall_reset{true};   // mc_er_steve.txt: fall_reset=0 never touches the timer
+std::atomic<bool> g_fall_reset{false};  // mc_er_steve.txt: fall_reset=1 writes the fall timer (experiment: every way of writing it broke the movement, see HANDOFF)
 std::atomic<float> g_fall_hold{2.0f};   // fall_hold=<seconds>: the timer is reset to 0 when it passes this
 std::atomic<float> g_pre_fall_t{0.f};   // the timer as it was just before the last write
 void WriteFallTimer(uintptr_t chr, float value) {
