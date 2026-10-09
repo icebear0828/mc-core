@@ -53,6 +53,7 @@
 #include "eldenring_world.hpp"
 
 using namespace eldenring::live;
+namespace blocks = eldenring::blocks;
 
 namespace {
 
