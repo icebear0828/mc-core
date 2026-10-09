@@ -1184,6 +1184,7 @@ void CycleHiddenSlot(int& cursor) {
 blocks::BlockGrid g_blocks;
 std::mutex g_blocks_mutex;
 std::atomic<bool> g_blocks_enabled{true};      // mc_er_steve.txt: blocks=0 turns placing and breaking off
+std::atomic<bool> g_block_anchor{true};        // block_anchor=0: do not pin the player in place on a block while no movement key is down
 std::atomic<bool> g_block_ground{true};        // block_ground=0: do not fake "on the ground" while standing on a block
 std::atomic<bool> g_block_collision{true};     // block_collision=0: the player walks through the blocks
 std::atomic<float> g_reach{4.5f};              // reach, metres (Minecraft survival)
@@ -1347,7 +1348,7 @@ void BlocksCollisionStep() {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         r = have_prev && !jumped ? blocks::resolvePlayerSwept(g_blocks, prev, feet) : blocks::resolvePlayer(g_blocks, feet);
     }
-    const float* final_feet = r.moved ? r.feet : feet;
+    float final_feet[3] = {r.moved ? r.feet[0] : feet[0], r.moved ? r.feet[1] : feet[1], r.moved ? r.feet[2] : feet[2]};
     bool supported;
     {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
@@ -1358,6 +1359,33 @@ void BlocksCollisionStep() {
         // +0x70 is the position, +0x80 the previous frame's: both move, so the push is not seen as speed
         WriteBytesSafe(module + layout::kPhysicsPosition, r.feet, sizeof(r.feet));
         WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, r.feet, sizeof(r.feet));
+    }
+    // On a block the game has no ground, so the horizontal speed it carries from the air never fades: the player slid forward at a
+    // constant speed with no key down. While no movement key (WASD, Space) is held, the player is pinned to where it stopped.
+    static bool anchored = false;
+    static float anchor[2] = {};
+    bool pinned = false;
+    if (supported && g_block_anchor.load(std::memory_order_relaxed)) {
+        const bool fg = GameInForeground();
+        const bool keys = fg && ((GetAsyncKeyState('W') | GetAsyncKeyState('A') | GetAsyncKeyState('S') | GetAsyncKeyState('D') | GetAsyncKeyState(VK_SPACE)) & 0x8000) != 0;
+        if (keys) {
+            anchored = false;
+        } else {
+            if (!anchored) {
+                anchor[0] = final_feet[0];
+                anchor[1] = final_feet[2];
+                anchored = true;
+            }
+            final_feet[0] = anchor[0];
+            final_feet[2] = anchor[1];
+            pinned = true;
+        }
+    } else {
+        anchored = false;
+    }
+    if (module != 0 && pinned) {
+        WriteBytesSafe(module + layout::kPhysicsPosition, final_feet, sizeof(final_feet));
+        WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, final_feet, sizeof(final_feet));
     }
     if (module != 0 && supported) {
         // The game has no ground under a block, so it thinks the player is falling (no jump, restricted movement). While the player
@@ -1389,8 +1417,11 @@ void BlocksCollisionStep() {
             SafeCopy(module + 0x92, &flags[0], 1);
             SafeCopy(module + 0x93, &flags[1], 1);
         }
-        Log("blocks: standing diag: feet=(%.2f %.2f %.2f) cam=(%.2f %.2f %.2f) first_person=%d 92=%u 93=%u", final_feet[0], final_feet[1], final_feet[2],
-            have_cam ? cam.position[0] : 0.f, have_cam ? cam.position[1] : 0.f, have_cam ? cam.position[2] : 0.f, g_first_person.load() ? 1 : 0, flags[0], flags[1]);
+        float vel[3] = {};
+        if (module != 0) SafeCopy(module + 0x120, vel, sizeof(vel));
+        Log("blocks: standing diag: feet=(%.2f %.2f %.2f) cam=(%.2f %.2f %.2f) first_person=%d 92=%u 93=%u vel=(%.2f %.2f %.2f) pinned=%d", final_feet[0], final_feet[1],
+            final_feet[2], have_cam ? cam.position[0] : 0.f, have_cam ? cam.position[1] : 0.f, have_cam ? cam.position[2] : 0.f, g_first_person.load() ? 1 : 0, flags[0],
+            flags[1], vel[0], vel[1], vel[2], pinned ? 1 : 0);
     }
 }
 
@@ -2050,6 +2081,7 @@ void SetupOverlay() {
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "eye_height") g_eye_height.store(value);
                 else if (key == "blocks") g_blocks_enabled.store(value != 0.f);
+                else if (key == "block_anchor") g_block_anchor.store(value != 0.f);
                 else if (key == "block_ground") g_block_ground.store(value != 0.f);
                 else if (key == "block_collision") g_block_collision.store(value != 0.f);
                 else if (key == "reach") g_reach.store(std::clamp(value, 1.f, 8.f));
