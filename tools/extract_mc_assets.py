@@ -164,6 +164,8 @@ _PLACEHOLDER_ITEM_COLORS = {
     "item_arrow": (200, 200, 200), "item_trident": (40, 150, 150), "item_flint_and_steel": (90, 90, 90),
     "item_ender_pearl": (20, 90, 80), "item_enchanted_golden_apple": (200, 120, 230), "item_bread": (200, 150, 70),
     "item_cooked_beef": (120, 60, 30), "item_firework_rocket": (200, 40, 40),
+    "block_dirt": (134, 96, 67), "block_stone": (125, 125, 125), "block_tnt_top": (160, 80, 70),
+    "block_tnt_side": (200, 60, 50), "block_tnt_bottom": (160, 80, 70),
 }
 
 
@@ -356,6 +358,8 @@ def create_canonical_sprite(name: str) -> Image.Image:
             for x in range(5, 11):
                 img.putpixel((x, y), c_gld)
         img.putpixel((6, 5), c_emr); img.putpixel((9, 5), c_emr)
+    elif name.startswith("block_") and name in _PLACEHOLDER_ITEM_COLORS:  # a flat coloured square
+        img = Image.new("RGBA", (16, 16), _PLACEHOLDER_ITEM_COLORS[name] + (255,))
     elif name in _PLACEHOLDER_ITEM_COLORS:  # a plain coloured disc; the real icon replaces it when a client.jar is given
         col = _PLACEHOLDER_ITEM_COLORS[name] + (255,)
         for y in range(16):
@@ -412,6 +416,12 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("item_firework_rocket", (16, 16)),
     ("container_top", (176, 71)),
     ("container_bottom", (176, 96)),
+    # the faces of the blocks placed in the world (flat, as in the jar)
+    ("block_dirt", (16, 16)),
+    ("block_stone", (16, 16)),
+    ("block_tnt_top", (16, 16)),
+    ("block_tnt_side", (16, 16)),
+    ("block_tnt_bottom", (16, 16)),
 ]
 
 _JAR_HUD_SPRITES = {
@@ -442,6 +452,11 @@ _JAR_HUD_SPRITES = {
     "item_bread": "item/bread.png",
     "item_cooked_beef": "item/cooked_beef.png",
     "item_firework_rocket": "item/firework_rocket.png",
+    "block_dirt": "block/dirt.png",
+    "block_stone": "block/stone.png",
+    "block_tnt_top": "block/tnt_top.png",
+    "block_tnt_side": "block/tnt_side.png",
+    "block_tnt_bottom": "block/tnt_bottom.png",
 }
 
 # The 3-row container background (gui/container/generic_54.png): its top part is 17 + 3 * 18 rows, its bottom part (the

@@ -159,6 +159,7 @@ HUD_KEYS = [
     *[f"particle_sweep_{i}" for i in range(8)],
     "item_arrow", "item_trident", "item_flint_and_steel", "item_ender_pearl", "item_enchanted_golden_apple",
     "item_bread", "item_cooked_beef", "item_firework_rocket", "container_top", "container_bottom",
+    "block_dirt", "block_stone", "block_tnt_top", "block_tnt_side", "block_tnt_bottom",
 ]
 HUD_SIZES = {
     "heart_absorb_full": (9, 9), "heart_absorb_half": (9, 9), "particle_crit": (8, 8), "particle_damage": (8, 8),
@@ -197,6 +198,7 @@ def _sprite_colors():
         "item/bread.png": _solid((16, 16), (43, 44, 45, 255)),
         "item/cooked_beef.png": _solid((16, 16), (46, 47, 48, 255)),
         "item/firework_rocket.png": _solid((16, 16), (49, 50, 51, 255)),
+        "block/tnt_bottom.png": _solid((16, 16), (52, 53, 54, 255)),
     }
 
 
@@ -325,6 +327,17 @@ def test_new_item_icons_are_copied_and_the_enchanted_apple_is_a_tinted_golden_ap
     glint = _hud_region(atlas, uv["item_enchanted_golden_apple"]).getpixel((8, 8))
     assert glint != plain and glint[3] == 255
     assert glint[2] > plain[2]  # shifted towards the purple glint
+
+
+def test_block_face_sprites_are_the_flat_block_textures(tmp_path):
+    from extract_mc_assets import build_hud_atlas
+
+    atlas, uv = build_hud_atlas(_hud_jar(tmp_path / "client.jar"))
+    expect = {"block_dirt": (100, 80, 60, 255), "block_stone": (120, 120, 120, 255), "block_tnt_top": (220, 220, 220, 255),
+              "block_tnt_side": (200, 40, 30, 255), "block_tnt_bottom": (52, 53, 54, 255)}
+    for key, color in expect.items():
+        region = _hud_region(atlas, uv[key])
+        assert {region.getpixel((x, y)) for x in range(16) for y in range(16)} == {color}, key
 
 
 def test_committed_generated_headers_match_the_tool_output(tmp_path):

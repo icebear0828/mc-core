@@ -42,6 +42,7 @@ add_executable(mc_tests
     test_inventory.cpp
     test_inventory_layout.cpp
     test_eldenring_blocks.cpp
+    test_eldenring_blockmesh.cpp
 )
 
 target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source")
