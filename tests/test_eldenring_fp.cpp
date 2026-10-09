@@ -77,6 +77,17 @@ TEST(EldenRingFp, TheItemDisplayTransformScalesAndOffsetsTheModel) {
     EXPECT_NEAR(std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z), 0.5f * 0.68f, 1e-4f);
 }
 
+TEST(EldenRingFp, BlockDisplayScalesBy04AndTurnsTheCubeBy45Degrees) {
+    const mc::Vec3 c = apply(blockDisplay(), origin());
+    EXPECT_NEAR(c.x, 0.f, 1e-6f); // block/block display has no translation
+    EXPECT_NEAR(c.y, 0.f, 1e-6f);
+    const mc::Vec3 edge = apply(blockDisplay(), mc::Vec3{0.5f, 0.f, 0.f});
+    EXPECT_NEAR(std::sqrt(edge.x * edge.x + edge.y * edge.y + edge.z * edge.z), 0.5f * 0.4f, 1e-5f);
+    // a quarter turn about Y would send +x to +/-z; 45 degrees splits it evenly
+    EXPECT_NEAR(std::fabs(edge.x), std::fabs(edge.z), 1e-5f);
+    EXPECT_NEAR(edge.y, 0.f, 1e-6f);
+}
+
 TEST(EldenRingFp, HostMatrixMirrorsZAndUsesRowVectors) {
     // a point 1 in front of the camera in Minecraft space (-Z) is +1 in front in the host's left-handed space
     const mc::rig::Mat4 m = toHost(translate(0.f, 0.f, -1.f));

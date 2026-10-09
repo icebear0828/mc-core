@@ -203,3 +203,37 @@ TEST(ItemModel, FlatMeshIsCentredOneSixteenthThickAndAddressesTheSpritePixels) {
     EXPECT_TRUE(mc::rig::buildFlatItemMesh(empty).vertices.empty());
     EXPECT_TRUE(mc::rig::buildFlatItemMesh({nullptr, 8, 8, 0, 0, 2, 2}).vertices.empty());
 }
+
+TEST(ItemModelTest, HeldBlockIsATexturedCubeWithTheFaceCellsOfTheBlock) {
+    const UvRect top{0.10f, 0.10f, 0.20f, 0.20f}, side{0.30f, 0.30f, 0.40f, 0.40f}, bottom{0.50f, 0.50f, 0.60f, 0.60f};
+    const RigMesh mesh = buildHeldBlockMesh(top, side, bottom, kSekiro);
+    EXPECT_EQ(mesh.vertices.size(), 24u);
+    EXPECT_EQ(mesh.indices.size(), 36u);
+    auto in = [](const UvRect& r, const RigVertex& v) { return v.u >= r.u0 && v.u <= r.u1 && v.v >= r.v0 && v.v <= r.v1; };
+    int n_top = 0, n_side = 0, n_bottom = 0;
+    for (const RigVertex& v : mesh.vertices) {
+        if (in(top, v)) ++n_top;
+        else if (in(side, v)) ++n_side;
+        else if (in(bottom, v)) ++n_bottom;
+    }
+    EXPECT_EQ(n_top, 4);
+    EXPECT_EQ(n_side, 16);
+    EXPECT_EQ(n_bottom, 4);
+}
+
+TEST(ItemModelTest, HeldBlockIsSmallAndNearTheRightHand) {
+    const UvRect r{0.f, 0.f, 1.f, 1.f};
+    const RigMesh mesh = buildHeldBlockMesh(r, r, r, kSekiro);
+    ASSERT_FALSE(mesh.vertices.empty());
+    float lo[3] = {1e9f, 1e9f, 1e9f}, hi[3] = {-1e9f, -1e9f, -1e9f};
+    for (const RigVertex& v : mesh.vertices) {
+        const float p[3] = {v.x, v.y, v.z};
+        for (int i = 0; i < 3; ++i) {
+            lo[i] = std::min(lo[i], p[i]);
+            hi[i] = std::max(hi[i], p[i]);
+        }
+    }
+    // host units are metres; the model block is 0.9 m, scaled by 0.375 and rotated: well under a metre along any axis, and not a point
+    for (int i = 0; i < 3; ++i) EXPECT_LT(hi[i] - lo[i], 0.7f);
+    EXPECT_GT(hi[0] - lo[0], 0.2f);
+}

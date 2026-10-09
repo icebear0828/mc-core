@@ -22,6 +22,7 @@
 #include "eldenring_fp.hpp"
 #include "eldenring_hudtex.hpp"
 #include "eldenring_particles.hpp"
+#include "eldenring_blocks.hpp"
 #include "mc/hud_layout.hpp"
 #include "mc/inventory_layout.hpp"
 #include "mc/hud.hpp"
@@ -868,7 +869,8 @@ void RenderFrame(IDXGISwapChain* sc) {
         const fp::M4 base = fp::mul(fp::walkBob(g_walk_dist, g_walk_bob), fp::handSway(d_pitch, d_yaw));
         const float equipped = g_hand.equipped();
         const fp::M4 item_pose = steve.eating > 0.f ? fp::eatPose(steve.eating, equipped) : fp::itemPose(steve.swing, equipped);
-        const fp::M4 item_world = fp::mul(fp::mul(base, item_pose), fp::itemDisplay());
+        const bool held_block = eldenring::blocks::blockForItem(static_cast<mc::ItemId>(g_hand.shownItem())) != mc::BlockId::Air;
+        const fp::M4 item_world = fp::mul(fp::mul(base, item_pose), held_block ? fp::blockDisplay() : fp::itemDisplay());
         const fp::M4 arm_world = fp::mul(base, fp::bareArmPose(steve.swing, equipped));
         const mc::ItemId shown = g_hand.shownItem();
         const mc::rig::Mat4 proj = mc::rig::perspectiveLH(70.f * fp::kDeg, static_cast<float>(g_s.width) / static_cast<float>(g_s.height), 0.05f, 20.f);

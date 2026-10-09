@@ -5,6 +5,7 @@
 
 #include "eldenring_blocks.hpp"
 #include "mc/hud_atlas.hpp"
+#include "mc/item_model.hpp"
 #include "mc/rig.hpp"
 
 namespace eldenring::blocks {
@@ -58,6 +59,27 @@ inline mc::rig::RigMesh buildBlockMesh(const BlockGrid& grid) {
         }
     }
     return mesh;
+}
+
+// A block as an item in the hand: the unit cube centred on the origin (first person; 1 unit = 1 block, y up, +z towards the viewer).
+inline mc::rig::RigMesh buildCubeMesh(mc::BlockId id) {
+    BlockGrid g;
+    g.place({0, 0, 0}, id);
+    mc::rig::RigMesh mesh = buildBlockMesh(g);
+    for (mc::rig::RigVertex& v : mesh.vertices) {
+        v.x -= 0.5f;
+        v.y -= 0.5f;
+        v.z -= 0.5f;
+    }
+    return mesh;
+}
+
+// The same block held in the right hand in third person (see mc::rig::buildHeldBlockMesh).
+inline mc::rig::RigMesh buildHeldCubeMesh(mc::BlockId id, const mc::rig::HostBasis& basis) {
+    const FaceCells cells = faceCellsFor(id);
+    const float inset = 0.25f / static_cast<float>(mc::hud::kHudAtlasWidth);
+    auto rect = [&](const mc::hud::HudUV& uv) { return mc::rig::UvRect{uv.u0 + inset, uv.v0 + inset, uv.u1 - inset, uv.v1 - inset}; };
+    return mc::rig::buildHeldBlockMesh(rect(*cells.top), rect(*cells.side), rect(*cells.bottom), basis);
 }
 
 } // namespace eldenring::blocks

@@ -135,6 +135,10 @@ inline M4 itemDisplay() {
     return mul(p, scale(0.68f));
 }
 
+// The display transform of a block held in the first-person right hand (block/block: rotation (0, 45, 0), no translation, scale 0.4),
+// applied to the unit cube centred on the origin.
+inline M4 blockDisplay() { return mul(rotY(45.f), scale(0.4f)); }
+
 // View bobbing while walking (GameRenderer.bobView). `walk` is the walked distance in Minecraft's units, `bob` the amplitude
 // (0 standing .. 0.1 walking).
 inline M4 walkBob(float walk, float bob) {

@@ -238,4 +238,43 @@ inline Resolve resolvePlayer(const BlockGrid& grid, const float feet_in[3], floa
     return r;
 }
 
+inline bool playerOverlapsBlocks(const BlockGrid& grid, const float feet[3]) {
+    const int x0 = static_cast<int>(std::floor(feet[0] - kPlayerHalfWidth)), x1 = static_cast<int>(std::floor(feet[0] + kPlayerHalfWidth));
+    const int y0 = static_cast<int>(std::floor(feet[1])), y1 = static_cast<int>(std::floor(feet[1] + kPlayerHeight));
+    const int z0 = static_cast<int>(std::floor(feet[2] - kPlayerHalfWidth)), z1 = static_cast<int>(std::floor(feet[2] + kPlayerHalfWidth));
+    for (int x = x0; x <= x1; ++x)
+        for (int y = y0; y <= y1; ++y)
+            for (int z = z0; z <= z1; ++z)
+                if (grid.get({x, y, z}) != mc::BlockId::Air && cellTouchesPlayer({x, y, z}, feet)) return true;
+    return false;
+}
+
+// Like resolvePlayer, but a fall that crossed the top of a block between two frames is caught: the player ends up standing on the
+// highest block top it passed through (a frame hitch or a high falling speed would otherwise take it through a thin block).
+inline Resolve resolvePlayerSwept(const BlockGrid& grid, const float prev[3], const float cur[3], float max_push = 1.0f) {
+    if (grid.count() != 0 && cur[1] < prev[1] - 1e-4f && prev[1] - cur[1] < 64.f) {
+        const int x0 = static_cast<int>(std::floor(cur[0] - kPlayerHalfWidth + kOverlapEps)), x1 = static_cast<int>(std::floor(cur[0] + kPlayerHalfWidth - kOverlapEps));
+        const int z0 = static_cast<int>(std::floor(cur[2] - kPlayerHalfWidth + kOverlapEps)), z1 = static_cast<int>(std::floor(cur[2] + kPlayerHalfWidth - kOverlapEps));
+        const int y_top = static_cast<int>(std::floor(prev[1] + kOverlapEps)), y_low = static_cast<int>(std::floor(cur[1]));
+        for (int y = y_top; y >= y_low; --y) { // from the highest block top the player passed
+            bool found = false;
+            for (int x = x0; x <= x1 && !found; ++x)
+                for (int z = z0; z <= z1 && !found; ++z) found = grid.get({x, y, z}) != mc::BlockId::Air;
+            if (!found) continue;
+            const float top = static_cast<float>(y + 1);
+            if (top > prev[1] + kOverlapEps || top <= cur[1]) continue;
+            Resolve r;
+            r.feet[0] = cur[0];
+            r.feet[1] = top;
+            r.feet[2] = cur[2];
+            // standing there must not leave the player inside another block (a ceiling right above the block)
+            if (playerOverlapsBlocks(grid, r.feet)) continue;
+            r.moved = true;
+            r.standing = true;
+            return r;
+        }
+    }
+    return resolvePlayer(grid, cur, max_push);
+}
+
 } // namespace eldenring::blocks

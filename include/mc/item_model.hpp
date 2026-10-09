@@ -34,6 +34,13 @@ enum class HeldItemStyle {
 // centre of each source pixel, so point sampling returns the sprite's colours.
 RigMesh buildHeldItemMesh(const ItemSprite& sprite, HeldItemStyle style, const HostBasis& basis);
 
+// A block held in the hand in third person (block/block display: rotation (75, 45, 0), translation (0, 2.5, 0), scale 0.375): a
+// textured cube in the same space as buildHeldItemMesh. The faces are cells of an atlas, given as UV rectangles.
+struct UvRect {
+    float u0{0.f}, v0{0.f}, u1{1.f}, v1{1.f};
+};
+RigMesh buildHeldBlockMesh(const UvRect& top, const UvRect& side, const UvRect& bottom, const HostBasis& basis);
+
 // The sprite as a flat, one pixel thick extrusion centred on the origin, for the first-person view: x right, y up, z towards the
 // viewer, 1 unit = 1 block (16 sprite pixels), so the mesh spans -0.5..0.5 and is 1/16 thick. UVs address the atlas at the centre
 // of each source pixel. Empty for an unusable sprite.

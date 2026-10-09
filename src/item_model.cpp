@@ -167,6 +167,38 @@ RigMesh buildHeldItemMesh(const ItemSprite& s, HeldItemStyle style, const HostBa
     return mesh;
 }
 
+RigMesh buildHeldBlockMesh(const UvRect& top, const UvRect& side, const UvRect& bottom, const HostBasis& basis) {
+    RigMesh mesh;
+    const Display display{{75, 45, 0}, {0, 2.5f, 0}, 0.375f};
+    struct Face {
+        float c[4][3]; // corners of the unit cube (-0.5..0.5), seen from outside: top-left, top-right, bottom-right, bottom-left
+        int kind;      // 0 top, 1 side, 2 bottom
+    };
+    static const Face faces[6] = {
+        {{{-.5f, .5f, -.5f}, {.5f, .5f, -.5f}, {.5f, .5f, .5f}, {-.5f, .5f, .5f}}, 0},
+        {{{-.5f, -.5f, .5f}, {.5f, -.5f, .5f}, {.5f, -.5f, -.5f}, {-.5f, -.5f, -.5f}}, 2},
+        {{{.5f, .5f, -.5f}, {.5f, .5f, .5f}, {.5f, -.5f, .5f}, {.5f, -.5f, -.5f}}, 1},
+        {{{-.5f, .5f, .5f}, {-.5f, .5f, -.5f}, {-.5f, -.5f, -.5f}, {-.5f, -.5f, .5f}}, 1},
+        {{{.5f, .5f, .5f}, {-.5f, .5f, .5f}, {-.5f, -.5f, .5f}, {.5f, -.5f, .5f}}, 1},
+        {{{-.5f, .5f, -.5f}, {.5f, .5f, -.5f}, {.5f, -.5f, -.5f}, {-.5f, -.5f, -.5f}}, 1},
+    };
+    for (const Face& f : faces) {
+        const UvRect& r = f.kind == 0 ? top : (f.kind == 1 ? side : bottom);
+        const float us[4] = {r.u0, r.u1, r.u1, r.u0};
+        const float vs[4] = {r.v0, r.v0, r.v1, r.v1};
+        const uint16_t base = static_cast<uint16_t>(mesh.vertices.size());
+        for (int k = 0; k < 4; ++k) {
+            // sprite space is 16 pixels per block
+            const Vec3 model = spriteToModel(Vec3{f.c[k][0] * 16.f, f.c[k][1] * 16.f, f.c[k][2] * 16.f}, display);
+            const Vec3 host = basis.fromCanonical(Vec3{-model.z * kCmPerModelPixel, model.x * kCmPerModelPixel, (24.0f - model.y) * kCmPerModelPixel});
+            mesh.vertices.push_back({host.x, host.y, host.z, us[k], vs[k]});
+        }
+        static constexpr uint16_t kQuad[6] = {0, 1, 2, 0, 2, 3};
+        for (uint16_t i : kQuad) mesh.indices.push_back(static_cast<uint16_t>(base + i));
+    }
+    return mesh;
+}
+
 RigMesh buildFlatItemMesh(const ItemSprite& s) {
     RigMesh mesh;
     if (!s.rgba || s.w <= 0 || s.h <= 0 || s.x < 0 || s.y < 0 || s.x + s.w > s.atlas_w || s.y + s.h > s.atlas_h) return mesh;

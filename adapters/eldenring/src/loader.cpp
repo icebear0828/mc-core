@@ -466,6 +466,8 @@ struct CamKeep {
     bool valid{false};
 };
 CamKeep g_cam_keep;
+std::atomic<bool> g_camstep_installed{false}; // the camera update hook (game thread, every frame) is in place
+void BlocksCollisionStep(); // defined with the placed blocks below
 std::atomic<unsigned> g_camstep_calls{0}, g_camstep_changed{0};
 
 bool WriteBytesSafe(uintptr_t address, const void* src, size_t n) {
@@ -520,6 +522,7 @@ void AfterCameraStep(bool have_before, uintptr_t addr, const float before[3]) {
 }
 
 uint64_t __fastcall CameraStepDetour(uint64_t self, float dt, uint64_t chr, uint64_t flag) {
+    BlocksCollisionStep();
     RestoreCamKeep();
     uintptr_t addr = 0;
     float before[3] = {};
@@ -1308,6 +1311,63 @@ bool TryBreakBlock() {
     return true;
 }
 
+// Keeps the player out of the blocks. Runs on the game thread, at the start of every camera update (the game's own per-frame hook), so
+// the physics position is never written while the game is using it and the camera sees the corrected position.
+void BlocksCollisionStep() {
+    static bool have_prev = false;
+    static float prev[3] = {};
+    static unsigned pushes = 0;
+    if (!g_block_collision.load(std::memory_order_relaxed) || !g_mc_mode.load(std::memory_order_relaxed)) {
+        have_prev = false;
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        if (g_blocks.count() == 0) {
+            have_prev = false;
+            return;
+        }
+    }
+    const uintptr_t player = PlayerChrPtr();
+    float feet[3];
+    if (player == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) {
+        have_prev = false;
+        return;
+    }
+    float dx = 0.f, dy = 0.f, dz = 0.f;
+    if (have_prev) {
+        dx = feet[0] - prev[0];
+        dy = feet[1] - prev[1];
+        dz = feet[2] - prev[2];
+    }
+    const bool jumped = std::sqrt(dx * dx + dy * dy + dz * dz) > 20.f; // teleport / origin re-base: not movement
+    blocks::Resolve r;
+    {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        r = have_prev && !jumped ? blocks::resolvePlayerSwept(g_blocks, prev, feet) : blocks::resolvePlayer(g_blocks, feet);
+    }
+    if (!r.moved) {
+        std::memcpy(prev, feet, sizeof(prev));
+        have_prev = true;
+        return;
+    }
+    const uintptr_t module = detail::readPhysicsModule(g_reader, g_img.base, player);
+    if (module == 0) return;
+    // +0x70 is the position, +0x80 the previous frame's: both move, so the push is not seen as speed
+    WriteBytesSafe(module + layout::kPhysicsPosition, r.feet, sizeof(r.feet));
+    WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, r.feet, sizeof(r.feet));
+    if (r.standing) {
+        const float zero = 0.f; // the fall speed the game kept adding up is cancelled, so the next frame starts from rest
+        WriteBytesSafe(module + 0x120 + 4, &zero, sizeof(zero));
+    }
+    std::memcpy(prev, r.feet, sizeof(prev));
+    have_prev = true;
+    if (++pushes <= 20 || pushes % 500 == 0) {
+        Log("blocks: pushed the player out (%.2f %.2f %.2f) -> (%.2f %.2f %.2f)%s, %u so far", feet[0], feet[1], feet[2], r.feet[0], r.feet[1], r.feet[2],
+            r.standing ? " standing" : "", pushes);
+    }
+}
+
 // Called every key-thread tick: forgets the blocks when the game loads another map (the world coordinates are not the same any more),
 // and keeps the player out of the blocks.
 void BlocksTick() {
@@ -1323,27 +1383,7 @@ void BlocksTick() {
         prev_loading = ls.screen_loading;
     }
     SendBlockMesh();
-    if (!g_block_collision.load() || !g_mc_mode.load()) return;
-    const uintptr_t player = PlayerChrPtr();
-    if (player == 0) return;
-    float feet[3];
-    if (!detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) return;
-    blocks::Resolve r;
-    {
-        std::lock_guard<std::mutex> g(g_blocks_mutex);
-        if (g_blocks.count() == 0) return;
-        r = blocks::resolvePlayer(g_blocks, feet);
-    }
-    if (!r.moved) return;
-    const uintptr_t module = detail::readPhysicsModule(g_reader, g_img.base, player);
-    if (module == 0) return;
-    // +0x70 is the position, +0x80 the previous frame's: both move, so the push is not seen as speed
-    WriteBytesSafe(module + layout::kPhysicsPosition, r.feet, sizeof(r.feet));
-    WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, r.feet, sizeof(r.feet));
-    if (++pushes <= 20 || pushes % 200 == 0) {
-        Log("blocks: pushed the player out (%.2f %.2f %.2f) -> (%.2f %.2f %.2f)%s, %u so far", feet[0], feet[1], feet[2], r.feet[0], r.feet[1], r.feet[2],
-            r.standing ? " standing" : "", pushes);
-    }
+    if (!g_camstep_installed.load()) BlocksCollisionStep(); // without the camera hook the collision runs here (less smooth)
 }
 
 // Opens / closes the inventory and drives its virtual pointer. Runs on the key thread before the normal MC input, and takes the
@@ -1727,6 +1767,7 @@ void SetupDamage() {
                    MH_EnableHook(reinterpret_cast<void*>(step)) != MH_OK) {
             Log("camstep: hooking %p failed", reinterpret_cast<void*>(step));
         } else {
+            g_camstep_installed.store(true);
             Log("camstep: camera update hooked at %p (RVA 0x%llX): first person keeps the eye position for the whole frame (fp_persist=0 turns it off)",
                 reinterpret_cast<void*>(step), static_cast<unsigned long long>(step - g_img.base));
         }

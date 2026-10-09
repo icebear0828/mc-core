@@ -174,3 +174,52 @@ TEST(Blocks, ItemsMapToBlocks) {
     EXPECT_EQ(blockForItem(mc::ItemId::DiamondSword), mc::BlockId::Air);
     EXPECT_EQ(itemForBlock(mc::BlockId::Stone), mc::ItemId::BlockStone);
 }
+
+TEST(Blocks, FallingThroughABlockTopIsCaughtAndStandsOnIt) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::Stone); // top at y = 1
+    const float prev[3] = {0.5f, 3.0f, 0.5f};
+    const float cur[3] = {0.5f, -4.0f, 0.5f}; // a hitch: seven metres in one frame, far below the block
+    const Resolve r = resolvePlayerSwept(g, prev, cur);
+    EXPECT_TRUE(r.moved);
+    EXPECT_TRUE(r.standing);
+    EXPECT_NEAR(r.feet[1], 1.0f, 1e-4f);
+}
+
+TEST(Blocks, FallingBesideABlockIsNotCaught) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::Stone);
+    const float prev[3] = {2.5f, 3.0f, 0.5f};
+    const float cur[3] = {2.5f, -4.0f, 0.5f};
+    EXPECT_FALSE(resolvePlayerSwept(g, prev, cur).moved);
+}
+
+TEST(Blocks, FallingOntoTheHighestBlockOfAColumnStopsOnTheFirstOne) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::Stone);
+    g.place({0, 2, 0}, mc::BlockId::Stone); // top at 3
+    const float prev[3] = {0.5f, 5.0f, 0.5f};
+    const float cur[3] = {0.5f, -1.0f, 0.5f};
+    const Resolve r = resolvePlayerSwept(g, prev, cur);
+    EXPECT_NEAR(r.feet[1], 3.0f, 1e-4f);
+}
+
+TEST(Blocks, SweptFallsBackToTheNormalPushWhenNotFalling) {
+    BlockGrid g;
+    for (int y = 0; y < 3; ++y) g.place({2, y, 0}, mc::BlockId::Stone);
+    const float prev[3] = {1.0f, 0.0f, 0.5f};
+    const float cur[3] = {1.8f, 0.0f, 0.5f};
+    const Resolve r = resolvePlayerSwept(g, prev, cur);
+    EXPECT_TRUE(r.moved);
+    EXPECT_NEAR(r.feet[0], 1.7f, 1e-3f);
+}
+
+TEST(Blocks, ACeilingRightAboveTheBlockTopDoesNotTrapThePlayer) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::Stone);
+    g.place({0, 2, 0}, mc::BlockId::Stone); // only 1 m of room above the first block: the 1.8 m player does not fit there
+    const float prev[3] = {0.5f, 1.0f, 0.5f};
+    const float cur[3] = {0.5f, 0.2f, 0.5f};
+    const Resolve r = resolvePlayerSwept(g, prev, cur);
+    EXPECT_FALSE(r.standing && std::fabs(r.feet[1] - 1.0f) < 1e-3f); // not placed into the pocket
+}

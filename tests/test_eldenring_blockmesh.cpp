@@ -79,3 +79,28 @@ TEST(BlockMesh, EmptyGridGivesAnEmptyMesh) {
     BlockGrid g;
     EXPECT_TRUE(buildBlockMesh(g).vertices.empty());
 }
+
+TEST(BlockMesh, TheHeldCubeIsCentredOnTheOrigin) {
+    const mc::rig::RigMesh m = buildCubeMesh(mc::BlockId::Stone);
+    ASSERT_EQ(m.vertices.size(), 24u);
+    for (const mc::rig::RigVertex& v : m.vertices) {
+        EXPECT_GE(v.x, -0.5f);
+        EXPECT_LE(v.x, 0.5f);
+        EXPECT_GE(v.y, -0.5f);
+        EXPECT_LE(v.y, 0.5f);
+        EXPECT_TRUE(inside(mc::hud::kUV_BLOCK_STONE, v));
+    }
+}
+
+TEST(BlockMesh, TheThirdPersonHeldCubeUsesTheBlockFaces) {
+    const mc::rig::HostBasis basis{{0.f, 0.f, 1.f}, {-1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, 0.01f};
+    const mc::rig::RigMesh m = buildHeldCubeMesh(mc::BlockId::Tnt, basis);
+    ASSERT_EQ(m.vertices.size(), 24u);
+    int top = 0, side = 0;
+    for (const mc::rig::RigVertex& v : m.vertices) {
+        if (inside(mc::hud::kUV_BLOCK_TNT_TOP, v)) ++top;
+        if (inside(mc::hud::kUV_BLOCK_TNT_SIDE, v)) ++side;
+    }
+    EXPECT_EQ(top, 4);
+    EXPECT_EQ(side, 16);
+}

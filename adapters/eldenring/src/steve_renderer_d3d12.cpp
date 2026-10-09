@@ -7,6 +7,7 @@
 #include <cstring>
 #include <vector>
 
+#include "eldenring_blockmesh.hpp"
 #include "mc/item_model.hpp"
 #include "steve_renderer_d3d12.hpp"
 
@@ -417,8 +418,14 @@ bool SteveRenderer::initFirstPerson(ID3D12Device* device, const uint8_t* atlas_r
     }
     if (atlas_rgba) {
         for (const FpItemCell& cell : cells) {
-            const mc::rig::ItemSprite sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
-            const mc::rig::RigMesh mesh = mc::rig::buildFlatItemMesh(sprite);
+            const mc::BlockId block = eldenring::blocks::blockForItem(static_cast<mc::ItemId>(cell.item));
+            mc::rig::RigMesh mesh;
+            if (block != mc::BlockId::Air) {
+                mesh = eldenring::blocks::buildCubeMesh(block); // blocks are held as textured cubes, not as their GUI icon
+            } else {
+                const mc::rig::ItemSprite sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
+                mesh = mc::rig::buildFlatItemMesh(sprite);
+            }
             if (!mesh.vertices.empty()) fp_items_[cell.item] = add(mesh);
         }
     }
@@ -444,9 +451,15 @@ bool SteveRenderer::initHeldItems(ID3D12Device* device, const uint8_t* atlas_rgb
     std::vector<uint16_t> indices;
     for (const FpItemCell& cell : cells) {
         const mc::ItemId item = static_cast<mc::ItemId>(cell.item);
-        if (!mc::rig::isHeldAsFlatSprite(item)) continue;
-        const mc::rig::ItemSprite sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
-        const mc::rig::RigMesh mesh = mc::rig::buildHeldItemMesh(sprite, mc::rig::heldItemStyle(item), eldenring::render::kBasis);
+        const mc::BlockId block = eldenring::blocks::blockForItem(item);
+        mc::rig::RigMesh mesh;
+        if (block != mc::BlockId::Air) {
+            mesh = eldenring::blocks::buildHeldCubeMesh(block, eldenring::render::kBasis);
+        } else {
+            if (!mc::rig::isHeldAsFlatSprite(item)) continue;
+            const mc::rig::ItemSprite sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
+            mesh = mc::rig::buildHeldItemMesh(sprite, mc::rig::heldItemStyle(item), eldenring::render::kBasis);
+        }
         if (mesh.vertices.empty()) continue;
         FpDraw d;
         d.base_vertex = static_cast<int>(vertices.size());
