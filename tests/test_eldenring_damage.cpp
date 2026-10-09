@@ -282,6 +282,23 @@ TEST(EldenRingDamage, OnlyTheEntityBeingUpdatedRunsAndOthersWait) {
     EXPECT_EQ(q.pending(), 1u);
 }
 
+TEST(EldenRingDamage, DeadOrNeutralVictimsAreReportedEvenWhenAnotherEntityIsUpdating) {
+    Mem m = makeWorld();
+    const HitTemplate t = makeTemplate();
+    std::vector<Call> calls;
+    DamageQueue q;
+    m.put<int32_t>(kEnemy + 0x2000 + layout::kDataHp, 0); // killed earlier: its data module is no longer updated
+    q.enqueue(kEnemy, 50, 10);
+    DrainContext c = baseCtx(m, t, calls);
+    c.require_victim_updating = true;
+    c.updating_data_module = kEnemy2 + 0x2000;
+    const auto r = q.drain(c);
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_EQ(r[0].outcome, DamageOutcome::VictimDead); // not left to expire after 5 s
+    EXPECT_EQ(q.pending(), 0u);
+    EXPECT_TRUE(calls.empty());
+}
+
 TEST(EldenRingDamage, WaitingRequestsExpire) {
     const Mem m = makeWorld();
     const HitTemplate t = makeTemplate();

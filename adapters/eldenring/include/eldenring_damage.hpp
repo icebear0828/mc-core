@@ -221,12 +221,6 @@ private:
             damage_module == 0) {
             return DamageOutcome::VictimGone;
         }
-        if (ctx.require_victim_updating && ctx.updating_data_module != 0 &&
-            ctx.updating_data_module != static_cast<uintptr_t>(data_module)) {
-            return DamageOutcome::Deferred;
-        }
-        if (ctx.require_victim_updating && ctx.updating_data_module == 0) return DamageOutcome::Deferred;
-
         const auto dmg = static_cast<uintptr_t>(damage_module);
         uint64_t owner = 0;
         if (!rd.read(dmg + layout::kOwnerInDataModule, &owner, sizeof(owner)) || owner != victim) return DamageOutcome::VictimGone;
@@ -247,6 +241,13 @@ private:
 
         float pos[3];
         if (!detail::readPhysicsPosition(rd, base, victim, pos)) return DamageOutcome::VictimGone;
+
+        // Everything above is cheap and says "never": report it now. Only a request that is valid but whose entity is
+        // not the one being updated right now waits (so an entity is not changed while a worker updates it).
+        if (ctx.require_victim_updating &&
+            (ctx.updating_data_module == 0 || ctx.updating_data_module != static_cast<uintptr_t>(data_module))) {
+            return DamageOutcome::Deferred;
+        }
 
         HitContext hit = buildHitContext(*ctx.hit_template, player_chr, victim, r.base_damage, pos);
         ctx.invoke(dmg, player_chr, hit.bytes);

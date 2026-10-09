@@ -271,6 +271,10 @@ filter 取值（实调，空旷地形）：
 - 传送期间 `+0x1A` 同样短暂变 0（78.0~78.4 s）；所有常驻 `ui_states` 在 78.0 s 清零、78.6 s 恢复。
 - 菜单结构（按时序的推测）：枢纽 A = 槽 `0x1C`、`+0x1C=16`（33.2 s 起持续 10.6 s）；装备页 = 槽 `0x1D`、`+0x1C=17`（53.8 s）；另一页 = 槽 `0x1F`（旁边槽 `0x20`）、`+0x1C=0x50`（65.0 s）；系统菜单 = 槽 `0x3D`、`+0x1D=1`（73.9 s、138.3 s）；地图 = 槽 `0x2B`、`+0x1C=4`（76.1 s，地图打开时槽 `0x3D` 降为 3）。**哪个菜单是哪个页，需要用户确认。**
 **第二轮监听补充（用户说全部做完；约 250 s，之后只剩 `+0xEC` 的周期抖动）**：鼠标在菜单里移动期间 `+0x1A` 也没有变化，确认它与菜单、鼠标无关（至少在手柄已连接时）。着地标志只有零星的 0.1 s 抖动（46.6 s、49.8 s、74 s），没有明显的起跳序列，说明 "跳、翻滚、奔跑" 那几步并没有产生大的变化，或者做得很短。代码调整：`readFadeAlpha` 改读 plate 2；`LoadingState` 新增 `screen_loading`（`+0xED==0`）并保留 `job_active`；`MenuState` 新增 `menu_focused`（`+0x1C|+0x1D`）。401 个测试全过。
+**2026-10-08 里程碑 M1 第 1+2 步真机结果（`feat/eldenring-m1`，`dinput8.dll` 代理 + `ClampHP` 钩子，日志 `mc_er.log`）**
+- 加载器：环境检查通过（44 个模块、无 EAC）；4 个单例在加载后 0.125 s 内按签名绑定成功（RVA 与扫描一致）；`ClampHP`（RVA `0x438870`）32 字节前缀签名唯一，MinHook 钩子成功。游戏线程 = 游戏窗口所在线程（`GetWindowThreadProcessId`），伤害调用全部落在这个线程上。
+- 状态行（每秒）：枚举 492~674 个存活条目，其中敌对 466~643；玩家被打后 HP 576→392 能读到；菜单位掩码、读盘、淡入淡出读数都正常；回到标题时 `world=0` 并持续到日志结束。
+- 伤害：见清单 C3。结论：**从 `ClampHP` 钩子里、仅在游戏线程调用受害者伤害模块的 `vfunc[7]` 一次**，是可行的，且稳定。
 ### 1.10 输入与渲染的静态信息（B）
 
 - 导入表只有 `dinput8.dll!DirectInput8Create` 与 `user32` 的 `GetCursorPos/SetCursorPos/ClipCursor/GetKeyboardState/GetKeyState`，**没有** `RegisterRawInputDevices`/`GetRawInputData`（只说明没静态导入）。`CSInGamePad` 虚表 RVA `0x2A2AA40`。动作枚举来自外部参考：`Attack=7`、`Guard=9`、`Jump=14`。轮询函数、`allow_polling` 偏移都没找到。

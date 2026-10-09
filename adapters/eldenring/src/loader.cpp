@@ -176,6 +176,7 @@ bool GameInForeground() {
 // ---- damage --------------------------------------------------------------------------------------------------
 
 std::atomic<bool> g_damage_enabled{false};
+std::atomic<bool> g_require_victim_updating{true};
 DamageQueue g_queue;
 std::optional<HitTemplate> g_template;
 using ClampFn = void*(__fastcall*)(void*, int32_t);
@@ -223,7 +224,7 @@ void DrainOnce(uintptr_t updating_data_module) {
     c.on_game_thread = true;
     c.tick = NowTick();
     c.updating_data_module = updating_data_module;
-    c.require_victim_updating = true;
+    c.require_victim_updating = g_require_victim_updating.load();
     c.hit_template = g_template ? &*g_template : nullptr;
     c.max_per_drain = 1;
     c.expire_after_ticks = 60 * 5;
@@ -341,10 +342,12 @@ void SetupDamage() {
         Log("damage: hooking ClampHP at %p failed", reinterpret_cast<void*>(clamp));
         return;
     }
+    // mc_er_anyvictim.txt: do not wait for the victim to be the entity being updated (lower latency, small race risk).
+    g_require_victim_updating.store(!FileExists(g_game_dir + "mc_er_anyvictim.txt"));
     g_damage_enabled.store(true);
     CreateThread(nullptr, 0, KeyThread, nullptr, 0, nullptr);
-    Log("damage: enabled; ClampHP hooked at %p (RVA 0x%llX); press F8 to hit the nearest hostile enemy", reinterpret_cast<void*>(clamp),
-        static_cast<unsigned long long>(clamp - g_img.base));
+    Log("damage: enabled; ClampHP hooked at %p (RVA 0x%llX); press F8 to hit the nearest hostile enemy (require_victim_updating=%d)", reinterpret_cast<void*>(clamp),
+        static_cast<unsigned long long>(clamp - g_img.base), g_require_victim_updating.load() ? 1 : 0);
 }
 
 // ---- status loop ---------------------------------------------------------------------------------------------
