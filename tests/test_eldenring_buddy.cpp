@@ -161,3 +161,43 @@ TEST(Buddy, TracksTheCountAtPlus80ThatWasObservedToGoFromZeroToOneWhileSummoned)
     EXPECT_EQ(s.summoned, 1);
     EXPECT_NE(mon.update(s).find("summoned=1"), std::string::npos);
 }
+
+// ---- summon plan: what the experiment writes, and when it refuses --------------------------------------------
+
+TEST(BuddySummon, PlansTheTabletFirstThenTheRequestAtTheObservedOffsets) {
+    auto m = world();
+    m.put<int32_t>(kMan + buddy::layout::kSummonedFlag, 1);
+    const auto plan = buddy::planSummon(buddy::sample(m, kBase), 232000, 1042360100);
+    ASSERT_TRUE(plan.has_value());
+    EXPECT_EQ(plan->tablet_address, kMan + 0x3C);
+    EXPECT_EQ(plan->request_address, kMan + 0x20);
+    EXPECT_EQ(plan->tablet, 1042360100);
+    EXPECT_EQ(plan->request, 232000);
+    EXPECT_STREQ(buddy::refusalReason(buddy::sample(m, kBase)), "");
+}
+
+TEST(BuddySummon, RefusesWhenNotInAWorldOrTheWorldIsNotUp) {
+    FakeMemory none;
+    EXPECT_FALSE(buddy::planSummon(buddy::sample(none, kBase), 232000, 1).has_value());
+    auto m = world(); // +0x80 == 0: loading / title
+    EXPECT_FALSE(buddy::planSummon(buddy::sample(m, kBase), 232000, 1).has_value());
+    EXPECT_STRNE(buddy::refusalReason(buddy::sample(m, kBase)), "");
+}
+
+TEST(BuddySummon, RefusesWhileARequestIsPendingOrTheManagerIsBusy) {
+    auto m = world(232000);
+    m.put<int32_t>(kMan + buddy::layout::kSummonedFlag, 1);
+    EXPECT_FALSE(buddy::planSummon(buddy::sample(m, kBase), 232000, 1).has_value());
+    auto b = world(-1, -1, 0, 2);
+    b.put<int32_t>(kMan + buddy::layout::kSummonedFlag, 1);
+    EXPECT_FALSE(buddy::planSummon(buddy::sample(b, kBase), 232000, 1).has_value());
+}
+
+TEST(BuddySummon, RefusesNonsenseIds) {
+    auto m = world();
+    m.put<int32_t>(kMan + buddy::layout::kSummonedFlag, 1);
+    const auto snap = buddy::sample(m, kBase);
+    EXPECT_FALSE(buddy::planSummon(snap, -1, 1042360100).has_value());
+    EXPECT_FALSE(buddy::planSummon(snap, 0, 1042360100).has_value());
+    EXPECT_FALSE(buddy::planSummon(snap, 232000, 0).has_value());
+}

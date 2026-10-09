@@ -16,6 +16,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <optional>
 #include <string>
 
 namespace eldenring::buddy {
@@ -105,5 +106,33 @@ private:
     bool have_prev_{false};
     Snapshot prev_{};
 };
+
+// ---- the write experiment (mc_er_summon.txt + F2) -----------------------------------------------------------------------
+// Mirrors what the item code was observed to do: the tablet id and the request appear together, the frame update consumes the
+// request. The tablet goes first so it is already there when the request becomes visible. Only these two fields; +0x38 and
+// +0x44 were also set by the game and are NOT written (add them only if the summon fails without them).
+
+struct SummonPlan {
+    uintptr_t tablet_address{0};
+    uintptr_t request_address{0};
+    int32_t tablet{0};
+    int32_t request{-1};
+};
+
+// Why a summon cannot be requested right now ("" = it can).
+inline const char* refusalReason(const Snapshot& s) {
+    if (!s.valid) return "buddy manager not readable (not in a world)";
+    if (s.summoned == 0) return "world is not up yet (+0x80 == 0)";
+    if (s.request != -1) return "a request is already pending";
+    if (s.busy > 0) return "manager is busy (+0x88 > 0)";
+    return "";
+}
+
+inline std::optional<SummonPlan> planSummon(const Snapshot& s, int32_t request, int32_t tablet) {
+    if (refusalReason(s)[0] != '\0') return std::nullopt;
+    if (request <= 0 || tablet <= 0) return std::nullopt;
+    return SummonPlan{s.buddy_man + layout::kTabletId, s.buddy_man + layout::kRequestId, tablet, request};
+}
+
 
 } // namespace eldenring::buddy

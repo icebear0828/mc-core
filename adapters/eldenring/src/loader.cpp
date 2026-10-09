@@ -279,6 +279,7 @@ mc::ConsumableSystem g_eating;     // right click on food, guarded by g_melee_mu
 std::atomic<float> g_sound_volume{0.8f}; // mc_er_steve.txt: sound_volume
 std::atomic<float> g_walk_speed{0.f}; // horizontal speed of the player (m/s), measured by the key thread
 std::atomic<bool> g_on_ground{true};
+std::atomic<bool> g_summon_pending{false}; // F2 pressed with mc_er_summon.txt present: write one summon request on the game thread
 std::atomic<int> g_heal_pending{0}; // Elden Ring hit points waiting to be given back on the game thread
 using ApplyHpFn = void*(__fastcall*)(void* data_module, int32_t hp, uint8_t flag);
 ApplyHpFn g_apply_hp = nullptr;
@@ -1005,11 +1006,40 @@ void DrainOnce(uintptr_t updating_data_module) {
     }
 }
 
+// Experiment (mc_er_summon.txt + F2): asks the ash manager for a Wolf Pack summon the way the item code does (tablet id and
+// request together). Runs on the game thread. Logs the manager before and after, so a failure is visible either way.
+void RunSummonExperiment() {
+    constexpr int32_t kWolfPackRequest = 232000;     // ash 2320 * 100 + level 0, observed live
+    constexpr int32_t kTabletEntityId = 1042360100;  // the tablet entity observed with it (Limgrave tile 42_36)
+    using eldenring::buddy::sample;
+    const auto before = sample(g_reader, g_img.base);
+    const char* why = eldenring::buddy::refusalReason(before);
+    if (why[0] != '\0') {
+        Log("summon: refused: %s", why);
+        return;
+    }
+    const auto plan = eldenring::buddy::planSummon(before, kWolfPackRequest, kTabletEntityId);
+    if (!plan) {
+        Log("summon: no plan");
+        return;
+    }
+    const bool t_ok = SafeWrite32(plan->tablet_address, static_cast<uint32_t>(plan->tablet));
+    const bool r_ok = t_ok && SafeWrite32(plan->request_address, static_cast<uint32_t>(plan->request));
+    const auto after = sample(g_reader, g_img.base);
+    Log("summon: wrote tablet=%d request=%d (%s) | before request=%d active=%d tablet=%d | right after request=%d active=%d tablet=%d",
+        plan->tablet, plan->request, r_ok ? "ok" : "WRITE FAILED", before.request, before.active, before.tablet, after.request, after.active,
+        after.tablet);
+}
+
 void* __fastcall ClampDetour(void* module, int32_t value) {
     void* r = g_clamp_orig(module, value);
     if (g_damage_enabled.load(std::memory_order_relaxed) && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
         g_queue.pending() > 0) {
         DrainOnce(reinterpret_cast<uintptr_t>(module));
+    }
+    if (g_summon_pending.load(std::memory_order_relaxed) && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
+        g_summon_pending.exchange(false)) {
+        RunSummonExperiment();
     }
     if (g_heal_pending.load(std::memory_order_relaxed) > 0 && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed)) {
         uint64_t owner = 0;
@@ -1985,6 +2015,17 @@ DWORD WINAPI KeyThread(LPVOID) {
             Log("F6: MC mode %s", g_mc_mode.load() ? "on" : "off");
             ResetSlotProbe(slot_cursor);
         }
+        static bool prev_f2 = false;
+        const bool d2 = fg && (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
+        if (d2 && !prev_f2) {
+            if (FileExists(g_game_dir + "mc_er_summon.txt")) {
+                g_summon_pending.store(true);
+                Log("F2: summon experiment queued for the game thread");
+            } else {
+                Log("F2: ignored (no mc_er_summon.txt in the game directory)");
+            }
+        }
+        prev_f2 = d2;
         const bool d9 = fg && (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
         if (d9 && !prev9 && g_hide_native.load()) CycleHiddenSlot(slot_cursor);
         prev9 = d9;
