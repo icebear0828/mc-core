@@ -1020,9 +1020,30 @@ void RunSummonExperiment() {
         Log("summon: refused: %s", why);
         return;
     }
-    const auto plan = eldenring::buddy::planSummon(before, kWolfPackRequest, kTabletEntityId);
+    const uintptr_t player = PlayerChrPtr();
+    float pos[3], q[4];
+    if (player == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, pos) ||
+        !detail::readPhysicsOrientation(g_reader, g_img.base, player, q)) {
+        Log("summon: refused: the player's position is not readable");
+        return;
+    }
+    const auto spawn = eldenring::buddy::spawnPointAhead(pos, eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]));
+    const auto plan = eldenring::buddy::planSummon(before, kWolfPackRequest, kTabletEntityId, spawn);
     if (!plan) {
         Log("summon: no plan");
+        return;
+    }
+    bool sp_ok = true;
+    for (int i = 0; i < 4; ++i) {
+        uint32_t bits;
+        std::memcpy(&bits, &plan->spawn.pos[i], sizeof(bits));
+        sp_ok = SafeWrite32(plan->spawn_address + 4 * static_cast<uintptr_t>(i), bits) && sp_ok;
+    }
+    uint32_t yaw_bits;
+    std::memcpy(&yaw_bits, &plan->spawn.yaw, sizeof(yaw_bits));
+    sp_ok = SafeWrite32(plan->yaw_address, yaw_bits) && sp_ok;
+    if (!sp_ok) {
+        Log("summon: writing the spawn point failed; nothing else was written");
         return;
     }
     const bool t_ok = SafeWrite32(plan->tablet_address, static_cast<uint32_t>(plan->tablet));
@@ -1031,6 +1052,9 @@ void RunSummonExperiment() {
     Log("summon: wrote tablet=%d request=%d (%s) | before request=%d active=%d tablet=%d | right after request=%d active=%d tablet=%d",
         plan->tablet, plan->request, r_ok ? "ok" : "WRITE FAILED", before.request, before.active, before.tablet, after.request, after.active,
         after.tablet);
+    Log("summon: wrote spawn=(%.2f %.2f %.2f %.2f) yaw=%.2f for the player at (%.2f %.2f %.2f)", static_cast<double>(plan->spawn.pos[0]),
+        static_cast<double>(plan->spawn.pos[1]), static_cast<double>(plan->spawn.pos[2]), static_cast<double>(plan->spawn.pos[3]),
+        static_cast<double>(plan->spawn.yaw), static_cast<double>(pos[0]), static_cast<double>(pos[1]), static_cast<double>(pos[2]));
     Log("summon: spawn point in the manager was (%.2f %.2f %.2f %.2f) yaw=%.2f", static_cast<double>(before.spawn_pos[0]),
         static_cast<double>(before.spawn_pos[1]), static_cast<double>(before.spawn_pos[2]), static_cast<double>(before.spawn_pos[3]),
         static_cast<double>(before.spawn_yaw));

@@ -2,6 +2,7 @@
 
 #include "eldenring_buddy.hpp"
 
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <vector>
@@ -55,6 +56,8 @@ FakeMemory world(int32_t request = -1, int32_t active = -1, int32_t tablet = -1,
     m.put(kMan + buddy::layout::kBusyCount, busy);
     return m;
 }
+
+const buddy::SpawnPoint kSpawn{{1.f, 2.f, 3.f, 1.f}, 0.5f};
 
 } // namespace
 
@@ -167,7 +170,7 @@ TEST(Buddy, TracksTheCountAtPlus80ThatWasObservedToGoFromZeroToOneWhileSummoned)
 TEST(BuddySummon, PlansTheTabletFirstThenTheRequestAtTheObservedOffsets) {
     auto m = world();
     m.put<int32_t>(kMan + buddy::layout::kSummonedFlag, 1);
-    const auto plan = buddy::planSummon(buddy::sample(m, kBase), 232000, 1042360100);
+    const auto plan = buddy::planSummon(buddy::sample(m, kBase), 232000, 1042360100, kSpawn);
     ASSERT_TRUE(plan.has_value());
     EXPECT_EQ(plan->tablet_address, kMan + 0x3C);
     EXPECT_EQ(plan->request_address, kMan + 0x20);
@@ -178,28 +181,28 @@ TEST(BuddySummon, PlansTheTabletFirstThenTheRequestAtTheObservedOffsets) {
 
 TEST(BuddySummon, RefusesWhenNotInAWorldOrTheWorldIsNotUp) {
     FakeMemory none;
-    EXPECT_FALSE(buddy::planSummon(buddy::sample(none, kBase), 232000, 1).has_value());
+    EXPECT_FALSE(buddy::planSummon(buddy::sample(none, kBase), 232000, 1, kSpawn).has_value());
     auto m = world(); // +0x80 == 0: loading / title
-    EXPECT_FALSE(buddy::planSummon(buddy::sample(m, kBase), 232000, 1).has_value());
+    EXPECT_FALSE(buddy::planSummon(buddy::sample(m, kBase), 232000, 1, kSpawn).has_value());
     EXPECT_STRNE(buddy::refusalReason(buddy::sample(m, kBase)), "");
 }
 
 TEST(BuddySummon, RefusesWhileARequestIsPendingOrTheManagerIsBusy) {
     auto m = world(232000);
     m.put<int32_t>(kMan + buddy::layout::kSummonedFlag, 1);
-    EXPECT_FALSE(buddy::planSummon(buddy::sample(m, kBase), 232000, 1).has_value());
+    EXPECT_FALSE(buddy::planSummon(buddy::sample(m, kBase), 232000, 1, kSpawn).has_value());
     auto b = world(-1, -1, 0, 2);
     b.put<int32_t>(kMan + buddy::layout::kSummonedFlag, 1);
-    EXPECT_FALSE(buddy::planSummon(buddy::sample(b, kBase), 232000, 1).has_value());
+    EXPECT_FALSE(buddy::planSummon(buddy::sample(b, kBase), 232000, 1, kSpawn).has_value());
 }
 
 TEST(BuddySummon, RefusesNonsenseIds) {
     auto m = world();
     m.put<int32_t>(kMan + buddy::layout::kSummonedFlag, 1);
     const auto snap = buddy::sample(m, kBase);
-    EXPECT_FALSE(buddy::planSummon(snap, -1, 1042360100).has_value());
-    EXPECT_FALSE(buddy::planSummon(snap, 0, 1042360100).has_value());
-    EXPECT_FALSE(buddy::planSummon(snap, 232000, 0).has_value());
+    EXPECT_FALSE(buddy::planSummon(snap, -1, 1042360100, kSpawn).has_value());
+    EXPECT_FALSE(buddy::planSummon(snap, 0, 1042360100, kSpawn).has_value());
+    EXPECT_FALSE(buddy::planSummon(snap, 232000, 0, kSpawn).has_value());
 }
 
 TEST(BuddySummon, NewEntitiesAreTheOnesMissingFromTheBaseline) {
@@ -236,4 +239,46 @@ TEST(Buddy, TheRawDumpCoversTheSpawnPointToo) {
     m.put<uint32_t>(kMan + 0xB0, 0xCAFEF00D);
     buddy::Monitor mon;
     EXPECT_NE(mon.update(buddy::sample(m, kBase)).find("CAFEF00D"), std::string::npos);
+}
+
+TEST(BuddySummon, SpawnPointIsThreeMetresAheadOfThePlayerMatchingTheObservedNaturalSummon) {
+    // Observed live: player (-7.57, 7.23, 7.61) heading -2.51 -> the item code wrote (-5.79, 7.15, 10.03, 1.00) yaw -2.51.
+    const float player[3] = {-7.57f, 7.23f, 7.61f};
+    const auto p = buddy::spawnPointAhead(player, -2.51f);
+    EXPECT_NEAR(p.pos[0], -5.79f, 0.03f);
+    EXPECT_NEAR(p.pos[2], 10.03f, 0.03f);
+    EXPECT_NEAR(p.pos[1], 7.23f, 0.1f);
+    EXPECT_FLOAT_EQ(p.pos[3], 1.0f);
+    EXPECT_FLOAT_EQ(p.yaw, -2.51f);
+    const float dx = p.pos[0] - player[0], dz = p.pos[2] - player[2];
+    EXPECT_NEAR(std::sqrt(dx * dx + dz * dz), 3.0f, 1e-4);
+}
+
+TEST(BuddySummon, TheSpawnPointFollowsTheHeading) {
+    const float origin[3] = {0.f, 5.f, 0.f};
+    // heading 0 -> the game's quaternion faces -Z, so "ahead" is -Z... which is the observed -(sin h, cos h) rule.
+    const auto a = buddy::spawnPointAhead(origin, 0.f);
+    EXPECT_NEAR(a.pos[0], 0.f, 1e-5);
+    EXPECT_NEAR(a.pos[2], -3.f, 1e-5);
+    const auto b = buddy::spawnPointAhead(origin, 1.5707963f);
+    EXPECT_NEAR(b.pos[0], -3.f, 1e-4);
+    EXPECT_NEAR(b.pos[2], 0.f, 1e-4);
+}
+
+TEST(BuddySummon, PlanWritesTheSpawnPointFirstThenTheTabletThenTheRequest) {
+    auto m = world();
+    m.put<int32_t>(kMan + buddy::layout::kSummonedFlag, 1);
+    const auto plan = buddy::planSummon(buddy::sample(m, kBase), 232000, 1042360100, kSpawn);
+    ASSERT_TRUE(plan.has_value());
+    EXPECT_EQ(plan->spawn_address, kMan + 0xA0);
+    EXPECT_EQ(plan->yaw_address, kMan + 0xB0);
+    EXPECT_FLOAT_EQ(plan->spawn.pos[2], 3.f);
+    EXPECT_FLOAT_EQ(plan->spawn.yaw, 0.5f);
+}
+
+TEST(BuddySummon, RefusesANonFiniteSpawnPoint) {
+    auto m = world();
+    m.put<int32_t>(kMan + buddy::layout::kSummonedFlag, 1);
+    const buddy::SpawnPoint bad{{std::nanf(""), 0.f, 0.f, 1.f}, 0.f};
+    EXPECT_FALSE(buddy::planSummon(buddy::sample(m, kBase), 232000, 1, bad).has_value());
 }

@@ -16,6 +16,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <optional>
 #include <algorithm>
@@ -121,13 +122,34 @@ private:
 };
 
 // ---- the write experiment (mc_er_summon.txt + F2) -----------------------------------------------------------------------
-// Mirrors what the item code was observed to do: the tablet id and the request appear together, the frame update consumes the
-// request. The tablet goes first so it is already there when the request becomes visible. Only these two fields; +0x38 and
-// +0x44 were also set by the game and are NOT written (add them only if the summon fails without them).
+// Mirrors what the item code was observed to do: the spawn point, the tablet id and the request appear together, the frame
+// update consumes the request. The request goes last so everything else is already there when it becomes visible. +0x38 and
+// +0x44 are set by the game itself and are NOT written.
+
+// Where the units appear: the item code was observed to write the player's position plus 3 m straight ahead (in the player's
+// real facing, which is opposite to the orientation quaternion's own forward) and the player's heading, in the same instant as
+// the request. Observed: player (-7.57, 7.23, 7.61) heading -2.51 -> (-5.79, 7.15, 10.03, 1.00) yaw -2.51.
+struct SpawnPoint {
+    float pos[4]{0.f, 0.f, 0.f, 1.f};
+    float yaw{0.f};
+};
+
+inline SpawnPoint spawnPointAhead(const float player_pos[3], float heading, float distance = 3.0f) {
+    SpawnPoint p;
+    p.pos[0] = player_pos[0] - std::sin(heading) * distance;
+    p.pos[1] = player_pos[1];
+    p.pos[2] = player_pos[2] - std::cos(heading) * distance;
+    p.pos[3] = 1.0f;
+    p.yaw = heading;
+    return p;
+}
 
 struct SummonPlan {
+    uintptr_t spawn_address{0}; // 4 floats
+    uintptr_t yaw_address{0};
     uintptr_t tablet_address{0};
     uintptr_t request_address{0};
+    SpawnPoint spawn{};
     int32_t tablet{0};
     int32_t request{-1};
 };
@@ -141,12 +163,16 @@ inline const char* refusalReason(const Snapshot& s) {
     return "";
 }
 
-inline std::optional<SummonPlan> planSummon(const Snapshot& s, int32_t request, int32_t tablet) {
+inline std::optional<SummonPlan> planSummon(const Snapshot& s, int32_t request, int32_t tablet, const SpawnPoint& spawn) {
     if (refusalReason(s)[0] != '\0') return std::nullopt;
     if (request <= 0 || tablet <= 0) return std::nullopt;
-    return SummonPlan{s.buddy_man + layout::kTabletId, s.buddy_man + layout::kRequestId, tablet, request};
+    for (float v : spawn.pos) {
+        if (!std::isfinite(v)) return std::nullopt;
+    }
+    if (!std::isfinite(spawn.yaw)) return std::nullopt;
+    return SummonPlan{s.buddy_man + layout::kSpawnPos, s.buddy_man + layout::kSpawnYaw, s.buddy_man + layout::kTabletId,
+                      s.buddy_man + layout::kRequestId, spawn, tablet, request};
 }
-
 
 // Indices into `after` of the entities that were not in `before` (what appeared after a summon).
 inline std::vector<size_t> newEntities(const std::vector<uintptr_t>& before, const std::vector<uintptr_t>& after) {
