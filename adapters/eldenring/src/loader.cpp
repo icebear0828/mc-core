@@ -1184,6 +1184,8 @@ void CycleHiddenSlot(int& cursor) {
 blocks::BlockGrid g_blocks;
 std::mutex g_blocks_mutex;
 std::atomic<bool> g_blocks_enabled{true};      // mc_er_steve.txt: blocks=0 turns placing and breaking off
+std::atomic<float> g_block_walk_speed{3.9f};   // m/s on a block (measured ground speed of the run)
+std::atomic<bool> g_block_drive{true};         // block_drive=0: leave the game's own (stale) velocity alone on a block
 std::atomic<bool> g_block_anchor{true};        // block_anchor=0: do not pin the player in place on a block while no movement key is down
 std::atomic<bool> g_block_ground{true};        // block_ground=0: do not fake "on the ground" while standing on a block
 std::atomic<bool> g_block_collision{true};     // block_collision=0: the player walks through the blocks
@@ -1386,6 +1388,32 @@ void BlocksCollisionStep() {
     if (module != 0 && pinned) {
         WriteBytesSafe(module + layout::kPhysicsPosition, final_feet, sizeof(final_feet));
         WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, final_feet, sizeof(final_feet));
+    }
+    // On a block the game keeps the horizontal velocity it had in the air (+0x120, constant for seconds in the log) and moves the player with
+    // it whatever key is down; a jump resets it. So the velocity is written here: from the keys and the camera, or zero.
+    if (module != 0 && supported && g_block_drive.load(std::memory_order_relaxed)) {
+        float vx = 0.f, vz = 0.f;
+        if (!pinned && GameInForeground()) {
+            const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
+            const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
+            const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+            CameraPose cam;
+            if ((fwd_key != 0.f || right_key != 0.f) && world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
+                float fx = cam.forward[0], fz = cam.forward[2], rx = cam.right[0], rz = cam.right[2];
+                const float fl = std::sqrt(fx * fx + fz * fz), rl = std::sqrt(rx * rx + rz * rz);
+                if (fl > 1e-3f && rl > 1e-3f) {
+                    fx /= fl; fz /= fl; rx /= rl; rz /= rl;
+                    float dx = fwd_key * fx + right_key * rx, dz = fwd_key * fz + right_key * rz;
+                    const float dl = std::sqrt(dx * dx + dz * dz);
+                    if (dl > 1e-3f) {
+                        vx = dx / dl * g_block_walk_speed.load();
+                        vz = dz / dl * g_block_walk_speed.load();
+                    }
+                }
+            }
+        }
+        WriteBytesSafe(module + 0x120, &vx, sizeof(vx));
+        WriteBytesSafe(module + 0x120 + 8, &vz, sizeof(vz));
     }
     if (module != 0 && supported) {
         // The game has no ground under a block, so it thinks the player is falling (no jump, restricted movement). While the player
@@ -2081,6 +2109,8 @@ void SetupOverlay() {
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "eye_height") g_eye_height.store(value);
                 else if (key == "blocks") g_blocks_enabled.store(value != 0.f);
+                else if (key == "block_drive") g_block_drive.store(value != 0.f);
+                else if (key == "block_speed") g_block_walk_speed.store(std::clamp(value, 0.5f, 12.f));
                 else if (key == "block_anchor") g_block_anchor.store(value != 0.f);
                 else if (key == "block_ground") g_block_ground.store(value != 0.f);
                 else if (key == "block_collision") g_block_collision.store(value != 0.f);
