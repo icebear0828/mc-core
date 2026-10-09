@@ -402,8 +402,30 @@ thread_local ForcedDamage t_forced;
 using ProcessDamageFn = uint64_t (*)(void* module, void* attacker, uint8_t* ctx, uint32_t a4, uint8_t a5);
 ProcessDamageFn g_pdc_orig = nullptr;
 std::atomic<bool> g_pdc_hooked{false};
+std::atomic<bool> g_log_player_hits{false}; // mc_er_hitlog.txt: log the HitContext of every hit the player takes (read only)
+
+// Read-only: one line per hit the player takes, with the HitContext fields the reverser needs (blood effect, flinch, knockback).
+void LogPlayerHit(void* module, void* attacker, const uint8_t* ctx, uint8_t blocked_flag) {
+    uint64_t owner = 0, world = 0, player = 0;
+    if (!SafeCopy(reinterpret_cast<uintptr_t>(module) + layout::kOwnerInDataModule, &owner, sizeof(owner)) || owner == 0) return;
+    world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    if (world == 0 || !SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) || owner != player) return;
+    uint8_t b[0x240];
+    if (!SafeCopy(reinterpret_cast<uintptr_t>(ctx), b, sizeof(b))) return;
+    auto u32 = [&](size_t o) { uint32_t v; std::memcpy(&v, b + o, 4); return v; };
+    auto f32 = [&](size_t o) { float v; std::memcpy(&v, b + o, 4); return v; };
+    int32_t npc = 0;
+    uint8_t team = 0;
+    SafeCopy(reinterpret_cast<uintptr_t>(attacker) + layout::kNpcIdInChrIns, &npc, sizeof(npc));
+    SafeCopy(reinterpret_cast<uintptr_t>(attacker) + layout::kTeamTypeInChrIns, &team, sizeof(team));
+    Log("HIT-IN: dmg=%u poise=%u tier=%u kb+FC=%.2f f+50=%.2f %.2f %.2f u8[67]=%u u8[D9]=%u u8[DA]=%u u8[114]=%02X u8[115]=%02X "
+        "u32[21C]=%u u32[230]=%u blocked_arg=%u attacker=%p npc=%d team=%u",
+        u32(layout::kHitDamage), u32(0x40), u32(0x44), f32(layout::kHitKnockbackIn), f32(0x50), f32(0x54), f32(0x58), b[0x67], b[0xD9], b[0xDA],
+        b[0x114], b[0x115], u32(0x21C), u32(0x230), static_cast<unsigned>(blocked_flag), attacker, npc, static_cast<unsigned>(team));
+}
 
 uint64_t ProcessDamageDetour(void* module, void* attacker, uint8_t* ctx, uint32_t a4, uint8_t a5) {
+    if (!t_forced.armed && g_log_player_hits.load(std::memory_order_relaxed)) LogPlayerHit(module, attacker, ctx, a5);
     if (t_forced.armed && !t_forced.applied) {
         t_forced.applied = overrideFinalDamage(ctx, t_forced.attacker, t_forced.victim, t_forced.value, &t_forced.engine_value);
     }
@@ -814,6 +836,8 @@ void SetupDamage() {
                 static_cast<unsigned long long>(rcc - g_img.base));
         }
     }
+    g_log_player_hits.store(FileExists(g_game_dir + "mc_er_hitlog.txt"));
+    if (g_log_player_hits.load()) Log("hitlog: logging the HitContext of every hit the player takes");
     if (FileExists(g_game_dir + "mc_er_nolos.txt")) {
         Log("los: disabled by mc_er_nolos.txt");
     } else {
