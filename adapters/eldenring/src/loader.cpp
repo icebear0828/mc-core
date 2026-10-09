@@ -229,6 +229,7 @@ std::atomic<unsigned> g_native_reshown{0};     // times the game turned a hidden
 std::atomic<bool> g_slots_changed{false};
 std::atomic<int> g_slot_probe{-1}; // F9 probe: -1 = off (all slots), 0..26 = only that part slot is hidden
 std::atomic<uint32_t> g_hide_mask1{0x100A1}; // bits cleared in disp_flags1 (+0x20): visible + shadow (verified live, not bisected)
+std::atomic<int> g_hud_setting{-1}; // mc_er_steve.txt: hud_setting=N forces CSMenuMan+0x654C (the game's HUD option) while MC mode is on (experiment)
 std::atomic<bool> g_no_player_hit_vfx{false}; // mc_er_steve.txt: no_player_hit_vfx=1 (also implied by first person): no blood when the player is hit
 std::atomic<bool> g_first_person{false};  // mc_er_steve.txt: first_person=1 (experiment), F10 toggles
 std::atomic<float> g_eye_height{1.65f};
@@ -327,17 +328,24 @@ using HitVfxFn = uint8_t(__fastcall*)(void* damage_module, void* attacker, uint8
 HitVfxFn g_hitvfx_orig = nullptr;
 std::atomic<unsigned> g_hitvfx_skipped{0};
 
-uint8_t __fastcall HitVfxDetour(void* damage_module, void* attacker, uint8_t* ctx, void* flags) {
-    if (g_no_player_hit_vfx.load(std::memory_order_relaxed) || g_first_person.load(std::memory_order_relaxed)) {
-        uint64_t owner = 0, player = 0;
-        const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
-        if (world != 0 && SafeCopy(reinterpret_cast<uintptr_t>(damage_module) + layout::kOwnerInDataModule, &owner, sizeof(owner)) &&
-            SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) && owner != 0 && owner == player) {
-            ++g_hitvfx_skipped;
-            return 0;
-        }
+uint8_t __fastcall HitVfxDetour(void* a1, void* a2, uint8_t* ctx, void* flags) {
+    // a1 is the ATTACKER's module (0x140448870 hands the attacker's slot-18 module down), so the victim is read from the
+    // HitContext (+0x1E0), the same field our own hits fill in.
+    uint64_t victim = 0, player = 0;
+    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    const bool known = world != 0 && SafeCopy(reinterpret_cast<uintptr_t>(ctx) + layout::kHitVictim, &victim, sizeof(victim)) &&
+                       SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) && player != 0;
+    static std::atomic<unsigned> logged{0};
+    if (known && logged.load() < 12 && (victim == player || logged.load() < 4)) {
+        ++logged;
+        Log("hit vfx: call a1=%p a2=%p ctx victim=%p player=%p -> %s", a1, a2, reinterpret_cast<void*>(victim), reinterpret_cast<void*>(player),
+            victim == player ? "PLAYER IS THE VICTIM" : "other victim");
     }
-    return g_hitvfx_orig(damage_module, attacker, ctx, flags);
+    if (known && victim == player && (g_no_player_hit_vfx.load(std::memory_order_relaxed) || g_first_person.load(std::memory_order_relaxed))) {
+        ++g_hitvfx_skipped;
+        return 0;
+    }
+    return g_hitvfx_orig(a1, a2, ctx, flags);
 }
 
 // ---- line of sight (the game's static-geometry ray, docs/ELDENRING_REVERSE.md 1.6) -------------------------------------
@@ -955,6 +963,31 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
                             readFadeAlpha(g_reader, readSingleton(g_reader, g_img.base, g_rva_fade, sigs::kCSFade), fade);
     out.mc_mode = g_mc_mode.load();
     out.slot_probe = g_slot_probe.load();
+    {
+        // CSMenuMan+0x654C: candidate for the game's HUD option (auto / always / off). Logged when it changes; with hud_setting=N
+        // it is forced to N while MC mode is on and put back when MC mode is off.
+        static uint32_t last_seen = 0xFFFFFFFFu, original = 0xFFFFFFFFu;
+        static bool forced = false;
+        const uintptr_t menu = readSingleton(g_reader, g_img.base, g_rva_menu, sigs::kCSMenuMan);
+        uint32_t now_value = 0;
+        if (menu != 0 && SafeCopy(menu + 0x654C, &now_value, sizeof(now_value))) {
+            if (now_value != last_seen) {
+                Log("hud setting: CSMenuMan+0x654C = %u", now_value);
+                last_seen = now_value;
+            }
+            const int want = g_hud_setting.load();
+            if (want >= 0 && out.mc_mode && out.show) {
+                if (!forced) {
+                    original = now_value;
+                    forced = true;
+                }
+                if (now_value != static_cast<uint32_t>(want)) SafeWrite32(menu + 0x654C, static_cast<uint32_t>(want));
+            } else if (forced) {
+                SafeWrite32(menu + 0x654C, original);
+                forced = false;
+            }
+        }
+    }
     out.hp = v.hp;
     out.max_hp = v.max_hp;
     {
@@ -1037,6 +1070,7 @@ void SetupOverlay() {
                 else if (key == "scene_height") cfg.scene_height = value;
                 else if (key == "yaw_offset_deg") g_steve_yaw_offset = value * 3.14159265f / 180.f;
                 else if (key == "hide_native") g_hide_native.store(value != 0.f);
+                else if (key == "hud_setting") g_hud_setting.store(static_cast<int>(value));
                 else if (key == "no_player_hit_vfx") g_no_player_hit_vfx.store(value != 0.f);
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "eye_height") g_eye_height.store(value);
