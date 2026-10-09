@@ -72,4 +72,11 @@ inline std::optional<ScreenPoint> projectToScreen(const CameraPose& cam, const f
     return s;
 }
 
+// First-person experiment: the camera position (x, y, z) that puts the view at the player's eyes (Y up, metres).
+inline void firstPersonEye(const float feet[3], float eye_height, float out[3]) {
+    out[0] = feet[0];
+    out[1] = feet[1] + eye_height;
+    out[2] = feet[2];
+}
+
 } // namespace eldenring::live

@@ -226,6 +226,8 @@ std::unordered_map<uintptr_t, HiddenWord> g_hidden_flags; // flag word addresses
 std::atomic<bool> g_slots_changed{false};
 std::atomic<int> g_slot_probe{-1}; // F9 probe: -1 = off (all slots), 0..26 = only that part slot is hidden
 std::atomic<uint32_t> g_hide_mask1{0x100A1}; // bits cleared in disp_flags1 (+0x20): visible + shadow (verified live, not bisected)
+std::atomic<bool> g_first_person{false};  // mc_er_steve.txt: first_person=1 (experiment), F10 toggles
+std::atomic<float> g_eye_height{1.65f};
 std::atomic<float> g_kb_force{-1.f}; // mc_er_steve.txt: kb_force (>= 0 overrides HitContext+0xFC of our own hits; experiment)
 std::atomic<uint32_t> g_hide_slots{0xFFFFFFFFu}; // bit n = part slot n of the native model (mc_er_steve.txt: hide_slots)
 std::atomic<uint32_t> g_hide_mask2{1};         // bits cleared in disp_flags2 (+0x24)
@@ -262,6 +264,44 @@ bool CallVfunc7(uintptr_t damage_module, uintptr_t attacker, void* ctx) {
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
+    }
+}
+
+// ---- first person experiment ----------------------------------------------------------------------------------------
+// Detour of the function at 0x1404A7190 that copies ChrCam's vectors into another camera context. Before the copy the
+// position in ChrCam is replaced by the player's eye position, after it the engine's own value is put back, so the
+// camera controller and every other reader of ChrCam are untouched. Whether the renderer takes its view from that
+// context is exactly what this experiment finds out.
+using RenderCamCopyFn = void(__fastcall*)(void* self);
+RenderCamCopyFn g_rcc_orig = nullptr;
+
+void __fastcall RenderCamCopyDetour(void* self) {
+    uintptr_t pos_addr = 0;
+    float saved[3] = {};
+    if (g_first_person.load(std::memory_order_relaxed)) {
+        const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+        uint64_t cam = 0, player = 0;
+        float feet[3];
+        if (world != 0 && SafeCopy(world + layout::kChrCamInWorldChrMan, &cam, sizeof(cam)) && cam != 0 &&
+            SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) && player != 0 &&
+            detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(player), feet) &&
+            SafeCopy(static_cast<uintptr_t>(cam) + layout::kCamMatrix + 0x30, saved, sizeof(saved))) {
+            float eye[3];
+            firstPersonEye(feet, g_eye_height.load(), eye);
+            pos_addr = static_cast<uintptr_t>(cam) + layout::kCamMatrix + 0x30;
+            __try {
+                std::memcpy(reinterpret_cast<void*>(pos_addr), eye, sizeof(eye));
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                pos_addr = 0;
+            }
+        }
+    }
+    g_rcc_orig(self);
+    if (pos_addr != 0) {
+        __try {
+            std::memcpy(reinterpret_cast<void*>(pos_addr), saved, sizeof(saved));
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
     }
 }
 
@@ -600,6 +640,7 @@ DWORD WINAPI KeyThread(LPVOID) {
     bool prev_digit[MeleeController::kSlots] = {};
     bool prev_space = false;
     bool prev9 = false;
+    bool prev10 = false;
     int slot_cursor = -1; // -1 = all slots, 0..26 = only that part slot
     uint64_t last_ms = GetTickCount64();
     for (;;) {
@@ -661,6 +702,12 @@ DWORD WINAPI KeyThread(LPVOID) {
         const bool d9 = fg && (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
         if (d9 && !prev9 && g_hide_native.load()) CycleHiddenSlot(slot_cursor);
         prev9 = d9;
+        const bool d10 = fg && (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
+        if (d10 && !prev10) {
+            g_first_person.store(!g_first_person.load());
+            Log("F10: first person experiment %s", g_first_person.load() ? "on" : "off");
+        }
+        prev10 = d10;
         const bool d7 = fg && (GetAsyncKeyState(VK_F7) & 0x8000) != 0;
         if (d7 && !prev7) erov::CycleDepthCandidate();
         prev7 = d7;
@@ -739,6 +786,19 @@ void SetupDamage() {
         g_pdc_hooked.store(true);
         Log("damage: ProcessDamageContext hooked at %p (RVA 0x%llX): final damage is replaced for our own hits", reinterpret_cast<void*>(pdc),
             static_cast<unsigned long long>(pdc - g_img.base));
+    }
+    {
+        uintptr_t rcc = 0;
+        if (!LocateByPrefix(g_img, sigs::kRenderCameraCopy, rcc)) {
+            Log("first person: render camera copy signature not unique, experiment unavailable");
+        } else if (MH_CreateHook(reinterpret_cast<void*>(rcc), reinterpret_cast<void*>(&RenderCamCopyDetour), reinterpret_cast<void**>(&g_rcc_orig)) !=
+                       MH_OK ||
+                   MH_EnableHook(reinterpret_cast<void*>(rcc)) != MH_OK) {
+            Log("first person: hooking %p failed", reinterpret_cast<void*>(rcc));
+        } else {
+            Log("first person: render camera copy hooked at %p (RVA 0x%llX); first_person=1 or F10 turns the experiment on", reinterpret_cast<void*>(rcc),
+                static_cast<unsigned long long>(rcc - g_img.base));
+        }
     }
     if (FileExists(g_game_dir + "mc_er_nolos.txt")) {
         Log("los: disabled by mc_er_nolos.txt");
@@ -845,7 +905,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.feet[2] = feet[2];
         steve.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) + g_steve_yaw_offset;
     }
-    if (g_slot_probe.load() >= 0) steve.draw = false; // slot probing: show only the native model, with the one slot missing
+    if (g_slot_probe.load() >= 0 || g_first_person.load()) steve.draw = false; // slot probing: show only the native model, with the one slot missing
     return true;
 }
 
@@ -882,6 +942,8 @@ void SetupOverlay() {
                 else if (key == "scene_height") cfg.scene_height = value;
                 else if (key == "yaw_offset_deg") g_steve_yaw_offset = value * 3.14159265f / 180.f;
                 else if (key == "hide_native") g_hide_native.store(value != 0.f);
+                else if (key == "first_person") g_first_person.store(value != 0.f);
+                else if (key == "eye_height") g_eye_height.store(value);
                 else if (key == "kb_force") g_kb_force.store(value);
                 else if (key == "hide_slots") g_hide_slots.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));
                 else if (key == "hide_mask1") g_hide_mask1.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));

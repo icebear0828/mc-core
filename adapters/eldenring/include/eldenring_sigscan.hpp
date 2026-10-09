@@ -102,6 +102,11 @@ inline constexpr const char* kClampHp =
 // load, then `mov r14, r8` (ctx). Both halves are unique in 2.7.1.0 (checked in the exe).
 inline constexpr const char* kProcessDamageContext =
     "4C 8B DC 55 53 56 57 41 56 41 57 49 8D 6B 88 48 81 EC 48 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 20 4D 89 63 20 4D 8B F0";
+// The function that copies ChrCam's right/up/forward/position into another camera context ([rbx+0x80..0xB0]); it is called
+// through a vtable (0x1404A7190). Unique in 2.7.1.0. Used by the first-person experiment only.
+inline constexpr const char* kRenderCameraCopy =
+    "40 53 48 83 EC 20 48 8B D9 48 83 C1 48 E8 ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 85 C0 74 38 48 8B 80 E0 EC 01 00 48 85 C0 74 2C 0F 28 40 10 "
+    "0F 29 83 80 00 00 00";
 inline constexpr const char* kGetEffectiveTeamType = "48 89 5C 24 10 57 48 83 EC 20 0F B6 41 6C 48 8B F9 88 02";
 } // namespace sigs
 

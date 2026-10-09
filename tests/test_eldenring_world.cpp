@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "eldenring_camera.hpp"
 #include "eldenring_sigscan.hpp"
 #include "eldenring_model.hpp"
 #include "eldenring_world.hpp"
@@ -537,4 +538,13 @@ TEST(EldenRingModel, PhysicsVec3ReadsAnyOffset) {
     EXPECT_FLOAT_EQ(v[1], -2.f);
     EXPECT_FLOAT_EQ(v[2], 0.25f);
     EXPECT_FALSE(detail::readPhysicsVec3(m, kBase, 0, 0x120, v));
+}
+
+TEST(EldenRingCamera, FirstPersonEyeIsAboveTheFeet) {
+    const float feet[3] = {1.f, 2.f, 3.f};
+    float eye[3] = {};
+    eldenring::live::firstPersonEye(feet, 1.65f, eye);
+    EXPECT_FLOAT_EQ(eye[0], 1.f);
+    EXPECT_FLOAT_EQ(eye[1], 3.65f);
+    EXPECT_FLOAT_EQ(eye[2], 3.f);
 }
