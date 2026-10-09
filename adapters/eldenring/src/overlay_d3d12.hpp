@@ -86,6 +86,8 @@ void SpawnFx(FxKind kind, const float world_pos[3], int count);
 void ScreenSize(float& width, float& height);
 // The mesh of the placed blocks (world space, game metres; see eldenring_blockmesh.hpp). Thread safe; the overlay uploads and draws it.
 void SetBlockMesh(const mc::rig::RigMesh& mesh);
+// Saves the next frame (the game plus our overlay) as a PNG at `utf8_path`. Thread safe; the file is written by the Present thread.
+void RequestScreenshot(const char* utf8_path);
 // Debug: bind the next captured 1920x1080 R32G8X24 depth resource (the game creates several).
 void CycleDepthCandidate();
 

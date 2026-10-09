@@ -61,4 +61,32 @@ bool DecodePngFile(const std::string& path, std::vector<uint8_t>& rgba, unsigned
     return ok;
 }
 
+bool EncodePngFile(const std::string& path, const uint8_t* rgba, unsigned width, unsigned height, unsigned pitch) {
+    if (rgba == nullptr || width == 0 || height == 0 || pitch < width * 4) return false;
+    const HRESULT init = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool uninit = SUCCEEDED(init);
+    bool ok = false;
+    {
+        Com<IWICImagingFactory> factory;
+        Com<IWICStream> stream;
+        Com<IWICBitmapEncoder> encoder;
+        Com<IWICBitmapFrameEncode> frame;
+        const std::wstring wide = Widen(path);
+        if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(factory.put()))) &&
+            SUCCEEDED(factory->CreateStream(stream.put())) && SUCCEEDED(stream->InitializeFromFilename(wide.c_str(), GENERIC_WRITE)) &&
+            SUCCEEDED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, encoder.put())) &&
+            SUCCEEDED(encoder->Initialize(stream.p, WICBitmapEncoderNoCache)) && SUCCEEDED(encoder->CreateNewFrame(frame.put(), nullptr)) &&
+            SUCCEEDED(frame->Initialize(nullptr)) && SUCCEEDED(frame->SetSize(width, height))) {
+            WICPixelFormatGUID format = GUID_WICPixelFormat32bppRGBA;
+            if (SUCCEEDED(frame->SetPixelFormat(&format)) && IsEqualGUID(format, GUID_WICPixelFormat32bppRGBA) &&
+                SUCCEEDED(frame->WritePixels(height, pitch, pitch * height, const_cast<BYTE*>(rgba))) && SUCCEEDED(frame->Commit()) &&
+                SUCCEEDED(encoder->Commit())) {
+                ok = true;
+            }
+        }
+    }
+    if (uninit) CoUninitialize();
+    return ok;
+}
+
 } // namespace erov

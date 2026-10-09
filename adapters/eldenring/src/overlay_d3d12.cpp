@@ -29,6 +29,7 @@
 #include "mc/inventory_layout.hpp"
 #include "mc/hud.hpp"
 #include "overlay_d3d12.hpp"
+#include "png_wic.hpp"
 #include "steve_renderer_d3d12.hpp"
 
 namespace erov {
@@ -96,6 +97,9 @@ UINT g_depth_w = 0, g_depth_h = 0;
 std::atomic<bool> g_depth_dirty{false};
 D3D12_CPU_DESCRIPTOR_HANDLE g_depth_cpu{};
 D3D12_GPU_DESCRIPTOR_HANDLE g_depth_gpu{};
+std::mutex g_shot_mutex;
+std::string g_shot_path;
+std::atomic<bool> g_shot_requested{false};
 std::mutex g_block_mutex;
 mc::rig::RigMesh g_block_mesh;
 std::atomic<bool> g_blocks_dirty{false};
@@ -951,7 +955,49 @@ void RenderFrame(IDXGISwapChain* sc) {
         g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr); // ImGui draws without a depth view
     }
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_s.list);
-    b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    // A screenshot (F4): the finished back buffer is copied into a read-back buffer in the same command list.
+    ID3D12Resource* shot_buf = nullptr;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT shot_fp{};
+    UINT shot_rows = 0;
+    std::string shot_path;
+    if (g_shot_requested.exchange(false)) {
+        {
+            std::lock_guard<std::mutex> g(g_shot_mutex);
+            shot_path = g_shot_path;
+        }
+        const D3D12_RESOURCE_DESC rd = f.back->GetDesc();
+        UINT64 row_bytes = 0, total = 0;
+        g_s.device->GetCopyableFootprints(&rd, 0, 1, 0, &shot_fp, &shot_rows, &row_bytes, &total);
+        D3D12_HEAP_PROPERTIES hp{};
+        hp.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_RESOURCE_DESC bd{};
+        bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        bd.Width = total;
+        bd.Height = 1;
+        bd.DepthOrArraySize = 1;
+        bd.MipLevels = 1;
+        bd.SampleDesc.Count = 1;
+        bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        if (FAILED(g_s.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&shot_buf)))) {
+            shot_buf = nullptr;
+            Logf("screenshot: read-back buffer failed");
+        } else {
+            b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            g_s.list->ResourceBarrier(1, &b);
+            D3D12_TEXTURE_COPY_LOCATION dst{};
+            dst.pResource = shot_buf;
+            dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            dst.PlacedFootprint = shot_fp;
+            D3D12_TEXTURE_COPY_LOCATION src{};
+            src.pResource = f.back;
+            src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            src.SubresourceIndex = 0;
+            g_s.list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+            b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        }
+    }
+    if (shot_buf == nullptr) b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
     g_s.list->ResourceBarrier(1, &b);
     g_s.list->Close();
@@ -959,6 +1005,37 @@ void RenderFrame(IDXGISwapChain* sc) {
     g_execute_orig(g_s.queue, 1, lists);
     f.fence_value = ++g_s.fence_counter;
     g_s.queue->Signal(g_s.fence, f.fence_value);
+    if (shot_buf != nullptr) {
+        g_s.fence->SetEventOnCompletion(f.fence_value, g_s.fence_event);
+        WaitForSingleObject(g_s.fence_event, 2000);
+        const D3D12_RESOURCE_DESC rd = f.back->GetDesc();
+        void* mapped = nullptr;
+        D3D12_RANGE range{0, shot_fp.Footprint.RowPitch * shot_rows};
+        const bool rgba = rd.Format == DXGI_FORMAT_R8G8B8A8_UNORM || rd.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+        const bool bgra = rd.Format == DXGI_FORMAT_B8G8R8A8_UNORM || rd.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        if ((rgba || bgra) && SUCCEEDED(shot_buf->Map(0, &range, &mapped))) {
+            const unsigned w = static_cast<unsigned>(rd.Width), h = rd.Height;
+            std::vector<uint8_t> out(static_cast<size_t>(w) * h * 4);
+            for (unsigned y = 0; y < h; ++y) {
+                const uint8_t* srow = static_cast<const uint8_t*>(mapped) + static_cast<size_t>(y) * shot_fp.Footprint.RowPitch;
+                uint8_t* drow = out.data() + static_cast<size_t>(y) * w * 4;
+                for (unsigned x = 0; x < w; ++x) {
+                    drow[x * 4 + 0] = srow[x * 4 + (bgra ? 2 : 0)];
+                    drow[x * 4 + 1] = srow[x * 4 + 1];
+                    drow[x * 4 + 2] = srow[x * 4 + (bgra ? 0 : 2)];
+                    drow[x * 4 + 3] = 255;
+                }
+            }
+            D3D12_RANGE none{0, 0};
+            shot_buf->Unmap(0, &none);
+            const bool ok = EncodePngFile(shot_path, out.data(), w, h, w * 4);
+            Logf(ok ? "screenshot: saved" : "screenshot: writing the PNG failed");
+            if (g_log) g_log("screenshot: %ux%u -> %s", w, h, shot_path.c_str());
+        } else {
+            Logf("screenshot: the back buffer format is not 8-bit RGBA/BGRA or the read-back map failed");
+        }
+        shot_buf->Release();
+    }
     (void)sc;
 }
 
@@ -1109,6 +1186,14 @@ void SetSteveSkin(const uint8_t* rgba, unsigned width, unsigned height) {
     g_skin_rgba.assign(rgba, rgba + static_cast<size_t>(width) * height * 4);
     g_skin_w = width;
     g_skin_h = height;
+}
+
+void RequestScreenshot(const char* utf8_path) {
+    {
+        std::lock_guard<std::mutex> g(g_shot_mutex);
+        g_shot_path = utf8_path != nullptr ? utf8_path : "";
+    }
+    g_shot_requested.store(true);
 }
 
 void SetBlockMesh(const mc::rig::RigMesh& mesh) {

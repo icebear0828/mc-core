@@ -1904,6 +1904,18 @@ DWORD WINAPI KeyThread(LPVOID) {
             ResetSlotProbe(slot_cursor);
         }
         prev10 = d10;
+        {
+            static bool prev4 = false;
+            const bool d4 = fg && (GetAsyncKeyState(VK_F4) & 0x8000) != 0;
+            if (d4 && !prev4) {
+                static unsigned shot_no = 0;
+                char name[64];
+                snprintf(name, sizeof(name), "mc_er_shot_%03u.png", ++shot_no);
+                erov::RequestScreenshot((g_game_dir + name).c_str());
+                Log("F4: screenshot %s", name);
+            }
+            prev4 = d4;
+        }
         const bool d7 = fg && (GetAsyncKeyState(VK_F7) & 0x8000) != 0;
         if (d7 && !prev7) erov::CycleDepthCandidate();
         prev7 = d7;
