@@ -376,6 +376,47 @@ void __fastcall RenderCamCopyDetour(void* self) {
     }
 }
 
+// ---- no stagger (experiment, config no_stagger=1) -------------------------------------------------------------------------
+// Every hit the player takes goes through one of two reaction pickers (REVERSE 21). While the experiment is on they do nothing for the
+// player (the output byte is cleared), so the hit still costs hit points but plays no reaction animation. Game thread only.
+uintptr_t PlayerChrPtr(); // defined below
+
+using HitReactFn = void(__fastcall*)(void*, void*, void*, void*, uint64_t);
+using HitReactHeavyFn = void(__fastcall*)(void*, void*, void*, void*, uint64_t, uint64_t);
+HitReactFn g_hitreact_orig = nullptr;
+HitReactHeavyFn g_hitreact_heavy_orig = nullptr;
+std::atomic<bool> g_no_stagger{false};
+std::atomic<unsigned> g_stagger_skipped{0};
+
+bool IsPlayerActionModule(void* self) {
+    const uintptr_t player = PlayerChrPtr();
+    if (player == 0) return false;
+    uint64_t container = 0, action = 0;
+    if (!SafeCopy(player + layout::kModuleContainerInChrIns, &container, sizeof(container)) || container == 0 ||
+        !SafeCopy(static_cast<uintptr_t>(container) + 0xA0, &action, sizeof(action))) {
+        return false;
+    }
+    return static_cast<uintptr_t>(action) == reinterpret_cast<uintptr_t>(self);
+}
+
+void __fastcall HitReactDetour(void* self, void* a, void* b, void* out, uint64_t five) {
+    if (g_no_stagger.load(std::memory_order_relaxed) && g_mc_mode.load(std::memory_order_relaxed) && IsPlayerActionModule(self)) {
+        if (out != nullptr) *static_cast<uint8_t*>(out) = 0;
+        if (++g_stagger_skipped <= 10) Log("no_stagger: skipped the default hit reaction picker for the player");
+        return;
+    }
+    g_hitreact_orig(self, a, b, out, five);
+}
+
+void __fastcall HitReactHeavyDetour(void* self, void* a, void* b, void* out, uint64_t five, uint64_t six) {
+    if (g_no_stagger.load(std::memory_order_relaxed) && g_mc_mode.load(std::memory_order_relaxed) && IsPlayerActionModule(self)) {
+        if (out != nullptr) *static_cast<uint8_t*>(out) = 0;
+        if (++g_stagger_skipped <= 10) Log("no_stagger: skipped the heavy hit reaction picker for the player");
+        return;
+    }
+    g_hitreact_heavy_orig(self, a, b, out, five, six);
+}
+
 // ---- inventory screen ----------------------------------------------------------------------------------------------------
 // While the inventory is open the game must not walk, roll, attack or turn the camera: the input master gate (0x14067B020) and the
 // camera-rotation freeze test (0x140766C60) both report "blocked" (REVERSE 12). Both are optional: without them the mouse buttons and
@@ -689,6 +730,8 @@ std::atomic<bool> g_pdc_hooked{false};
 std::atomic<bool> g_log_player_hits{false}; // mc_er_hitlog.txt: log the HitContext of every hit the player takes (read only)
 
 // Read-only: one line per hit the player takes, with the HitContext fields the reverser needs (blood effect, flinch, knockback).
+uintptr_t DataModuleOfChr(uintptr_t chr);
+
 void LogPlayerHit(void* module, void* attacker, const uint8_t* ctx, uint8_t blocked_flag) {
     uint64_t owner = 0, world = 0, player = 0;
     if (!SafeCopy(reinterpret_cast<uintptr_t>(module) + layout::kOwnerInDataModule, &owner, sizeof(owner)) || owner == 0) return;
@@ -709,7 +752,7 @@ void LogPlayerHit(void* module, void* attacker, const uint8_t* ctx, uint8_t bloc
     // What 0x447810 (which runs before this hook) left in the context: the stagger level and animation ids, and the data module
     // words around +0x154 that it compares with ctx+0x22C (REVERSE 21: poise or stamina?).
     uint32_t words[6] = {};
-    SafeCopy(reinterpret_cast<uintptr_t>(module) + 0x148, words, sizeof(words));
+    if (const uintptr_t data = DataModuleOfChr(static_cast<uintptr_t>(owner))) SafeCopy(data + 0x148, words, sizeof(words));
     auto u16 = [&](size_t o) { uint16_t v; std::memcpy(&v, b + o, 2); return static_cast<unsigned>(v); };
     Log("HIT-IN2: u32[22C]=%u u32[228]=%u anim[220]=%u [222]=%u [224]=%u [226]=%u u8[258]=%u u8[259]=%u u8[25A]=%u u8[266]=%02X u8[267]=%02X "
         "module+148..15C=%u %u %u %u %u %u",
@@ -1523,6 +1566,21 @@ void SetupDamage() {
             Log("inventory: camera freeze hooked at %p (RVA 0x%llX)", reinterpret_cast<void*>(freeze), static_cast<unsigned long long>(freeze - g_img.base));
         }
     }
+    {
+        uintptr_t react = 0, heavy = 0;
+        if (!LocateByPrefix(g_img, sigs::kHitReactDefault, react) || !LocateByPrefix(g_img, sigs::kHitReactHeavy, heavy)) {
+            Log("no_stagger: hit reaction signatures not unique, the experiment is unavailable");
+        } else if (MH_CreateHook(reinterpret_cast<void*>(react), reinterpret_cast<void*>(&HitReactDetour), reinterpret_cast<void**>(&g_hitreact_orig)) != MH_OK ||
+                   MH_EnableHook(reinterpret_cast<void*>(react)) != MH_OK ||
+                   MH_CreateHook(reinterpret_cast<void*>(heavy), reinterpret_cast<void*>(&HitReactHeavyDetour), reinterpret_cast<void**>(&g_hitreact_heavy_orig)) != MH_OK ||
+                   MH_EnableHook(reinterpret_cast<void*>(heavy)) != MH_OK) {
+            Log("no_stagger: hooking the hit reaction pickers failed");
+        } else {
+            Log("no_stagger: reaction pickers hooked at %p / %p (RVA 0x%llX / 0x%llX); no_stagger=1 in mc_er_steve.txt turns the experiment on",
+                reinterpret_cast<void*>(react), reinterpret_cast<void*>(heavy), static_cast<unsigned long long>(react - g_img.base),
+                static_cast<unsigned long long>(heavy - g_img.base));
+        }
+    }
     if (FileExists(g_game_dir + "mc_er_nolos.txt")) {
         Log("los: disabled by mc_er_nolos.txt");
     } else {
@@ -1740,6 +1798,7 @@ void SetupOverlay() {
                 else if (key == "no_player_hit_vfx") g_no_player_hit_vfx.store(value != 0.f);
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "eye_height") g_eye_height.store(value);
+                else if (key == "no_stagger") g_no_stagger.store(value != 0.f);
                 else if (key == "inv_key") g_inv_vk.store(static_cast<int>(value));
                 else if (key == "inv_sens") g_inv_sens.store(std::max(0.1f, value));
                 else if (key == "kb_force") g_kb_force.store(value);

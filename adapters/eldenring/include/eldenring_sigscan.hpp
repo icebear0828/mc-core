@@ -126,6 +126,12 @@ inline constexpr const char* kIsInputBlocked = "48 8B 05 ?? ?? ?? ?? 0F B6 80 34
 // The camera-rotation freeze test (0x140766C60): true when a full-screen menu is open. An identical twin at 0x140766BC0 differs only
 // in its call displacements, so the first call's literal displacement is part of the signature. 33 bytes, one match.
 inline constexpr const char* kMenuFreezesCamera = "40 53 48 83 EC 20 48 8B D9 BA 3D 00 00 00 48 8D 4C 24 38 E8 F8 1F 00 00 0F B7 00 66 83 F8 47 73 12";
+// The hit-reaction pair (REVERSE 21): called from the damage driver 0x449D30 and from 0x447810 (all eight call sites), they pick the
+// reaction animation ids (written into ctx+0x220..0x226) and then call the action module's vfunc[8]. 48 bytes each, one match each.
+inline constexpr const char* kHitReactDefault =
+    "48 89 5C 24 10 48 89 6C 24 18 56 57 41 54 41 56 41 57 48 83 EC 20 48 8B 01 4C 8B E2 8B 5C 24 70 4D 8B F1 8B D3 4D 8B F8 48 8B F9 FF 50 10 8B D3";
+inline constexpr const char* kHitReactHeavy =
+    "4C 89 4C 24 20 4C 89 44 24 18 48 89 54 24 10 48 89 4C 24 08 55 53 56 57 41 54 41 55 41 56 41 57 48 8B EC 48 83 EC 78 48 8B 01 49 8B F1 44 8B 75";
 inline constexpr const char* kGetEffectiveTeamType = "48 89 5C 24 10 57 48 83 EC 20 0F B6 41 6C 48 8B F9 88 02";
 } // namespace sigs
 
