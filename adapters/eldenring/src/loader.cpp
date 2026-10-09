@@ -223,6 +223,9 @@ struct HiddenWord {
     uint32_t mask;
 };
 std::unordered_map<uintptr_t, HiddenWord> g_hidden_flags; // flag word addresses we cleared -> original value and the bits we cleared
+std::mutex g_native_mutex; // g_hidden_flags: the Present thread and the pre-render hook both touch it
+std::atomic<bool> g_native_hide_wanted{false}; // set by the HUD provider: the native model should be hidden this frame
+std::atomic<unsigned> g_native_reshown{0};     // times the game turned a hidden part back on before we cleared it again
 std::atomic<bool> g_slots_changed{false};
 std::atomic<int> g_slot_probe{-1}; // F9 probe: -1 = off (all slots), 0..26 = only that part slot is hidden
 std::atomic<uint32_t> g_hide_mask1{0x100A1}; // bits cleared in disp_flags1 (+0x20): visible + shadow (verified live, not bisected)
@@ -275,7 +278,18 @@ bool CallVfunc7(uintptr_t damage_module, uintptr_t attacker, void* ctx) {
 using RenderCamCopyFn = void(__fastcall*)(void* self);
 RenderCamCopyFn g_rcc_orig = nullptr;
 
+void UpdateNativeModel(uintptr_t player, bool hide); // defined with the overlay code below
+
 void __fastcall RenderCamCopyDetour(void* self) {
+    // Hide the native model right before the frame is drawn: the game may turn parts back on during a hit reaction, and the
+    // Present-time write alone would let that frame show them.
+    if (g_native_hide_wanted.load(std::memory_order_relaxed)) {
+        const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+        uint64_t player = 0;
+        if (world != 0 && SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) && player != 0) {
+            UpdateNativeModel(static_cast<uintptr_t>(player), true);
+        }
+    }
     uintptr_t pos_addr = 0;
     float saved[3] = {};
     if (g_first_person.load(std::memory_order_relaxed)) {
@@ -836,6 +850,7 @@ void RestoreNativeModel() {
 }
 
 void UpdateNativeModel(uintptr_t player, bool hide) {
+    std::lock_guard<std::mutex> lock(g_native_mutex);
     if (g_slots_changed.exchange(false)) RestoreNativeModel(); // another slot set was chosen: show the old one again
     if (!hide) {
         RestoreNativeModel();
@@ -850,7 +865,7 @@ void UpdateNativeModel(uintptr_t player, bool hide) {
             uint32_t flags = 0;
             if (!SafeCopy(a, &flags, sizeof(flags))) continue;
             if ((flags & masks[w]) != 0) {
-                g_hidden_flags.emplace(a, HiddenWord{flags, masks[w]});
+                if (!g_hidden_flags.emplace(a, HiddenWord{flags, masks[w]}).second) ++g_native_reshown; // we had hidden it, the game showed it again
                 SafeWrite32(a, hideBits(flags, masks[w]));
             }
         }
@@ -886,7 +901,18 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     }
     out.show = have_state && !ms.menu_focused && !ms.popup_open && !ls.screen_loading && fade < 0.02f;
 
-    if (g_hide_native.load()) UpdateNativeModel(static_cast<uintptr_t>(player), out.show && out.mc_mode);
+    if (g_hide_native.load()) {
+        const bool want_hidden = out.show && out.mc_mode;
+        g_native_hide_wanted.store(want_hidden);
+        UpdateNativeModel(static_cast<uintptr_t>(player), want_hidden);
+        static uint64_t last_report_ms = 0;
+        const uint64_t now_ms = GetTickCount64();
+        if (now_ms - last_report_ms >= 1000) {
+            last_report_ms = now_ms;
+            const unsigned n = g_native_reshown.exchange(0);
+            if (n != 0) Log("native: the game turned hidden parts back on %u time(s) in the last second", n);
+        }
+    }
 
     steve.draw = false;
     CameraPose cam;
