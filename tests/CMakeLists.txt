@@ -30,6 +30,7 @@ add_executable(mc_tests
     test_sekiro_model.cpp
     test_eldenring_live.cpp
     test_eldenring_world.cpp
+    test_eldenring_buddy.cpp
     test_eldenring_state.cpp
     test_eldenring_damage.cpp
     test_eldenring_steve.cpp

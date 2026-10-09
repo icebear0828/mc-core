@@ -38,6 +38,7 @@
 #include "eldenring_audio_data.hpp"
 #include "eldenring_blockmesh.hpp"
 #include "eldenring_blocks.hpp"
+#include "eldenring_buddy.hpp"
 #include "eldenring_los.hpp"
 #include "eldenring_survival.hpp"
 #include "eldenring_xp.hpp"
@@ -1141,6 +1142,25 @@ void LogPhysicsVectors() {
         p120[1], p120[2]);
 }
 
+// Diagnostic (read only): the spirit-ash manager's fields, one log entry each time they change. Armed by mc_er_buddylog.txt
+// in the game directory (the file is looked for once a second); works outside MC mode so ashes can be used normally.
+void LogBuddyOnChange() {
+    static uint64_t last_check_ms = 0, last_sample_ms = 0;
+    static bool armed = false;
+    static eldenring::buddy::Monitor monitor;
+    const uint64_t now = GetTickCount64();
+    if (now - last_check_ms >= 1000) {
+        last_check_ms = now;
+        const bool file = FileExists(g_game_dir + "mc_er_buddylog.txt");
+        if (file && !armed) monitor = eldenring::buddy::Monitor{};
+        armed = file;
+    }
+    if (!armed || now - last_sample_ms < 100) return;
+    last_sample_ms = now;
+    const std::string text = monitor.update(eldenring::buddy::sample(g_reader, g_img.base));
+    if (!text.empty()) Log("%s", text.c_str());
+}
+
 // Diagnostic: the player's ground-contact bytes, one log line each time they change (jump / fall / roll / swim).
 void LogGroundBytesOnChange() {
     static uint8_t last[4] = {0xFF, 0xFF, 0xFF, 0xFF};
@@ -1829,6 +1849,7 @@ DWORD WINAPI KeyThread(LPVOID) {
             g_feedback.tick(dt);
         }
         if (g_mc_mode.load()) LogGroundBytesOnChange();
+        LogBuddyOnChange();
         if (g_mc_mode.load() && FileExists(g_game_dir + "mc_er_physlog.txt")) LogPhysicsVectors();
         if (g_mc_mode.load() && fg) {
             // Footsteps: Minecraft plays one every ~1.6 m walked on the ground. The ground material is not known yet: grass.
