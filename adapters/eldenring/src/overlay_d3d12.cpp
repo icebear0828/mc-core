@@ -16,6 +16,7 @@
 #include <cstring>
 
 #include <mutex>
+#include <vector>
 
 #include "overlay_d3d12.hpp"
 #include "steve_renderer_d3d12.hpp"
@@ -44,7 +45,8 @@ CreateDsvFn g_create_dsv_orig = nullptr;
 SteveConfig g_steve_cfg;
 SteveRenderer g_steve;
 std::mutex g_depth_mutex;
-ID3D12Resource* g_depth_res = nullptr; // AddRef'd main scene depth (R32G8X24_TYPELESS), guarded by g_depth_mutex
+ID3D12Resource* g_depth_res = nullptr; // AddRef'd scene depth in use (R32G8X24_TYPELESS), guarded by g_depth_mutex
+std::vector<ID3D12Resource*> g_depth_candidates; // AddRef'd, oldest first, guarded by g_depth_mutex
 UINT g_depth_w = 0, g_depth_h = 0;
 std::atomic<bool> g_depth_dirty{false};
 D3D12_CPU_DESCRIPTOR_HANDLE g_depth_cpu{};
@@ -324,6 +326,10 @@ void RenderFrame(IDXGISwapChain* sc) {
     g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
     ID3D12DescriptorHeap* heaps[] = {g_s.srv_heap};
     g_s.list->SetDescriptorHeaps(1, heaps);
+    if (g_steve_cfg.depthview_gain > 0.f && g_depth_res != nullptr) {
+        g_steve.drawDepthView(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, g_steve_cfg.depthview_gain,
+                              static_cast<float>(g_depth_w), static_cast<float>(g_depth_h));
+    }
     if (steve.draw && g_steve.ready()) {
         const float scene_h = g_steve_cfg.scene_height > 0.f ? g_steve_cfg.scene_height : static_cast<float>(g_s.height);
         const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
@@ -361,6 +367,16 @@ void STDMETHODCALLTYPE CreateDsvDetour(ID3D12Device* d, ID3D12Resource* res, con
     {
         std::lock_guard<std::mutex> g(g_depth_mutex);
         if (g_depth_res == res) return;
+        bool known = false;
+        for (ID3D12Resource* c : g_depth_candidates) known = known || c == res;
+        if (!known) {
+            res->AddRef();
+            g_depth_candidates.push_back(res);
+            if (g_depth_candidates.size() > 8) {
+                g_depth_candidates.front()->Release();
+                g_depth_candidates.erase(g_depth_candidates.begin());
+            }
+        }
         res->AddRef();
         if (g_depth_res) g_depth_res->Release();
         g_depth_res = res;
@@ -467,6 +483,25 @@ bool ResolveTargets(void*& present, void*& resize, void*& execute, void*& create
 } // namespace
 
 void SetSteveConfig(const SteveConfig& cfg) { g_steve_cfg = cfg; }
+
+void CycleDepthCandidate() {
+    std::lock_guard<std::mutex> g(g_depth_mutex);
+    if (g_depth_candidates.empty()) return;
+    size_t cur = 0;
+    for (size_t i = 0; i < g_depth_candidates.size(); ++i) {
+        if (g_depth_candidates[i] == g_depth_res) cur = i;
+    }
+    ID3D12Resource* next = g_depth_candidates[(cur + 1) % g_depth_candidates.size()];
+    next->AddRef();
+    if (g_depth_res) g_depth_res->Release();
+    g_depth_res = next;
+    const D3D12_RESOURCE_DESC rd = next->GetDesc();
+    g_depth_w = static_cast<UINT>(rd.Width);
+    g_depth_h = rd.Height;
+    g_depth_dirty.store(true);
+    if (g_log) g_log("overlay: depth candidate %zu of %zu bound: %p %llux%u", (cur + 1) % g_depth_candidates.size() + 1,
+                     g_depth_candidates.size(), static_cast<void*>(next), static_cast<unsigned long long>(rd.Width), rd.Height);
+}
 
 bool Install(HudProvider provider, LogFn log) {
     g_provider = provider;

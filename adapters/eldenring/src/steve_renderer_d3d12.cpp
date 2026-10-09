@@ -33,6 +33,25 @@ VSOut VSMain(VSIn i) {
     return o;
 }
 
+struct FullOut { float4 pos : SV_POSITION; };
+
+FullOut VSFull(uint id : SV_VertexID) {
+    FullOut o;
+    float2 uv = float2((id << 1) & 2, id & 2);
+    o.pos = float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+    return o;
+}
+
+// Debug: the scene depth as grey (scene.x is the gain, sqrt spreads the small reverse-Z values). Exactly zero (cleared,
+// or nothing drawn there) is dark blue.
+float4 PSDepthView(FullOut i) : SV_Target {
+    int2 texel = int2(i.pos.xy / dims.zw * dims.xy);
+    float gd = scene_depth.Load(int3(texel, 0)).r;
+    if (gd <= 0.0) return float4(0.0, 0.0, 0.25, 0.9);
+    float g = sqrt(saturate(gd * scene.x));
+    return float4(g, g, g, 0.9);
+}
+
 float4 PSMain(VSOut i) : SV_Target {
     if (scene.w > 0.5) {
         // Reverse-Z game depth: nearer = larger, 0 = far. SV_POSITION.w is 1 / view-space z in a pixel shader.
@@ -176,6 +195,9 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     };
+    ID3DBlob* vs_full = nullptr;
+    ID3DBlob* ps_full = nullptr;
+    const bool full_ok = Compile("VSFull", "vs_5_0", &vs_full, log) && Compile("PSDepthView", "ps_5_0", &ps_full, log);
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
     pd.pRootSignature = root_;
     pd.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
@@ -194,6 +216,22 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
     const HRESULT hr = device->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso_));
     Rel(vs);
     Rel(ps);
+    if (SUCCEEDED(hr) && full_ok) {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC fd = pd;
+        fd.VS = {vs_full->GetBufferPointer(), vs_full->GetBufferSize()};
+        fd.PS = {ps_full->GetBufferPointer(), ps_full->GetBufferSize()};
+        fd.InputLayout = {nullptr, 0};
+        fd.BlendState.RenderTarget[0].BlendEnable = TRUE;
+        fd.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        fd.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        fd.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+        fd.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+        fd.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+        fd.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        if (FAILED(device->CreateGraphicsPipelineState(&fd, IID_PPV_ARGS(&pso_depthview_))) && log) log("steve: depth view pipeline failed");
+    }
+    Rel(vs_full);
+    Rel(ps_full);
     if (FAILED(hr)) {
         if (log) log("steve: pipeline state failed (0x%08X)", static_cast<unsigned>(hr));
         release();
@@ -204,6 +242,7 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
 
 void SteveRenderer::release() {
     Rel(pso_);
+    Rel(pso_depthview_);
     Rel(root_);
     Rel(vertices_);
     Rel(indices_);
@@ -216,6 +255,25 @@ void SteveRenderer::setDepthView(ID3D12Device* device, ID3D12Resource* depth, D3
     sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     sd.Texture2D.MipLevels = 1;
     device->CreateShaderResourceView(depth, &sd, slot); // a null resource makes a valid null descriptor
+}
+
+void SteveRenderer::drawDepthView(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
+                                  D3D12_GPU_DESCRIPTOR_HANDLE depth_table, unsigned width, unsigned height, float gain, float depth_w,
+                                  float depth_h) {
+    if (!pso_depthview_) return;
+    D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
+    D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+    list->RSSetViewports(1, &vp);
+    list->RSSetScissorRects(1, &sc);
+    list->SetPipelineState(pso_depthview_);
+    list->SetGraphicsRootSignature(root_);
+    ID3D12DescriptorHeap* heaps[] = {srv_heap};
+    list->SetDescriptorHeaps(1, heaps);
+    list->SetGraphicsRootDescriptorTable(1, depth_table);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    const float extra[8] = {gain, 0.f, 0.f, 0.f, depth_w, depth_h, static_cast<float>(width), static_cast<float>(height)};
+    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
+    list->DrawInstanced(3, 1, 0, 0);
 }
 
 void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table,

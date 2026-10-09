@@ -30,13 +30,16 @@ struct SteveState {
 // Tuning read from mc_er_steve.txt (key=value lines).
 struct SteveConfig {
     bool occlusion{true};
-    int debug{0}; // 1: colour the figure by how the scene depth compares with it (calibration)
+    int debug{0};
+    float depthview_gain{0.f}; // > 0: draw the scene depth as a grey overlay with this gain (calibration) // 1: colour the figure by how the scene depth compares with it (calibration)
     float depth_const{0.0501f};
     float rel_bias{0.08f};
     float abs_bias{0.05f};
     float scene_height{0.f}; // 0: use the back buffer height for the projection aspect
 };
 void SetSteveConfig(const SteveConfig& cfg);
+// Debug: bind the next captured 1920x1080 R32G8X24 depth resource (the game creates several).
+void CycleDepthCandidate();
 
 // Called on the Present thread once per frame; fills `out`. Return false to skip the overlay entirely.
 using HudProvider = bool (*)(HudState& out, SteveState& steve);

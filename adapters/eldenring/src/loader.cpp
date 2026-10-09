@@ -366,7 +366,7 @@ bool WantSuppress() {
 }
 
 DWORD WINAPI KeyThread(LPVOID) {
-    bool prev8 = false, prev6 = false;
+    bool prev8 = false, prev6 = false, prev7 = false;
     for (;;) {
         Sleep(15);
         const bool fg = GameInForeground();
@@ -381,6 +381,9 @@ DWORD WINAPI KeyThread(LPVOID) {
             g_mc_mode.store(!g_mc_mode.load());
             Log("F6: MC mode %s", g_mc_mode.load() ? "on" : "off");
         }
+        const bool d7 = fg && (GetAsyncKeyState(VK_F7) & 0x8000) != 0;
+        if (d7 && !prev7) erov::CycleDepthCandidate();
+        prev7 = d7;
         prev8 = d8;
         prev6 = d6;
     }
@@ -522,6 +525,7 @@ void SetupOverlay() {
                 const float value = static_cast<float>(atof(line.c_str() + eq + 1));
                 if (key == "occlusion") cfg.occlusion = value != 0.f;
                 else if (key == "debug") cfg.debug = static_cast<int>(value);
+                else if (key == "depthview_gain") cfg.depthview_gain = value;
                 else if (key == "depth_const") cfg.depth_const = value;
                 else if (key == "rel_bias") cfg.rel_bias = value;
                 else if (key == "abs_bias") cfg.abs_bias = value;

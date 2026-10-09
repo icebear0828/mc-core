@@ -30,6 +30,10 @@ public:
     // (Re)creates the depth SRV at `slot`; a null resource writes a null descriptor (occlusion must then be off).
     void setDepthView(ID3D12Device* device, ID3D12Resource* depth, D3D12_CPU_DESCRIPTOR_HANDLE slot);
 
+    // Debug: the scene depth as a grey full-screen overlay (see PSDepthView).
+    void drawDepthView(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table,
+                       unsigned width, unsigned height, float gain, float depth_w, float depth_h);
+
     // Records the draw calls. `srv_heap` must be the heap that holds the depth SRV at `depth_table` (GPU handle).
     void draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table,
               unsigned width, unsigned height, const mc::rig::Mat4& view_proj, const eldenring::render::PartMatrices& parts,
@@ -38,6 +42,7 @@ public:
 private:
     ID3D12RootSignature* root_{nullptr};
     ID3D12PipelineState* pso_{nullptr};
+    ID3D12PipelineState* pso_depthview_{nullptr};
     ID3D12Resource* vertices_{nullptr};
     ID3D12Resource* indices_{nullptr};
     D3D12_VERTEX_BUFFER_VIEW vbv_{};
