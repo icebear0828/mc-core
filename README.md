@@ -76,12 +76,16 @@ mc-core/
 │   ├── test_ballistics.cpp
 │   └── test_extract_assets.py
 ├── tools/                         # 资产提取与转换工具
-│   └── extract_mc_assets.py
+│   ├── extract_mc_assets.py
+│   └── extract_mc_sounds.py       # 原版音效（从 Mojang 资源服务器下载并转 WAV，本地使用）
 ├── docs/                          # 架构、避坑规范、烘焙与安装使用指南
 │   ├── ARCHITECTURE.md            # 跨引擎架构与接口规格
 │   ├── ADAPTER_SPECIFICATION.md   # 宿主适配器工程避坑与上屏准入规范
 │   ├── BAKING_GUIDE.md            # 各引擎模型一键封包实操
-│   └── INSTALL.md                 # 玩家安装目录与按键指南
+│   ├── INSTALL.md                 # 玩家安装目录与按键指南
+│   ├── ELDENRING_HANDOFF.md       # 艾尔登法环适配器交接文档（新对话先读这个）
+│   ├── ELDENRING_VERIFY_CHECKLIST.md  # ER 逐项真机验证状态
+│   └── ELDENRING_REVERSE.md       # ER 逆向事实、审计与任务单
 ├── CMakeLists.txt                 # CMake 构建脚本 (C++20, 零警告策略)
 ├── CONTRIBUTING.md                # 代码风格与 Conventional Commits 规范
 └── README.md

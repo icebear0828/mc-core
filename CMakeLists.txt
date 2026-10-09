@@ -27,6 +27,8 @@ add_library(mc_core STATIC
     include/mc/hud_layout.hpp
     include/mc/session.hpp
     include/mc/rig.hpp
+    include/mc/item_model.hpp
+    include/mc/entity_model.hpp
     include/mc/contracts/physics_adapter.hpp
     include/mc/contracts/render_adapter.hpp
     include/mc/contracts/combat_adapter.hpp
@@ -42,6 +44,8 @@ add_library(mc_core STATIC
     src/hud_layout.cpp
     src/session.cpp
     src/rig.cpp
+    src/item_model.cpp
+    src/entity_model.cpp
 )
 
 target_include_directories(mc_core
@@ -55,6 +59,7 @@ option(BUILD_ADAPTERS "Build game adapters." ON)
 if(BUILD_ADAPTERS AND CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     add_subdirectory(adapters/wukong)
     add_subdirectory(adapters/sekiro)
+    add_subdirectory(adapters/eldenring)
 endif()
 
 # Testing

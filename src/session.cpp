@@ -74,6 +74,8 @@ void Session::setActive(bool active) {
         swing_elapsed_ = -1.f;
         body_yaw_seeded_ = false;
         smoothed_vel_seeded_ = false;
+        feedback_ = {};
+        have_last_hp_ = false;
         ports_.render.destroySteveParts();
         ports_.render.setNativePlayerVisible(true);
         if (ports_.gameplay) ports_.gameplay->setNativeCombatInputSuppressed(false);
@@ -135,6 +137,14 @@ void Session::tick(float dt, const InputSnapshot& in) {
             constexpr float kHalfHeartsFull = 20.f;
             hud_->setMaxHealth(kHalfHeartsFull);
             hud_->setHealth(std::clamp(vitals.health / vitals.max_health, 0.f, 1.f) * kHalfHeartsFull);
+            // A drop in real health is damage: flash the screen. The first reading (or the first after a gap)
+            // is only a baseline.
+            if (have_last_hp_ && vitals.health < last_hp_ - 0.5f) {
+                feedback_.hurt_flash = 1.f;
+                feedback_.hurt_amount = std::clamp((last_hp_ - vitals.health) / vitals.max_health, 0.f, 1.f);
+            }
+            last_hp_ = vitals.health;
+            have_last_hp_ = true;
         }
     }
 
@@ -143,13 +153,16 @@ void Session::tick(float dt, const InputSnapshot& in) {
     if (fwd.lengthSq() < 0.5f) {
         fwd = {1.f, 0.f, 0.f};
     }
-    const Vec3 cam_pos = ports_.input.getCameraPosition();
+    const Vec3 cam_pos = ports_.input.getEyePosition(); // origin of the pick ray and of projectiles
     const Vec3 player_pos = ports_.input.getPlayerPosition();
     const Vec3 player_vel = ports_.input.getPlayerVelocity();
     const float yaw = std::atan2(fwd.y, fwd.x);
     const float pitch = std::asin(std::clamp(fwd.z, -1.f, 1.f));
 
     attack_cooldown_ = std::min(1.f, attack_cooldown_ + dt / kAttackRechargeSec);
+    feedback_.hit_marker = std::max(0.f, feedback_.hit_marker - dt / kHitMarkerSec);
+    feedback_.hurt_flash = std::max(0.f, feedback_.hurt_flash - dt / kHurtFlashSec);
+    if (feedback_.hurt_flash == 0.f) feedback_.hurt_amount = 0.f;
 
     // --- Target probe (only when an action needs it) ----------------------
     RaycastResult target{};
@@ -172,7 +185,7 @@ void Session::tick(float dt, const InputSnapshot& in) {
             const HitIntent intent = combat_->calculateMeleeHit(
                 EntityId::LocalPlayer, target.hit_entity, held, attack_cooldown_,
                 falling, in.on_ground, target.point, fwd);
-            combat_->executeHit(intent);
+            if (combat_->executeHit(intent)) feedback_.hit_marker = 1.f;
         }
         attack_cooldown_ = 0.f;
     }

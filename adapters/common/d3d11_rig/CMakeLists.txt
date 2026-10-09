@@ -13,8 +13,10 @@ endif()
 add_library(mc_d3d11_rig STATIC
     include/d3d11_rig/rig_renderer.hpp
     include/d3d11_rig/depth_capture.hpp
+    include/d3d11_rig/cb_probe.hpp
     src/rig_renderer.cpp
     src/depth_capture.cpp
+    src/cb_probe.cpp
 )
 target_include_directories(mc_d3d11_rig PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)

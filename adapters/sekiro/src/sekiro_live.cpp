@@ -193,6 +193,35 @@ void LiveBinder::readFacing(uintptr_t player, LiveSample& out) const {
     out.facing_valid = true;
 }
 
+void LiveBinder::readVitals(uintptr_t player, LiveSample& out) const {
+    out.vitals_valid = false;
+    uintptr_t container = 0, module = 0, vtable = 0;
+    if (!readPointer(player + layout::kModuleContainerInChrIns, container) || container == 0) return;
+    if (!readPointer(container + layout::kChrDataModuleInContainer, module) || module == 0) return;
+    if (!readPointer(module, vtable) || vtable != base_ + layout::kChrDataModuleVtableRva) return; // class check
+    int32_t hp = 0, max_hp = 0;
+    if (!reader_.read(module + layout::kDataHp, &hp, sizeof(hp)) || !reader_.read(module + layout::kDataMaxHp, &max_hp, sizeof(max_hp))) {
+        return;
+    }
+    if (max_hp <= 0 || max_hp > layout::kMaxPlausibleMaxHp || hp < 0 || hp > max_hp) return;
+    out.hp = static_cast<float>(hp);
+    out.max_hp = static_cast<float>(max_hp);
+    out.vitals_valid = true;
+}
+
+void LiveBinder::readGrounded(uintptr_t player, LiveSample& out) const {
+    out.grounded_valid = false;
+    out.grounded = true;
+    uintptr_t container = 0, module = 0, vtable = 0;
+    if (!readPointer(player + layout::kModuleContainerInChrIns, container) || container == 0) return;
+    if (!readPointer(container + layout::kFallModuleInContainer, module) || module == 0) return;
+    if (!readPointer(module, vtable) || vtable != base_ + layout::kFallModuleVtableRva) return;
+    int32_t state = 0;
+    if (!reader_.read(module + layout::kFallState, &state, sizeof(state))) return;
+    out.grounded_valid = true;
+    out.grounded = state == -1;
+}
+
 SampleStatus LiveBinder::sample(LiveSample& out) const {
     if (status_ != BindStatus::Bound) return SampleStatus::NotBound;
 
@@ -220,6 +249,8 @@ SampleStatus LiveBinder::sample(LiveSample& out) const {
     LiveSample s;
     s.player_pos = pos;
     readFacing(player, s);
+    readVitals(player, s);
+    readGrounded(player, s);
 
     // Try the candidate that worked last time first, then the others.
     const size_t count = camera_global_rvas_.size();
@@ -233,6 +264,150 @@ SampleStatus LiveBinder::sample(LiveSample& out) const {
         }
     }
     return SampleStatus::Invalid;
+}
+
+std::optional<ContainerModuleRef> findChrDataModule(const IMemoryReader& reader, uintptr_t image_base, uintptr_t container,
+                                               uintptr_t hint_offset) {
+    if (container == 0) return std::nullopt;
+    auto check = [&](uintptr_t offset) -> std::optional<ContainerModuleRef> {
+        uint64_t module = 0, vtable = 0;
+        if (!reader.read(container + offset, &module, sizeof(module)) || module == 0) return std::nullopt;
+        if (!reader.read(static_cast<uintptr_t>(module), &vtable, sizeof(vtable))) return std::nullopt;
+        if (vtable != image_base + layout::kChrDataModuleVtableRva) return std::nullopt;
+        return ContainerModuleRef{static_cast<uintptr_t>(module), offset};
+    };
+    if (hint_offset != 0) {
+        if (const auto hit = check(hint_offset)) return hit;
+    }
+    for (uintptr_t offset = 0; offset < layout::kModuleScanLimit; offset += sizeof(uint64_t)) {
+        if (offset == hint_offset) continue;
+        if (const auto hit = check(offset)) return hit;
+    }
+    return std::nullopt;
+}
+
+namespace {
+constexpr unsigned kModuleRetryFrames = 90; // about 1.5 s at 60 fps
+}
+
+std::optional<DataModuleRef> findOwnedDataModule(const IMemoryReader& reader, uintptr_t image_base, size_t image_size,
+                                                 uintptr_t owner, const DataModuleRef* hint) {
+    if (owner == 0) return std::nullopt;
+    auto heapPointer = [&](uint64_t q) {
+        return q >= 0x10000 && q < 0x00007FFFFFFFFFFFull && !(q >= image_base && q < image_base + image_size);
+    };
+    // A candidate is a module when it has the class's vtable and names `owner` as its owner.
+    auto owned = [&](uint64_t q) {
+        if (!heapPointer(q)) return false;
+        uint64_t head[2]{};
+        if (!reader.read(static_cast<uintptr_t>(q), head, sizeof(head))) return false;
+        return head[0] == image_base + layout::kChrDataModuleVtableRva && head[1] == owner;
+    };
+    auto readPtr = [&](uintptr_t address, uint64_t& out) { return reader.read(address, &out, sizeof(out)); };
+
+    if (hint) {
+        uint64_t q = 0;
+        if (hint->isDirect()) {
+            if (readPtr(owner + hint->first, q) && owned(q)) return DataModuleRef{static_cast<uintptr_t>(q), hint->first, DataModuleRef::kDirect};
+        } else {
+            uint64_t box = 0;
+            if (readPtr(owner + hint->first, box) && heapPointer(box) && readPtr(static_cast<uintptr_t>(box) + hint->second, q) && owned(q)) {
+                return DataModuleRef{static_cast<uintptr_t>(q), hint->first, hint->second};
+            }
+        }
+    }
+
+    // 1. the character object points at the module itself (most enemy types)
+    constexpr size_t kChunk = 0x200;
+    std::vector<uint64_t> words;
+    words.reserve(layout::kCharacterScanLimit / 8);
+    for (uintptr_t off = 0; off < layout::kCharacterScanLimit; off += kChunk) {
+        uint64_t chunk[kChunk / 8];
+        if (!reader.read(owner + off, chunk, sizeof(chunk))) {
+            words.insert(words.end(), kChunk / 8, 0); // unreadable part: keeps the offsets aligned
+            continue;
+        }
+        words.insert(words.end(), chunk, chunk + kChunk / 8);
+    }
+    for (size_t i = 0; i < words.size(); ++i) {
+        if (owned(words[i])) return DataModuleRef{static_cast<uintptr_t>(words[i]), i * 8, DataModuleRef::kDirect};
+    }
+
+    // 2. through the module container (+0x10b8), which holds the player's module and some enemies'
+    uint64_t container = 0;
+    if (readPtr(owner + layout::kModuleContainerInChrIns, container) && heapPointer(container)) {
+        for (uintptr_t off = 0; off < layout::kModuleScanLimit; off += sizeof(uint64_t)) {
+            uint64_t q = 0;
+            if (readPtr(static_cast<uintptr_t>(container) + off, q) && owned(q)) {
+                return DataModuleRef{static_cast<uintptr_t>(q), layout::kModuleContainerInChrIns, off};
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+size_t LiveBinder::enumerateEnemies(std::vector<LiveEnemy>& out, size_t max_entries) const {
+    out.clear();
+    ++enumerate_calls_;
+    if (status_ != BindStatus::Bound) return 0;
+    uintptr_t world = 0, block = 0, block_vtable = 0, slots = 0;
+    if (!readPointer(base_ + wcm_global_rva_, world) || world == 0) return 0;
+    if (!readPointer(world + layout::kWorldBlockInWorldChrMan, block) || block == 0) return 0;
+    if (!readPointer(block, block_vtable) || block_vtable != base_ + layout::kWorldBlockVtableRva) return 0;
+    int32_t count = 0;
+    if (!reader_.read(block + layout::kBlockSlotCount, &count, sizeof(count)) || count <= 0 || count > layout::kMaxSlots) return 0;
+    if (!readPointer(block + layout::kBlockSlotArray, slots) || slots == 0) return 0;
+
+    for (int32_t i = 0; i < count && out.size() < max_entries; ++i) {
+        uintptr_t enemy = 0, vtable = 0;
+        if (!readPointer(slots + static_cast<uintptr_t>(i) * layout::kSlotStride, enemy) || enemy == 0) continue;
+        if (!readPointer(enemy, vtable) || vtable != base_ + layout::kEnemyInsVtableRva) continue;
+
+        // Live position, like the player's: both copies must agree, and all-zero means not loaded.
+        float a[3], b[3];
+        if (!reader_.read(enemy + layout::kChrPosition, a, sizeof(a)) || !reader_.read(enemy + layout::kChrPositionCopy, b, sizeof(b))) continue;
+        const native::FVector3 pos{a[0], a[1], a[2]}, copy{b[0], b[1], b[2]};
+        if (!finiteAndBounded(pos) || !finiteAndBounded(copy)) continue;
+        if (pos.X == 0.0f && pos.Y == 0.0f && pos.Z == 0.0f) continue;
+        if ((pos - copy).Length() > layout::kMaxPositionCopyDelta) continue;
+
+        LiveEnemy e;
+        e.handle = enemy;
+        e.slot = static_cast<uint32_t>(i);
+        e.position = pos;
+        reader_.read(enemy + layout::kEnemyCharId, &e.char_id, sizeof(e.char_id));
+        reader_.read(enemy + layout::kEnemyTeam, &e.team, sizeof(e.team));
+        e.hostile = e.team == layout::kTeamHostile;
+
+        {
+            const auto hint = module_hints_.find(enemy);
+            const auto retry = module_retry_at_.find(enemy);
+            const bool backing_off = hint == module_hints_.end() && retry != module_retry_at_.end() && enumerate_calls_ < retry->second;
+            std::optional<DataModuleRef> ref;
+            if (!backing_off) {
+                ref = findOwnedDataModule(reader_, base_, size_, enemy, hint == module_hints_.end() ? nullptr : &hint->second);
+                if (!ref) {
+                    module_hints_.erase(enemy);
+                    module_retry_at_[enemy] = enumerate_calls_ + kModuleRetryFrames;
+                }
+            }
+            if (ref) {
+                module_retry_at_.erase(enemy);
+                module_hints_[enemy] = *ref; // a character's layout does not change while it lives
+                int32_t hp = 0, max_hp = 0;
+                if (reader_.read(ref->module + layout::kDataHp, &hp, sizeof(hp)) &&
+                    reader_.read(ref->module + layout::kEnemyMaxHp, &max_hp, sizeof(max_hp)) && max_hp > 0 &&
+                    max_hp <= layout::kMaxPlausibleMaxHp && hp >= 0 && hp <= max_hp) {
+                    e.hp_valid = true;
+                    e.hp = static_cast<float>(hp);
+                    e.max_hp = static_cast<float>(max_hp);
+                    e.dead = hp == 0;
+                }
+            }
+        }
+        out.push_back(e);
+    }
+    return out.size();
 }
 
 void CameraStabilizer::apply(LiveSample& sample) {
@@ -263,6 +438,13 @@ void LiveMirror::update(const LiveSample& sample, float dt, native::ChrIns& play
 
     player.Position = sample.player_pos;
     player.Velocity = velocity;
+    player.bGroundedValid = sample.grounded_valid;
+    player.bOnGround = sample.grounded;
+    player.bVitalsValid = sample.vitals_valid;
+    if (sample.vitals_valid) {
+        player.Health = sample.hp;
+        player.MaxHealth = sample.max_hp;
+    }
     player.bFacingValid = sample.facing_valid;
     if (sample.facing_valid) player.Facing = {sample.facing_x, 0.0f, sample.facing_z};
     camera.Position = sample.cam_pos;

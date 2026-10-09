@@ -21,6 +21,17 @@ constexpr uintptr_t kPlayer = 0x7ff400100000ull;  // player ChrIns
 constexpr uintptr_t kCamera = 0x7ff400200000ull;  // camera object
 constexpr uintptr_t kCameraDecoy = 0x7ff400300000ull;
 constexpr uintptr_t kChrModel = 0x7ff400400000ull;  // player ChrIns+0x48 object
+constexpr uintptr_t kModuleContainer = 0x7ff400500000ull; // [player+0x10b8]
+constexpr uintptr_t kDataModule = 0x7ff400600000ull;      // [container+0x1e8], SprjChrDataModule
+constexpr uint32_t kDataModuleVtableRva = 0x2A8BE18;
+constexpr uintptr_t kBlock = 0x7ff400700000ull;       // [WorldChrMan+0xC8] WorldBlockChr
+constexpr uintptr_t kSlots = 0x7ff400710000ull;       // slot array, stride 0x38
+constexpr uintptr_t kEnemyBase = 0x7ff400800000ull;   // enemies are kEnemyBase + n * kEnemyStride
+constexpr uintptr_t kEnemyStride = 0x20000;
+constexpr uint32_t kBlockVtableRva = 0x2A2EB10;
+constexpr uintptr_t kFallModule = 0x7ff400900000ull; // [container+0x240], SprjPlayerFallModule
+constexpr uint32_t kFallModuleVtableRva = 0x2A821F0;
+constexpr uint32_t kEnemyVtableRva = 0x2A27F28;
 
 constexpr uint32_t kWcmPatternRva = 0x100;
 constexpr uint32_t kWcmGlobalRva = 0x1000;
@@ -134,6 +145,79 @@ struct World {
                              0.f, 1.f, 0.f, py,
                              s, 0.f, -c, pz};
         mem.put(kChrModel + 0x30, m);
+    }
+    // Player vitals as measured on the real game: ChrIns+0x10b8 -> container +0x1e8 -> SprjChrDataModule,
+    // hp at +0x130, max at +0x138, identified by its vtable.
+    void setVitals(int32_t hp, int32_t max_hp, bool right_class = true) {
+        if (!mem.regions.count(kModuleContainer)) mem.region(kModuleContainer, 0x400);
+        if (!mem.regions.count(kDataModule)) mem.region(kDataModule, 0x400);
+        mem.put<uint64_t>(kPlayer + 0x10b8, kModuleContainer);
+        mem.put<uint64_t>(kModuleContainer + 0x1e8, kDataModule);
+        mem.put<uint64_t>(kDataModule, kBase + (right_class ? kDataModuleVtableRva : 0x1234));
+        mem.put<int32_t>(kDataModule + 0x130, hp);
+        mem.put<int32_t>(kDataModule + 0x138, max_hp);
+    }
+    // Fall state as measured on the real game: [[player+0x10b8]+0x240] is SprjPlayerFallModule; its int32 at +0x40
+    // is -1 while standing or running and >= 0 while airborne.
+    void setFallState(int32_t state, bool right_class = true) {
+        if (!mem.regions.count(kModuleContainer)) mem.region(kModuleContainer, 0x400);
+        if (!mem.regions.count(kFallModule)) mem.region(kFallModule, 0x100);
+        mem.put<uint64_t>(kPlayer + 0x10b8, kModuleContainer);
+        mem.put<uint64_t>(kModuleContainer + 0x240, kFallModule);
+        mem.put<uint64_t>(kFallModule, kBase + (right_class ? kFallModuleVtableRva : 0x4242));
+        mem.put<int32_t>(kFallModule + 0x40, state);
+    }
+    // ---- enemies: WorldChrMan+0xC8 -> block (+0x80 slot count, +0x88 slot array, stride 0x38, enemy at +0) ----
+    struct EnemySpec {
+        float x{0}, y{0}, z{0};
+        float live_y{std::numeric_limits<float>::quiet_NaN()};
+        uint32_t char_id{10010000};
+        uint32_t team{5};
+        int32_t hp{2101};
+        int32_t max_hp{2101};
+        bool right_class{true};
+        bool module_ok{true};
+        bool active{true}; // live position (+0x1050) non-zero; inactive ones only have a spawn position (+0xE0)
+        uintptr_t module_offset{0x1f8}; // where in the module container the data module hangs; differs between characters
+        bool decoy_at_1f8{false};       // a pointer to some other object sits at +0x1f8 (seen on real soldiers)
+        uintptr_t direct_offset{0};     // when non-zero the enemy object itself points at its module here (most soldiers: +0x2288)
+        bool in_container{true};        // false: nothing points at the module from the module container
+        bool foreign_owner{false};      // the module says it belongs to some other character
+    };
+    void ensureBlock(int32_t slots = 144) {
+        if (!mem.regions.count(kBlock)) mem.region(kBlock, 0x200);
+        if (!mem.regions.count(kSlots)) mem.region(kSlots, 0x38 * 256);
+        mem.put<uint64_t>(kWorld + 0xC8, kBlock);
+        mem.put<uint64_t>(kBlock, kBase + kBlockVtableRva);
+        mem.put<int32_t>(kBlock + 0x80, slots);
+        mem.put<uint64_t>(kBlock + 0x88, kSlots);
+    }
+    uintptr_t addEnemy(int slot, const EnemySpec& e) {
+        ensureBlock();
+        const uintptr_t enemy = kEnemyBase + static_cast<uintptr_t>(slot) * kEnemyStride;
+        const uintptr_t container = enemy + 0x10000;
+        const uintptr_t module = enemy + 0x11000;
+        mem.region(enemy, 0x20000);
+        mem.put<uint64_t>(kSlots + static_cast<uintptr_t>(slot) * 0x38, enemy);
+        mem.put<uint64_t>(enemy, kBase + (e.right_class ? kEnemyVtableRva : 0x4321));
+        mem.put<uint32_t>(enemy + 0x68, e.char_id);
+        mem.put<uint32_t>(enemy + 0x70, e.team);
+        const float spawn[3] = {e.x, e.y, e.z};
+        mem.put(enemy + 0xE0, spawn);
+        if (e.active) {
+            const float live[3] = {e.x, std::isnan(e.live_y) ? e.y : e.live_y, e.z};
+            mem.put(enemy + 0x1050, live);
+            mem.put(enemy + 0x1060, live);
+        }
+        mem.put<uint64_t>(enemy + 0x10b8, container);
+        if (e.decoy_at_1f8) mem.put<uint64_t>(container + 0x1f8, enemy); // points back at an EnemyIns, not a data module
+        if (e.in_container) mem.put<uint64_t>(container + e.module_offset, module);
+        if (e.direct_offset != 0) mem.put<uint64_t>(enemy + e.direct_offset, module);
+        mem.put<uint64_t>(module, kBase + (e.module_ok ? kDataModuleVtableRva : 0x999));
+        mem.put<uint64_t>(module + 8, e.foreign_owner ? uint64_t{0x7ff4deadbeef} : static_cast<uint64_t>(enemy)); // owner back-pointer
+        mem.put<int32_t>(module + 0x130, e.hp);
+        mem.put<int32_t>(module + 0x160, e.max_hp);
+        return enemy;
     }
     void setCamera(const Mat& m, uintptr_t obj = kCamera) { mem.put(obj + 0xea0, m); }
 };
@@ -288,6 +372,43 @@ TEST(SekiroLiveSampleTest, MissingOrImplausibleFacingNeverInvalidatesTheSample) 
     EXPECT_FALSE(s.facing_valid);
 }
 
+TEST(SekiroLiveSampleTest, ReadsThePlayersRealHealthFromTheDataModule) {
+    World w;
+    w.setVitals(1024, 1120);
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    LiveSample s;
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+    EXPECT_TRUE(s.vitals_valid);
+    EXPECT_FLOAT_EQ(s.hp, 1024.f);
+    EXPECT_FLOAT_EQ(s.max_hp, 1120.f);
+
+    w.setVitals(0, 1120); // dead: zero is a real reading, not "unknown"
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+    EXPECT_TRUE(s.vitals_valid);
+    EXPECT_FLOAT_EQ(s.hp, 0.f);
+}
+
+TEST(SekiroLiveSampleTest, ImplausibleOrUnidentifiedVitalsNeverInvalidateTheSample) {
+    World w;
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    LiveSample s;
+
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok); // no module container at all
+    EXPECT_FALSE(s.vitals_valid);
+
+    w.setVitals(500, 1120, /*right_class=*/false); // pointer chain leads to something else
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+    EXPECT_FALSE(s.vitals_valid);
+
+    for (auto [hp, max_hp] : {std::pair<int32_t, int32_t>{500, 0}, {500, -5}, {-1, 1120}, {1121, 1120}, {500, 5000000}}) {
+        w.setVitals(hp, max_hp);
+        ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+        EXPECT_FALSE(s.vitals_valid) << hp << "/" << max_hp;
+    }
+}
+
 TEST(SekiroLiveSampleTest, NotInWorldWhileManagersAreNull) {
     World w;
     LiveBinder binder(w.mem, kBase, kImageSize);
@@ -412,6 +533,27 @@ TEST(SekiroLiveMirrorTest, CarriesTheFacingIntoTheMirrorOnlyWhileItIsValid) {
     s.facing_valid = false;
     mirror.update(s, 0.016f, player, camera);
     EXPECT_FALSE(player.bFacingValid);
+}
+
+TEST(SekiroLiveMirrorTest, CarriesVitalsIntoTheMirrorOnlyWhileValid) {
+    ChrIns player;
+    ChrCam camera;
+    LiveMirror mirror;
+    LiveSample s;
+    s.player_pos = {1.f, 2.f, 3.f};
+    s.vitals_valid = true;
+    s.hp = 700.f;
+    s.max_hp = 1120.f;
+    mirror.update(s, 0.016f, player, camera);
+    EXPECT_TRUE(player.bVitalsValid);
+    EXPECT_FLOAT_EQ(player.Health, 700.f);
+    EXPECT_FLOAT_EQ(player.MaxHealth, 1120.f);
+
+    s.vitals_valid = false;
+    s.hp = 0.f;
+    mirror.update(s, 0.016f, player, camera);
+    EXPECT_FALSE(player.bVitalsValid);
+    EXPECT_FLOAT_EQ(player.Health, 700.f); // last good value kept, flagged unusable
 }
 
 TEST(SekiroLiveMirrorTest, TeleportAndResetDoNotProduceVelocitySpikes) {
@@ -540,4 +682,336 @@ TEST(SekiroCameraStabilizerTest, ResetForgetsThePreviousFrame) {
     const LiveSample raw = b;
     stabilizer.apply(b);
     EXPECT_FLOAT_EQ(b.cam_pos.Z, raw.cam_pos.Z);
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Enemy enumeration: WorldChrMan+0xC8 -> WorldBlockChr, a slot array of EnemyIns (verified in the live game)
+// ---------------------------------------------------------------------------------------------
+TEST(SekiroLiveEnemiesTest, ListsActiveEnemiesWithTheirRealHealthAndPosition) {
+    World w;
+    const uintptr_t first = w.addEnemy(4, {.x = 164.f, .y = -29.f, .z = 23.f, .char_id = 10010000, .hp = 1500, .max_hp = 2101});
+    w.addEnemy(7, {.x = 10.f, .y = 2.f, .z = 3.f, .char_id = 10100300, .hp = 200, .max_hp = 322});
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+
+    std::vector<LiveEnemy> enemies;
+    ASSERT_EQ(binder.enumerateEnemies(enemies), 2u);
+    EXPECT_EQ(enemies[0].slot, 4u);
+    EXPECT_EQ(enemies[0].handle, first);
+    EXPECT_EQ(enemies[0].char_id, 10010000u);
+    EXPECT_EQ(enemies[0].team, 5u);
+    EXPECT_TRUE(enemies[0].hostile);
+    EXPECT_FLOAT_EQ(enemies[0].position.X, 164.f);
+    EXPECT_FLOAT_EQ(enemies[0].position.Y, -29.f);
+    EXPECT_TRUE(enemies[0].hp_valid);
+    EXPECT_FLOAT_EQ(enemies[0].hp, 1500.f);
+    EXPECT_FLOAT_EQ(enemies[0].max_hp, 2101.f);
+    EXPECT_FALSE(enemies[0].dead);
+    EXPECT_EQ(enemies[1].slot, 7u);
+}
+
+TEST(SekiroLiveEnemiesTest, UsesTheLivePositionNotTheStaticSpawnPosition) {
+    World w;
+    w.addEnemy(1, {.x = 100.f, .y = 5.f, .z = 100.f, .live_y = 6.5f}); // moved: live differs from the spawn copy
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> enemies;
+    ASSERT_EQ(binder.enumerateEnemies(enemies), 1u);
+    EXPECT_FLOAT_EQ(enemies[0].position.Y, 6.5f);
+}
+
+TEST(SekiroLiveEnemiesTest, SkipsInactiveEmptyAndWrongClassSlots) {
+    World w;
+    w.addEnemy(0, {.x = 50.f, .y = 1.f, .z = 50.f, .active = false});      // unloaded: no live position
+    w.addEnemy(2, {.x = 1.f, .y = 1.f, .z = 1.f, .right_class = false});   // not an EnemyIns
+    w.addEnemy(3, {.x = 2.f, .y = 1.f, .z = 2.f});                         // the only real one
+    // slot 1 stays a null pointer
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> enemies;
+    ASSERT_EQ(binder.enumerateEnemies(enemies), 1u);
+    EXPECT_EQ(enemies[0].slot, 3u);
+}
+
+TEST(SekiroLiveEnemiesTest, ClassifiesTeamsAndDeathFromHealth) {
+    World w;
+    w.addEnemy(0, {.x = 1.f, .y = 1.f, .z = 1.f, .team = 5});
+    w.addEnemy(1, {.x = 2.f, .y = 1.f, .z = 2.f, .team = 9});              // neutral
+    w.addEnemy(2, {.x = 3.f, .y = 1.f, .z = 3.f, .team = 1});              // friendly
+    w.addEnemy(3, {.x = 4.f, .y = 1.f, .z = 4.f, .hp = 0});                // dead
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    ASSERT_EQ(binder.enumerateEnemies(e), 4u);
+    EXPECT_TRUE(e[0].hostile);
+    EXPECT_FALSE(e[1].hostile);
+    EXPECT_FALSE(e[2].hostile);
+    EXPECT_TRUE(e[3].dead);
+    EXPECT_TRUE(e[3].hp_valid);
+}
+
+TEST(SekiroLiveEnemiesTest, UntrustworthyHealthIsReportedAsUnknownNotAsZero) {
+    World w;
+    w.addEnemy(0, {.x = 1.f, .y = 1.f, .z = 1.f, .module_ok = false});          // module class mismatch (garbage)
+    w.addEnemy(1, {.x = 2.f, .y = 1.f, .z = 2.f, .hp = 500, .max_hp = 0});      // impossible max
+    w.addEnemy(2, {.x = 3.f, .y = 1.f, .z = 3.f, .hp = 9000, .max_hp = 100});   // hp above max
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    ASSERT_EQ(binder.enumerateEnemies(e), 3u); // still listed: position is real
+    for (const auto& enemy : e) {
+        EXPECT_FALSE(enemy.hp_valid);
+        EXPECT_FALSE(enemy.dead) << "unknown health must not look like a corpse";
+    }
+}
+
+TEST(SekiroLiveEnemiesTest, NothingWithoutABlockAndABoundedWalkWithAHugeSlotCount) {
+    World w;
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    EXPECT_EQ(binder.enumerateEnemies(e), 0u); // no block pointer
+
+    w.addEnemy(5, {.x = 1.f, .y = 1.f, .z = 1.f});
+    w.ensureBlock(1000000); // corrupt count: must not read a million slots
+    EXPECT_EQ(binder.enumerateEnemies(e), 0u);
+
+    w.ensureBlock(144);
+    w.mem.put<uint64_t>(kBlock, kBase + 0x7777); // wrong class for the block
+    EXPECT_EQ(binder.enumerateEnemies(e), 0u);
+}
+
+TEST(SekiroLiveEnemiesTest, HonoursTheMaxEntriesLimit) {
+    World w;
+    for (int i = 0; i < 6; ++i) w.addEnemy(i, {.x = float(i + 1), .y = 1.f, .z = 1.f});
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    EXPECT_EQ(binder.enumerateEnemies(e, 4), 4u);
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Real grounded flag: SprjPlayerFallModule + 0x40 is -1 on the ground
+// ---------------------------------------------------------------------------------------------
+TEST(SekiroLiveGroundedTest, MinusOneMeansGroundedAndNonNegativeMeansAirborne) {
+    World w;
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    LiveSample s;
+
+    w.setFallState(-1);
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+    EXPECT_TRUE(s.grounded_valid);
+    EXPECT_TRUE(s.grounded);
+
+    for (int32_t airborne : {0, 1, 3, 12}) {
+        w.setFallState(airborne);
+        ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+        EXPECT_TRUE(s.grounded_valid);
+        EXPECT_FALSE(s.grounded) << airborne;
+    }
+}
+
+TEST(SekiroLiveGroundedTest, MissingOrWrongClassModuleMeansUnknownNotAirborne) {
+    World w;
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    LiveSample s;
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+    EXPECT_FALSE(s.grounded_valid);
+
+    w.setFallState(5, /*right_class=*/false);
+    ASSERT_EQ(binder.sample(s), SampleStatus::Ok);
+    EXPECT_FALSE(s.grounded_valid);
+    EXPECT_TRUE(s.grounded) << "unknown defaults to grounded so nothing starts gliding by accident";
+}
+
+TEST(SekiroLiveMirrorTest, CarriesTheGroundedFlagOnlyWhileValid) {
+    ChrIns player;
+    ChrCam camera;
+    LiveMirror mirror;
+    LiveSample s;
+    s.player_pos = {1.f, 2.f, 3.f};
+    s.grounded_valid = true;
+    s.grounded = false;
+    mirror.update(s, 0.016f, player, camera);
+    EXPECT_TRUE(player.bGroundedValid);
+    EXPECT_FALSE(player.bOnGround);
+    s.grounded_valid = false;
+    mirror.update(s, 0.016f, player, camera);
+    EXPECT_FALSE(player.bGroundedValid);
+}
+
+
+TEST(SekiroLiveEnemiesTest, FindsTheDataModuleWhereverItHangsInTheContainer) {
+    World w;
+    w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .hp = 700, .max_hp = 900, .module_offset = 0x2A0});
+    w.addEnemy(2, {.x = 2.f, .y = 1.f, .z = 2.f, .hp = 300, .max_hp = 322, .module_offset = 0x1e8});
+    w.addEnemy(3, {.x = 3.f, .y = 1.f, .z = 3.f, .hp = 50, .max_hp = 60, .module_offset = 0x30});
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    ASSERT_EQ(binder.enumerateEnemies(e), 3u);
+    EXPECT_TRUE(e[0].hp_valid);
+    EXPECT_FLOAT_EQ(e[0].hp, 700.f);
+    EXPECT_FLOAT_EQ(e[0].max_hp, 900.f);
+    EXPECT_TRUE(e[1].hp_valid);
+    EXPECT_FLOAT_EQ(e[1].hp, 300.f);
+    EXPECT_TRUE(e[2].hp_valid);
+    EXPECT_FLOAT_EQ(e[2].hp, 50.f);
+}
+
+TEST(SekiroLiveEnemiesTest, SkipsPointersThatAreNotDataModulesAndStillFindsTheRealOne) {
+    World w;
+    w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .hp = 400, .max_hp = 500, .module_offset = 0x240, .decoy_at_1f8 = true});
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    ASSERT_EQ(binder.enumerateEnemies(e), 1u);
+    EXPECT_TRUE(e[0].hp_valid);
+    EXPECT_FLOAT_EQ(e[0].hp, 400.f);
+}
+
+TEST(SekiroLiveEnemiesTest, ACharacterWithoutAnyDataModuleHasUnknownHealth) {
+    World w;
+    w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .module_ok = false, .module_offset = 0x260});
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    ASSERT_EQ(binder.enumerateEnemies(e), 1u);
+    EXPECT_FALSE(e[0].hp_valid);
+}
+
+TEST(SekiroLiveEnemiesTest, FindChrDataModuleReportsTheOffsetAndHonoursTheHint) {
+    World w;
+    const uintptr_t enemy = w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .module_offset = 0x2C8});
+    const uintptr_t container = enemy + 0x10000;
+    const auto found = findChrDataModule(w.mem, kBase, container);
+    ASSERT_TRUE(found.has_value());
+    EXPECT_EQ(found->offset, 0x2C8u);
+    EXPECT_EQ(found->module, enemy + 0x11000);
+    const auto hinted = findChrDataModule(w.mem, kBase, container, 0x2C8);
+    ASSERT_TRUE(hinted.has_value());
+    EXPECT_EQ(hinted->offset, 0x2C8u);
+    const auto wrong_hint = findChrDataModule(w.mem, kBase, container, 0x40); // stale hint: falls back to a scan
+    ASSERT_TRUE(wrong_hint.has_value());
+    EXPECT_EQ(wrong_hint->offset, 0x2C8u);
+    EXPECT_FALSE(findChrDataModule(w.mem, kBase, 0).has_value());
+    EXPECT_FALSE(findChrDataModule(w.mem, kBase, 0xdead0000ull).has_value());
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Most enemies (dozens of character types in the live game) point at their data module straight from the
+// EnemyIns object, at +0x2188..+0x2288 depending on the type; the module's +0x8 names its owner.
+// ---------------------------------------------------------------------------------------------
+TEST(SekiroLiveEnemiesTest, FindsAModuleThatTheEnemyObjectPointsAtDirectly) {
+    World w;
+    w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .hp = 1572, .max_hp = 1572, .direct_offset = 0x2288, .in_container = false});
+    w.addEnemy(2, {.x = 2.f, .y = 1.f, .z = 2.f, .hp = 700, .max_hp = 756, .direct_offset = 0x2228, .in_container = false});
+    w.addEnemy(3, {.x = 3.f, .y = 1.f, .z = 3.f, .hp = 5, .max_hp = 9, .direct_offset = 0x20b8, .in_container = false});
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    ASSERT_EQ(binder.enumerateEnemies(e), 3u);
+    EXPECT_TRUE(e[0].hp_valid);
+    EXPECT_FLOAT_EQ(e[0].hp, 1572.f);
+    EXPECT_TRUE(e[1].hp_valid);
+    EXPECT_FLOAT_EQ(e[1].hp, 700.f);
+    EXPECT_TRUE(e[2].hp_valid);
+    EXPECT_FLOAT_EQ(e[2].hp, 5.f);
+}
+
+TEST(SekiroLiveEnemiesTest, AModuleThatBelongsToAnotherCharacterIsNeverAccepted) {
+    World w;
+    // both the container and the direct pointer lead to a module whose owner field names somebody else
+    w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .hp = 100, .max_hp = 200, .direct_offset = 0x2288, .foreign_owner = true});
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    ASSERT_EQ(binder.enumerateEnemies(e), 1u);
+    EXPECT_FALSE(e[0].hp_valid) << "never read (and never write) another character's health";
+}
+
+TEST(SekiroLiveEnemiesTest, FindOwnedDataModuleReportsHowItWasFoundAndHonoursTheHint) {
+    World w;
+    const uintptr_t direct = w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .direct_offset = 0x2288, .in_container = false});
+    const uintptr_t boxed = w.addEnemy(2, {.x = 2.f, .y = 1.f, .z = 2.f, .module_offset = 0x1b0});
+
+    const auto a = findOwnedDataModule(w.mem, kBase, kImageSize, direct);
+    ASSERT_TRUE(a.has_value());
+    EXPECT_TRUE(a->isDirect());
+    EXPECT_EQ(a->first, 0x2288u);
+    EXPECT_EQ(a->module, direct + 0x11000);
+
+    const auto b = findOwnedDataModule(w.mem, kBase, kImageSize, boxed);
+    ASSERT_TRUE(b.has_value());
+    EXPECT_FALSE(b->isDirect());
+    EXPECT_EQ(b->first, 0x10b8u);
+    EXPECT_EQ(b->second, 0x1b0u);
+
+    const auto again = findOwnedDataModule(w.mem, kBase, kImageSize, direct, &*a);
+    ASSERT_TRUE(again.has_value());
+    EXPECT_EQ(again->module, a->module);
+    const DataModuleRef stale{0, 0x40, DataModuleRef::kDirect}; // a hint that no longer points at a module
+    const auto recovered = findOwnedDataModule(w.mem, kBase, kImageSize, direct, &stale);
+    ASSERT_TRUE(recovered.has_value());
+    EXPECT_EQ(recovered->first, 0x2288u);
+
+    EXPECT_FALSE(findOwnedDataModule(w.mem, kBase, kImageSize, 0).has_value());
+    EXPECT_FALSE(findOwnedDataModule(w.mem, kBase, kImageSize, 0xdead0000ull).has_value());
+}
+
+
+namespace {
+// Counts reads so a test can see how much work a frame costs.
+class CountingReader : public IMemoryReader {
+public:
+    explicit CountingReader(const IMemoryReader& inner) : inner_(inner) {}
+    bool read(uintptr_t address, void* out, size_t size) const override {
+        ++reads;
+        return inner_.read(address, out, size);
+    }
+    mutable size_t reads{0};
+
+private:
+    const IMemoryReader& inner_;
+};
+} // namespace
+
+TEST(SekiroLiveEnemiesTest, ACharacterWithNoDataModuleIsNotRescannedEveryFrame) {
+    World w;
+    for (int i = 0; i < 5; ++i) {
+        w.addEnemy(i, {.x = float(i + 1), .y = 1.f, .z = 1.f, .module_ok = false, .in_container = false});
+    }
+    CountingReader counting(w.mem);
+    LiveBinder binder(counting, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    counting.reads = 0;
+    ASSERT_EQ(binder.enumerateEnemies(e), 5u); // the first frame searches (and finds nothing)
+    const size_t first_frame = counting.reads;
+    counting.reads = 0;
+    ASSERT_EQ(binder.enumerateEnemies(e), 5u);
+    EXPECT_LT(counting.reads * 2, first_frame) << "the second frame must not repeat the full search (" << counting.reads << " vs " << first_frame << " reads)";
+}
+
+TEST(SekiroLiveEnemiesTest, AModuleThatAppearsLaterIsFoundOnceTheMissIsRetried) {
+    World w;
+    w.addEnemy(1, {.x = 1.f, .y = 1.f, .z = 1.f, .module_ok = false, .direct_offset = 0x2288, .in_container = false});
+    LiveBinder binder(w.mem, kBase, kImageSize);
+    ASSERT_EQ(binder.scan(), BindStatus::Bound);
+    std::vector<LiveEnemy> e;
+    ASSERT_EQ(binder.enumerateEnemies(e), 1u);
+    EXPECT_FALSE(e[0].hp_valid);
+    // the game finishes building the character: the module gets its class
+    w.mem.put<uint64_t>(kEnemyBase + 1 * kEnemyStride + 0x11000, kBase + kDataModuleVtableRva);
+    bool found = false;
+    for (int frame = 0; frame < 200 && !found; ++frame) {
+        binder.enumerateEnemies(e);
+        found = !e.empty() && e[0].hp_valid;
+    }
+    EXPECT_TRUE(found) << "a retry must eventually pick the module up";
 }

@@ -155,11 +155,22 @@ HUD_KEYS = [
     "hotbar", "hotbar_selection",
     "item_diamond_sword", "item_diamond_pickaxe", "item_dirt", "item_stone", "item_tnt",
     "item_golden_apple", "item_bow", "item_elytra", "item_totem_of_undying",
+    "heart_absorb_full", "heart_absorb_half", "particle_crit", "particle_damage",
+    *[f"particle_sweep_{i}" for i in range(8)],
+    "item_arrow", "item_trident", "item_flint_and_steel", "item_ender_pearl", "item_enchanted_golden_apple",
+    "item_bread", "item_cooked_beef", "item_firework_rocket", "container_top", "container_bottom",
+    "block_dirt", "block_stone", "block_tnt_top", "block_tnt_side", "block_tnt_bottom",
+    "heart_container_blinking", "heart_full_blinking", "heart_half_blinking", "xp_bar_background", "xp_bar_progress",
 ]
 HUD_SIZES = {
+    "heart_absorb_full": (9, 9), "heart_absorb_half": (9, 9), "particle_crit": (8, 8), "particle_damage": (8, 8),
+    **{f"particle_sweep_{i}": (32, 32) for i in range(8)},
     "crosshair": (15, 15), "hotbar": (182, 22), "hotbar_selection": (24, 23),
     "heart_container": (9, 9), "heart_full": (9, 9), "heart_half": (9, 9),
     "hunger_container": (9, 9), "hunger_full": (9, 9), "hunger_half": (9, 9),
+    "container_top": (176, 71), "container_bottom": (176, 96),
+    "xp_bar_background": (182, 5), "xp_bar_progress": (182, 5),
+    "heart_container_blinking": (9, 9), "heart_full_blinking": (9, 9), "heart_half_blinking": (9, 9),
 }
 
 
@@ -183,6 +194,19 @@ def _sprite_colors():
         "item/bow.png": _solid((16, 16), (19, 20, 21, 255)),
         "item/elytra.png": _solid((16, 16), (22, 23, 24, 255)),
         "item/totem_of_undying.png": _solid((16, 16), (25, 26, 27, 255)),
+        "item/arrow.png": _solid((16, 16), (31, 32, 33, 255)),
+        "item/trident.png": _solid((16, 16), (34, 35, 36, 255)),
+        "item/flint_and_steel.png": _solid((16, 16), (37, 38, 39, 255)),
+        "item/ender_pearl.png": _solid((16, 16), (40, 41, 42, 255)),
+        "item/bread.png": _solid((16, 16), (43, 44, 45, 255)),
+        "item/cooked_beef.png": _solid((16, 16), (46, 47, 48, 255)),
+        "item/firework_rocket.png": _solid((16, 16), (49, 50, 51, 255)),
+        "block/tnt_bottom.png": _solid((16, 16), (52, 53, 54, 255)),
+        "gui/sprites/hud/heart/container_blinking.png": _solid((9, 9), (61, 62, 63, 255)),
+        "gui/sprites/hud/heart/full_blinking.png": _solid((9, 9), (64, 65, 66, 255)),
+        "gui/sprites/hud/heart/half_blinking.png": _solid((9, 9), (67, 68, 69, 255)),
+        "gui/sprites/hud/experience_bar_background.png": _solid((182, 5), (70, 71, 72, 255)),
+        "gui/sprites/hud/experience_bar_progress.png": _solid((182, 5), (73, 74, 75, 255)),
     }
 
 
@@ -195,6 +219,11 @@ def _hud_jar(path: Path) -> Path:
             hotbar.putpixel((x, y), (x % 256, y * 10, 77, 255))
     files = _sprite_colors()
     files["gui/sprites/hud/hotbar.png"] = hotbar
+    container = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
+    for x in range(256):
+        for y in range(256):
+            container.putpixel((x, y), (x, y, 9, 255))
+    files["gui/container/generic_54.png"] = container
     with zipfile.ZipFile(path, "w") as z:
         for name, img in files.items():
             z.writestr("assets/minecraft/textures/" + name, _png(img))
@@ -284,6 +313,52 @@ def test_non_block_items_stay_flat(tmp_path):
     assert sword.getpixel((0, 0)) == (1, 2, 3, 255) and sword.getpixel((15, 15)) == (1, 2, 3, 255)
 
 
+def test_container_halves_are_the_right_rows_of_generic_54(tmp_path):
+    from extract_mc_assets import build_hud_atlas
+
+    atlas, uv = build_hud_atlas(_hud_jar(tmp_path / "client.jar"))
+    top = _hud_region(atlas, uv["container_top"])
+    bottom = _hud_region(atlas, uv["container_bottom"])
+    assert top.size == (176, 71) and bottom.size == (176, 96)
+    assert top.getpixel((0, 0)) == (0, 0, 9, 255) and top.getpixel((175, 70)) == (175, 70, 9, 255)
+    assert bottom.getpixel((0, 0)) == (0, 126, 9, 255) and bottom.getpixel((175, 95)) == (175, 221, 9, 255)
+
+
+def test_new_item_icons_are_copied_and_the_enchanted_apple_is_a_tinted_golden_apple(tmp_path):
+    from extract_mc_assets import build_hud_atlas
+
+    atlas, uv = build_hud_atlas(_hud_jar(tmp_path / "client.jar"))
+    for key, color in {"item_arrow": (31, 32, 33, 255), "item_cooked_beef": (46, 47, 48, 255), "item_firework_rocket": (49, 50, 51, 255)}.items():
+        region = _hud_region(atlas, uv[key])
+        assert {region.getpixel((x, y)) for x in range(16) for y in range(16)} == {color}, key
+    plain = _hud_region(atlas, uv["item_golden_apple"]).getpixel((8, 8))
+    glint = _hud_region(atlas, uv["item_enchanted_golden_apple"]).getpixel((8, 8))
+    assert glint != plain and glint[3] == 255
+    assert glint[2] > plain[2]  # shifted towards the purple glint
+
+
+def test_block_face_sprites_are_the_flat_block_textures(tmp_path):
+    from extract_mc_assets import build_hud_atlas
+
+    atlas, uv = build_hud_atlas(_hud_jar(tmp_path / "client.jar"))
+    expect = {"block_dirt": (100, 80, 60, 255), "block_stone": (120, 120, 120, 255), "block_tnt_top": (220, 220, 220, 255),
+              "block_tnt_side": (200, 40, 30, 255), "block_tnt_bottom": (52, 53, 54, 255)}
+    for key, color in expect.items():
+        region = _hud_region(atlas, uv[key])
+        assert {region.getpixel((x, y)) for x in range(16) for y in range(16)} == {color}, key
+
+
+def test_blinking_hearts_and_the_experience_bar_are_copied(tmp_path):
+    from extract_mc_assets import build_hud_atlas
+
+    atlas, uv = build_hud_atlas(_hud_jar(tmp_path / "client.jar"))
+    expect = {"heart_container_blinking": (61, 62, 63, 255), "heart_full_blinking": (64, 65, 66, 255), "heart_half_blinking": (67, 68, 69, 255),
+              "xp_bar_background": (70, 71, 72, 255), "xp_bar_progress": (73, 74, 75, 255)}
+    for key, color in expect.items():
+        region = _hud_region(atlas, uv[key])
+        assert {region.getpixel((x, y)) for x in range(region.width) for y in range(region.height)} == {color}, key
+
+
 def test_committed_generated_headers_match_the_tool_output(tmp_path):
     """The headers must be generated, never hand-edited: regenerate and compare byte for byte."""
     from extract_mc_assets import build_hud_atlas, export_hud_atlas_header, export_adapter_atlas_header
@@ -300,3 +375,135 @@ def test_committed_generated_headers_match_the_tool_output(tmp_path):
 
     committed_png = Image.open(root / "assets/source/textures/mc_hud_atlas.png").convert("RGBA")
     assert committed_png.tobytes() == atlas.tobytes()
+
+
+def test_parse_geometry_json_bedrock_1_12():
+    from extract_mc_assets import parse_geometry_json
+
+    sample_json = """{
+        "format_version": "1.12.0",
+        "minecraft:geometry": [
+            {
+                "description": {
+                    "identifier": "geometry.creeper",
+                    "texture_width": 64,
+                    "texture_height": 32
+                },
+                "bones": [
+                    {
+                        "name": "head",
+                        "pivot": [0, 18, 0],
+                        "cubes": [
+                            {"origin": [-4, 18, -4], "size": [8, 8, 8], "uv": [0, 0]}
+                        ]
+                    },
+                    {
+                        "name": "body",
+                        "pivot": [0, 18, 0],
+                        "cubes": [
+                            {"origin": [-4, 6, -2], "size": [8, 12, 4], "uv": [16, 16], "inflate": 0.25}
+                        ]
+                    },
+                    {
+                        "name": "leg0",
+                        "parent": "body",
+                        "pivot": [-2, 6, 4],
+                        "rotation": [0, 15, 0],
+                        "cubes": [
+                            {"origin": [-4, 0, 2], "size": [4, 6, 4], "uv": [0, 16], "mirror": true}
+                        ]
+                    }
+                ]
+            }
+        ]
+    }"""
+    geo = parse_geometry_json(sample_json)
+    assert geo["identifier"] == "geometry.creeper"
+    assert geo["texture_width"] == 64
+    assert geo["texture_height"] == 32
+    assert len(geo["bones"]) == 3
+
+    head = geo["bones"][0]
+    assert head["name"] == "head"
+    assert head["pivot"] == (0, 18, 0)
+    assert len(head["cubes"]) == 1
+    assert head["cubes"][0]["origin"] == (-4, 18, -4)
+    assert head["cubes"][0]["size"] == (8, 8, 8)
+    assert head["cubes"][0]["uv"] == (0, 0)
+
+    body = geo["bones"][1]
+    assert body["name"] == "body"
+    assert body["cubes"][0]["inflate"] == 0.25
+
+    leg0 = geo["bones"][2]
+    assert leg0["name"] == "leg0"
+    assert leg0["parent"] == "body"
+    assert leg0["rotation"] == (0, 15, 0)
+    assert leg0["cubes"][0]["mirror"] is True
+
+
+def test_parse_geometry_json_bedrock_1_8():
+    from extract_mc_assets import parse_geometry_json
+
+    sample_1_8 = """{
+        "format_version": "1.8.0",
+        "geometry.zombie": {
+            "texturewidth": 64,
+            "textureheight": 64,
+            "bones": [
+                {
+                    "name": "head",
+                    "pivot": [0, 24, 0],
+                    "cubes": [
+                        {"origin": [-4, 24, -4], "size": [8, 8, 8], "uv": [0, 0]}
+                    ]
+                }
+            ]
+        }
+    }"""
+    geo = parse_geometry_json(sample_1_8)
+    assert geo["identifier"] == "geometry.zombie"
+    assert geo["texture_width"] == 64
+    assert geo["texture_height"] == 64
+    assert len(geo["bones"]) == 1
+    assert geo["bones"][0]["name"] == "head"
+
+
+def test_build_geometry_mesh_generates_valid_triangles():
+    from extract_mc_assets import parse_geometry_json, build_geometry_mesh
+
+    sample_json = """{
+        "format_version": "1.12.0",
+        "minecraft:geometry": [
+            {
+                "description": {
+                    "identifier": "geometry.box",
+                    "texture_width": 64,
+                    "texture_height": 32
+                },
+                "bones": [
+                    {
+                        "name": "cube",
+                        "pivot": [0, 0, 0],
+                        "cubes": [
+                            {"origin": [-2, 0, -2], "size": [4, 4, 4], "uv": [0, 0]}
+                        ]
+                    }
+                ]
+            }
+        ]
+    }"""
+    geo = parse_geometry_json(sample_json)
+    parts = build_geometry_mesh(geo)
+    assert "cube" in parts
+    mesh = parts["cube"]
+    # 6 faces * 4 vertices = 24 vertices
+    assert len(mesh["positions"]) == 24
+    assert len(mesh["normals"]) == 24
+    assert len(mesh["uv"]) == 24
+    # 6 faces * 2 triangles * 3 indices = 36 indices
+    assert len(mesh["triangles"]) == 36
+    for u, v in mesh["uv"]:
+        assert 0.0 <= u <= 1.0
+        assert 0.0 <= v <= 1.0
+

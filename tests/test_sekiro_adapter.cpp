@@ -280,6 +280,202 @@ TEST(SekiroAdapterTest, FacingYawIsTheCanonicalHeadingOfTheNativeFacingDirection
     EXPECT_FALSE(adapter.getPlayerFacingYaw(yaw));
 }
 
+TEST(SekiroAdapterTest, ReportsRealPlayerVitalsOnlyWhenTheLiveReadIsValid) {
+    sekiro::native::ChrIns player;
+    sekiro::native::ChrCam camera;
+    SekiroAdapter adapter(&player, &camera);
+    mc::HostVitals v;
+
+    EXPECT_NE(adapter.supportedFeatures() & static_cast<uint32_t>(mc::HostFeature::PlayerVitals), 0u);
+    EXPECT_FALSE(adapter.getPlayerVitals(v)); // nothing read yet
+
+    player.bVitalsValid = true;
+    player.Health = 1024.f;
+    player.MaxHealth = 1120.f;
+    ASSERT_TRUE(adapter.getPlayerVitals(v));
+    EXPECT_FLOAT_EQ(v.health, 1024.f);
+    EXPECT_FLOAT_EQ(v.max_health, 1120.f);
+
+    player.bVitalsValid = false;
+    EXPECT_FALSE(adapter.getPlayerVitals(v));
+}
+
+TEST(SekiroAdapterTest, NativeCombatInputSuppressionIsAFlagTheLoaderReadsFromAnotherThread) {
+    SekiroAdapter adapter;
+    EXPECT_FALSE(adapter.nativeCombatInputSuppressed());
+    adapter.setNativeCombatInputSuppressed(true);
+    EXPECT_TRUE(adapter.nativeCombatInputSuppressed());
+    adapter.setNativeCombatInputSuppressed(true); // idempotent
+    EXPECT_TRUE(adapter.nativeCombatInputSuppressed());
+    adapter.setNativeCombatInputSuppressed(false);
+    EXPECT_FALSE(adapter.nativeCombatInputSuppressed());
+}
+
+TEST(SekiroAdapterTest, EyesAre162CmAboveTheFeetNotAtTheFloatingCamera) {
+    ChrIns player;
+    ChrCam camera;
+    SekiroAdapter adapter(&player, &camera);
+    player.Position = FVector3{2.f, 0.5f, 10.f}; // native metres: right, up, forward
+    camera.Position = FVector3{2.f, 3.0f, 5.f};  // behind and above
+    const Vec3 eye = adapter.getEyePosition();
+    const Vec3 feet = adapter.getPlayerPosition();
+    EXPECT_NEAR(eye.x, feet.x, 1e-3f);
+    EXPECT_NEAR(eye.y, feet.y, 1e-3f);
+    EXPECT_NEAR(eye.z, feet.z + 162.f, 1e-3f);
+    EXPECT_GT((adapter.getCameraPosition() - eye).length(), 100.f);
+    EXPECT_NEAR(SekiroAdapter().getEyePosition().length(), SekiroAdapter().getCameraPosition().length(), 1e-3f); // unbound
+}
+
+TEST(SekiroAdapterTest, OnlyDeclaresTheHostFeaturesThatWereVerifiedInTheLiveGame) {
+    SekiroAdapter adapter;
+    // Add a bit here only together with its live-game verification (docs/REVERSE_INTERFACES.md).
+    EXPECT_EQ(adapter.supportedFeatures(), static_cast<uint32_t>(mc::HostFeature::PlayerVitals) |
+                                               static_cast<uint32_t>(mc::HostFeature::GroundedFlag));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Enemies are targeted geometrically (the game's own raycast is not hooked): an upright capsule per tracked
+// character, 45 cm radius and 190 cm tall by default.
+// ---------------------------------------------------------------------------------------------
+namespace {
+ChrIns makeEnemy(float native_right, float native_up, float native_forward, float hp = 2101.f) {
+    ChrIns e;
+    e.Position = {native_right, native_up, native_forward};
+    e.Health = hp;
+    e.MaxHealth = 2101.f;
+    e.TeamId = 1;
+    return e;
+}
+} // namespace
+
+TEST(SekiroAdapterEnemyTest, ARayAtChestHeightHitsTheEnemyAndNamesItsEntityId) {
+    SekiroAdapter adapter;
+    ChrIns enemy = makeEnemy(0.f, 0.f, 3.f); // 3 m ahead of the origin (MC +X)
+    ASSERT_TRUE(adapter.registerEntity(static_cast<EntityId>(7), &enemy));
+
+    const RaycastResult hit = adapter.raycastWorld({0.f, 0.f, 100.f}, {450.f, 0.f, 100.f});
+    ASSERT_TRUE(hit.has_hit);
+    EXPECT_EQ(hit.hit_entity, static_cast<EntityId>(7));
+    EXPECT_FALSE(hit.is_block);
+    EXPECT_NEAR(hit.point.x, 300.f - 45.f, 1.f); // front of the 45 cm capsule
+    EXPECT_NEAR(hit.point.z, 100.f, 1e-2f);
+    EXPECT_NEAR(hit.normal.length(), 1.f, 1e-3f);
+    EXPECT_LT(hit.normal.x, -0.9f); // faces back toward the shooter
+}
+
+TEST(SekiroAdapterEnemyTest, TheLastRayIsRememberedForDiagnostics) {
+    SekiroAdapter adapter;
+    ChrIns enemy = makeEnemy(0.f, 0.f, 3.f);
+    adapter.registerEntity(static_cast<EntityId>(7), &enemy);
+    EXPECT_FALSE(adapter.lastRay().valid);
+
+    adapter.raycastWorld({0.f, 0.f, 100.f}, {450.f, 0.f, 100.f});
+    ASSERT_TRUE(adapter.lastRay().valid);
+    EXPECT_NEAR(adapter.lastRay().start.z, 100.f, 1e-3f);
+    EXPECT_NEAR(adapter.lastRay().end.x, 450.f, 1e-3f);
+    EXPECT_TRUE(adapter.lastRay().result.has_hit);
+    EXPECT_EQ(adapter.lastRay().result.hit_entity, static_cast<EntityId>(7));
+
+    adapter.raycastWorld({0.f, 100.f, 100.f}, {450.f, 100.f, 100.f}); // a miss
+    EXPECT_FALSE(adapter.lastRay().result.has_hit);
+    EXPECT_NEAR(adapter.lastRay().start.y, 100.f, 1e-3f);
+}
+
+TEST(SekiroAdapterEnemyTest, MissesBesideAboveAndBelowAndBeyondTheRay) {
+    SekiroAdapter adapter;
+    ChrIns enemy = makeEnemy(0.f, 0.f, 3.f);
+    adapter.registerEntity(static_cast<EntityId>(7), &enemy);
+    EXPECT_FALSE(adapter.raycastWorld({0.f, 100.f, 100.f}, {450.f, 100.f, 100.f}).has_hit);  // 1 m to the side
+    EXPECT_FALSE(adapter.raycastWorld({0.f, 0.f, 260.f}, {450.f, 0.f, 260.f}).has_hit);      // above the head (190 cm)
+    EXPECT_FALSE(adapter.raycastWorld({0.f, 0.f, -20.f}, {450.f, 0.f, -20.f}).has_hit);      // under the feet
+    EXPECT_FALSE(adapter.raycastWorld({0.f, 0.f, 100.f}, {200.f, 0.f, 100.f}).has_hit);      // short of it
+    EXPECT_FALSE(adapter.raycastWorld({0.f, 0.f, 100.f}, {-450.f, 0.f, 100.f}).has_hit);     // looking away
+}
+
+TEST(SekiroAdapterEnemyTest, HeadAndFeetCapsAreSolidToo) {
+    SekiroAdapter adapter;
+    ChrIns enemy = makeEnemy(0.f, 0.f, 3.f);
+    adapter.registerEntity(static_cast<EntityId>(7), &enemy);
+    EXPECT_TRUE(adapter.raycastWorld({0.f, 0.f, 185.f}, {450.f, 0.f, 185.f}).has_hit); // just under the top
+    EXPECT_TRUE(adapter.raycastWorld({0.f, 0.f, 8.f}, {450.f, 0.f, 8.f}).has_hit);     // just above the feet
+    EXPECT_TRUE(adapter.raycastWorld({300.f, 0.f, 400.f}, {300.f, 0.f, 100.f}).has_hit); // straight down onto the head
+}
+
+TEST(SekiroAdapterEnemyTest, ABlockInFrontOfTheEnemyWinsAndTheNearestEnemyWins) {
+    SekiroAdapter adapter;
+    ChrIns near_enemy = makeEnemy(0.f, 0.f, 2.f);
+    ChrIns far_enemy = makeEnemy(0.f, 0.f, 4.f);
+    adapter.registerEntity(static_cast<EntityId>(3), &far_enemy);
+    adapter.registerEntity(static_cast<EntityId>(2), &near_enemy);
+    const RaycastResult both = adapter.raycastWorld({0.f, 0.f, 100.f}, {450.f, 0.f, 100.f});
+    EXPECT_EQ(both.hit_entity, static_cast<EntityId>(2));
+
+    adapter.createBlockCollider({1, 0, 1}, BlockId::Stone, {100.f, 0.f, 100.f}); // a block at 50..150 cm
+    const RaycastResult blocked = adapter.raycastWorld({0.f, 0.f, 100.f}, {450.f, 0.f, 100.f});
+    EXPECT_TRUE(blocked.is_block);
+    EXPECT_EQ(blocked.hit_entity, EntityId::None);
+}
+
+TEST(SekiroAdapterEnemyTest, TheShooterTheDeadAndTheUnplacedAreNeverTargets) {
+    SekiroAdapter adapter;
+    ChrIns self = makeEnemy(0.f, 0.f, 0.f);
+    ChrIns corpse = makeEnemy(0.f, 0.f, 3.f);
+    corpse.bIsDead = true;
+    adapter.registerEntity(static_cast<EntityId>(5), &corpse);
+    adapter.setPlayerCharacter(&self); // registers the local player at the origin
+    // the ray starts inside the local player's own capsule and passes through a corpse
+    const RaycastResult r = adapter.raycastWorld({0.f, 0.f, 100.f}, {450.f, 0.f, 100.f}, EntityId::LocalPlayer);
+    EXPECT_FALSE(r.has_hit);
+}
+
+TEST(SekiroAdapterEnemyTest, HitsAreAppliedAsAFractionOfMaxHealthAndQueuedForTheHost) {
+    SekiroAdapter adapter;
+    ChrIns enemy = makeEnemy(0.f, 0.f, 3.f);
+    const EntityId id = static_cast<EntityId>(7);
+    adapter.registerEntity(id, &enemy);
+
+    HitIntent hit;
+    hit.victim_id = id;
+    hit.max_hp_percent = 0.05f; // the diamond sword
+    ASSERT_TRUE(adapter.processHit(hit));
+    EXPECT_NEAR(enemy.Health, 2101.f * 0.95f, 0.5f);
+
+    auto writes = adapter.drainHostHealthWrites();
+    ASSERT_EQ(writes.size(), 1u);
+    EXPECT_EQ(writes[0].id, id);
+    EXPECT_NEAR(writes[0].health, 2101.f * 0.95f, 0.5f);
+    EXPECT_TRUE(adapter.drainHostHealthWrites().empty()); // drained
+
+    // two hits before the host gets to write: only the final health matters
+    adapter.processHit(hit);
+    adapter.processHit(hit);
+    writes = adapter.drainHostHealthWrites();
+    ASSERT_EQ(writes.size(), 1u);
+    EXPECT_NEAR(writes[0].health, 2101.f * (1.f - 3 * 0.05f), 1.f); // each hit is 5 % of MAX health
+}
+
+TEST(SekiroAdapterEnemyTest, ALethalHitQueuesZeroAndTheLocalPlayerIsNeverWrittenByHits) {
+    SekiroAdapter adapter;
+    ChrIns enemy = makeEnemy(0.f, 0.f, 3.f, 50.f);
+    const EntityId id = static_cast<EntityId>(7);
+    adapter.registerEntity(id, &enemy);
+    HitIntent hit;
+    hit.victim_id = id;
+    hit.damage = 500.f;
+    ASSERT_TRUE(adapter.processHit(hit));
+    auto writes = adapter.drainHostHealthWrites();
+    ASSERT_EQ(writes.size(), 1u);
+    EXPECT_FLOAT_EQ(writes[0].health, 0.f);
+
+    ChrIns self = makeEnemy(0.f, 0.f, 0.f);
+    adapter.setPlayerCharacter(&self);
+    HitIntent crash;
+    crash.victim_id = EntityId::LocalPlayer; // e.g. elytra crash damage: handled by the player-side path
+    crash.damage = 10.f;
+    adapter.processHit(crash);
+    EXPECT_TRUE(adapter.drainHostHealthWrites().empty());
+}
+
 TEST(SekiroAdapterTest, VoxelWorldIntegrationCycle) {
     SekiroAdapter adapter;
     VoxelWorld world(adapter, adapter);
@@ -491,6 +687,26 @@ TEST(SekiroAdapterTest, OnGroundHeuristicUsesVerticalVelocity) {
     EXPECT_TRUE(SekiroAdapter().isPlayerOnGround()); // no player bound
 }
 
+TEST(SekiroAdapterTest, RealGroundFlagBeatsTheVelocityEstimateWhenTheGameReportsIt) {
+    ChrIns player;
+    SekiroAdapter adapter(&player, nullptr);
+    EXPECT_FALSE(adapter.hasRealGroundFlag());
+
+    player.bGroundedValid = true;
+    player.bOnGround = false;
+    player.Velocity = FVector3{0.f, 0.f, 3.f}; // flat velocity: the estimate would say grounded
+    EXPECT_TRUE(adapter.hasRealGroundFlag());
+    EXPECT_FALSE(adapter.isPlayerOnGround());
+
+    player.bOnGround = true;
+    player.Velocity = FVector3{0.f, 5.f, 0.f}; // rising fast: the estimate would say airborne
+    EXPECT_TRUE(adapter.isPlayerOnGround());
+
+    player.bGroundedValid = false; // sample went invalid: back to the estimate
+    EXPECT_FALSE(adapter.hasRealGroundFlag());
+    EXPECT_FALSE(adapter.isPlayerOnGround());
+}
+
 // ---------------------------------------------------------------------------
 // Session wired through the real SekiroAdapter (no loader / D3D involved)
 // ---------------------------------------------------------------------------
@@ -531,7 +747,7 @@ TEST(SekiroSessionTest, UsePlacesBlockAlongNativeForwardAndRaysUseNativeAxes) {
     in.use_pressed = true;
     SekiroMod_Tick(0.05f, &in);
 
-    EXPECT_NEAR(seen_start.Y, 1.6f, 1e-4f);                           // camera height 1.6 m = native up
+    EXPECT_NEAR(seen_start.Y, 1.62f, 1e-4f);                          // the ray starts at the eyes: feet (0) + 1.62 m, native up
     EXPECT_NEAR(seen_end.Z, Session::kReachCm / 100.f, 1e-3f);       // 4.5 m reach along native forward
     EXPECT_NEAR(seen_end.X, 0.f, 1e-3f);
     EXPECT_EQ(seen_ignore, 321u); // Session ignores the player: mapped to its Havok handle, not an internal id

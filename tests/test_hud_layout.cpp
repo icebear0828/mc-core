@@ -83,3 +83,17 @@ TEST(HudLayoutTest, TextIsEightGuiPixelsTallAndTheItemNameSitsAboveTheStatusRow)
     EXPECT_FLOAT_EQ(l.itemNameBaselineY(), 1080.f - 59.f * 3.f);
     EXPECT_LT(l.itemNameBaselineY(), l.heart(0).y);
 }
+
+TEST(HudLayoutTest, ExperienceBarSitsAboveTheHotbarAtVanillaHeight) {
+    mc::HudLayout l(1920.f, 1080.f);
+    const mc::HudRect bar = l.xpBar();
+    EXPECT_FLOAT_EQ(bar.x, l.hotbar().x);          // same left edge as the hotbar
+    EXPECT_FLOAT_EQ(bar.w, 182.f * 3);
+    EXPECT_FLOAT_EQ(bar.h, 5.f * 3);
+    EXPECT_FLOAT_EQ(bar.y, 1080.f - 29.f * 3);     // height - 32 + 3 GUI px
+    EXPECT_LT(bar.y + bar.h, l.hotbar().y);        // above the hotbar
+    EXPECT_GT(bar.y, l.heart(0).y + l.heart(0).h - 1.f); // and below the hearts
+    // the level number is centred over the bar, 35 GUI px above the bottom
+    EXPECT_FLOAT_EQ(l.xpLevelTextTop(), 1080.f - 35.f * 3);
+    EXPECT_FLOAT_EQ(l.xpLevelCentreX(), 960.f);
+}

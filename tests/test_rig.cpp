@@ -334,3 +334,46 @@ TEST(RigSkinTest, FrontFaceUsesTheStandardSkinLayout) {
         }
     }
 }
+
+
+// ----------------------------------------------------------------------------- ground shadow
+
+TEST(RigShadowTest, TheGroundShadowIsAFlatSquareOnTheFeetPlaneInAnyBasis) {
+    for (const auto& nb : kBases) {
+        const RigMesh m = buildGroundShadowMesh(nb.basis, 50.f);
+        ASSERT_EQ(m.vertices.size(), 4u) << nb.name;
+        ASSERT_EQ(m.indices.size(), 6u) << nb.name;
+        for (uint16_t i : m.indices) EXPECT_LT(i, 4u);
+        float min_u = 1e9f, max_u = -1e9f, min_v = 1e9f, max_v = -1e9f;
+        for (const auto& v : m.vertices) {
+            const Vec3 p{v.x, v.y, v.z};
+            EXPECT_NEAR(along(p, nb.basis.up), 1.f * nb.basis.units_per_cm, 1e-4f) << "1 cm above the feet, flat: " << nb.name;
+            EXPECT_NEAR(std::fabs(along(p, nb.basis.forward)), 50.f * nb.basis.units_per_cm, 1e-3f) << nb.name;
+            EXPECT_NEAR(std::fabs(along(p, nb.basis.left)), 50.f * nb.basis.units_per_cm, 1e-3f) << nb.name;
+            min_u = std::min(min_u, v.u); max_u = std::max(max_u, v.u);
+            min_v = std::min(min_v, v.v); max_v = std::max(max_v, v.v);
+        }
+        EXPECT_FLOAT_EQ(min_u, 0.f);
+        EXPECT_FLOAT_EQ(max_u, 1.f);
+        EXPECT_FLOAT_EQ(min_v, 0.f);
+        EXPECT_FLOAT_EQ(max_v, 1.f);
+    }
+}
+
+TEST(RigShadowTest, TheTwoTrianglesCoverTheWholeSquareWithoutOverlap) {
+    const RigMesh m = buildGroundShadowMesh(kBases[0].basis, 50.f);
+    auto area = [&](size_t i) {
+        const auto& a = m.vertices[m.indices[i]];
+        const auto& b = m.vertices[m.indices[i + 1]];
+        const auto& c = m.vertices[m.indices[i + 2]];
+        return 0.5f * std::fabs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y));
+    };
+    EXPECT_NEAR(area(0) + area(3), 100.f * 100.f, 1.f);
+    EXPECT_GT(area(0), 1000.f);
+    EXPECT_GT(area(3), 1000.f);
+}
+
+TEST(RigShadowTest, ARadiusOfZeroOrLessGivesNoShadow) {
+    EXPECT_TRUE(buildGroundShadowMesh(kBases[0].basis, 0.f).vertices.empty());
+    EXPECT_TRUE(buildGroundShadowMesh(kBases[0].basis, -5.f).vertices.empty());
+}

@@ -20,9 +20,33 @@ add_executable(mc_tests
     test_hud_layout.cpp
     test_session.cpp
     test_rig.cpp
+    test_item_model.cpp
     test_sekiro_live.cpp
+    test_sekiro_enemies.cpp
+    test_sekiro_host_write.cpp
+    test_sekiro_input_filter.cpp
+    test_sekiro_damage_probe.cpp
     test_sekiro_steve.cpp
     test_sekiro_model.cpp
+    test_eldenring_live.cpp
+    test_eldenring_world.cpp
+    test_eldenring_state.cpp
+    test_eldenring_damage.cpp
+    test_eldenring_steve.cpp
+    test_eldenring_melee.cpp
+    test_eldenring_los.cpp
+    test_eldenring_survival.cpp
+    test_eldenring_audio.cpp
+    test_eldenring_particles.cpp
+    test_eldenring_fp.cpp
+    test_inventory.cpp
+    test_inventory_layout.cpp
+    test_eldenring_blocks.cpp
+    test_eldenring_blockmesh.cpp
+    test_eldenring_blockicon.cpp
+    test_eldenring_hud_anim.cpp
+    test_eldenring_jump.cpp
+    test_entity_model.cpp
 )
 
 target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source")
@@ -32,6 +56,7 @@ target_link_libraries(mc_tests
         mc_core
         wukong_adapter
         sekiro_adapter
+        eldenring_live
         GTest::gtest_main
 )
 

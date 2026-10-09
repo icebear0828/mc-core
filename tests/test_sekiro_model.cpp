@@ -29,6 +29,8 @@ public:
     std::map<uintptr_t, std::vector<uint8_t>> regions;
     int writes{0};
     bool fail_writes{false};
+    int fail_on_write_number{-1}; // 1-based: that single write fails, the others succeed
+    int attempts{0};
 
     bool read(uintptr_t a, void* out, size_t n) const override {
         for (const auto& [start, bytes] : regions) {
@@ -37,7 +39,7 @@ public:
         return false;
     }
     bool write(uintptr_t a, const void* data, size_t n) override {
-        if (fail_writes) return false;
+        if (fail_writes || ++attempts == fail_on_write_number) return false;
         for (auto& [start, bytes] : regions) {
             if (a >= start && a + n <= start + bytes.size()) { std::memcpy(bytes.data() + (a - start), data, n); ++writes; return true; }
         }
@@ -231,4 +233,219 @@ TEST(SekiroModelHiderTest, ReportsAFailedWriteInsteadOfPretendingToBeHidden) {
     ModelHider h = s.hider();
     EXPECT_EQ(h.update(true), HideStatus::WriteFailed);
     EXPECT_EQ(s.mask(), 4u);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Second path (user-verified 2026-10-07): the ChrModel (vtable RVA 0x29F7CE8) itself holds two 64-bit draw
+// masks at +0x90 and +0x98, all ones while drawn. Zeroing both hides the mesh while bones, animation and
+// physics keep running. It is used next to (or, when the draw entity cannot be found, instead of) the
+// SprjAsmModelDrawEntity mask.
+// ---------------------------------------------------------------------------------------------
+namespace {
+
+constexpr uint32_t kChrModelVtableRva = 0x29F7CE8;
+constexpr uint64_t kAllOnes = 0xFFFFFFFFFFFFFFFFull;
+
+struct MaskScene : Scene {
+    MaskScene() {
+        mem.put<uint64_t>(kModel, kBase + kChrModelVtableRva);
+        mem.put<uint64_t>(kModel + 0x90, kAllOnes);
+        mem.put<uint64_t>(kModel + 0x98, kAllOnes);
+    }
+    void dropDrawEntity() { mem.put<uint64_t>(kModel + 0x250, 0); } // the failing real-game case
+    uint64_t m1() const { return mem.get<uint64_t>(kModel + 0x90); }
+    uint64_t m2() const { return mem.get<uint64_t>(kModel + 0x98); }
+};
+
+} // namespace
+
+TEST(SekiroModelMasksTest, HidesThroughTheChrModelMasksWhenTheDrawEntityCannotBeFound) {
+    MaskScene s;
+    s.dropDrawEntity();
+    ModelHider h = s.hider();
+    EXPECT_EQ(h.update(false), HideStatus::Idle);
+    EXPECT_EQ(s.mem.writes, 0);
+
+    EXPECT_EQ(h.update(true), HideStatus::Hidden);
+    EXPECT_EQ(s.m1(), 0u);
+    EXPECT_EQ(s.m2(), 0u);
+    EXPECT_EQ(h.update(true), HideStatus::Hidden);
+    EXPECT_EQ(s.mem.writes, 2) << "idempotent";
+
+    EXPECT_EQ(h.update(false), HideStatus::Idle);
+    EXPECT_EQ(s.m1(), kAllOnes);
+    EXPECT_EQ(s.m2(), kAllOnes);
+}
+
+TEST(SekiroModelMasksTest, RestoresTheRememberedValuesNotAnAssumedOne) {
+    MaskScene s;
+    s.dropDrawEntity();
+    s.mem.put<uint64_t>(kModel + 0x90, 0x00FF00FF00FF00FFull);
+    s.mem.put<uint64_t>(kModel + 0x98, 0x1ull);
+    ModelHider h = s.hider();
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    ASSERT_EQ(h.update(false), HideStatus::Idle);
+    EXPECT_EQ(s.m1(), 0x00FF00FF00FF00FFull);
+    EXPECT_EQ(s.m2(), 0x1ull);
+}
+
+TEST(SekiroModelMasksTest, BothPathsAreUsedWhenBothAreAvailableAndBothAreRestored) {
+    MaskScene s; // the draw entity is still wired up
+    ModelHider h = s.hider();
+    EXPECT_EQ(h.update(true), HideStatus::Hidden);
+    EXPECT_EQ(s.mask(), 0u);
+    EXPECT_EQ(s.m1(), 0u);
+    EXPECT_EQ(s.m2(), 0u);
+    EXPECT_EQ(h.update(false), HideStatus::Idle);
+    EXPECT_EQ(s.mask(), 4u);
+    EXPECT_EQ(s.m1(), kAllOnes);
+    EXPECT_EQ(s.m2(), kAllOnes);
+}
+
+TEST(SekiroModelMasksTest, OnlyAChrModelByVtableIsEverWritten) {
+    MaskScene s;
+    s.dropDrawEntity();
+    s.mem.put<uint64_t>(kModel, kBase + 0x1111); // something else lives behind player+0x48
+    ModelHider h = s.hider();
+    EXPECT_EQ(h.update(true), HideStatus::NotInWorld) << "neither path is available";
+    EXPECT_EQ(s.mem.writes, 0);
+    EXPECT_EQ(s.m1(), kAllOnes);
+}
+
+TEST(SekiroModelMasksTest, AMaskPairThatWasAlreadyZeroIsNotOursToRestore) {
+    MaskScene s;
+    s.dropDrawEntity();
+    s.mem.put<uint64_t>(kModel + 0x90, 0);
+    s.mem.put<uint64_t>(kModel + 0x98, 0);
+    ModelHider h = s.hider();
+    EXPECT_EQ(h.update(true), HideStatus::Rejected);
+    EXPECT_EQ(s.mem.writes, 0);
+}
+
+TEST(SekiroModelMasksTest, AFailedSecondWriteDoesNotLeaveAHalfHiddenModel) {
+    MaskScene s;
+    s.dropDrawEntity();
+    ModelHider h = s.hider();
+    s.mem.fail_on_write_number = 2; // the first mask goes through, the second does not
+    EXPECT_EQ(h.update(true), HideStatus::WriteFailed);
+    EXPECT_EQ(s.m1(), kAllOnes);
+    EXPECT_EQ(s.m2(), kAllOnes);
+}
+
+TEST(SekiroModelMasksTest, RestoreAndForgetBehaveLikeTheDrawEntityPath) {
+    MaskScene s;
+    s.dropDrawEntity();
+    ModelHider h = s.hider();
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    h.restore();
+    EXPECT_EQ(s.m1(), kAllOnes);
+    EXPECT_EQ(s.m2(), kAllOnes);
+    EXPECT_EQ(h.status(), HideStatus::Idle);
+
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    h.forgetObject(); // world left: the model is gone, nothing is written
+    const int writes = s.mem.writes;
+    EXPECT_EQ(h.status(), HideStatus::NotInWorld);
+    h.restore();
+    EXPECT_EQ(s.mem.writes, writes);
+}
+
+TEST(SekiroModelMasksTest, ANewModelObjectInvalidatesTheRememberedValues) {
+    MaskScene s;
+    s.dropDrawEntity();
+    ModelHider h = s.hider();
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    // the game replaced the Wolf's model with a new object whose masks are visible
+    constexpr uintptr_t kModel2 = 0x7ff400500000ull;
+    s.mem.region(kModel2, 0x400);
+    s.mem.put<uint64_t>(kModel2, kBase + kChrModelVtableRva);
+    s.mem.put<uint64_t>(kModel2 + 0x90, 0x7ull);
+    s.mem.put<uint64_t>(kModel2 + 0x98, 0x9ull);
+    s.mem.put<uint64_t>(kPlayer + 0x48, kModel2);
+    ASSERT_EQ(h.update(false), HideStatus::Idle);
+    EXPECT_EQ(s.mem.get<uint64_t>(kModel2 + 0x90), 0x7ull) << "never write the old object's values into the new one";
+    EXPECT_EQ(s.mem.get<uint64_t>(kModel2 + 0x98), 0x9ull);
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// The game resets the masks between our frames (warps, cutscenes, outfit changes). Each reset leaks a frame
+// of the Wolf, so the hider counts them and a guard thread re-applies the hide within milliseconds.
+// ---------------------------------------------------------------------------------------------
+TEST(SekiroModelResetsTest, CountsEveryTimeTheGameResetTheMasksBehindOurBack) {
+    MaskScene s;
+    s.dropDrawEntity();
+    ModelHider h = s.hider();
+    EXPECT_EQ(h.resetCount(), 0u);
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    EXPECT_EQ(h.resetCount(), 0u) << "the first hide is not a reset";
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    EXPECT_EQ(h.resetCount(), 0u) << "nothing happened between the two updates";
+
+    s.mem.put<uint64_t>(kModel + 0x90, kAllOnes); // the game redraws the Wolf
+    s.mem.put<uint64_t>(kModel + 0x98, kAllOnes);
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    EXPECT_EQ(h.resetCount(), 1u);
+    EXPECT_EQ(s.m1(), 0u);
+    s.mem.put<uint64_t>(kModel + 0x98, 0x5ull); // only one of the two comes back
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    EXPECT_EQ(h.resetCount(), 2u);
+    EXPECT_EQ(s.m2(), 0u);
+    // restoring afterwards still puts back the values remembered at the very first hide
+    ASSERT_EQ(h.update(false), HideStatus::Idle);
+    EXPECT_EQ(s.m1(), kAllOnes);
+    EXPECT_EQ(s.m2(), kAllOnes);
+}
+
+TEST(SekiroModelResetsTest, ANewModelObjectIsAFreshHideNotAReset) {
+    MaskScene s;
+    s.dropDrawEntity();
+    ModelHider h = s.hider();
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    constexpr uintptr_t kModel2 = 0x7ff400500000ull;
+    s.mem.region(kModel2, 0x400);
+    s.mem.put<uint64_t>(kModel2, kBase + kChrModelVtableRva);
+    s.mem.put<uint64_t>(kModel2 + 0x90, kAllOnes);
+    s.mem.put<uint64_t>(kModel2 + 0x98, kAllOnes);
+    s.mem.put<uint64_t>(kPlayer + 0x48, kModel2);
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    EXPECT_EQ(h.resetCount(), 0u);
+    EXPECT_EQ(h.objectChangeCount(), 1u) << "a warp swapped the Wolf's model object";
+}
+
+TEST(SekiroModelResetsTest, TheDrawEntityMaskResetsAreCountedToo) {
+    Scene s; // draw-entity path only
+    ModelHider h = s.hider();
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    s.mem.put<uint32_t>(kEntity + 0x70, 4); // redrawn
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    EXPECT_EQ(h.resetCount(), 1u);
+    EXPECT_EQ(s.mask(), 0u);
+}
+
+
+TEST(SekiroModelDiagnosticsTest, DescribesBothHidePathsWithoutWritingAnything) {
+    MaskScene s;
+    ModelHider h = s.hider();
+    const std::string before = h.describe();
+    EXPECT_NE(before.find("model="), std::string::npos);
+    EXPECT_NE(before.find("masks=ffffffffffffffff,ffffffffffffffff"), std::string::npos) << before;
+    EXPECT_NE(before.find("entity="), std::string::npos);
+    EXPECT_NE(before.find("entity_mask=4"), std::string::npos) << before;
+    EXPECT_EQ(s.mem.writes, 0);
+
+    ASSERT_EQ(h.update(true), HideStatus::Hidden);
+    const std::string after = h.describe();
+    EXPECT_NE(after.find("masks=0,0"), std::string::npos) << after;
+    EXPECT_NE(after.find("entity_mask=0"), std::string::npos) << after;
+}
+
+TEST(SekiroModelDiagnosticsTest, SaysWhyAPathIsUnavailable) {
+    MaskScene s;
+    s.dropDrawEntity();
+    s.mem.put<uint64_t>(kModel, kBase + 0x1111);
+    ModelHider h = s.hider();
+    const std::string text = h.describe();
+    EXPECT_NE(text.find("model=wrong-class"), std::string::npos) << text;
+    EXPECT_NE(text.find("entity=none"), std::string::npos) << text;
 }

@@ -3,10 +3,13 @@
 #include "mc/contracts/physics_adapter.hpp"
 #include "mc/contracts/render_adapter.hpp"
 #include "mc/contracts/combat_adapter.hpp"
+#include "mc/contracts/host_gameplay.hpp"
 #include "mc/contracts/input_adapter.hpp"
 #include "mc/animator.hpp"
 #include "sekiro_native.hpp"
 
+#include <atomic>
+#include <map>
 #include <unordered_map>
 #include <vector>
 #include <memory>
@@ -33,7 +36,8 @@ struct SekiroBlockVisualRecord {
 class SekiroAdapter : public IPhysicsAdapter,
                       public IRenderAdapter,
                       public ICombatAdapter,
-                      public IInputAdapter {
+                      public IInputAdapter,
+                      public IHostGameplay {
 public:
     SekiroAdapter();
     explicit SekiroAdapter(sekiro::native::ChrIns* player, sekiro::native::ChrCam* camera = nullptr);
@@ -47,8 +51,26 @@ public:
     void unregisterEntity(EntityId entity_id);
     sekiro::native::ChrIns* getRegisteredEntity(EntityId entity_id) const;
 
+    // Health the core decided a tracked enemy should have after hits this frame, for the loader to write
+    // into the game (latest value per enemy). Drained: a second call returns nothing until the next hit.
+    struct HostHealthWrite {
+        EntityId id{EntityId::None};
+        float health{0.0f};
+    };
+    [[nodiscard]] std::vector<HostHealthWrite> drainHostHealthWrites();
+
+    // The most recent raycastWorld() call, for diagnostics (why did that click not hit anything?).
+    struct LastRay {
+        bool valid{false};
+        Vec3 start{};
+        Vec3 end{};
+        RaycastResult result{};
+    };
+    [[nodiscard]] const LastRay& lastRay() const { return last_ray_; }
+
     // --- IPhysicsAdapter ---
     RaycastResult raycastWorld(const Vec3& start, const Vec3& end, EntityId ignore_entity = EntityId::None) override;
+    RaycastResult raycastWorldImpl(const Vec3& start, const Vec3& end, EntityId ignore_entity);
     uint64_t createBlockCollider(const GridPos& grid_pos, BlockId block_id, const Vec3& world_pos) override;
     void destroyBlockCollider(uint64_t collider_handle) override;
     void applyLinearImpulse(EntityId entity_id, const Vec3& impulse) override;
@@ -78,6 +100,15 @@ public:
     Vec3 getPlayerPosition() const override;
     Vec3 getPlayerVelocity() const override;
     bool getPlayerFacingYaw(float& out_yaw) const override;
+    // The Wolf's eyes (the camera floats 4 m behind): feet + 1.62 m. Attacks and arrows start here.
+    Vec3 getEyePosition() const override;
+
+    // --- IHostGameplay (only what was verified in the live game) ---
+    [[nodiscard]] uint32_t supportedFeatures() const override;
+    bool getPlayerVitals(HostVitals& out) const override;
+    void setNativeCombatInputSuppressed(bool suppressed) override { input_suppressed_.store(suppressed); }
+    // Read by the DirectInput hooks on the game's input thread.
+    [[nodiscard]] bool nativeCombatInputSuppressed() const { return input_suppressed_.load(); }
 
     // Auxiliary methods & inspections
     void setEquippedItems(ItemId main, ItemId off);
@@ -97,6 +128,8 @@ public:
 
     // Vertical-velocity heuristic: Dantelion exposes no grounded flag we can read yet.
     [[nodiscard]] bool isPlayerOnGround() const;
+    // True when isPlayerOnGround() comes from the game's own flag rather than the velocity estimate.
+    [[nodiscard]] bool hasRealGroundFlag() const { return player_ && player_->bGroundedValid; }
 
     // Dantelion units are metres (verified in-game: sprint ~5.6 u/s); MC space is centimetres.
     static constexpr float kCmPerNativeUnit = 100.0f;
@@ -125,6 +158,9 @@ private:
     std::unordered_map<uint64_t, std::unique_ptr<SekiroBlockColliderRecord>> colliders_;
     std::unordered_map<uint64_t, std::unique_ptr<SekiroBlockVisualRecord>> visuals_;
     std::unordered_map<EntityId, sekiro::native::ChrIns*> registered_entities_;
+    std::map<EntityId, float> pending_health_writes_;
+    LastRay last_ray_{};
+    std::atomic<bool> input_suppressed_{false};
 
     // 12 Steve parts
     bool steve_parts_spawned_{false};

@@ -105,6 +105,10 @@ RigMesh buildPartMesh(StevePart part, const HostBasis& basis);
 // box. Edge points lie on two faces, hence a list. Empty when the point is not on the box.
 std::vector<std::array<float, 2>> skinUvForLocalPoint(StevePart part, ModelPoint local_px, float tolerance = 1e-3f);
 
+// A flat square on the feet plane (1 cm above it, so it does not fight the ground), `radius_cm` to each side, UV
+// 0..1 across it: the renderer fades it into Minecraft's round blob shadow. Empty for a non-positive radius.
+RigMesh buildGroundShadowMesh(const HostBasis& basis, float radius_cm);
+
 // The whole figure turned about the host's vertical axis by a CANONICAL yaw (0 = forward, counter-clockwise
 // positive seen from above). Handles left-handed hosts.
 Mat4 yawMatrix(const HostBasis& basis, float canonical_yaw);

@@ -102,6 +102,9 @@ public:
     mc::Vec3 cam_fwd{1.f, 0.f, 0.f};
     bool has_facing{false};
     float facing_yaw{0.f};
+    bool has_eye{false};
+    mc::Vec3 eye{};
+    mc::Vec3 getEyePosition() const override { return has_eye ? eye : cam_pos; }
 
     bool getPlayerFacingYaw(float& out) const override {
         if (has_facing) out = facing_yaw;
@@ -947,4 +950,121 @@ TEST(HostFeatureTest, EveryFeatureHasADistinctNameAndBit) {
         EXPECT_STRNE(mc::hostFeatureName(f), "Unknown");
     }
     EXPECT_EQ(seen, mc::kAllHostFeatures);
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Third person: the camera floats behind the character, but vanilla Minecraft aims and reaches from the EYES.
+// ---------------------------------------------------------------------------------------------
+TEST_F(SessionTest, TheTargetRayStartsAtTheEyesNotAtACameraFloatingBehindTheCharacter) {
+    session.setActive(true);
+    input.cam_pos = {-500.f, 0.f, 220.f}; // 5 m behind and above
+    input.cam_fwd = {1.f, 0.f, 0.f};
+    input.has_eye = true;
+    input.eye = {0.f, 0.f, 162.f};
+    mc::InputSnapshot click;
+    click.attack_pressed = true;
+    session.tick(0.016f, click);
+
+    ASSERT_EQ(physics.raycast_calls, 1);
+    EXPECT_NEAR(physics.last_start.x, 0.f, 1e-3f);
+    EXPECT_NEAR(physics.last_start.z, 162.f, 1e-3f);
+    EXPECT_NEAR(physics.last_end.x, mc::Session::kReachCm, 1e-2f); // reach is measured from the eyes
+    EXPECT_EQ(physics.last_ignore, mc::EntityId::LocalPlayer);
+}
+
+TEST_F(SessionTest, HostsWithoutAnEyePositionKeepUsingTheCamera) {
+    session.setActive(true);
+    input.cam_pos = {10.f, 20.f, 160.f};
+    input.cam_fwd = {1.f, 0.f, 0.f};
+    mc::InputSnapshot click;
+    click.attack_pressed = true;
+    session.tick(0.016f, click);
+    ASSERT_EQ(physics.raycast_calls, 1);
+    EXPECT_NEAR(physics.last_start.x, 10.f, 1e-3f);
+    EXPECT_NEAR(physics.last_start.y, 20.f, 1e-3f);
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Feedback: a hit marker when an attack connects, a hurt flash when the player's real health drops
+// ---------------------------------------------------------------------------------------------
+TEST_F(SessionTest, AConnectingAttackShowsAHitMarkerThatFadesAndAMissDoesNot) {
+    session.setActive(true);
+    EXPECT_FLOAT_EQ(session.feedback().hit_marker, 0.f);
+
+    mc::InputSnapshot click;
+    click.attack_pressed = true;
+    session.tick(0.016f, click); // nothing under the crosshair
+    EXPECT_FLOAT_EQ(session.feedback().hit_marker, 0.f);
+
+    physics.next_hit.has_hit = true;
+    physics.next_hit.hit_entity = mc::EntityId{5};
+    physics.next_hit.point = {300.f, 0.f, 100.f};
+    session.tick(1.0f, {}); // let the weapon recharge
+    session.tick(0.016f, click);
+    EXPECT_GT(session.feedback().hit_marker, 0.9f);
+
+    session.tick(0.1f, {});
+    EXPECT_GT(session.feedback().hit_marker, 0.f);
+    EXPECT_LT(session.feedback().hit_marker, 0.9f);
+    session.tick(0.5f, {});
+    EXPECT_FLOAT_EQ(session.feedback().hit_marker, 0.f);
+}
+
+TEST_F(SessionGameplayTest, LosingRealHealthFlashesTheScreenAndRecoveryDoesNot) {
+    gameplay.vitals_ok = true;
+    gameplay.vitals = {1000.f, 1120.f};
+    with_gameplay.setActive(true);
+    with_gameplay.tick(0.016f, {});
+    EXPECT_FLOAT_EQ(with_gameplay.feedback().hurt_flash, 0.f) << "the first reading is a baseline, not damage";
+
+    gameplay.vitals = {1000.f, 1120.f};
+    with_gameplay.tick(0.016f, {});
+    EXPECT_FLOAT_EQ(with_gameplay.feedback().hurt_flash, 0.f);
+
+    gameplay.vitals = {814.f, 1120.f}; // took 186
+    with_gameplay.tick(0.016f, {});
+    EXPECT_GT(with_gameplay.feedback().hurt_flash, 0.9f);
+    EXPECT_GT(with_gameplay.feedback().hurt_amount, 0.15f) << "186 of 1120 is about a sixth of full health";
+
+    with_gameplay.tick(0.2f, {});
+    EXPECT_GT(with_gameplay.feedback().hurt_flash, 0.f);
+    EXPECT_LT(with_gameplay.feedback().hurt_flash, 0.9f);
+    with_gameplay.tick(1.0f, {});
+    EXPECT_FLOAT_EQ(with_gameplay.feedback().hurt_flash, 0.f);
+
+    gameplay.vitals = {1000.f, 1120.f}; // healed
+    with_gameplay.tick(0.016f, {});
+    EXPECT_FLOAT_EQ(with_gameplay.feedback().hurt_flash, 0.f);
+}
+
+TEST_F(SessionGameplayTest, FeedbackIsClearedWhenTheSessionIsSwitchedOff) {
+    gameplay.vitals_ok = true;
+    gameplay.vitals = {1000.f, 1120.f};
+    with_gameplay.setActive(true);
+    with_gameplay.tick(0.016f, {});
+    gameplay.vitals = {500.f, 1120.f};
+    with_gameplay.tick(0.016f, {});
+    ASSERT_GT(with_gameplay.feedback().hurt_flash, 0.f);
+    with_gameplay.setActive(false);
+    EXPECT_FLOAT_EQ(with_gameplay.feedback().hurt_flash, 0.f);
+    with_gameplay.setActive(true);
+    gameplay.vitals = {400.f, 1120.f}; // a drop that happened while we were off is not new damage
+    with_gameplay.tick(0.016f, {});
+    EXPECT_FLOAT_EQ(with_gameplay.feedback().hurt_flash, 0.f);
+}
+
+TEST_F(SessionGameplayTest, UnreadableVitalsNeverFlashAndKeepTheBaseline) {
+    gameplay.vitals_ok = true;
+    gameplay.vitals = {1000.f, 1120.f};
+    with_gameplay.setActive(true);
+    with_gameplay.tick(0.016f, {});
+    gameplay.vitals_ok = false; // loading screen
+    with_gameplay.tick(0.016f, {});
+    EXPECT_FLOAT_EQ(with_gameplay.feedback().hurt_flash, 0.f);
+    gameplay.vitals_ok = true;
+    gameplay.vitals = {1000.f, 1120.f}; // unchanged after the gap
+    with_gameplay.tick(0.016f, {});
+    EXPECT_FLOAT_EQ(with_gameplay.feedback().hurt_flash, 0.f);
 }

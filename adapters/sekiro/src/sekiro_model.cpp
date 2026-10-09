@@ -1,5 +1,7 @@
 #include "sekiro_model.hpp"
 
+#include <cstdio>
+
 #include <cstring>
 
 namespace sekiro::live {
@@ -66,7 +68,7 @@ std::optional<uintptr_t> ModelHider::resolveEntity() const {
     return link(*model + layout::kAsmDrawEntityInModel);
 }
 
-HideStatus ModelHider::update(bool want_hidden) {
+HideStatus ModelHider::updateDrawEntity(bool want_hidden) {
     const auto entity = resolveEntity();
     if (!entity) {
         status_ = HideStatus::NotInWorld;
@@ -118,6 +120,7 @@ HideStatus ModelHider::update(bool want_hidden) {
         return status_;
     }
 
+    if (have_original_) ++resets_; // we hid this very entity and the game made it visible again
     if (!have_original_) {
         original_mask_ = *current;
         have_original_ = true;
@@ -132,7 +135,152 @@ HideStatus ModelHider::update(bool want_hidden) {
     return status_;
 }
 
+std::optional<uintptr_t> ModelHider::resolveChrModel() const {
+    auto link = [&](uintptr_t address) -> std::optional<uintptr_t> {
+        uint64_t p = 0;
+        if (!reader_.read(address, &p, sizeof(p)) || p == 0) return std::nullopt;
+        return static_cast<uintptr_t>(p);
+    };
+    const auto world = link(base_ + wcm_rva_);
+    if (!world) return std::nullopt;
+    const auto player = link(*world + layout::kPlayerInsInWorldChrMan);
+    if (!player) return std::nullopt;
+    const auto model = link(*player + layout::kModelInChrIns);
+    if (!model) return std::nullopt;
+    const auto vtable = link(*model);
+    if (!vtable || *vtable != base_ + layout::kChrModelVtableRva) return std::nullopt;
+    return model;
+}
+
+HideStatus ModelHider::updateChrModelMasks(bool want_hidden) {
+    const auto model = resolveChrModel();
+    if (!model) return HideStatus::NotInWorld;
+    if (have_masks_original_ && *model != masks_model_) {
+        have_masks_original_ = false; // the remembered values belonged to another object
+        masks_model_ = 0;
+        ++object_changes_;
+    }
+
+    uint64_t current[2]{};
+    if (!reader_.read(*model + layout::kChrModelDrawMask1, &current[0], sizeof(uint64_t)) ||
+        !reader_.read(*model + layout::kChrModelDrawMask2, &current[1], sizeof(uint64_t))) {
+        return HideStatus::NotInWorld;
+    }
+    const bool zero = current[0] == 0 && current[1] == 0;
+
+    if (!want_hidden) {
+        if (have_masks_original_) {
+            if (zero) { // only put the values back if they are still the ones we wrote
+                if (!writer_.write(*model + layout::kChrModelDrawMask1, &masks_original_[0], sizeof(uint64_t)) ||
+                    !writer_.write(*model + layout::kChrModelDrawMask2, &masks_original_[1], sizeof(uint64_t))) {
+                    return HideStatus::WriteFailed;
+                }
+            }
+            have_masks_original_ = false;
+            masks_model_ = 0;
+        }
+        return HideStatus::Idle;
+    }
+
+    if (zero) return have_masks_original_ ? HideStatus::Hidden : HideStatus::Rejected; // not ours to restore
+    if (have_masks_original_) ++resets_; // we hid this very object and the game made it visible again
+    if (!have_masks_original_) {
+        masks_original_[0] = current[0];
+        masks_original_[1] = current[1];
+        masks_model_ = *model;
+        have_masks_original_ = true;
+    }
+    const uint64_t zero_mask = 0;
+    if (!writer_.write(*model + layout::kChrModelDrawMask1, &zero_mask, sizeof(zero_mask))) {
+        have_masks_original_ = false;
+        masks_model_ = 0;
+        return HideStatus::WriteFailed;
+    }
+    if (!writer_.write(*model + layout::kChrModelDrawMask2, &zero_mask, sizeof(zero_mask))) {
+        // never leave the model half hidden
+        writer_.write(*model + layout::kChrModelDrawMask1, &masks_original_[0], sizeof(uint64_t));
+        have_masks_original_ = false;
+        masks_model_ = 0;
+        return HideStatus::WriteFailed;
+    }
+    return HideStatus::Hidden;
+}
+
+void ModelHider::restoreChrModelMasks() {
+    if (have_masks_original_) {
+        const auto model = resolveChrModel();
+        if (model && *model == masks_model_) {
+            uint64_t current[2]{};
+            if (reader_.read(*model + layout::kChrModelDrawMask1, &current[0], sizeof(uint64_t)) &&
+                reader_.read(*model + layout::kChrModelDrawMask2, &current[1], sizeof(uint64_t)) && current[0] == 0 && current[1] == 0) {
+                writer_.write(*model + layout::kChrModelDrawMask1, &masks_original_[0], sizeof(uint64_t));
+                writer_.write(*model + layout::kChrModelDrawMask2, &masks_original_[1], sizeof(uint64_t));
+            }
+        }
+    }
+    have_masks_original_ = false;
+    masks_model_ = 0;
+}
+
+std::string ModelHider::describe() const {
+    char buf[320];
+    std::string text;
+    auto readU64At = [&](uintptr_t a) -> std::optional<uint64_t> {
+        uint64_t v = 0;
+        if (!reader_.read(a, &v, sizeof(v))) return std::nullopt;
+        return v;
+    };
+    const auto world = readU64At(base_ + wcm_rva_);
+    const auto player = world && *world ? readU64At(*world + layout::kPlayerInsInWorldChrMan) : std::nullopt;
+    const auto model = player && *player ? readU64At(*player + layout::kModelInChrIns) : std::nullopt;
+    if (!model || *model == 0) return "model=none";
+    const auto vtable = readU64At(*model);
+    if (!vtable || *vtable != base_ + layout::kChrModelVtableRva) {
+        text = "model=wrong-class";
+    } else {
+        const auto m1 = readU64At(*model + layout::kChrModelDrawMask1);
+        const auto m2 = readU64At(*model + layout::kChrModelDrawMask2);
+        std::snprintf(buf, sizeof(buf), "model=%llx masks=%llx,%llx", static_cast<unsigned long long>(*model),
+                      static_cast<unsigned long long>(m1.value_or(0)), static_cast<unsigned long long>(m2.value_or(0)));
+        text = buf;
+    }
+    const auto entity = readU64At(*model + layout::kAsmDrawEntityInModel);
+    if (!entity || *entity == 0 || *entity < 0x10000) {
+        text += " entity=none";
+    } else {
+        const auto mask = readU32(reader_, *entity + layout::kDrawMask);
+        std::snprintf(buf, sizeof(buf), " entity=%llx entity_mask=%u", static_cast<unsigned long long>(*entity), mask.value_or(0xFFFFFFFFu));
+        text += buf;
+    }
+    return text;
+}
+
+HideStatus ModelHider::update(bool want_hidden) {
+    // Two independent ways to hide the same mesh; each reports NotInWorld when it cannot find its object.
+    const HideStatus entity = updateDrawEntity(want_hidden);
+    const HideStatus masks = updateChrModelMasks(want_hidden);
+
+    if (entity == HideStatus::NotInWorld && masks == HideStatus::NotInWorld) {
+        status_ = HideStatus::NotInWorld;
+    } else if (entity == HideStatus::Hidden || masks == HideStatus::Hidden) {
+        status_ = HideStatus::Hidden;
+    } else if (entity == HideStatus::WriteFailed || masks == HideStatus::WriteFailed) {
+        status_ = HideStatus::WriteFailed;
+    } else if (entity == HideStatus::Rejected || masks == HideStatus::Rejected) {
+        status_ = HideStatus::Rejected;
+    } else {
+        status_ = HideStatus::Idle;
+    }
+    return status_;
+}
+
 void ModelHider::restore() {
+    restoreChrModelMasks();
+    restoreDrawEntity();
+    status_ = HideStatus::Idle;
+}
+
+void ModelHider::restoreDrawEntity() {
     if (have_original_) {
         const auto entity = resolveEntity();
         if (entity && *entity == entity_) {
@@ -145,12 +293,13 @@ void ModelHider::restore() {
     }
     have_original_ = false;
     entity_ = 0;
-    status_ = HideStatus::Idle;
 }
 
 void ModelHider::forgetObject() {
     have_original_ = false;
     entity_ = 0;
+    have_masks_original_ = false;
+    masks_model_ = 0;
     status_ = HideStatus::NotInWorld;
 }
 

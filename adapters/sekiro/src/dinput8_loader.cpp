@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <mutex>
+#include <set>
 #include <atomic>
 #include <cstdio>
 #include <cstdarg>
@@ -25,13 +27,20 @@
 #include <wincodec.h>
 
 #include "sekiro_native.hpp"
+#include "mc/hud_atlas.hpp"
+#include "mc/item_model.hpp"
 #include "sekiro_hud_atlas.hpp"
 #include "sekiro_adapter.hpp"
 #include "sekiro_live.hpp"
+#include "sekiro_enemies.hpp"
+#include "sekiro_damage_probe.hpp"
+#include "sekiro_host_write.hpp"
+#include "sekiro_input_filter.hpp"
 #include "sekiro_model.hpp"
 #include "sekiro_steve.hpp"
 #include "mc/hud_layout.hpp"
 #include "d3d11_rig/rig_renderer.hpp"
+#include "d3d11_rig/cb_probe.hpp"
 #include "d3d11_rig/depth_capture.hpp"
 #include "mc/hud.hpp"
 #include "mc/session.hpp"
@@ -44,6 +53,10 @@ void SekiroMod_SetSteveMode(bool active);
 bool SekiroMod_IsSteveModeActive();
 void SekiroMod_Tick(float delta_time, const mc::InputSnapshot* input);
 void SekiroMod_UpdatePointers(sekiro::native::ChrIns* player, sekiro::native::ChrCam* camera);
+bool SekiroMod_RegisterEntity(uint64_t entity_id, sekiro::native::ChrIns* entity);
+void SekiroMod_UnregisterEntity(uint64_t entity_id);
+size_t SekiroMod_DrainEnemyHealthWrites(uint64_t* ids, float* healths, size_t max);
+bool SekiroMod_IsNativeInputSuppressed();
 mc::Session* SekiroMod_GetSession();
 const mc::adapter::SekiroAdapter* SekiroMod_GetAdapter();
 }
@@ -86,6 +99,10 @@ std::chrono::steady_clock::time_point g_last_frame_time;
 ID3D11Device* g_d3d_device = nullptr;
 ID3D11DeviceContext* g_d3d_context = nullptr;
 ID3D11ShaderResourceView* g_hud_srv = nullptr;
+std::vector<BYTE> g_atlas_rgba; // the atlas the HUD was built from, kept so held items can be extruded from it
+UINT g_atlas_w = 0, g_atlas_h = 0;
+mc::ItemId g_held_item_applied = mc::ItemId::None;
+bool g_held_item_dirty = true;
 ID3D11SamplerState* g_point_sampler = nullptr;
 bool g_show_debug_panel = false;
 HWND g_game_hwnd = nullptr;
@@ -170,6 +187,10 @@ ID3D11ShaderResourceView* CreateHudTextureSRV(ID3D11Device* device) {
         Log("HUD atlas: failed to decode any atlas");
         return nullptr;
     }
+    g_atlas_rgba = pixels;
+    g_atlas_w = width;
+    g_atlas_h = height;
+    g_held_item_dirty = true;
     return CreateSrvFromRgba(device, pixels, width, height);
 }
 
@@ -323,6 +344,8 @@ public:
 SelfMemoryReader g_memory;
 SelfMemoryWriter g_memory_writer;
 std::unique_ptr<sekiro::live::ModelHider> g_model_hider;
+std::mutex g_hider_mutex;                   // the Present thread and the guard thread both drive the hider
+std::atomic<bool> g_wolf_hide_wanted{false};
 sekiro::live::HideStatus g_last_hide_status = sekiro::live::HideStatus::Idle;
 std::unique_ptr<sekiro::live::LiveBinder> g_binder;
 std::atomic<bool> g_binder_ready{false};
@@ -331,6 +354,9 @@ sekiro::native::ChrIns g_player_mirror;
 sekiro::native::ChrCam g_camera_mirror;
 sekiro::live::LiveMirror g_live_mirror;
 sekiro::live::CameraStabilizer g_camera_stabilizer;
+sekiro::live::EnemyTracker g_enemy_tracker;
+std::unique_ptr<sekiro::live::HostHealthWriter> g_health_writer;
+size_t g_logged_enemy_count = static_cast<size_t>(-1);
 bool g_in_world = false;
 sekiro::live::LiveSample g_last_sample{};
 std::unique_ptr<mc::d3d11::RigRenderer> g_steve_renderer;
@@ -343,6 +369,230 @@ sekiro::live::SampleStatus g_last_sample_status = sekiro::live::SampleStatus::No
 const char* LinkStateText() {
     if (!g_binder_ready.load()) return "SEARCHING for game structures (waiting for code to unpack)";
     return g_in_world ? "LINKED: player + camera bound" : "BOUND: waiting for a loaded world";
+}
+
+// The game can make the Wolf visible again between two of our Present calls (warps, cutscenes, outfit changes), and
+// each such reset would show the Wolf for a frame. This thread re-applies the hide every ~2 ms while Steve mode
+// owns the model, so a reset is undone before the next frame is rendered. update() is idempotent and only writes
+// when the masks are not already zero.
+DWORD WINAPI WolfGuardThread(LPVOID) {
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, 0x00000002 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+    if (!timer) timer = CreateWaitableTimerW(nullptr, TRUE, nullptr);
+    while (!g_stop.load()) {
+        if (timer) {
+            LARGE_INTEGER due;
+            due.QuadPart = -20000LL; // 2 ms, relative
+            SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+            WaitForSingleObject(timer, 5);
+        } else {
+            Sleep(2);
+        }
+        if (!g_wolf_hide_wanted.load()) continue;
+        std::lock_guard<std::mutex> lock(g_hider_mutex);
+        if (g_model_hider) g_model_hider->update(true);
+    }
+    if (timer) CloseHandle(timer);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Read-only probe of the game's DealDamage (see sekiro_damage_probe.hpp). Every call is passed through
+// unchanged; the first few are logged with both modules' class names and the DamageData before and after.
+// ---------------------------------------------------------------------------------------------
+using DealDamage_t = void(__fastcall*)(void*, void*, uint8_t*, uint8_t);
+DealDamage_t g_original_deal_damage = nullptr;
+uintptr_t g_probe_image_base = 0;
+size_t g_probe_image_size = 0;
+
+std::string ClassOf(void* object) {
+    if (!object) return "null";
+    const auto name = sekiro::live::rttiClassName(g_memory, g_probe_image_base, g_probe_image_size, reinterpret_cast<uintptr_t>(object));
+    return name ? *name : std::string("(no rtti)");
+}
+
+void AppendProbeFile(const std::string& text) {
+    FILE* f = nullptr;
+    if (fopen_s(&f, "mc_damage_probe.txt", "a") == 0 && f) {
+        fputs(text.c_str(), f);
+        fclose(f);
+    }
+}
+
+std::string VtableRvaOf(void* object) {
+    uint64_t vt = 0;
+    if (!object || !g_memory.read(reinterpret_cast<uintptr_t>(object), &vt, sizeof(vt)) || vt < g_probe_image_base || vt >= g_probe_image_base + g_probe_image_size) return "?";
+    char buf[24];
+    std::snprintf(buf, sizeof(buf), "%#llx", static_cast<unsigned long long>(vt - g_probe_image_base));
+    return buf;
+}
+
+// Native hit reactions (opt-in: the file mc_native_hit.txt next to the game exe). A wolf->enemy DamageData seen
+// in the hook is kept as the template; hits our rig lands are queued by the Present thread and replayed through
+// the game's own DealDamage from inside the hook, i.e. on the game's logic thread. hp is 0 in the replay: our
+// direct hp write already applied the damage, the replay only brings the stagger / flinch / hit sound.
+struct PendingNativeHit {
+    uintptr_t enemy;
+    uintptr_t module;
+};
+std::mutex g_native_hit_mutex;
+std::vector<PendingNativeHit> g_native_hits;
+uint8_t g_native_template[sekiro::live::kDamageDataSize];
+uintptr_t g_native_attacker = 0;
+std::atomic<bool> g_native_template_ready{false};
+std::atomic<bool> g_native_hit_enabled{false};
+
+void RunPendingNativeHits() {
+    std::vector<PendingNativeHit> hits;
+    {
+        std::lock_guard<std::mutex> lock(g_native_hit_mutex);
+        hits.swap(g_native_hits);
+    }
+    for (const auto& h : hits) {
+        uint8_t data[sekiro::live::kDamageDataSize];
+        uint32_t posture = 0;
+        std::memcpy(&posture, g_native_template + sekiro::live::kDamagePosture, sizeof(posture));
+        // Replay the template's own hp (an hp-0 hit is probably dropped before the reaction) and a posture
+        // large enough to be felt; the enemy loses a few hp more than our direct write, which is harmless.
+        uint32_t hp = 0;
+        std::memcpy(&hp, g_native_template + sekiro::live::kDamageHp, sizeof(hp));
+        posture = posture < 20 ? 20 : posture;
+        sekiro::live::patchNativeHit(g_native_template, g_native_attacker, h.enemy, hp, posture, data);
+        // Diagnostic: did the game's apply stage run? (hp +0x130, posture +0x148, last damage +0x170/+0x174)
+        const auto dm = sekiro::live::findOwnedDataModule(g_memory, g_probe_image_base, g_probe_image_size, h.enemy, nullptr);
+        int32_t before[4]{}, after[4]{};
+        auto snap = [&](int32_t* out) {
+            if (!dm) return;
+            g_memory.read(dm->module + 0x130, &out[0], 4);
+            g_memory.read(dm->module + 0x148, &out[1], 4);
+            g_memory.read(dm->module + 0x170, &out[2], 4);
+            g_memory.read(dm->module + 0x174, &out[3], 4);
+        };
+        snap(before);
+        g_original_deal_damage(reinterpret_cast<void*>(h.module), reinterpret_cast<void*>(g_native_attacker), data, 1);
+        snap(after);
+        static int logged = 0;
+        if (logged < 20) Log("Native hit state hp/posture/lastdmg/lastposture: %d/%d/%d/%d -> %d/%d/%d/%d (hp=%u posture=%u)", before[0], before[1], before[2],
+                             before[3], after[0], after[1], after[2], after[3], hp, posture);
+        if (logged < 20) Log("Native hit #%d: replayed DealDamage on enemy %llx (module %llx, posture %u)", ++logged,
+                             static_cast<unsigned long long>(h.enemy), static_cast<unsigned long long>(h.module), posture);
+    }
+}
+
+void __fastcall DetourDealDamage(void* target, void* attacker, uint8_t* data, uint8_t flag) {
+    static std::atomic<int> calls{0}, noise{0}, recorded{0};
+    calls.fetch_add(1);
+    if (g_native_hit_enabled.load()) {
+        RunPendingNativeHits();
+        // Keep the latest real wolf->enemy hit as the template for replays.
+        if (attacker && target && data && ClassOf(attacker).rfind("PlayerIns", 0) == 0 && ClassOf(target).rfind("SprjEnemyDamageModule", 0) == 0) {
+            uint8_t copy[sekiro::live::kDamageDataSize];
+            if (g_memory.read(reinterpret_cast<uintptr_t>(data), copy, sizeof(copy))) {
+                std::lock_guard<std::mutex> lock(g_native_hit_mutex);
+                std::memcpy(g_native_template, copy, sizeof(copy));
+                g_native_attacker = reinterpret_cast<uintptr_t>(attacker);
+                g_native_template_ready.store(true);
+            }
+        }
+    }
+    // Most calls are enemies touching enemies (hp 0, posture 1): only calls that involve the player are recorded.
+    const std::string attacker_class = ClassOf(attacker);
+    const std::string target_class = ClassOf(target);
+    const bool involves_player = attacker_class.rfind("PlayerIns", 0) == 0 || target_class.rfind("SprjPlayerDamageModule", 0) == 0;
+    const bool record = involves_player && recorded.load() < 60;
+    if (!involves_player) noise.fetch_add(1);
+    std::string before;
+    if (record) {
+        uint8_t copy[sekiro::live::kDamageDataSize];
+        if (g_memory.read(reinterpret_cast<uintptr_t>(data), copy, sizeof(copy))) {
+            before = sekiro::live::describeDamageData(copy, sizeof(copy), g_memory, g_probe_image_base, g_probe_image_size);
+        } else {
+            before = "  (DamageData unreadable)\n";
+        }
+    }
+    g_original_deal_damage(target, attacker, data, flag);
+    if (!record) return;
+    const int index = recorded.fetch_add(1);
+    std::string after;
+    uint8_t copy[sekiro::live::kDamageDataSize];
+    if (g_memory.read(reinterpret_cast<uintptr_t>(data), copy, sizeof(copy))) {
+        after = sekiro::live::describeDamageData(copy, sizeof(copy), g_memory, g_probe_image_base, g_probe_image_size);
+    }
+    uint64_t owner = 0;
+    g_memory.read(reinterpret_cast<uintptr_t>(target) + 8, &owner, sizeof(owner));
+    char head[900];
+    std::snprintf(head, sizeof(head),
+                  "=== DealDamage player call #%d (thread %lu, %d noise calls so far): target module %p (%s, vtable RVA %s, owner %llx) "
+                  "attacker %p (%s, vtable RVA %s) data %p flag %u\n",
+                  index, GetCurrentThreadId(), noise.load(), target, target_class.c_str(), VtableRvaOf(target).c_str(),
+                  static_cast<unsigned long long>(owner), attacker, attacker_class.c_str(), VtableRvaOf(attacker).c_str(),
+                  static_cast<void*>(data), static_cast<unsigned>(flag));
+    AppendProbeFile(std::string(head) + "--- DamageData BEFORE the call\n" + before + "--- DamageData AFTER the call\n" + after);
+    Log("DealDamage probe: player call #%d target=%s attacker=%s hp=%u posture=%u stagger=%u", index, target_class.c_str(), attacker_class.c_str(),
+        *reinterpret_cast<uint32_t*>(copy + 0x24), *reinterpret_cast<uint32_t*>(copy + 0x28), *reinterpret_cast<uint32_t*>(copy + 0x54));
+}
+
+// Read-only probe of the game's ApplySpEffect(ChrIns*, int id) at RVA 0x9F54A0 (found through the sekiro-coop
+// signature 44 89 70 9C 45 33 C0 4C 89 70 A0 at +107, then checked by disassembly). Logs each distinct
+// (target class, id) pair once, so the log shows which effects the game applies when a hit lands.
+constexpr uint32_t kApplySpEffectRva = 0x9F54A0;
+constexpr uint8_t kApplySpEffectPrologue[] = {0x48, 0x8b, 0xc4, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89, 0x70, 0x18, 0x48, 0x89, 0x78, 0x20};
+using ApplySpEffect_t = bool(__fastcall*)(void*, int32_t);
+ApplySpEffect_t g_original_apply_sp_effect = nullptr;
+
+bool __fastcall DetourApplySpEffect(void* target, int32_t id) {
+    static std::mutex seen_mutex;
+    static std::set<std::pair<std::string, int32_t>> seen;
+    const std::string cls = ClassOf(target);
+    if (cls.rfind("PlayerIns", 0) == 0 || cls.rfind("EnemyIns", 0) == 0) {
+        std::lock_guard<std::mutex> lock(seen_mutex);
+        if (seen.size() < 300 && seen.insert({cls.substr(0, cls.find('@')), id}).second) {
+            Log("ApplySpEffect probe: target=%s id=%d thread=%lu", cls.substr(0, cls.find('@')).c_str(), id, GetCurrentThreadId());
+        }
+    }
+    return g_original_apply_sp_effect(target, id);
+}
+
+void InstallDamageProbe() {
+    // Diagnostics only: the hooks run a class lookup per game call, so they are installed on request.
+    {
+        FILE* f = nullptr;
+        const bool wanted = (fopen_s(&f, "mc_probe.txt", "r") == 0 && f) || (f = nullptr, fopen_s(&f, "mc_native_hit.txt", "r") == 0 && f);
+        if (f) fclose(f);
+        if (!wanted) return;
+    }
+    MODULEINFO mi{};
+    if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleA(nullptr), &mi, sizeof(mi))) return;
+    g_probe_image_base = reinterpret_cast<uintptr_t>(mi.lpBaseOfDll);
+    g_probe_image_size = static_cast<size_t>(mi.SizeOfImage);
+    if (!sekiro::live::prologueMatches(g_memory, g_probe_image_base, sekiro::live::kDealDamageRva, sekiro::live::kDealDamagePrologue)) {
+        Log("Damage probe: DealDamage prologue does not match (another game version or the code is not unpacked yet); not hooking");
+        return;
+    }
+    void* target = reinterpret_cast<void*>(g_probe_image_base + sekiro::live::kDealDamageRva);
+    if (MH_CreateHook(target, reinterpret_cast<void*>(&DetourDealDamage), reinterpret_cast<void**>(&g_original_deal_damage)) != MH_OK ||
+        MH_EnableHook(target) != MH_OK) {
+        Log("Damage probe: could not hook DealDamage");
+        return;
+    }
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, "mc_native_hit.txt", "r") == 0 && f) {
+            fclose(f);
+            g_native_hit_enabled.store(true);
+            Log("Native hit reactions ENABLED (mc_native_hit.txt present)");
+        }
+    }
+    {
+        void* sp = reinterpret_cast<void*>(g_probe_image_base + kApplySpEffectRva);
+        if (sekiro::live::prologueMatches(g_memory, g_probe_image_base, kApplySpEffectRva, kApplySpEffectPrologue) &&
+            MH_CreateHook(sp, reinterpret_cast<void*>(&DetourApplySpEffect), reinterpret_cast<void**>(&g_original_apply_sp_effect)) == MH_OK &&
+            MH_EnableHook(sp) == MH_OK) {
+            Log("ApplySpEffect probe: hooked %p (read-only)", sp);
+        } else {
+            Log("ApplySpEffect probe: not hooked (prologue mismatch or hook failure)");
+        }
+    }
+    Log("Damage probe: hooked DealDamage at %p (read-only, every call is passed through)", target);
 }
 
 // Runs on the loader thread: the Steam wrapper decrypts code lazily, so keep scanning until the
@@ -365,8 +615,11 @@ void BindLiveGameState() {
                 attempt + 1, binder->worldChrManGlobalRva(), binder->cameraCandidateRvas().size());
             g_model_hider = std::make_unique<sekiro::live::ModelHider>(
                 g_memory, g_memory_writer, binder->imageBase(), binder->imageSize(), binder->worldChrManGlobalRva());
+            InstallDamageProbe();
+            g_health_writer = std::make_unique<sekiro::live::HostHealthWriter>(g_memory, g_memory_writer, binder->imageBase(), binder->imageSize());
             g_binder = std::move(binder);
             g_binder_ready.store(true);
+            CreateThread(nullptr, 0, WolfGuardThread, nullptr, 0, nullptr);
             return;
         }
         if (st != last || attempt % 30 == 0) {
@@ -377,6 +630,89 @@ void BindLiveGameState() {
             last = st;
         }
         Sleep(1000);
+    }
+}
+
+// Enemies are only tracked (and so hittable) while Steve mode is on. Everything is dropped otherwise.
+void ReleaseEnemies() {
+    for (const mc::EntityId id : g_enemy_tracker.clear()) SekiroMod_UnregisterEntity(static_cast<uint64_t>(id));
+    g_logged_enemy_count = static_cast<size_t>(-1);
+}
+
+std::vector<sekiro::live::LiveEnemy> g_last_enemy_list; // what the last frame read, for diagnostics
+
+void SyncEnemies(float dt) {
+    if (!g_binder_ready.load() || !g_in_world || !SekiroMod_IsSteveModeActive()) {
+        ReleaseEnemies();
+        return;
+    }
+    std::vector<sekiro::live::LiveEnemy>& list = g_last_enemy_list;
+    g_binder->enumerateEnemies(list);
+    const auto changes = g_enemy_tracker.update(list, dt);
+    for (const mc::EntityId id : changes.removed) SekiroMod_UnregisterEntity(static_cast<uint64_t>(id));
+    for (const mc::EntityId id : changes.added) {
+        SekiroMod_RegisterEntity(static_cast<uint64_t>(id), g_enemy_tracker.mirror(id));
+    }
+    if (g_enemy_tracker.count() != g_logged_enemy_count) {
+        g_logged_enemy_count = g_enemy_tracker.count();
+        Log("Tracking %zu hostile enemies (%zu loaded characters read)", g_logged_enemy_count, list.size());
+    }
+}
+
+// Why did that click (not) hit anything? Logged for the first clicks of a run: where the ray started and went,
+// what it found, and every loaded character within 12 m with the reason it is or is not a target.
+void LogAttackDiagnostics() {
+    static int logged = 0;
+    if (logged >= 40) return;
+    const mc::adapter::SekiroAdapter* adapter = SekiroMod_GetAdapter();
+    if (!adapter) return;
+    ++logged;
+    const auto& ray = adapter->lastRay();
+    if (!ray.valid) {
+        Log("Attack click #%d: the Session did not cast a ray", logged);
+        return;
+    }
+    const mc::Vec3 d = (ray.end - ray.start).normalized();
+    Log("Attack click #%d: ray from (%.0f,%.0f,%.0f) cm dir (%.2f,%.2f,%.2f) -> %s%s entity=%llu at (%.0f,%.0f,%.0f); %zu tracked",
+        logged, ray.start.x, ray.start.y, ray.start.z, d.x, d.y, d.z, ray.result.has_hit ? "HIT" : "no hit",
+        ray.result.is_block ? " (block)" : "", static_cast<unsigned long long>(ray.result.hit_entity), ray.result.point.x,
+        ray.result.point.y, ray.result.point.z, g_enemy_tracker.count());
+    for (const auto& e : g_last_enemy_list) {
+        const float dx = e.position.X - g_last_sample.player_pos.X, dz = e.position.Z - g_last_sample.player_pos.Z;
+        const float dist = std::sqrt(dx * dx + dz * dz), dy = e.position.Y - g_last_sample.player_pos.Y;
+        if (dist > 12.0f) continue;
+        Log("    near: slot %u id %u team %u dist %.1f m dy %.1f hp %s%.0f/%.0f %s%s", e.slot, e.char_id, e.team, dist, dy,
+            e.hp_valid ? "" : "(unknown) ", e.hp, e.max_hp, e.hostile ? "hostile" : "not-hostile", e.dead ? " DEAD" : "");
+    }
+}
+
+// Health the core took from enemies this frame, written into the game (lower-only, class-checked).
+void ApplyEnemyHealthWrites() {
+    if (!g_health_writer) return;
+    uint64_t ids[16];
+    float healths[16];
+    const size_t n = SekiroMod_DrainEnemyHealthWrites(ids, healths, 16);
+    for (size_t i = 0; i < n; ++i) {
+        const uintptr_t handle = g_enemy_tracker.handleOf(static_cast<mc::EntityId>(ids[i]));
+        if (handle == 0) continue; // the enemy left the world between the hit and now
+        const auto r = g_health_writer->lowerEnemyHealth(handle, healths[i]);
+        if (g_native_hit_enabled.load() && g_native_template_ready.load() && r == sekiro::live::HostHealthWriter::Result::Written) {
+            if (const auto module = sekiro::live::findEnemyDamageModule(g_memory, g_probe_image_base, g_probe_image_size, handle)) {
+                std::lock_guard<std::mutex> lock(g_native_hit_mutex);
+                if (g_native_hits.size() < 8) g_native_hits.push_back({handle, *module});
+            } else {
+                static int missing = 0;
+                if (missing++ < 5) Log("Native hit: no SprjEnemyDamageModule found for enemy %llx", static_cast<unsigned long long>(handle));
+            }
+        }
+        static int logged = 0;
+        if (logged < 40 && r != sekiro::live::HostHealthWriter::Result::Unchanged) {
+            ++logged;
+            Log("Enemy hit: wrote hp %.0f -> %s", healths[i],
+                r == sekiro::live::HostHealthWriter::Result::Written ? "written"
+                : r == sekiro::live::HostHealthWriter::Result::Rejected ? "REJECTED (validation failed, nothing written)"
+                : "WRITE FAILED");
+        }
     }
 }
 
@@ -400,8 +736,40 @@ bool SyncLiveGameState(float dt) {
         g_camera_stabilizer.apply(sample);
         g_live_mirror.update(sample, dt, g_player_mirror, g_camera_mirror);
         g_last_sample = sample;
+        {
+            const float cam[3] = {sample.cam_pos.X, sample.cam_pos.Y, sample.cam_pos.Z};
+            const float ply[3] = {sample.player_pos.X, sample.player_pos.Y, sample.player_pos.Z};
+            mc::d3d11::cbprobe::setTargets(cam, ply);
+        }
         if (g_model_hider) {
+            std::lock_guard<std::mutex> hider_lock(g_hider_mutex);
+            g_wolf_hide_wanted.store(g_player_mirror.bModelHidden);
             const sekiro::live::HideStatus hs = g_model_hider->update(g_player_mirror.bModelHidden);
+            static unsigned logged_resets = 0, logged_changes = 0;
+            if (g_model_hider->resetCount() != logged_resets && logged_resets < 60) {
+                logged_resets = g_model_hider->resetCount();
+                Log("Wolf model: the game made it visible again behind our back (reset #%u); hidden again", logged_resets);
+            } else {
+                logged_resets = g_model_hider->resetCount();
+            }
+            if (g_model_hider->objectChangeCount() != logged_changes) {
+                logged_changes = g_model_hider->objectChangeCount();
+                Log("Wolf model: the game replaced the Wolf's model object (warp/cutscene #%u); hidden again", logged_changes);
+            }
+            {
+                // While the Wolf is being hidden, say what both hide paths see once a second for the first 8 s.
+                static DWORD last_describe = 0;
+                static int described = 0;
+                if (g_player_mirror.bModelHidden) {
+                    const DWORD now = GetTickCount();
+                    if (hs != g_last_hide_status) described = 0;
+                    if (described < 8 && now - last_describe >= 1000) {
+                        last_describe = now;
+                        ++described;
+                        Log("Wolf model state: %s", g_model_hider->describe().c_str());
+                    }
+                }
+            }
             if (hs != g_last_hide_status) {
                 const char* name = hs == sekiro::live::HideStatus::Hidden ? "Hidden (Wolf draw mask = 0)"
                                  : hs == sekiro::live::HideStatus::Idle ? "Idle (Wolf visible)"
@@ -422,10 +790,15 @@ bool SyncLiveGameState(float dt) {
 
     if (g_in_world) {
         g_in_world = false;
-        if (g_model_hider) g_model_hider->forgetObject();
+        g_wolf_hide_wanted.store(false);
+        if (g_model_hider) {
+            std::lock_guard<std::mutex> hider_lock(g_hider_mutex);
+            g_model_hider->forgetObject();
+        }
         g_last_hide_status = sekiro::live::HideStatus::Idle;
         g_live_mirror.reset();
         g_camera_stabilizer.reset();
+        ReleaseEnemies();
         SekiroMod_UpdatePointers(nullptr, nullptr);
         Log("Left world / link lost");
     }
@@ -459,6 +832,15 @@ void InitImGui(IDXGISwapChain* pSwapChain) {
     }
 
     g_d3d_device->GetImmediateContext(&g_d3d_context);
+    mc::d3d11::cbprobe::setLog(Log);
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, "mc_cb_probe.txt", "r") == 0 && f) {
+            fclose(f);
+            mc::d3d11::cbprobe::enable(true);
+            Log("Constant buffer probe ENABLED (mc_cb_probe.txt present)");
+        }
+    }
     Log(g_depth_capture.install(g_d3d_device, g_d3d_context) ? "Depth capture hook installed" : "Depth capture hook FAILED");
 
     // Hook WndProc for input
@@ -513,6 +895,36 @@ void ShadowText(ImDrawList* draw, float size, ImVec2 pos, ImU32 color, float sha
     draw->AddText(ImGui::GetFont(), size, pos, color, text);
 }
 
+// Hurt flash (red screen edges, stronger for bigger hits) and the hit marker around the crosshair.
+void DrawFeedbackOverlay(ImDrawList* draw, const mc::HudLayout& layout, float screen_w, float screen_h, float gui_scale) {
+    const mc::Session* session = SekiroMod_GetSession();
+    if (!session) return;
+    const mc::Session::Feedback& fb = session->feedback();
+
+    if (fb.hurt_flash > 0.f) {
+        const float strength = std::min(1.f, 0.35f + fb.hurt_amount * 4.f); // a scratch is faint, a big hit is not
+        const float a = fb.hurt_flash * strength * 0.75f;
+        const ImU32 edge = IM_COL32(200, 0, 0, static_cast<int>(a * 255.f));
+        const ImU32 clear = IM_COL32(200, 0, 0, 0);
+        const float t = std::min(screen_w, screen_h) * 0.22f; // thickness of the vignette
+        draw->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(screen_w, t), edge, edge, clear, clear);
+        draw->AddRectFilledMultiColor(ImVec2(0, screen_h - t), ImVec2(screen_w, screen_h), clear, clear, edge, edge);
+        draw->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(t, screen_h), edge, clear, clear, edge);
+        draw->AddRectFilledMultiColor(ImVec2(screen_w - t, 0), ImVec2(screen_w, screen_h), clear, edge, edge, clear);
+    }
+    if (fb.hit_marker > 0.f) {
+        const mc::HudRect c = layout.crosshair();
+        const float cx = c.x + c.w * 0.5f, cy = c.y + c.h * 0.5f;
+        const float inner = 4.f * gui_scale, outer = 9.f * gui_scale;
+        const ImU32 col = IM_COL32(255, 255, 255, static_cast<int>(fb.hit_marker * 255.f));
+        for (const float sx : {-1.f, 1.f}) {
+            for (const float sy : {-1.f, 1.f}) {
+                draw->AddLine(ImVec2(cx + sx * inner, cy + sy * inner), ImVec2(cx + sx * outer, cy + sy * outer), col, std::max(1.f, gui_scale * 0.75f));
+            }
+        }
+    }
+}
+
 void RenderMinecraftHUD(float screen_w, float screen_h, bool is_steve_mode, float dt) {
     if (!g_hud_srv && g_d3d_device) {
         g_hud_srv = CreateHudTextureSRV(g_d3d_device);
@@ -538,6 +950,7 @@ void RenderMinecraftHUD(float screen_w, float screen_h, bool is_steve_mode, floa
     draw->AddCallback(UsePointSampler, nullptr);
 
     Blit(draw, sekiro::hud::kUV_CROSSHAIR, layout.crosshair());
+    DrawFeedbackOverlay(draw, layout, screen_w, screen_h, s);
     Blit(draw, sekiro::hud::kUV_HOTBAR, layout.hotbar());
 
     const int active = hud->getSelectedSlot();
@@ -626,6 +1039,7 @@ void EnsureSteveRenderer() {
     mc::d3d11::RigRenderer::PartMeshes meshes;
     for (size_t i = 0; i < meshes.size(); ++i) meshes[i] = sekiro::render::buildPartMesh(static_cast<mc::StevePart>(i));
     renderer->setDepthConvention(sekiro::render::kSekiroDepth);
+    constexpr float kShadowRadiusCm = 50.0f; // Minecraft's entity shadow radius is half a block
     if (!renderer->init(g_d3d_device, meshes)) {
         Log("Steve renderer init failed; the 3D rig will not be drawn");
         return;
@@ -638,7 +1052,48 @@ void EnsureSteveRenderer() {
     } else {
         Log("Steve skin: mods\\mc_adapter\\steve.png missing or not 64x64; using a neutral grey skin");
     }
+    renderer->setGroundShadow(mc::rig::buildGroundShadowMesh(sekiro::render::kSekiroBasis, kShadowRadiusCm));
     g_steve_renderer = std::move(renderer);
+}
+
+// The HUD atlas cell holding an item's flat sprite (nullptr when the item has none).
+const mc::hud::HudUV* HeldItemUv(mc::ItemId item) {
+    switch (item) {
+        case mc::ItemId::DiamondSword: return &mc::hud::kUV_ITEM_DIAMOND_SWORD;
+        case mc::ItemId::DiamondPickaxe: return &mc::hud::kUV_ITEM_DIAMOND_PICKAXE;
+        case mc::ItemId::Bow: return &mc::hud::kUV_ITEM_BOW;
+        case mc::ItemId::GoldenApple: return &mc::hud::kUV_ITEM_GOLDEN_APPLE;
+        case mc::ItemId::TotemOfUndying: return &mc::hud::kUV_ITEM_TOTEM_OF_UNDYING;
+        default: return nullptr;
+    }
+}
+
+// Keeps the renderer's held item in step with the selected hotbar slot.
+void SyncHeldItem() {
+    if (!g_steve_renderer) return;
+    mc::HudEngine* hud = GetHud();
+    const mc::ItemId item = hud ? hud->getSelectedItem() : mc::ItemId::None;
+    if (item == g_held_item_applied && !g_held_item_dirty) return;
+    g_held_item_applied = item;
+    g_held_item_dirty = false;
+
+    const mc::hud::HudUV* uv = HeldItemUv(item);
+    if (!uv || !mc::rig::isHeldAsFlatSprite(item) || g_atlas_rgba.empty() || !g_hud_srv) {
+        g_steve_renderer->setHeldItem({}, nullptr);
+        return;
+    }
+    mc::rig::ItemSprite sprite;
+    sprite.rgba = g_atlas_rgba.data();
+    sprite.atlas_w = static_cast<int>(g_atlas_w);
+    sprite.atlas_h = static_cast<int>(g_atlas_h);
+    sprite.x = static_cast<int>(std::lround(uv->u0 * static_cast<float>(g_atlas_w)));
+    sprite.y = static_cast<int>(std::lround(uv->v0 * static_cast<float>(g_atlas_h)));
+    sprite.w = static_cast<int>(std::lround((uv->u1 - uv->u0) * static_cast<float>(g_atlas_w)));
+    sprite.h = static_cast<int>(std::lround((uv->v1 - uv->v0) * static_cast<float>(g_atlas_h)));
+    const mc::rig::RigMesh mesh = mc::rig::buildHeldItemMesh(sprite, mc::rig::heldItemStyle(item), sekiro::render::kSekiroBasis);
+    const bool ok = g_steve_renderer->setHeldItem(mesh, g_hud_srv);
+    Log("Held item %d: %zu vertices from atlas cell (%d,%d) %dx%d (%s)", static_cast<int>(item), mesh.vertices.size(), sprite.x,
+        sprite.y, sprite.w, sprite.h, ok ? "ok" : "FAILED");
 }
 
 // Draws the real 3D rig into the frame, positioned from the live camera matrix and player position.
@@ -674,6 +1129,9 @@ void DrawSteveRig(ID3D11RenderTargetView* target, float screen_w, float screen_h
             g_steve_renderer->setAmbientProbe(clip[0] / clip[3] * 0.5f + 0.5f, 1.0f - (clip[1] / clip[3] * 0.5f + 0.5f));
         }
     }
+    g_steve_renderer->setGroundShadowWorld(sekiro::render::translation(root.position));
+    if (const mc::Session* session = SekiroMod_GetSession()) g_steve_renderer->setHurtTint(session->feedback().hurt_flash);
+    SyncHeldItem();
     g_steve_renderer->setSceneDepth(g_depth_capture.sceneDepth(static_cast<unsigned>(screen_w), static_cast<unsigned>(screen_h)));
     g_steve_renderer->draw(g_d3d_context, target, static_cast<UINT>(screen_w), static_cast<UINT>(screen_h), view_proj, world);
 }
@@ -715,6 +1173,14 @@ void TraceFrame(float dt) {
     }
 }
 
+// Our own key/button edges. GetAsyncKeyState's "pressed since the last call" bit is shared with the game (it
+// imports the same function) so the game could take a click before we saw it; levels cannot be taken.
+enum KeySlot : size_t { kKeyF6, kKeyF7, kKeyF8, kKeyLeft, kKeyRight, kKeySpace, kKeyDigit0, kKeyCount = kKeyDigit0 + 9 };
+sekiro::input::EdgeSet<kKeyCount> g_key_edges;
+bool KeyRising(size_t slot, int vk) {
+    return g_key_edges.rising(slot, (GetAsyncKeyState(vk) & 0x8000) != 0);
+}
+
 HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UINT flags) {
     if (!g_mod_initialized.load()) {
         Log("Initializing SekiroMod (no player bound yet; waiting for live game link)...");
@@ -729,7 +1195,7 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
     }
 
     // F6 Hotkey toggle
-    if (GetAsyncKeyState(VK_F6) & 1) {
+    if (KeyRising(kKeyF6, VK_F6)) {
         bool current_active = SekiroMod_IsSteveModeActive();
         bool new_active = !current_active;
         SekiroMod_SetSteveMode(new_active);
@@ -737,7 +1203,7 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
         Log(">>> Hotkey [F6] triggered! Steve Mode toggled to: %s", new_active ? "TRUE (ACTIVE)" : "FALSE (STANDBY)");
     }
 
-    if (GetAsyncKeyState(VK_F7) & 1) {
+    if (KeyRising(kKeyF7, VK_F7)) {
         g_screenshot_requested.store(true);
     }
     // Remote debugging: an external tool asks for a frame by creating mc_cmd_screenshot.txt in the game
@@ -751,7 +1217,7 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
         DeleteFileW(L"mc_cmd_depth.txt");
         g_depth_dump_requested.store(true);
     }
-    if (GetAsyncKeyState(VK_F8) & 1) {
+    if (KeyRising(kKeyF8, VK_F8)) {
         g_show_debug_panel = !g_show_debug_panel;
     }
 
@@ -759,7 +1225,7 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
     mc::InputSnapshot input_snapshot{};
     mc::HudEngine* global_hud = GetHud();
     for (int k = 0; k < 9; ++k) {
-        if (GetAsyncKeyState('1' + k) & 1) {
+        if (KeyRising(kKeyDigit0 + static_cast<size_t>(k), '1' + k)) {
             input_snapshot.hotbar_select = k;
             g_selected_slot = k;
             Log("Selected hotbar slot: %d (%s)", k + 1, global_hud ? mc::HudEngine::getItemDisplayName(global_hud->getSlot(k).item) : kHotbarItems[k]);
@@ -768,10 +1234,10 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
     if (g_imgui_initialized.load() && ImGui::GetIO().MouseWheel != 0.0f) {
         input_snapshot.scroll = ImGui::GetIO().MouseWheel > 0.0f ? -1 : 1;
     }
-    input_snapshot.attack_pressed = (GetAsyncKeyState(VK_LBUTTON) & 1) != 0;
+    input_snapshot.attack_pressed = KeyRising(kKeyLeft, VK_LBUTTON);
     input_snapshot.attack_held = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-    input_snapshot.use_pressed = (GetAsyncKeyState(VK_RBUTTON) & 1) != 0;
-    input_snapshot.glide_toggle = (GetAsyncKeyState(VK_SPACE) & 1) != 0;
+    input_snapshot.use_pressed = KeyRising(kKeyRight, VK_RBUTTON);
+    input_snapshot.glide_toggle = KeyRising(kKeySpace, VK_SPACE);
 
     // Compute delta time
     auto now = std::chrono::steady_clock::now();
@@ -783,7 +1249,10 @@ HRESULT WINAPI DetourPresent(IDXGISwapChain* pSwapChain, UINT sync_interval, UIN
 
     // Tick mc-core engine only with a validated live link; otherwise stay idle and say so in the HUD
     if (SyncLiveGameState(dt)) {
+        SyncEnemies(dt);
         SekiroMod_Tick(dt, &input_snapshot);
+        if (input_snapshot.attack_pressed && SekiroMod_IsSteveModeActive()) LogAttackDiagnostics();
+        ApplyEnemyHealthWrites();
         TraceFrame(dt);
     }
 
@@ -1031,6 +1500,156 @@ DWORD WINAPI LoaderThread(LPVOID) {
 } // namespace
 
 // =========================================================================
+// DirectInput mouse hooks: keep the native character from attacking/guarding while a Minecraft action owns
+// the mouse buttons. The game's own DirectInput mouse device is found when it is created (we are its
+// dinput8.dll), and its GetDeviceState / GetDeviceData results are filtered on the way to the game. Only
+// the two buttons are cleared; camera movement and every key stay untouched.
+// =========================================================================
+
+namespace {
+
+// IDirectInputDevice8 vtable: IUnknown 0-2, GetCapabilities 3, EnumObjects 4, GetProperty 5, SetProperty 6,
+// Acquire 7, Unacquire 8, GetDeviceState 9, GetDeviceData 10. IDirectInput8: CreateDevice is 3.
+using CreateDevice_t = HRESULT(STDMETHODCALLTYPE*)(void*, REFGUID, void**, LPUNKNOWN);
+using GetDeviceState_t = HRESULT(STDMETHODCALLTYPE*)(void*, DWORD, LPVOID);
+using GetDeviceData_t = HRESULT(STDMETHODCALLTYPE*)(void*, DWORD, void*, LPDWORD, DWORD);
+
+CreateDevice_t g_original_create_device = nullptr;
+GetDeviceState_t g_original_get_device_state = nullptr;
+GetDeviceData_t g_original_get_device_data = nullptr;
+void* g_create_device_target = nullptr;
+void* g_device_state_target = nullptr;
+void* g_device_data_target = nullptr;
+std::mutex g_mouse_mutex;
+std::vector<void*> g_mouse_devices; // identity only: never dereferenced; the game recreates devices, addresses repeat
+std::vector<void*> g_keyboard_devices;
+std::atomic<unsigned> g_keyboard_calls{0}, g_suppressed_keys{0};
+std::atomic<unsigned> g_mouse_state_calls{0}, g_mouse_data_calls{0}, g_suppressed_clicks{0};
+
+// GUID_SysMouse {6F1D2B60-D5A0-11CF-BFC7-444553540000}
+constexpr GUID kGuidSysMouse = {0x6F1D2B60, 0xD5A0, 0x11CF, {0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00}};
+// GUID_SysKeyboard {6F1D2B61-D5A0-11CF-BFC7-444553540000}
+constexpr GUID kGuidSysKeyboard = {0x6F1D2B61, 0xD5A0, 0x11CF, {0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00}};
+
+void RememberDevice(std::vector<void*>& list, void* device) {
+    std::lock_guard<std::mutex> lock(g_mouse_mutex);
+    if (std::find(list.begin(), list.end(), device) != list.end()) return;
+    if (list.size() >= 64) list.erase(list.begin()); // the game recreates devices; keep the newest
+    list.push_back(device);
+}
+
+bool IsKeyboardDevice(void* device) {
+    std::lock_guard<std::mutex> lock(g_mouse_mutex);
+    return std::find(g_keyboard_devices.begin(), g_keyboard_devices.end(), device) != g_keyboard_devices.end();
+}
+
+bool IsMouseDevice(void* device) {
+    std::lock_guard<std::mutex> lock(g_mouse_mutex);
+    return std::find(g_mouse_devices.begin(), g_mouse_devices.end(), device) != g_mouse_devices.end();
+}
+
+void NoteSuppressed(bool had_click) {
+    if (had_click && g_suppressed_clicks.fetch_add(1) == 0) Log("DirectInput: suppressed a native mouse click (first time)");
+}
+
+HRESULT STDMETHODCALLTYPE DetourGetDeviceState(void* self, DWORD cb, LPVOID data) {
+    const HRESULT hr = g_original_get_device_state(self, cb, data);
+    if (SUCCEEDED(hr) && data && cb == 256 && IsKeyboardDevice(self)) {
+        if (g_keyboard_calls.fetch_add(1) == 0) Log("DirectInput: the game polls its keyboard with GetDeviceState");
+        if (SekiroMod_IsNativeInputSuppressed()) {
+            const auto* k = static_cast<const uint8_t*>(data);
+            const bool pressed = k[sekiro::input::kDikR] != 0;
+            sekiro::input::suppressKeyboardKeys(data, cb);
+            if (pressed && g_suppressed_keys.fetch_add(1) == 0) Log("DirectInput: suppressed a native key press (first time)");
+        }
+        return hr;
+    }
+    if (SUCCEEDED(hr) && data && IsMouseDevice(self)) {
+        if (g_mouse_state_calls.fetch_add(1) == 0) Log("DirectInput: the game polls its mouse with GetDeviceState (size %lu)", cb);
+        if (SekiroMod_IsNativeInputSuppressed()) {
+            const auto* b = static_cast<const uint8_t*>(data);
+            const bool click = (cb == 16 || cb == 20) && (b[sekiro::input::kMouseButton0Offset] || b[sekiro::input::kMouseButton1Offset]);
+            sekiro::input::suppressMouseButtons(data, cb);
+            NoteSuppressed(click);
+        }
+    }
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE DetourGetDeviceData(void* self, DWORD cb, void* elements, LPDWORD in_out, DWORD flags) {
+    const HRESULT hr = g_original_get_device_data(self, cb, elements, in_out, flags);
+    if (SUCCEEDED(hr) && elements && in_out && IsKeyboardDevice(self)) {
+        if (SekiroMod_IsNativeInputSuppressed()) sekiro::input::suppressBufferedKeys(elements, *in_out, cb);
+        return hr;
+    }
+    if (SUCCEEDED(hr) && elements && in_out && IsMouseDevice(self)) {
+        if (g_mouse_data_calls.fetch_add(1) == 0) Log("DirectInput: the game reads its mouse with GetDeviceData (element size %lu)", cb);
+        if (SekiroMod_IsNativeInputSuppressed()) {
+            sekiro::input::suppressBufferedMouseButtons(elements, *in_out, cb);
+            NoteSuppressed(false);
+        }
+    }
+    return hr;
+}
+
+void HookMouseDeviceMethods(void* device) {
+    if (g_device_state_target) return;
+    void** vtable = *reinterpret_cast<void***>(device);
+    g_device_state_target = vtable[9];
+    g_device_data_target = vtable[10];
+    if (MH_CreateHook(g_device_state_target, reinterpret_cast<void*>(&DetourGetDeviceState),
+                      reinterpret_cast<void**>(&g_original_get_device_state)) != MH_OK ||
+        MH_EnableHook(g_device_state_target) != MH_OK) {
+        Log("DirectInput: could not hook GetDeviceState");
+        g_device_state_target = nullptr;
+        return;
+    }
+    if (MH_CreateHook(g_device_data_target, reinterpret_cast<void*>(&DetourGetDeviceData),
+                      reinterpret_cast<void**>(&g_original_get_device_data)) != MH_OK ||
+        MH_EnableHook(g_device_data_target) != MH_OK) {
+        Log("DirectInput: could not hook GetDeviceData (buffered mouse input will not be filtered)");
+        g_device_data_target = nullptr;
+    }
+}
+
+HRESULT STDMETHODCALLTYPE DetourCreateDevice(void* self, REFGUID guid, void** out, LPUNKNOWN outer) {
+    const HRESULT hr = g_original_create_device(self, guid, out, outer);
+    if (SUCCEEDED(hr) && out && *out && IsEqualGUID(guid, kGuidSysMouse)) {
+        RememberDevice(g_mouse_devices, *out);
+        static int logged_mice = 0;
+        if (logged_mice++ < 2) Log("DirectInput: the game created its system mouse device (%p)", *out);
+        HookMouseDeviceMethods(*out);
+    }
+    if (SUCCEEDED(hr) && out && *out && IsEqualGUID(guid, kGuidSysKeyboard)) {
+        RememberDevice(g_keyboard_devices, *out);
+        static int logged_keyboards = 0;
+        if (logged_keyboards++ < 2) Log("DirectInput: the game created its system keyboard device (%p)", *out);
+        HookMouseDeviceMethods(*out); // same IDirectInputDevice8 methods; installs them once
+    }
+    return hr;
+}
+
+// Called once with the IDirectInput8 the game just got from us.
+void HookDirectInputInterface(void* directinput) {
+    if (!directinput || g_create_device_target) return;
+    const MH_STATUS init = MH_Initialize();
+    if (init != MH_OK && init != MH_ERROR_ALREADY_INITIALIZED) {
+        Log("DirectInput: MinHook unavailable (%d); mouse suppression off", static_cast<int>(init));
+        return;
+    }
+    void** vtable = *reinterpret_cast<void***>(directinput);
+    g_create_device_target = vtable[3];
+    if (MH_CreateHook(g_create_device_target, reinterpret_cast<void*>(&DetourCreateDevice),
+                      reinterpret_cast<void**>(&g_original_create_device)) != MH_OK ||
+        MH_EnableHook(g_create_device_target) != MH_OK) {
+        Log("DirectInput: could not hook CreateDevice; mouse suppression off");
+        g_create_device_target = nullptr;
+    }
+}
+
+} // namespace
+
+// =========================================================================
 // DirectInput8 Proxy Export
 // =========================================================================
 
@@ -1057,7 +1676,9 @@ extern "C" HRESULT WINAPI DirectInput8Create(
     }
 
     if (g_system_DirectInput8Create) {
-        return g_system_DirectInput8Create(hinst, dwVersion, riidltf, ppvOut, punkOuter);
+        const HRESULT hr = g_system_DirectInput8Create(hinst, dwVersion, riidltf, ppvOut, punkOuter);
+        if (SUCCEEDED(hr) && ppvOut && *ppvOut) HookDirectInputInterface(*ppvOut);
+        return hr;
     }
 
     Log("DirectInput8Create: Failed to forward call to system dinput8.dll");

@@ -231,6 +231,21 @@ std::vector<std::array<float, 2>> skinUvForLocalPoint(StevePart part, ModelPoint
     return out;
 }
 
+RigMesh buildGroundShadowMesh(const HostBasis& basis, float radius_cm) {
+    RigMesh mesh;
+    if (!(radius_cm > 0.0f)) return mesh;
+    constexpr float kLiftCm = 1.0f;
+    const float r = radius_cm;
+    const float corners[4][2] = {{-r, -r}, {r, -r}, {r, r}, {-r, r}}; // (forward, left)
+    const float uvs[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+    for (int i = 0; i < 4; ++i) {
+        const Vec3 p = basis.fromCanonical({corners[i][0], corners[i][1], kLiftCm});
+        mesh.vertices.push_back({p.x, p.y, p.z, uvs[i][0], uvs[i][1]});
+    }
+    mesh.indices = {0, 1, 2, 0, 2, 3};
+    return mesh;
+}
+
 Mat4 yawMatrix(const HostBasis& basis, float canonical_yaw) {
     // Canonical yaw is counter-clockwise about +Z. A reflecting basis turns it into a clockwise rotation about
     // the image of +Z.

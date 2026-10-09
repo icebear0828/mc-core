@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 import io
+import json
 import math
 from pathlib import Path
 import zipfile
@@ -112,6 +113,200 @@ def export_obj(name: str, mesh: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def parse_geometry_json(content: str | dict, target_id: str = "") -> dict:
+    data = json.loads(content) if isinstance(content, str) else content
+    if not isinstance(data, dict):
+        raise ValueError("Invalid geometry JSON: root must be an object")
+
+    geom = None
+    identifier = target_id
+
+    # Bedrock 1.12.0+ format: "minecraft:geometry": [...]
+    if "minecraft:geometry" in data and isinstance(data["minecraft:geometry"], list):
+        geos = data["minecraft:geometry"]
+        if target_id:
+            for g in geos:
+                if g.get("description", {}).get("identifier") == target_id:
+                    geom = g
+                    break
+        if geom is None and geos:
+            geom = geos[0]
+        if geom is not None:
+            desc = geom.get("description", {})
+            identifier = desc.get("identifier", target_id or "geometry.unnamed")
+            tex_w = desc.get("texture_width", 64)
+            tex_h = desc.get("texture_height", 64)
+            raw_bones = geom.get("bones", [])
+        else:
+            raise ValueError(f"Geometry '{target_id}' not found in minecraft:geometry")
+
+    else:
+        # Bedrock 1.8.0 format: "geometry.<id>": { "bones": ... }
+        geo_keys = [k for k in data.keys() if k.startswith("geometry.")]
+        if target_id and target_id in data:
+            geo_key = target_id
+        elif geo_keys:
+            geo_key = geo_keys[0]
+        else:
+            raise ValueError("No valid geometry found in JSON")
+        geom = data[geo_key]
+        identifier = geo_key
+        tex_w = geom.get("texturewidth", geom.get("texture_width", 64))
+        tex_h = geom.get("textureheight", geom.get("texture_height", 64))
+        raw_bones = geom.get("bones", [])
+
+    parsed_bones = []
+    for b in raw_bones:
+        b_name = b.get("name", "")
+        b_parent = b.get("parent")
+        b_pivot = tuple(b.get("pivot", [0, 0, 0]))
+        b_rot = tuple(b.get("rotation", [0, 0, 0]))
+        cubes = []
+        for c in b.get("cubes", []):
+            origin = tuple(c.get("origin", [0, 0, 0]))
+            size = tuple(c.get("size", [0, 0, 0]))
+            uv = tuple(c.get("uv", [0, 0]))
+            inflate = float(c.get("inflate", 0.0))
+            mirror = bool(c.get("mirror", b.get("mirror", False)))
+            cubes.append({
+                "origin": origin,
+                "size": size,
+                "uv": uv,
+                "inflate": inflate,
+                "mirror": mirror,
+            })
+        parsed_bones.append({
+            "name": b_name,
+            "parent": b_parent,
+            "pivot": b_pivot,
+            "rotation": b_rot,
+            "cubes": cubes,
+        })
+
+    return {
+        "identifier": identifier,
+        "texture_width": tex_w,
+        "texture_height": tex_h,
+        "bones": parsed_bones,
+    }
+
+
+def _cube_faces_bedrock(origin: tuple[float, float, float], size: tuple[float, float, float],
+                        uv: tuple[float, float], inflate: float = 0.0, mirror: bool = False) -> list:
+    x0, y0, z0 = origin
+    w, h, d = size
+    x_min, y_min, z_min = x0 - inflate, y0 - inflate, z0 - inflate
+    x_max, y_max, z_max = x0 + w + inflate, y0 + h + inflate, z0 + d + inflate
+    u, v = uv
+
+    # Standard box unwrapping:
+    # Top (+Y): u+d, v, size w, d
+    # Bottom (-Y): u+d+w, v, size w, d
+    # North (front, -Z): u+d, v+d, size w, h
+    # South (back, +Z): u+d+w+d, v+d, size w, h
+    # West (-X): u, v+d, size d, h
+    # East (+X): u+d+w, v+d, size d, h
+    # Mirror swaps West and East, or flips U.
+    u_west = u + d + w if mirror else u
+    u_east = u if mirror else u + d + w
+
+    faces = [
+        # North / Front (-Z)
+        ([(x_min, y_min, z_min), (x_max, y_min, z_min), (x_max, y_max, z_min), (x_min, y_max, z_min)],
+         (u + d, v + d, w, h)),
+        # South / Back (+Z)
+        ([(x_max, y_min, z_max), (x_min, y_min, z_max), (x_min, y_max, z_max), (x_max, y_max, z_max)],
+         (u + d + w + d, v + d, w, h)),
+        # West (-X)
+        ([(x_min, y_min, z_max), (x_min, y_min, z_min), (x_min, y_max, z_min), (x_min, y_max, z_max)],
+         (u_west, v + d, d, h)),
+        # East (+X)
+        ([(x_max, y_min, z_min), (x_max, y_min, z_max), (x_max, y_max, z_max), (x_max, y_max, z_min)],
+         (u_east, v + d, d, h)),
+        # Top (+Y)
+        ([(x_min, y_max, z_min), (x_max, y_max, z_min), (x_max, y_max, z_max), (x_min, y_max, z_max)],
+         (u + d, v, w, d)),
+        # Bottom (-Y)
+        ([(x_min, y_min, z_max), (x_max, y_min, z_max), (x_max, y_min, z_min), (x_min, y_min, z_min)],
+         (u + d + w, v, w, d)),
+    ]
+    return faces
+
+
+def build_geometry_mesh(geo: dict, texture: Image.Image | None = None) -> dict[str, dict]:
+    tw = float(geo.get("texture_width", 64))
+    th = float(geo.get("texture_height", 64))
+    bone_meshes = {}
+
+    for bone in geo.get("bones", []):
+        b_name = bone["name"]
+        positions, normals, uvs, colors, triangles = [], [], [], [], []
+
+        for cube in bone.get("cubes", []):
+            faces = _cube_faces_bedrock(
+                cube["origin"], cube["size"], cube["uv"],
+                inflate=cube.get("inflate", 0.0),
+                mirror=cube.get("mirror", False),
+            )
+
+            if texture is not None:
+                # Per-pixel texture unwrapping
+                mesh = mesh_from_faces(faces, texture)
+                base = len(positions)
+                positions.extend(mesh["positions"])
+                normals.extend(mesh["normals"])
+                uvs.extend(mesh["uv"])
+                colors.extend(mesh["colors"])
+                triangles.extend([idx + base for idx in mesh["triangles"]])
+            else:
+                # Direct geometric quad generation (1 quad per face)
+                for verts, (u, v, w, h) in faces:
+                    base = len(positions)
+                    positions.extend(verts)
+                    # UV mapping normalized to [0, 1]
+                    uv_quad = [
+                        (u / tw, (v + h) / th),
+                        ((u + w) / tw, (v + h) / th),
+                        ((u + w) / tw, (v + h) / th), # will be overwritten below
+                        (u / tw, v / th),
+                    ]
+                    # Actually standard quad UV: top-left, top-right, bottom-right, bottom-left
+                    uv_quad = [
+                        (u / tw, (v + h) / th),
+                        ((u + w) / tw, (v + h) / th),
+                        ((u + w) / tw, v / th),
+                        (u / tw, v / th),
+                    ]
+                    uvs.extend(uv_quad)
+                    colors.extend([[1.0, 1.0, 1.0, 1.0]] * 4)
+
+                    # Compute face normal
+                    a = [verts[1][j] - verts[0][j] for j in range(3)]
+                    b = [verts[3][j] - verts[0][j] for j in range(3)]
+                    n = [
+                        a[1] * b[2] - a[2] * b[1],
+                        a[2] * b[0] - a[0] * b[2],
+                        a[0] * b[1] - a[1] * b[0],
+                    ]
+                    length = math.sqrt(sum(c * c for c in n)) or 1.0
+                    norm = [c / length for c in n]
+                    normals.extend([norm] * 4)
+
+                    # Two CCW triangles
+                    triangles.extend([base, base + 1, base + 2, base, base + 2, base + 3])
+
+        bone_meshes[b_name] = {
+            "positions": positions,
+            "normals": normals,
+            "uv": uvs,
+            "colors": colors,
+            "triangles": triangles,
+        }
+
+    return bone_meshes
+
+
+
 def build_steve_parts(skin_texture: Image.Image) -> list[dict]:
     parts = []
     for name, pivot, origin, size, uv, inflate in PARTS:
@@ -158,6 +353,15 @@ def build_cube_block(texture: Image.Image, size_cm: float = 100.0) -> dict:
         "colors": colors,
         "triangles": triangles,
     }
+
+
+_PLACEHOLDER_ITEM_COLORS = {
+    "item_arrow": (200, 200, 200), "item_trident": (40, 150, 150), "item_flint_and_steel": (90, 90, 90),
+    "item_ender_pearl": (20, 90, 80), "item_enchanted_golden_apple": (200, 120, 230), "item_bread": (200, 150, 70),
+    "item_cooked_beef": (120, 60, 30), "item_firework_rocket": (200, 40, 40),
+    "block_dirt": (134, 96, 67), "block_stone": (125, 125, 125), "block_tnt_top": (160, 80, 70),
+    "block_tnt_side": (200, 60, 50), "block_tnt_bottom": (160, 80, 70),
+}
 
 
 def create_canonical_sprite(name: str) -> Image.Image:
@@ -218,6 +422,72 @@ def create_canonical_sprite(name: str) -> Image.Image:
         }
         for (x, y), col in pixels.items():
             img.putpixel((x, y), col)
+        return img
+
+    if name in ("heart_absorb_full", "heart_absorb_half"):
+        base = create_canonical_sprite("heart_full" if name.endswith("full") else "heart_half")
+        out = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        recolor = {(235, 18, 18): (255, 205, 40), (145, 0, 0): (170, 120, 0)}
+        for y in range(base.height):
+            for x in range(base.width):
+                r, g, b, a = base.getpixel((x, y))
+                if a:
+                    nr, ng, nb = recolor.get((r, g, b), (r, g, b))
+                    out.putpixel((x, y), (nr, ng, nb, a))
+        return out
+
+    if name == "particle_crit":
+        img = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+        for i in range(8):  # a plain four-point star
+            img.putpixel((3, i), (255, 255, 255, 255))
+            img.putpixel((4, i), (255, 255, 255, 255))
+            img.putpixel((i, 3), (255, 255, 255, 255))
+            img.putpixel((i, 4), (255, 255, 255, 255))
+        return img
+
+    if name == "particle_damage":
+        img = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+        for (x, y) in [(1, 2), (2, 1), (5, 1), (6, 2), (1, 3), (2, 3), (3, 3), (4, 3), (5, 3), (6, 3), (2, 4), (3, 4), (4, 4), (5, 4), (3, 5), (4, 5)]:
+            img.putpixel((x, y), (130, 0, 0, 255))
+        return img
+
+    if name.startswith("particle_sweep_"):
+        idx = int(name.rsplit("_", 1)[1])
+        img = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+        reach = 4 + idx * 3  # an arc that grows with the frame; the real frames replace it
+        for x in range(32):
+            for y in range(32):
+                d = ((x - 16) ** 2 + (y - 26) ** 2) ** 0.5
+                if reach - 1.5 <= d <= reach + 1.5 and y < 26:
+                    img.putpixel((x, y), (255, 255, 255, 255 - idx * 20))
+        return img
+
+    if name in ("heart_container_blinking", "heart_full_blinking", "heart_half_blinking"):
+        base = create_canonical_sprite({"heart_container_blinking": "heart_container", "heart_full_blinking": "heart_full",
+                                        "heart_half_blinking": "heart_half"}[name])
+        out = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        for y in range(base.height):
+            for x in range(base.width):
+                r, g, b, a = base.getpixel((x, y))
+                if a:  # the same shape in white
+                    out.putpixel((x, y), (255, 255, 255, a) if (r, g, b) != (0, 0, 0) else (r, g, b, a))
+        return out
+
+    if name in ("xp_bar_background", "xp_bar_progress"):
+        col = (50, 50, 50, 255) if name == "xp_bar_background" else (128, 255, 32, 255)
+        return Image.new("RGBA", (182, 5), col)
+
+    if name in ("container_top", "container_bottom"):
+        h = 71 if name == "container_top" else 96
+        img = Image.new("RGBA", (176, h), (198, 198, 198, 255))
+        rows = [(8 + 0, 18 + 18 * r) for r in range(3)] if name == "container_top" else [(8, 14 + 18 * r) for r in range(3)] + [(8, 72)]
+        for sx, sy in rows:
+            for c in range(9):
+                for dx in range(-1, 17):
+                    for dy in range(-1, 17):
+                        x, y = sx + 18 * c + dx, sy + dy
+                        if 0 <= x < 176 and 0 <= y < h:
+                            img.putpixel((x, y), (139, 139, 139, 255))
         return img
 
     if name == "hotbar":
@@ -298,6 +568,14 @@ def create_canonical_sprite(name: str) -> Image.Image:
             for x in range(5, 11):
                 img.putpixel((x, y), c_gld)
         img.putpixel((6, 5), c_emr); img.putpixel((9, 5), c_emr)
+    elif name.startswith("block_") and name in _PLACEHOLDER_ITEM_COLORS:  # a flat coloured square
+        img = Image.new("RGBA", (16, 16), _PLACEHOLDER_ITEM_COLORS[name] + (255,))
+    elif name in _PLACEHOLDER_ITEM_COLORS:  # a plain coloured disc; the real icon replaces it when a client.jar is given
+        col = _PLACEHOLDER_ITEM_COLORS[name] + (255,)
+        for y in range(16):
+            for x in range(16):
+                if (x - 7.5) ** 2 + (y - 7.5) ** 2 <= 36:
+                    img.putpixel((x, y), col)
 
     return img
 
@@ -324,6 +602,42 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("item_bow", (16, 16)),
     ("item_elytra", (16, 16)),
     ("item_totem_of_undying", (16, 16)),
+    # appended after the original layout, so every earlier UV stays exactly where it was
+    ("heart_absorb_full", (9, 9)),
+    ("heart_absorb_half", (9, 9)),
+    ("particle_crit", (8, 8)),
+    ("particle_damage", (8, 8)),
+    ("particle_sweep_0", (32, 32)),
+    ("particle_sweep_1", (32, 32)),
+    ("particle_sweep_2", (32, 32)),
+    ("particle_sweep_3", (32, 32)),
+    ("particle_sweep_4", (32, 32)),
+    ("particle_sweep_5", (32, 32)),
+    ("particle_sweep_6", (32, 32)),
+    ("particle_sweep_7", (32, 32)),
+    # the inventory screen: the rest of the 16x16 item icons, and the two halves of the 3-row container background
+    ("item_arrow", (16, 16)),
+    ("item_trident", (16, 16)),
+    ("item_flint_and_steel", (16, 16)),
+    ("item_ender_pearl", (16, 16)),
+    ("item_enchanted_golden_apple", (16, 16)),
+    ("item_bread", (16, 16)),
+    ("item_cooked_beef", (16, 16)),
+    ("item_firework_rocket", (16, 16)),
+    ("container_top", (176, 71)),
+    ("container_bottom", (176, 96)),
+    # the faces of the blocks placed in the world (flat, as in the jar)
+    ("block_dirt", (16, 16)),
+    ("block_stone", (16, 16)),
+    ("block_tnt_top", (16, 16)),
+    ("block_tnt_side", (16, 16)),
+    ("block_tnt_bottom", (16, 16)),
+    # the heart blink (a hit flashes the container and shows the lost hearts white) and the experience bar
+    ("heart_container_blinking", (9, 9)),
+    ("heart_full_blinking", (9, 9)),
+    ("heart_half_blinking", (9, 9)),
+    ("xp_bar_background", (182, 5)),
+    ("xp_bar_progress", (182, 5)),
 ]
 
 _JAR_HUD_SPRITES = {
@@ -342,7 +656,35 @@ _JAR_HUD_SPRITES = {
     "item_bow": "item/bow.png",
     "item_elytra": "item/elytra.png",
     "item_totem_of_undying": "item/totem_of_undying.png",
+    "heart_absorb_full": "gui/sprites/hud/heart/absorbing_full.png",
+    "heart_absorb_half": "gui/sprites/hud/heart/absorbing_half.png",
+    "particle_crit": "particle/critical_hit.png",
+    "particle_damage": "particle/damage.png",
+    **{f"particle_sweep_{i}": f"particle/sweep_{i}.png" for i in range(8)},
+    "item_arrow": "item/arrow.png",
+    "item_trident": "item/trident.png",
+    "item_flint_and_steel": "item/flint_and_steel.png",
+    "item_ender_pearl": "item/ender_pearl.png",
+    "item_bread": "item/bread.png",
+    "item_cooked_beef": "item/cooked_beef.png",
+    "item_firework_rocket": "item/firework_rocket.png",
+    "block_dirt": "block/dirt.png",
+    "block_stone": "block/stone.png",
+    "block_tnt_top": "block/tnt_top.png",
+    "block_tnt_side": "block/tnt_side.png",
+    "block_tnt_bottom": "block/tnt_bottom.png",
+    "heart_container_blinking": "gui/sprites/hud/heart/container_blinking.png",
+    "heart_full_blinking": "gui/sprites/hud/heart/full_blinking.png",
+    "heart_half_blinking": "gui/sprites/hud/heart/half_blinking.png",
+    "xp_bar_background": "gui/sprites/hud/experience_bar_background.png",
+    "xp_bar_progress": "gui/sprites/hud/experience_bar_progress.png",
 }
+
+# The 3-row container background (gui/container/generic_54.png): its top part is 17 + 3 * 18 rows, its bottom part (the
+# player's inventory) starts at row 126, as in Minecraft's ContainerScreen.
+_CONTAINER_TEXTURE = "gui/container/generic_54.png"
+_CONTAINER_PARTS = {"container_top": (0, 0, 176, 71), "container_bottom": (0, 126, 176, 222)}
+_GLINT = (130, 60, 220)  # the enchantment glint, flattened into a tint for the enchanted golden apple
 
 # Block items are drawn by Minecraft as isometric cubes: (top, left/right sides)
 _JAR_BLOCK_ITEMS = {
@@ -371,6 +713,17 @@ def _shade(img: Image.Image, factor: float) -> Image.Image:
         for x in range(out.width):
             r, g, b, a = px[x, y]
             px[x, y] = (int(r * factor), int(g * factor), int(b * factor), a)
+    return out
+
+
+def _tint(img: Image.Image, color: tuple[int, int, int], amount: float) -> Image.Image:
+    out = img.copy()
+    px = out.load()
+    for y in range(out.height):
+        for x in range(out.width):
+            r, g, b, a = px[x, y]
+            if a:
+                px[x, y] = tuple(int(c * (1 - amount) + t * amount) for c, t in zip((r, g, b), color)) + (a,)
     return out
 
 
@@ -421,6 +774,12 @@ def _read_real_hud_sprite(jar_zip: zipfile.ZipFile, name: str, size: tuple[int, 
         if top is None or side is None:
             return None
         return isometric_block_icon(top, side, size[0])
+    if name in _CONTAINER_PARTS:
+        src = _open_jar_png(jar_zip, _CONTAINER_TEXTURE)
+        return None if src is None else src.crop(_CONTAINER_PARTS[name])
+    if name == "item_enchanted_golden_apple":
+        apple = _open_jar_png(jar_zip, "item/golden_apple.png")
+        return None if apple is None else _tint(_fit_exact(apple, size), _GLINT, 0.35)
     relative = _JAR_HUD_SPRITES.get(name)
     if relative is None:
         return None
@@ -429,9 +788,9 @@ def _read_real_hud_sprite(jar_zip: zipfile.ZipFile, name: str, size: tuple[int, 
 
 
 def build_hud_atlas(client_jar: Path | None = None) -> tuple[Image.Image, dict[str, tuple[float, float, float, float]]]:
-    """Build the 256x256 RGBA HUD atlas and return (image, uv_mapping). The layout never depends on
+    """Build the 512x512 RGBA HUD atlas and return (image, uv_mapping). The layout never depends on
     whether a client.jar was given, so generated UV constants stay valid for either atlas."""
-    atlas_size = 256
+    atlas_size = 512
     pad = 1  # transparent gap between sprites so nearest-neighbour sampling never reads a neighbour
     atlas = Image.new("RGBA", (atlas_size, atlas_size), (0, 0, 0, 0))
     uv_map: dict[str, tuple[float, float, float, float]] = {}
@@ -561,9 +920,19 @@ def main():
     parser.add_argument("--export-adapter-header", type=Path, help="Export an adapter header forwarding the shared atlas names")
     parser.add_argument("--adapter-namespace", default="sekiro::hud", help="Namespace for --export-adapter-header")
     parser.add_argument("--export-steve-skin", action="store_true", help="Export the real Steve skin as steve.png (needs --client-jar)")
+    parser.add_argument("--geometry-json", type=Path, help="Path to a Bedrock/Blockbench geometry.json to extract OBJ models from")
+    parser.add_argument("--geometry-texture", type=Path, help="Optional texture PNG for --geometry-json")
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    if args.geometry_json:
+        geo = parse_geometry_json(args.geometry_json.read_text(encoding="utf-8"))
+        tex = Image.open(args.geometry_texture).convert("RGBA") if args.geometry_texture else None
+        bone_meshes = build_geometry_mesh(geo, tex)
+        for bone_name, mesh in bone_meshes.items():
+            obj_content = export_obj(f"{geo['identifier']}_{bone_name}", mesh)
+            (args.out_dir / f"{bone_name}.obj").write_text(obj_content, encoding="utf-8")
+        print(f"Exported {len(bone_meshes)} bone meshes from {args.geometry_json} to {args.out_dir}")
     if args.export_steve_skin:
         if not args.client_jar:
             parser.error("--export-steve-skin requires --client-jar")
