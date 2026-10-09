@@ -71,6 +71,7 @@
 | `SetMaxHPAndClampHP` | `0x438870` | `sigs::kClampHp` | 每个数据模块每帧一次；在这里排空伤害队列（`DamageQueue`）、消化回血 |
 | `ProcessDamageContext` | `0x448910` | `sigs::kProcessDamageContext` | **最终伤害替换**（我们的命中，`ctx+0x228`）；玩家被打时的吸收和图腾夹伤；`HIT-IN` 日志 |
 | 渲染相机拷贝 | `0x4A7190` | `sigs::kRenderCameraCopy` | 渲染前：第一人称改相机位置/受击倾斜（拷贝后还原）；清除原模型显示位 |
+| 相机更新 | `0x3B11D0` | `sigs::kCameraStepExecute` | 签名 `(ChrCam*, float dt@xmm1, ChrIns*, bool)`。执行前还原引擎相机，执行后把眼睛位置写进 ChrCam+0x40 并保持到下一帧，使特效/粒子/声音等所有读相机处都用眼睛位置（`fp_persist=0` 关闭）。**由硬件写断点（`mc_er_camwatch.txt`，会卡死，别常开）在 `0x3B1929 movaps [rdi+0x40]` 抓到；`0x3BC070` 不是它（日志 changed=0），已证伪。** |
 | 受击特效生成（可选） | `0x450120` | `sigs::kHitVfxSpawn` | 放 `mc_er_hitvfx.txt` 才装；血液已用游戏设置关掉，通常不需要 |
 | `ApplyHPChange`（调用，非钩子） | `0x437450` | `sigs::kApplyHpChange` | 回血，**游戏线程** |
 | 射线包装（调用） | `0xC71D70` | `sigs::kRaycastWrapper` | 墙体遮挡，过滤器 `0x5D`，在 `DamageQueue` 里（游戏线程）调用 |
@@ -94,7 +95,7 @@
 
 ### 5.3 `mc_er_steve.txt` 配置键（`key=value`，一行一个）
 
-`occlusion`（1=被场景遮挡）、`depth_const`（**0.00456**，深度×视距常数，实测）、`rel_bias`、`abs_bias`、`debug`/`depthview_gain`/`scene_height`（标定用，保持默认）、`yaw_offset_deg`（**180**，玩家物理四元数朝向与模型相反）、`hide_native`（1=隐藏原模型）、`hide_mask1`（`0x100A1`）、`hide_mask2`（`1`）、`hide_slots`（部件槽位掩码，默认全部）、`sound_volume`（0.8）、`first_person`（1=启动即第一人称）、`eye_height`（1.65）、`kb_force`（击退实验，**无效果，别用**）、`no_player_hit_vfx`（配合 `mc_er_hitvfx.txt`）。
+`occlusion`（1=被场景遮挡）、`depth_const`（**0.00456**，深度×视距常数，实测）、`rel_bias`、`abs_bias`、`debug`/`depthview_gain`/`scene_height`（标定用，保持默认）、`yaw_offset_deg`（**180**，玩家物理四元数朝向与模型相反）、`hide_native`（1=隐藏原模型）、`hide_mask1`（`0x100A1`）、`hide_mask2`（`1`）、`hide_slots`（部件槽位掩码，默认全部）、`sound_volume`（0.8）、`first_person`（1=启动即第一人称）、`eye_height`（1.65）、`fp_persist`（1，持久眼睛相机）、`kb_force`（击退实验，**无效果，别用**）、`no_player_hit_vfx`（配合 `mc_er_hitvfx.txt`）。
 
 ### 5.4 热键（游戏窗口在前台时）
 
@@ -137,6 +138,7 @@
 - `0x140436B18` 的 `call [r10+0x1E8]` 是盾牌判定（那里已经没有 `HitContext`）。真正的格挡参数是 `0x140448910` 的第 5 个参数。
 - 槽位按"像素差"命名（睫毛 13 万像素等不可能）；`CSMenuMan+0x654C` 是 HUD 选项（读出 `0x3D240000`）；`0x140450120` 只为玩家运行（它是为所有命中运行）。
 - `BulletSpawnData` 的 `+0x00/+0x08` 是指针（是 64 位句柄，默认 -1）；方块碰撞 `hknp*` 的"流程"（没有任何 RVA，不可调用）。
+- 相机任务 `0x1403BC070` 是 ChrCam 的写入者（实测 changed=0；真正写入者是 `0x1403B11D0`）。
 - `ELDENRING_VERIFIED_EVIDENCE.md`（引用过它，但不在本仓库）。
 
 ---
