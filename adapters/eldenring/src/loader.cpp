@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "overlay_d3d12.hpp"
 #include "eldenring_damage.hpp"
 #include "eldenring_singletons.hpp"
 #include "eldenring_state.hpp"
@@ -176,6 +177,8 @@ bool GameInForeground() {
 // ---- damage --------------------------------------------------------------------------------------------------
 
 std::atomic<bool> g_damage_enabled{false};
+std::atomic<bool> g_mc_mode{false};
+std::atomic<int> g_selected_slot{0};
 std::atomic<bool> g_require_victim_updating{true};
 DamageQueue g_queue;
 std::optional<HitTemplate> g_template;
@@ -286,13 +289,25 @@ void EnqueueNearestHostile() {
 }
 
 DWORD WINAPI KeyThread(LPVOID) {
-    bool prev = false;
+    bool prev8 = false, prev6 = false;
     for (;;) {
         Sleep(15);
-        const bool down = GameInForeground() && (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
-        if (down && !prev && g_damage_enabled.load()) EnqueueNearestHostile();
-        prev = down;
+        const bool fg = GameInForeground();
+        const bool d8 = fg && (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
+        const bool d6 = fg && (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
+        if (d8 && !prev8 && g_damage_enabled.load()) EnqueueNearestHostile();
+        if (d6 && !prev6) {
+            g_mc_mode.store(!g_mc_mode.load());
+            Log("F6: MC mode %s", g_mc_mode.load() ? "on" : "off");
+        }
+        prev8 = d8;
+        prev6 = d6;
     }
+}
+
+bool EnsureMinHook() {
+    const MH_STATUS st = MH_Initialize();
+    return st == MH_OK || st == MH_ERROR_ALREADY_INITIALIZED;
 }
 
 bool FileExists(const std::string& path) {
@@ -332,7 +347,7 @@ void SetupDamage() {
         Log("damage: ClampHP signature not unique, damage disabled");
         return;
     }
-    if (MH_Initialize() != MH_OK) {
+    if (!EnsureMinHook()) {
         Log("damage: MH_Initialize failed");
         return;
     }
@@ -345,9 +360,53 @@ void SetupDamage() {
     // mc_er_anyvictim.txt: do not wait for the victim to be the entity being updated (lower latency, small race risk).
     g_require_victim_updating.store(!FileExists(g_game_dir + "mc_er_anyvictim.txt"));
     g_damage_enabled.store(true);
-    CreateThread(nullptr, 0, KeyThread, nullptr, 0, nullptr);
     Log("damage: enabled; ClampHP hooked at %p (RVA 0x%llX); press F8 to hit the nearest hostile enemy (require_victim_updating=%d)", reinterpret_cast<void*>(clamp),
         static_cast<unsigned long long>(clamp - g_img.base), g_require_victim_updating.load() ? 1 : 0);
+}
+
+// ---- overlay -------------------------------------------------------------------------------------------------
+
+// Runs on the Present thread. The HUD is hidden whenever the game shows its own full-screen UI.
+bool HudProvider(erov::HudState& out) {
+    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    if (world == 0) return false;
+    uint64_t player = 0;
+    Vitals v;
+    if (!SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) || player == 0 ||
+        !readVitals(g_reader, g_img.base, static_cast<uintptr_t>(player), v)) {
+        return false;
+    }
+    MenuState ms;
+    LoadingState ls;
+    float fade = 0.f;
+    const bool have_state = readMenuState(g_reader, readSingleton(g_reader, g_img.base, g_rva_menu, sigs::kCSMenuMan), ms) &&
+                            readLoadingState(g_reader, readSingleton(g_reader, g_img.base, g_rva_loading, sigs::kCSNowLoadingHelper), ls) &&
+                            readFadeAlpha(g_reader, readSingleton(g_reader, g_img.base, g_rva_fade, sigs::kCSFade), fade);
+    out.mc_mode = g_mc_mode.load();
+    out.hp = v.hp;
+    out.max_hp = v.max_hp;
+    out.selected_slot = g_selected_slot.load();
+    out.show = have_state && !ms.menu_focused && !ms.popup_open && !ls.screen_loading && fade < 0.02f;
+    return true;
+}
+
+void SetupOverlay() {
+    if (!FileExists(g_game_dir + "mc_er_overlay.txt")) {
+        Log("overlay: disabled (no mc_er_overlay.txt)");
+        return;
+    }
+    if (!EnsureMinHook()) {
+        Log("overlay: MH_Initialize failed");
+        return;
+    }
+    erov::Install(&HudProvider, [](const char* fmt, ...) {
+        char msg[512];
+        va_list args;
+        va_start(args, fmt);
+        vsnprintf(msg, sizeof(msg), fmt, args);
+        va_end(args);
+        Log("%s", msg);
+    });
 }
 
 // ---- status loop ---------------------------------------------------------------------------------------------
@@ -455,6 +514,8 @@ DWORD WINAPI LoaderThread(LPVOID) {
     }
 
     SetupDamage();
+    SetupOverlay();
+    CreateThread(nullptr, 0, KeyThread, nullptr, 0, nullptr);
 
     for (;;) {
         Sleep(1000);
