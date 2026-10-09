@@ -6,8 +6,10 @@
 // CSBuddyMan (stored at 0x14050BFE5). +0x20 is the pending-request slot (-1 = none; tested at 0x1404B8952 and reset to -1 at
 // 0x1404B89CF), +0x24 the active one (copied from +0x20 at 0x1404B89CB), +0x3C the tablet id (read at 0x1404BBE29, looked
 // up by 0x140D28630), +0x88 a busy count (spawn is skipped while it is positive, 0x1404B89B5). What each value is while
-// playing was observed live: idle = request -1, active -1, tablet 0, +0x80 = 0, +0x88 = -1; after using an ash active =
-// 232000 (not the 21200000 an external list claimed), tablet = a ten digit map entity id (1042360100), +0x80 = 1.
+// playing was observed live (mc_er.log, 2026-10-09): idle = request -1, active -1, tablet 0, +0x88 = -1. Using an ash writes
+// request=232000 and tablet=1042360100 (a map entity id) in the same instant; the next frame (16 ms) moves request to active
+// and clears request; the tablet goes back to 0 after ~13 s; active is NOT cleared on dismissal. The request is
+// ash_id * 100 + upgrade level (0x1404BBEE2 splits it by 100): 232000 = ash 2320, level 0.
 
 #include "eldenring_live.hpp"
 
@@ -23,7 +25,7 @@ inline constexpr uintptr_t kBuddyManInWorldChrMan = 0x1E538; // A
 inline constexpr uintptr_t kRequestId = 0x20;                // A (int32)
 inline constexpr uintptr_t kActiveId = 0x24;                 // A (int32)
 inline constexpr uintptr_t kTabletId = 0x3C;                 // A (int32)
-inline constexpr uintptr_t kSummonedFlag = 0x80;             // B (int32): observed 0 idle, 1 while a ash is summoned
+inline constexpr uintptr_t kSummonedFlag = 0x80;             // B (int32): 1 once the world is up, 0 when leaving it (NOT 'ash summoned')
 inline constexpr uintptr_t kBusyCount = 0x88;                // A (int32): observed -1 in both states
 inline constexpr size_t kRawBytes = 0x98;                    // dumped on every change, to find the neighbours' meaning
 } // namespace layout
