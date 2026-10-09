@@ -1441,8 +1441,9 @@ float FallSpeed(uintptr_t module) {
     return v;
 }
 std::atomic<float> g_pre_fall_t{0.f}, g_pre_fall_v{0.f}; // the values the game had just before the last reset (what it would have used)
+std::atomic<bool> g_fall_reset{false}; // mc_er_steve.txt: fall_reset=1 writes 0 into the fall module +0x18 and the physics +0x1B8 each frame (experiment, off)
 void ResetFallTimer(uintptr_t chr) {
-    if (!g_fall_protect.load(std::memory_order_relaxed)) return;
+    if (!g_fall_reset.load(std::memory_order_relaxed)) return; // writing into the game's fall state was added on the reverser's word and is off by default
     if (const uintptr_t fall = FallModuleOf(chr)) {
         const float zero = 0.f;
         g_pre_fall_t.store(FallTimer(chr));
@@ -2452,6 +2453,7 @@ void SetupOverlay() {
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "eye_height") g_eye_height.store(value);
                 else if (key == "refocus") g_refocus.store(value != 0.f);
+                else if (key == "fall_reset") g_fall_reset.store(value != 0.f);
                 else if (key == "fall_protect") g_fall_protect.store(value != 0.f);
                 else if (key == "mc_jump") g_mc_jump.store(value != 0.f);
                 else if (key == "mc_jump_key") g_mc_jump_vk.store(static_cast<int>(value));
