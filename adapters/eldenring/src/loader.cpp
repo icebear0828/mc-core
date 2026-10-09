@@ -462,6 +462,7 @@ void LogGroundBytesOnChange() {
 DWORD WINAPI KeyThread(LPVOID) {
     bool prev8 = false, prev6 = false, prev7 = false;
     bool prev_digit[MeleeController::kSlots] = {};
+    bool prev_space = false;
     uint64_t last_ms = GetTickCount64();
     for (;;) {
         Sleep(15);
@@ -492,7 +493,15 @@ DWORD WINAPI KeyThread(LPVOID) {
             }
         }
         if (g_input_enabled.load()) erin::SetSuppressMouseButtons(fg && WantSuppress());
-        if (g_input_enabled.load() && erin::TakeLeftClick() && fg && g_click_attack.load() && WantSuppress()) {
+        const bool space = fg && (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0;
+        if (space && !prev_space && g_mc_mode.load()) Log("key: space down");
+        prev_space = space;
+        const bool click_edge = g_input_enabled.load() && erin::TakeLeftClick();
+        const bool want_suppress = click_edge ? WantSuppress() : false;
+        if (click_edge && !(fg && g_click_attack.load() && want_suppress) && g_mc_mode.load()) {
+            Log("click dropped: fg=%d click_attack=%d suppress=%d", fg ? 1 : 0, g_click_attack.load() ? 1 : 0, want_suppress ? 1 : 0);
+        }
+        if (click_edge && fg && g_click_attack.load() && want_suppress) {
             float charged;
             {
                 std::lock_guard<std::mutex> g(g_melee_mutex);
