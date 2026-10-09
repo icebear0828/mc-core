@@ -132,6 +132,21 @@ TEST(EldenRingSingleton, ResolvesWorldChrManWithTheLongerOffsets) {
     EXPECT_EQ(*rva, global);
 }
 
+TEST(EldenRingSingleton, ScanningOnlyTheCodeSectionStillResolvesGlobalsInOtherSections) {
+    // The code section starts at RVA 0x1000 and is 0x1000 long; the image is 0x5000 and the global lives at 0x4800.
+    std::vector<uint8_t> bytes = {0x48, 0x8B, 0xF8, 0x48, 0x89, 0x3D, 0, 0, 0, 0, 0x48, 0x8B, 0xC6};
+    auto code = imageWith(0x1000, 0x80, bytes);
+    const uint32_t code_rva = 0x1000, image_size = 0x5000, global = 0x4800;
+    putDisp(code, 0x80 + 6, static_cast<int32_t>(global - (code_rva + 0x80 + 3 + 7)));
+    const auto rva = locateGlobalRva(code.data(), code.size(), code_rva, image_size, sigs::kCSFade);
+    ASSERT_TRUE(rva.has_value());
+    EXPECT_EQ(*rva, global);
+    // The same buffer treated as the whole image would reject the target (it is past the buffer).
+    EXPECT_FALSE(locateGlobalRva(code.data(), code.size(), sigs::kCSFade).has_value());
+    // A target beyond SizeOfImage is refused.
+    EXPECT_FALSE(locateGlobalRva(code.data(), code.size(), code_rva, 0x2000, sigs::kCSFade).has_value());
+}
+
 TEST(EldenRingSingleton, NegativeDisplacementWorks) {
     std::vector<uint8_t> bytes = {0x48, 0x8B, 0xF8, 0x48, 0x89, 0x3D, 0, 0, 0, 0, 0x48, 0x8B, 0xC6};
     auto img = imageWith(0x2000, 0x1000, bytes);

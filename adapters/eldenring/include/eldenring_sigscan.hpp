@@ -94,6 +94,10 @@ inline constexpr const char* kCheckTeamHostile =
     "48 83 EC 28 0F B6 01 45 33 C0 48 6B C8 4F 0F B6 02 48 8D 54 24 30 48 03 C8 66 C7 44 24 30 01 00";
 inline constexpr const char* kCheckTeamFriend =
     "48 83 EC 28 0F B6 01 45 33 C0 48 6B C8 4F 0F B6 02 48 8D 54 24 30 48 03 C8 66 C7 44 24 30 00 01";
+// CSChrDataModule::SetMaxHPAndClampHP (0x140438870): a call-free leaf that every character data module runs once per
+// update; on the main thread it runs inside CSChrDataModule::Update. 32 bytes, unique in 2.7.1.0.
+inline constexpr const char* kClampHp =
+    "89 54 24 10 C7 44 24 18 FF FF 07 00 C7 44 24 08 01 00 00 00 83 FA 01 7D 07 48 8D 44 24 08 EB 14";
 inline constexpr const char* kGetEffectiveTeamType = "48 89 5C 24 10 57 48 83 EC 20 0F B6 41 6C 48 8B F9 88 02";
 } // namespace sigs
 

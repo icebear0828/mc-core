@@ -36,19 +36,27 @@ inline constexpr SingletonSig kWorldChrMan = {
     "41 FF 10 4C 8B 03 48 8B D6 48 8B CB 41 FF 50 68 48 89 3D ?? ?? ?? ?? 48 8B 35 ?? ?? ?? ??", 16, 7, 19, ".?AVWorldChrManImp@CS@@"};
 } // namespace sigs
 
-// RVA of the global variable (image mapped at its RVAs), or nullopt unless the signature matches exactly once and
-// the disp32 stays inside the image.
-inline std::optional<uint32_t> locateGlobalRva(const uint8_t* image, size_t size, const SingletonSig& sig) {
+// RVA of the global variable, or nullopt unless the signature matches exactly once and the resolved address stays
+// inside the image. `buffer` holds `size` bytes of the image that start at `buffer_rva` (the whole image: 0;
+// only the code section: its virtual address), `image_size` is SizeOfImage.
+inline std::optional<uint32_t> locateGlobalRva(const uint8_t* buffer, size_t size, uint32_t buffer_rva, uint32_t image_size,
+                                               const SingletonSig& sig) {
     const auto parsed = Signature::parse(sig.pattern);
     if (!parsed) return std::nullopt;
-    const ScanResult r = scanUnique(image, size, *parsed);
+    const ScanResult r = scanUnique(buffer, size, *parsed);
     if (r.status != ScanStatus::Unique) return std::nullopt;
     if (r.offset + sig.disp_offset + sizeof(int32_t) > size) return std::nullopt;
     int32_t disp = 0;
-    std::memcpy(&disp, image + r.offset + sig.disp_offset, sizeof(disp));
-    const int64_t target = static_cast<int64_t>(r.offset) + sig.insn_offset + sig.insn_length + disp;
-    if (target < 0 || target + static_cast<int64_t>(sizeof(uint64_t)) > static_cast<int64_t>(size)) return std::nullopt;
+    std::memcpy(&disp, buffer + r.offset + sig.disp_offset, sizeof(disp));
+    const int64_t target = static_cast<int64_t>(buffer_rva) + static_cast<int64_t>(r.offset) + sig.insn_offset +
+                           sig.insn_length + disp;
+    if (target < 0 || target + static_cast<int64_t>(sizeof(uint64_t)) > static_cast<int64_t>(image_size)) return std::nullopt;
     return static_cast<uint32_t>(target);
+}
+
+// Convenience for a buffer that is the whole image.
+inline std::optional<uint32_t> locateGlobalRva(const uint8_t* image, size_t size, const SingletonSig& sig) {
+    return locateGlobalRva(image, size, 0, static_cast<uint32_t>(size), sig);
 }
 
 // The singleton instance behind the global at `rva`, only when it carries the expected RTTI type. 0 otherwise
