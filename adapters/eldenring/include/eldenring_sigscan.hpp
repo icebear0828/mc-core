@@ -98,6 +98,10 @@ inline constexpr const char* kCheckTeamFriend =
 // update; on the main thread it runs inside CSChrDataModule::Update. 32 bytes, unique in 2.7.1.0.
 inline constexpr const char* kClampHp =
     "89 54 24 10 C7 44 24 18 FF FF 07 00 C7 44 24 08 01 00 00 00 83 FA 01 7D 07 48 8D 44 24 08 EB 14";
+// ProcessDamageContext (0x140448910): (damageModule, attackerChrIns, hitContext*, u32, u8). Prologue up to the stack-cookie
+// load, then `mov r14, r8` (ctx). Both halves are unique in 2.7.1.0 (checked in the exe).
+inline constexpr const char* kProcessDamageContext =
+    "4C 8B DC 55 53 56 57 41 56 41 57 49 8D 6B 88 48 81 EC 48 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 20 4D 89 63 20 4D 8B F0";
 inline constexpr const char* kGetEffectiveTeamType = "48 89 5C 24 10 57 48 83 EC 20 0F B6 41 6C 48 8B F9 88 02";
 } // namespace sigs
 

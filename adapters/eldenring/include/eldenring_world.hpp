@@ -31,7 +31,7 @@ inline constexpr uint32_t kPlayerInsVtableRva = 0x2A7FBB0; // A: humanoid NPCs s
 inline constexpr uintptr_t kPhysicsModuleSlot = 0x0D;     // A
 inline constexpr uint32_t kPhysicsModuleVtableRva = 0x2A3C890; // A
 inline constexpr uintptr_t kPhysicsOrientation = 0x50;   // A: float x,y,z,w, unit length
-inline constexpr uintptr_t kIsFallingInPhysics = 0x1D0;      // B (fromsoftware-rs layout, not yet checked live): bool
+inline constexpr uintptr_t kStandingOnGroundInPhysics = 0x92; // B+ (reverser's table 2026-10-09): 1 on the ground, 0 from takeoff to touchdown. NOT +0x1D0: that is a 1-2 frame takeoff pulse
 inline constexpr uintptr_t kPhysicsPosition = 0x70;       // A: float x,y,z; the only basis for relative positions
 
 // c1000 map anchors (sites of grace and the like). Filter by npc_id, never by "team 0".
@@ -118,11 +118,12 @@ inline bool readPhysicsPosition(const IMemoryReader& reader, uintptr_t image_bas
     return true;
 }
 
-// PhysicsModule+0x1D0 `is_falling`. False when the module cannot be read.
-inline bool readIsFalling(const IMemoryReader& reader, uintptr_t image_base, uintptr_t chr) {
+// True while the character is off the ground (takeoff, mid-air, free fall): PhysicsModule+0x92 is 0. False when the
+// module cannot be read, so an unreadable state never counts as airborne.
+inline bool readAirborne(const IMemoryReader& reader, uintptr_t image_base, uintptr_t chr) {
     const uintptr_t m = readPhysicsModule(reader, image_base, chr);
-    uint8_t v = 0;
-    return m != 0 && reader.read(m + layout::kIsFallingInPhysics, &v, sizeof(v)) && v != 0;
+    uint8_t v = 1;
+    return m != 0 && reader.read(m + layout::kStandingOnGroundInPhysics, &v, sizeof(v)) && v == 0;
 }
 
 // Orientation quaternion (x, y, z, w) at PhysicsModule+0x50 (A: unit length, yaw agrees with BlockPosition.yaw).

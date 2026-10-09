@@ -393,3 +393,30 @@ TEST(EldenRingDamage, RequestsEnqueuedDuringADrainAreNotLost) {
     EXPECT_EQ(q.drain(c).size(), 1u);
     EXPECT_EQ(q.pending(), 1u);
 }
+
+TEST(EldenRingDamage, OverrideFinalDamageOnlyForOurContext) {
+    using namespace eldenring::live;
+    uint8_t ctx[layout::kHitContextSize] = {};
+    const uint64_t player = 0x1111, victim = 0x2222;
+    std::memcpy(ctx + layout::kHitAttacker, &player, 8);
+    std::memcpy(ctx + layout::kHitVictim, &victim, 8);
+    const int32_t engine = 63;
+    std::memcpy(ctx + layout::kHitDamage, &engine, 4);
+
+    int32_t seen = -1;
+    EXPECT_TRUE(overrideFinalDamage(ctx, player, victim, 5, &seen));
+    EXPECT_EQ(seen, 63);
+    int32_t now = 0;
+    std::memcpy(&now, ctx + layout::kHitDamage, 4);
+    EXPECT_EQ(now, 5);
+
+    // another victim (a natural hit the game processes on the same thread): untouched
+    std::memcpy(ctx + layout::kHitDamage, &engine, 4);
+    EXPECT_FALSE(overrideFinalDamage(ctx, player, 0x3333, 5, &seen));
+    EXPECT_FALSE(overrideFinalDamage(ctx, 0x4444, victim, 5, &seen));
+    std::memcpy(&now, ctx + layout::kHitDamage, 4);
+    EXPECT_EQ(now, 63);
+
+    EXPECT_FALSE(overrideFinalDamage(ctx, player, victim, 0, &seen));  // nothing to force
+    EXPECT_FALSE(overrideFinalDamage(nullptr, player, victim, 5, &seen));
+}

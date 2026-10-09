@@ -469,11 +469,16 @@ TEST(EldenRingModel, HideAndRestoreOnlyTouchMaskedBits) {
     EXPECT_EQ(restoreBits(0x000100A0u, 0x000100A1u, 0x1u), 0x000100A1u);
 }
 
-TEST(EldenRingModel, IsFallingReadsPhysicsByte) {
+TEST(EldenRingModel, AirborneIsStandingOnGroundZero) {
     FakeMemory m = makeWorld();
     const uintptr_t phys = kPlayer + 0x3000;
-    EXPECT_FALSE(detail::readIsFalling(m, kBase, kPlayer));
-    m.put<uint8_t>(phys + layout::kIsFallingInPhysics, 1);
-    EXPECT_TRUE(detail::readIsFalling(m, kBase, kPlayer));
-    EXPECT_FALSE(detail::readIsFalling(m, kBase, 0)); // unreadable chr
+    m.put<uint8_t>(phys + layout::kStandingOnGroundInPhysics, 1); // standing / walking / rolling
+    EXPECT_FALSE(detail::readAirborne(m, kBase, kPlayer));
+    m.put<uint8_t>(phys + layout::kStandingOnGroundInPhysics, 0); // takeoff, mid-air, free fall
+    EXPECT_TRUE(detail::readAirborne(m, kBase, kPlayer));
+    // the takeoff pulse alone (+0x1D0) says nothing about standing
+    m.put<uint8_t>(phys + layout::kStandingOnGroundInPhysics, 1);
+    m.put<uint8_t>(phys + 0x1D0, 1);
+    EXPECT_FALSE(detail::readAirborne(m, kBase, kPlayer));
+    EXPECT_FALSE(detail::readAirborne(m, kBase, 0)); // unreadable chr: never airborne
 }

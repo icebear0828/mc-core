@@ -85,6 +85,23 @@ inline HitContext buildHitContext(const HitTemplate& tmpl, uintptr_t attacker_ch
     return c;
 }
 
+// The engine computes the final damage in ctx+0x228 (0x140447810) and then deducts it in ProcessDamageContext
+// (0x140448910, `edx = [ctx+0x228]`, reverser 2026-10-09, instruction bytes checked in the exe). Called from a hook on
+// ProcessDamageContext, this replaces that number for a context that is ours: attacker (ctx+0x1D8) and victim (ctx+0x1E0)
+// must both match. Returns false and touches nothing otherwise; `engine_value` receives what the engine computed.
+inline bool overrideFinalDamage(uint8_t* ctx, uint64_t attacker, uint64_t victim, int32_t forced, int32_t* engine_value) {
+    if (ctx == nullptr || forced <= 0) return false;
+    uint64_t a = 0, v = 0;
+    std::memcpy(&a, ctx + layout::kHitAttacker, sizeof(a));
+    std::memcpy(&v, ctx + layout::kHitVictim, sizeof(v));
+    if (a != attacker || v != victim) return false;
+    int32_t old = 0;
+    std::memcpy(&old, ctx + layout::kHitDamage, sizeof(old));
+    if (engine_value != nullptr) *engine_value = old;
+    std::memcpy(ctx + layout::kHitDamage, &forced, sizeof(forced));
+    return true;
+}
+
 enum class DamageOutcome {
     Applied,
     Deferred,        // victim is not the entity being updated right now; stays queued

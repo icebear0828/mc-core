@@ -274,6 +274,28 @@ int32_t HpOf(uintptr_t chr) {
     return readVitals(g_reader, g_img.base, chr, v) ? v.hp : -1;
 }
 
+// Final-damage override. Armed by DrainOnce around our own vfunc[7] call on the game thread, so a natural hit that the
+// game processes elsewhere (or even on this thread outside that call) is never touched.
+struct ForcedDamage {
+    bool armed{false};
+    uint64_t attacker{0};
+    uint64_t victim{0};
+    int32_t value{0};
+    bool applied{false};
+    int32_t engine_value{0};
+};
+thread_local ForcedDamage t_forced;
+using ProcessDamageFn = uint64_t (*)(void* module, void* attacker, uint8_t* ctx, uint32_t a4, uint8_t a5);
+ProcessDamageFn g_pdc_orig = nullptr;
+std::atomic<bool> g_pdc_hooked{false};
+
+uint64_t ProcessDamageDetour(void* module, void* attacker, uint8_t* ctx, uint32_t a4, uint8_t a5) {
+    if (t_forced.armed && !t_forced.applied) {
+        t_forced.applied = overrideFinalDamage(ctx, t_forced.attacker, t_forced.victim, t_forced.value, &t_forced.engine_value);
+    }
+    return g_pdc_orig(module, attacker, ctx, a4, a5);
+}
+
 void DrainOnce(uintptr_t updating_data_module) {
     DrainContext c;
     c.reader = &g_reader;
@@ -289,8 +311,23 @@ void DrainOnce(uintptr_t updating_data_module) {
         uint64_t owner = 0;
         SafeCopy(dmg + layout::kOwnerInDataModule, &owner, sizeof(owner));
         const int32_t before = HpOf(static_cast<uintptr_t>(owner));
+        int32_t wanted = 0;
+        std::memcpy(&wanted, static_cast<uint8_t*>(ctx) + layout::kHitDamage, sizeof(wanted));
+        if (g_pdc_hooked.load()) {
+            t_forced = ForcedDamage{};
+            t_forced.armed = true;
+            t_forced.attacker = attacker;
+            t_forced.victim = owner;
+            t_forced.value = wanted;
+        }
         const bool ok = CallVfunc7(dmg, attacker, ctx);
+        const ForcedDamage forced = t_forced;
+        t_forced = ForcedDamage{};
         const int32_t after = HpOf(static_cast<uintptr_t>(owner));
+        if (g_pdc_hooked.load()) {
+            Log("DAMAGE: wanted=%d engine=%d override=%s hp delta=%d", wanted, forced.engine_value, forced.applied ? "applied" : "NOT applied",
+                before - after);
+        }
         uint32_t computed = 0;
         std::memcpy(&computed, static_cast<uint8_t*>(ctx) + layout::kHitDamage, sizeof(computed));
         if (!ok) {
@@ -379,7 +416,7 @@ void ClickAttack(float charged) {
         return;
     }
     const EnemyInfo& e = list[static_cast<size_t>(idx)];
-    const bool falling = detail::readIsFalling(g_reader, g_img.base, static_cast<uintptr_t>(player));
+    const bool falling = detail::readAirborne(g_reader, g_img.base, static_cast<uintptr_t>(player));
     mc::ItemId held;
     mc::HitIntent intent;
     {
@@ -520,6 +557,18 @@ void SetupDamage() {
         MH_EnableHook(reinterpret_cast<void*>(clamp)) != MH_OK) {
         Log("damage: hooking ClampHP at %p failed", reinterpret_cast<void*>(clamp));
         return;
+    }
+    uintptr_t pdc = 0;
+    if (!LocateByPrefix(g_img, sigs::kProcessDamageContext, pdc)) {
+        Log("damage: ProcessDamageContext signature not unique, final damage stays engine-computed");
+    } else if (MH_CreateHook(reinterpret_cast<void*>(pdc), reinterpret_cast<void*>(&ProcessDamageDetour), reinterpret_cast<void**>(&g_pdc_orig)) !=
+                   MH_OK ||
+               MH_EnableHook(reinterpret_cast<void*>(pdc)) != MH_OK) {
+        Log("damage: hooking ProcessDamageContext at %p failed, final damage stays engine-computed", reinterpret_cast<void*>(pdc));
+    } else {
+        g_pdc_hooked.store(true);
+        Log("damage: ProcessDamageContext hooked at %p (RVA 0x%llX): final damage is replaced for our own hits", reinterpret_cast<void*>(pdc),
+            static_cast<unsigned long long>(pdc - g_img.base));
     }
     // mc_er_anyvictim.txt: do not wait for the victim to be the entity being updated (lower latency, small race risk).
     g_require_victim_updating.store(!FileExists(g_game_dir + "mc_er_anyvictim.txt"));
