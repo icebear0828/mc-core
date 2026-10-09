@@ -703,6 +703,16 @@ void SnapshotNativeParts() {
     }
 }
 
+// Back to hiding every part slot: a probe left on a single slot would otherwise keep the rest of the model visible.
+void ResetSlotProbe(int& cursor) {
+    if (cursor < 0 && g_slot_probe.load() < 0 && g_hide_slots.load() == 0xFFFFFFFFu) return;
+    cursor = -1;
+    g_hide_slots.store(0xFFFFFFFFu);
+    g_slot_probe.store(-1);
+    g_slots_changed.store(true);
+    Log("slots: probe reset, hiding ALL part slots");
+}
+
 // F9: hide one part slot at a time (to find out which body part a slot is), then all of them again.
 void CycleHiddenSlot(int& cursor) {
     const uintptr_t w = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
@@ -792,6 +802,7 @@ DWORD WINAPI KeyThread(LPVOID) {
         if (d6 && !prev6) {
             g_mc_mode.store(!g_mc_mode.load());
             Log("F6: MC mode %s", g_mc_mode.load() ? "on" : "off");
+            ResetSlotProbe(slot_cursor);
         }
         const bool d9 = fg && (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
         if (d9 && !prev9 && g_hide_native.load()) CycleHiddenSlot(slot_cursor);
@@ -803,6 +814,7 @@ DWORD WINAPI KeyThread(LPVOID) {
         if (d10 && !prev10) {
             g_first_person.store(!g_first_person.load());
             Log("F10: first person experiment %s", g_first_person.load() ? "on" : "off");
+            ResetSlotProbe(slot_cursor);
         }
         prev10 = d10;
         const bool d7 = fg && (GetAsyncKeyState(VK_F7) & 0x8000) != 0;
