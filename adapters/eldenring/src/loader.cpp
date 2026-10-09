@@ -217,8 +217,14 @@ std::atomic<bool> g_input_enabled{false};
 std::atomic<bool> g_click_attack{false};
 std::atomic<bool> g_steve_enabled{false};
 std::atomic<bool> g_hide_native{false};
-std::unordered_map<uintptr_t, uint32_t> g_hidden_flags; // flag word addresses we cleared -> their original value
+struct HiddenWord {
+    uint32_t original;
+    uint32_t mask;
+};
+std::unordered_map<uintptr_t, HiddenWord> g_hidden_flags; // flag word addresses we cleared -> original value and the bits we cleared
+std::atomic<bool> g_slots_changed{false};
 std::atomic<uint32_t> g_hide_mask1{0x100A1}; // bits cleared in disp_flags1 (+0x20): visible + shadow (verified live, not bisected)
+std::atomic<uint32_t> g_hide_slots{0xFFFFFFFFu}; // bit n = part slot n of the native model (mc_er_steve.txt: hide_slots)
 std::atomic<uint32_t> g_hide_mask2{1};         // bits cleared in disp_flags2 (+0x24)
 float g_steve_yaw_offset = 3.14159265f; // the orientation quaternion at PhysicsModule+0x50 faces opposite to the model forward (user verified live, 180 deg)
 std::atomic<bool> g_require_victim_updating{true};
@@ -476,10 +482,36 @@ void LogGroundBytesOnChange() {
     Log("ground: 92=%u 93=%u 1D0=%u 1D1=%u", b[0], b[1], b[2], b[3]);
 }
 
+// F9: hide one part slot at a time (to find out which body part a slot is), then all of them again.
+void CycleHiddenSlot(int& cursor) {
+    const uintptr_t w = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    uint64_t p = 0;
+    if (w == 0 || !SafeCopy(w + layout::kPlayerInsInWorldChrMan, &p, sizeof(p)) || p == 0) return;
+    int next = cursor;
+    for (int tries = 0; tries <= static_cast<int>(layout::kAsmPartSlots); ++tries) {
+        next = next + 1;
+        if (next >= static_cast<int>(layout::kAsmPartSlots)) {
+            next = -1;
+            break;
+        }
+        if (!collectDispFlagAddresses(g_reader, g_img.base, static_cast<uintptr_t>(p), 1u << next).empty()) break;
+    }
+    cursor = next;
+    g_hide_slots.store(next < 0 ? 0xFFFFFFFFu : (1u << next));
+    g_slots_changed.store(true);
+    if (next < 0) {
+        Log("slots: hiding ALL part slots");
+    } else {
+        Log("slots: hiding ONLY part slot %d (mask 0x%X)", next, 1u << next);
+    }
+}
+
 DWORD WINAPI KeyThread(LPVOID) {
     bool prev8 = false, prev6 = false, prev7 = false;
     bool prev_digit[MeleeController::kSlots] = {};
     bool prev_space = false;
+    bool prev9 = false;
+    int slot_cursor = -1; // -1 = all slots, 0..26 = only that part slot
     uint64_t last_ms = GetTickCount64();
     for (;;) {
         Sleep(15);
@@ -536,6 +568,9 @@ DWORD WINAPI KeyThread(LPVOID) {
             g_mc_mode.store(!g_mc_mode.load());
             Log("F6: MC mode %s", g_mc_mode.load() ? "on" : "off");
         }
+        const bool d9 = fg && (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+        if (d9 && !prev9 && g_hide_native.load()) CycleHiddenSlot(slot_cursor);
+        prev9 = d9;
         const bool d7 = fg && (GetAsyncKeyState(VK_F7) & 0x8000) != 0;
         if (d7 && !prev7) erov::CycleDepthCandidate();
         prev7 = d7;
@@ -628,9 +663,22 @@ void SetupDamage() {
 // Clears (hide) or restores (show) the "drawn" bit of every part of the player's native model. Called every frame from
 // the Present thread while the feature is on; the part list is re-read each time, so parts the game replaced are
 // never written through a stale address.
+// Puts back every bit we cleared, wherever it was (not only in the slots selected right now).
+void RestoreNativeModel() {
+    for (const auto& [a, w] : g_hidden_flags) {
+        uint32_t flags = 0;
+        if (SafeCopy(a, &flags, sizeof(flags))) SafeWrite32(a, restoreBits(flags, w.original, w.mask));
+    }
+    g_hidden_flags.clear();
+}
+
 void UpdateNativeModel(uintptr_t player, bool hide) {
-    if (!hide && g_hidden_flags.empty()) return;
-    const std::vector<uintptr_t> addrs = collectDispFlagAddresses(g_reader, g_img.base, player);
+    if (g_slots_changed.exchange(false)) RestoreNativeModel(); // another slot set was chosen: show the old one again
+    if (!hide) {
+        RestoreNativeModel();
+        return;
+    }
+    const std::vector<uintptr_t> addrs = collectDispFlagAddresses(g_reader, g_img.base, player, g_hide_slots.load());
     const uint32_t masks[2] = {g_hide_mask1.load(), g_hide_mask2.load()};
     for (uintptr_t base : addrs) {
         for (unsigned w = 0; w < 2; ++w) {
@@ -638,18 +686,12 @@ void UpdateNativeModel(uintptr_t player, bool hide) {
             if (masks[w] == 0) continue;
             uint32_t flags = 0;
             if (!SafeCopy(a, &flags, sizeof(flags))) continue;
-            if (hide) {
-                if ((flags & masks[w]) != 0) {
-                    g_hidden_flags.emplace(a, flags);
-                    SafeWrite32(a, hideBits(flags, masks[w]));
-                }
-            } else {
-                const auto it = g_hidden_flags.find(a);
-                if (it != g_hidden_flags.end()) SafeWrite32(a, restoreBits(flags, it->second, masks[w]));
+            if ((flags & masks[w]) != 0) {
+                g_hidden_flags.emplace(a, HiddenWord{flags, masks[w]});
+                SafeWrite32(a, hideBits(flags, masks[w]));
             }
         }
     }
-    if (!hide) g_hidden_flags.clear();
 }
 
 bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
@@ -735,13 +777,15 @@ void SetupOverlay() {
                 else if (key == "scene_height") cfg.scene_height = value;
                 else if (key == "yaw_offset_deg") g_steve_yaw_offset = value * 3.14159265f / 180.f;
                 else if (key == "hide_native") g_hide_native.store(value != 0.f);
+                else if (key == "hide_slots") g_hide_slots.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));
                 else if (key == "hide_mask1") g_hide_mask1.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));
                 else if (key == "hide_mask2") g_hide_mask2.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));
             }
         }
         erov::SetSteveConfig(cfg);
         g_steve_enabled.store(true);
-        Log("steve: hide_native=%d mask1=0x%X mask2=0x%X", g_hide_native.load() ? 1 : 0, g_hide_mask1.load(), g_hide_mask2.load());
+        Log("steve: hide_native=%d mask1=0x%X mask2=0x%X slots=0x%X", g_hide_native.load() ? 1 : 0, g_hide_mask1.load(), g_hide_mask2.load(),
+        g_hide_slots.load());
         Log("steve: enabled (occlusion=%d depth_const=%.4f rel_bias=%.3f abs_bias=%.3f scene_height=%.0f yaw_offset=%.1f deg)",
             cfg.occlusion ? 1 : 0, cfg.depth_const, cfg.rel_bias, cfg.abs_bias, cfg.scene_height, g_steve_yaw_offset * 180.f / 3.14159265f);
     }

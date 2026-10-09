@@ -448,6 +448,32 @@ TEST(EldenRingModel, CollectsTheDispFlagAddressesOfEveryAttachedPart) {
     EXPECT_EQ(addrs[1], disp_b + layout::kDispFlags1);
 }
 
+TEST(EldenRingModel, SlotMaskSelectsWhichPartsAreCollected) {
+    FakeMemory m = makeWorld();
+    const uintptr_t model = 0x7ff500700000ull, part_a = 0x7ff500710000ull, part_b = 0x7ff500720000ull;
+    const uintptr_t disp_a = 0x7ff500730000ull, disp_b = 0x7ff500740000ull;
+    m.region(model - 8, 0x400);
+    m.region(kBase + layout::kAsmModelVtableRva, 8);
+    for (uintptr_t r : {part_a, part_b, disp_a, disp_b}) m.region(r, 0x100);
+    m.put<uint64_t>(model, kBase + layout::kAsmModelVtableRva);
+    m.put<uint64_t>(kPlayer + layout::kAsmModelInPlayerIns, model);
+    m.put<uint64_t>(model + layout::kAsmPartPointers + 2 * 8, part_a);
+    m.put<uint64_t>(model + layout::kAsmPartPointers + 9 * 8, part_b);
+    m.put<uint64_t>(part_a + layout::kPartDispEntity, disp_a);
+    m.put<uint64_t>(part_b + layout::kPartDispEntity, disp_b);
+    m.put<uint32_t>(disp_a + layout::kDispFlags1, 0x000100A1);
+    m.put<uint32_t>(disp_b + layout::kDispFlags1, 0x000100A1);
+    const auto only2 = collectDispFlagAddresses(m, kBase, kPlayer, 1u << 2);
+    ASSERT_EQ(only2.size(), 1u);
+    EXPECT_EQ(only2[0], disp_a + layout::kDispFlags1);
+    const auto only9 = collectDispFlagAddresses(m, kBase, kPlayer, 1u << 9);
+    ASSERT_EQ(only9.size(), 1u);
+    EXPECT_EQ(only9[0], disp_b + layout::kDispFlags1);
+    EXPECT_TRUE(collectDispFlagAddresses(m, kBase, kPlayer, 0).empty());
+    EXPECT_TRUE(collectDispFlagAddresses(m, kBase, kPlayer, 1u << 3).empty()); // an empty slot stays empty
+    EXPECT_EQ(collectDispFlagAddresses(m, kBase, kPlayer).size(), 2u);         // default: every part
+}
+
 TEST(EldenRingModel, RefusesAnObjectOfAnotherClassAndSkipsEmptySlots) {
     FakeMemory m = makeWorld();
     const uintptr_t model = 0x7ff500700000ull;

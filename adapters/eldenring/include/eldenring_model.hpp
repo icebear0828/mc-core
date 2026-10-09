@@ -30,13 +30,16 @@ inline uint32_t restoreBits(uint32_t flags, uint32_t original, uint32_t mask) { 
 
 // Addresses of the disp_flags1 words of every part currently attached to the player. Empty when the model object is
 // missing or not a CSChrAsmModelIns.
-inline std::vector<uintptr_t> collectDispFlagAddresses(const IMemoryReader& reader, uintptr_t image_base, uintptr_t player_chr) {
+// `slot_mask` bit n selects part slot n (default: all of them).
+inline std::vector<uintptr_t> collectDispFlagAddresses(const IMemoryReader& reader, uintptr_t image_base, uintptr_t player_chr,
+                                                       uint32_t slot_mask = 0xFFFFFFFFu) {
     std::vector<uintptr_t> out;
     uint64_t model = 0;
     if (player_chr == 0 || !reader.read(player_chr + layout::kAsmModelInPlayerIns, &model, sizeof(model)) || model == 0) return out;
     const auto m = static_cast<uintptr_t>(model);
     if (!objectIsClass(reader, image_base, m, layout::kAsmModelVtableRva, layout::kAsmModelRtti)) return out;
     for (unsigned i = 0; i < layout::kAsmPartSlots; ++i) {
+        if ((slot_mask & (1u << i)) == 0) continue;
         uint64_t part = 0, disp = 0;
         uint32_t flags = 0;
         if (!reader.read(m + layout::kAsmPartPointers + i * sizeof(uint64_t), &part, sizeof(part)) || part == 0) continue;
