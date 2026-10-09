@@ -395,3 +395,54 @@ TEST(EldenRingCamera, CameraPositionIsAccountedFor) {
     EXPECT_NEAR(s->x, 960.f, 1e-3);
     EXPECT_NEAR(s->y, 540.f, 1e-3);
 }
+
+// ---- crosshair picking -----------------------------------------------------------------------------------
+
+#include "eldenring_pick.hpp"
+
+namespace {
+EnemyInfo enemyAt(float x, float y, float z, bool hostile = true) {
+    EnemyInfo e;
+    e.rel_x = x;
+    e.rel_y = y;
+    e.rel_z = z;
+    e.hostile = hostile;
+    e.hp = 100;
+    e.max_hp = 100;
+    return e;
+}
+} // namespace
+
+TEST(EldenRingPick, PicksTheEnemyTheCrosshairPassesThrough) {
+    // Camera 3 m behind and 1.5 m above the player, looking along +Z.
+    const float cam[3] = {0.f, 1.5f, -3.f}, dir[3] = {0.f, 0.f, 1.f};
+    const std::vector<EnemyInfo> list = {enemyAt(0.f, 0.f, 2.f), enemyAt(3.f, 0.f, 2.f)};
+    EXPECT_EQ(pickTarget(cam, dir, list), 0);
+}
+
+TEST(EldenRingPick, NothingUnderTheCrosshairMeansNoTarget) {
+    const float cam[3] = {0.f, 1.5f, -3.f}, dir[3] = {0.f, 0.f, 1.f};
+    const std::vector<EnemyInfo> list = {enemyAt(2.5f, 0.f, 2.f)};
+    EXPECT_EQ(pickTarget(cam, dir, list), -1);
+}
+
+TEST(EldenRingPick, SkipsNeutralOutOfReachAndBehindTheCamera) {
+    const float cam[3] = {0.f, 1.5f, -3.f}, dir[3] = {0.f, 0.f, 1.f};
+    EXPECT_EQ(pickTarget(cam, dir, {enemyAt(0.f, 0.f, 2.f, false)}), -1);          // not hostile
+    EXPECT_EQ(pickTarget(cam, dir, {enemyAt(0.f, 0.f, 6.f)}), -1);                 // beyond melee reach
+    const float back[3] = {0.f, 0.f, -1.f};
+    EXPECT_EQ(pickTarget(cam, back, {enemyAt(0.f, 0.f, 2.f)}), -1);               // looking away from it
+}
+
+TEST(EldenRingPick, TakesTheNearestAlongTheRayWhenTwoOverlap) {
+    const float cam[3] = {0.f, 1.5f, -3.f}, dir[3] = {0.f, 0.f, 1.f};
+    const std::vector<EnemyInfo> list = {enemyAt(0.2f, 0.f, 3.f), enemyAt(0.f, 0.f, 1.5f)};
+    EXPECT_EQ(pickTarget(cam, dir, list), 1);
+}
+
+TEST(EldenRingPick, HonoursTheTorsoSphereVertically) {
+    const float cam[3] = {0.f, 1.5f, -3.f}, dir[3] = {0.f, 0.f, 1.f};
+    PickParams p;
+    EXPECT_EQ(pickTarget(cam, dir, {enemyAt(0.f, 0.f, 2.f)}, p), 0);               // ray 0.5 m above the torso centre
+    EXPECT_EQ(pickTarget(cam, dir, {enemyAt(0.f, -2.f, 2.f)}, p), -1);             // enemy far below the ray
+}

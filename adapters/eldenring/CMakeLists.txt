@@ -51,14 +51,14 @@ if(WIN32)
         target_compile_options(imgui_dx12 PRIVATE /W3 /WX-)
     endif()
 
-    add_library(eldenring_adapter SHARED src/loader.cpp src/overlay_d3d12.cpp eldenring_dinput8.def)
+    add_library(eldenring_adapter SHARED src/loader.cpp src/overlay_d3d12.cpp src/input_hook.cpp eldenring_dinput8.def)
     set_target_properties(eldenring_adapter PROPERTIES
         OUTPUT_NAME dinput8
         RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/eldenring"
         RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/eldenring"
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON)
-    target_link_libraries(eldenring_adapter PRIVATE eldenring_live minhook imgui_dx12 psapi d3d12 dxgi)
+    target_link_libraries(eldenring_adapter PRIVATE eldenring_live minhook imgui_dx12 psapi d3d12 dxgi dxguid)
     if(MSVC)
         target_compile_options(eldenring_adapter PRIVATE /W4 /WX /permissive- /utf-8)
     endif()

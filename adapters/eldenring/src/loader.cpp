@@ -24,8 +24,11 @@
 #include <string>
 #include <vector>
 
+#include "input_hook.hpp"
 #include "overlay_d3d12.hpp"
+#include "eldenring_camera.hpp"
 #include "eldenring_damage.hpp"
+#include "eldenring_pick.hpp"
 #include "eldenring_singletons.hpp"
 #include "eldenring_state.hpp"
 #include "eldenring_world.hpp"
@@ -51,6 +54,22 @@ void Log(const char* fmt, ...) {
     if (!g_log) return;
     fprintf(g_log, "[%8.3f] %s\n", static_cast<double>(GetTickCount64() - g_start_ms) / 1000.0, msg);
     fflush(g_log);
+}
+
+void InitLogOnce() {
+    static std::mutex m;
+    static bool done = false;
+    std::lock_guard<std::mutex> g(m);
+    if (done) return;
+    done = true;
+    char exe[MAX_PATH] = {};
+    GetModuleFileNameA(nullptr, exe, MAX_PATH);
+    g_game_dir = exe;
+    g_game_dir.resize(g_game_dir.find_last_of("\\/") + 1);
+    g_start_ms = GetTickCount64();
+    // _fsopen with _SH_DENYNO: other processes (the probes, `type`) can read the log while the game runs.
+    g_log = _fsopen((g_game_dir + "mc_er.log").c_str(), "a", _SH_DENYNO);
+    Log("==== eldenring adapter loaded (pid %lu, exe %s) ====", GetCurrentProcessId(), exe);
 }
 
 // ---- guarded memory access -----------------------------------------------------------------------------------
@@ -178,6 +197,8 @@ bool GameInForeground() {
 
 std::atomic<bool> g_damage_enabled{false};
 std::atomic<bool> g_mc_mode{false};
+std::atomic<bool> g_input_enabled{false};
+std::atomic<bool> g_click_attack{false};
 std::atomic<int> g_selected_slot{0};
 std::atomic<bool> g_require_victim_updating{true};
 DamageQueue g_queue;
@@ -288,11 +309,49 @@ void EnqueueNearestHostile() {
         static_cast<unsigned>(best->team), best->hp, best_d, ok ? "ok" : "queue full");
 }
 
+// MC left click: the hostile enemy under the crosshair, in melee reach.
+void ClickAttack() {
+    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    if (world == 0) return;
+    CameraPose cam;
+    uint64_t player = 0;
+    float feet[3];
+    if (!readCamera(g_reader, g_img.base, world, cam) || !SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) ||
+        player == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(player), feet)) {
+        Log("click: no camera or player");
+        return;
+    }
+    std::vector<EnemyInfo> list;
+    if (!enumerateEnemies(g_reader, g_img.base, list, 2000)) return;
+    const float cam_rel[3] = {cam.position[0] - feet[0], cam.position[1] - feet[1], cam.position[2] - feet[2]};
+    const int idx = pickTarget(cam_rel, cam.forward, list);
+    if (idx < 0) return;
+    const EnemyInfo& e = list[static_cast<size_t>(idx)];
+    const bool ok = g_queue.enqueue(e.chr, 50, NowTick());
+    Log("click: queued 50 on chr=%p npc=%d hp=%d (%s)", reinterpret_cast<void*>(e.chr), e.npc_id, e.hp, ok ? "ok" : "queue full");
+}
+
+// Should the native character ignore the mouse buttons right now? Only while the MC HUD is on and the game shows no UI.
+bool WantSuppress() {
+    if (!g_mc_mode.load()) return false;
+    MenuState ms;
+    LoadingState ls;
+    if (!readMenuState(g_reader, readSingleton(g_reader, g_img.base, g_rva_menu, sigs::kCSMenuMan), ms) ||
+        !readLoadingState(g_reader, readSingleton(g_reader, g_img.base, g_rva_loading, sigs::kCSNowLoadingHelper), ls)) {
+        return false;
+    }
+    return !ms.menu_focused && !ms.popup_open && !ls.screen_loading;
+}
+
 DWORD WINAPI KeyThread(LPVOID) {
-    bool prev8 = false, prev6 = false;
+    bool prev8 = false, prev6 = false, prevl = false;
     for (;;) {
         Sleep(15);
         const bool fg = GameInForeground();
+        if (g_input_enabled.load()) erin::SetSuppressMouseButtons(fg && WantSuppress());
+        const bool left = fg && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+        if (left && !prevl && g_click_attack.load() && g_damage_enabled.load() && WantSuppress()) ClickAttack();
+        prevl = left;
         const bool d8 = fg && (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
         const bool d6 = fg && (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
         if (d8 && !prev8 && g_damage_enabled.load()) EnqueueNearestHostile();
@@ -306,8 +365,15 @@ DWORD WINAPI KeyThread(LPVOID) {
 }
 
 bool EnsureMinHook() {
-    const MH_STATUS st = MH_Initialize();
-    return st == MH_OK || st == MH_ERROR_ALREADY_INITIALIZED;
+    static std::mutex m;
+    static bool done = false, ok = false;
+    std::lock_guard<std::mutex> g(m);
+    if (!done) {
+        const MH_STATUS st = MH_Initialize();
+        ok = st == MH_OK || st == MH_ERROR_ALREADY_INITIALIZED;
+        done = true;
+    }
+    return ok;
 }
 
 bool FileExists(const std::string& path) {
@@ -409,6 +475,16 @@ void SetupOverlay() {
     });
 }
 
+void SetupInput() {
+    if (!FileExists(g_game_dir + "mc_er_input.txt")) {
+        Log("input: disabled (no mc_er_input.txt)");
+        return;
+    }
+    g_input_enabled.store(true);
+    g_click_attack.store(true);
+    Log("input: mouse buttons are cleared at the DirectInput layer while MC mode is on and no game UI is open; left click attacks");
+}
+
 // ---- status loop ---------------------------------------------------------------------------------------------
 
 void LogStatus() {
@@ -450,19 +526,17 @@ void LogStatus() {
         n += snprintf(line + n, sizeof(line) - static_cast<size_t>(n), " enemies=%zu hostile=%d nearest=%.1f", list.size(), hostile,
                       hostile > 0 ? nearest : -1.f);
     }
+    if (g_input_enabled.load()) {
+        const erin::Counters c = erin::TakeCounters();
+        n += snprintf(line + n, sizeof(line) - static_cast<size_t>(n), " input[mouse state=%u data=%u kbd state=%u data=%u other=%u cleared=%u]",
+                      c.mouse_state, c.mouse_data, c.keyboard_state, c.keyboard_data, c.other, c.mouse_buttons_cleared);
+    }
     (void)n;
     Log("%s", line);
 }
 
 DWORD WINAPI LoaderThread(LPVOID) {
-    char exe[MAX_PATH] = {};
-    GetModuleFileNameA(nullptr, exe, MAX_PATH);
-    g_game_dir = exe;
-    g_game_dir.resize(g_game_dir.find_last_of("\\/") + 1);
-    g_start_ms = GetTickCount64();
-    // _fsopen with _SH_DENYNO: other processes (the probes, `type`) can read the log while the game runs.
-    g_log = _fsopen((g_game_dir + "mc_er.log").c_str(), "a", _SH_DENYNO);
-    Log("==== eldenring adapter loaded (pid %lu, exe %s) ====", GetCurrentProcessId(), exe);
+    InitLogOnce();
 
     // Environment self-check: never touch a game that runs EasyAntiCheat.
     std::vector<std::string> names;
@@ -515,6 +589,7 @@ DWORD WINAPI LoaderThread(LPVOID) {
 
     SetupDamage();
     SetupOverlay();
+    SetupInput();
     CreateThread(nullptr, 0, KeyThread, nullptr, 0, nullptr);
 
     for (;;) {
@@ -532,6 +607,7 @@ DWORD WINAPI LoaderThread(LPVOID) {
 
 using DirectInput8Create_t = HRESULT(WINAPI*)(HINSTANCE, DWORD, REFIID, LPVOID*, LPUNKNOWN);
 DirectInput8Create_t g_system_create = nullptr;
+std::atomic<bool> g_wants_input_hooks{false};
 
 } // namespace
 
@@ -546,7 +622,25 @@ extern "C" HRESULT WINAPI DirectInput8Create(HINSTANCE hinst, DWORD version, REF
         }
     }
     if (g_system_create == nullptr) return E_FAIL;
-    return g_system_create(hinst, version, riid, out, outer);
+    static std::once_flag decided;
+    std::call_once(decided, [] {
+        InitLogOnce();
+        const DWORD a = GetFileAttributesA((g_game_dir + "mc_er_input.txt").c_str());
+        if (a != INVALID_FILE_ATTRIBUTES && EnsureMinHook()) {
+            erin::SetLog([](const char* fmt, ...) {
+                char msg[512];
+                va_list args;
+                va_start(args, fmt);
+                vsnprintf(msg, sizeof(msg), fmt, args);
+                va_end(args);
+                Log("%s", msg);
+            });
+            g_wants_input_hooks.store(true);
+        }
+    });
+    const HRESULT hr = g_system_create(hinst, version, riid, out, outer);
+    if (SUCCEEDED(hr) && out != nullptr && *out != nullptr && g_wants_input_hooks.load()) erin::OnDirectInputCreated(riid, *out);
+    return hr;
 }
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
