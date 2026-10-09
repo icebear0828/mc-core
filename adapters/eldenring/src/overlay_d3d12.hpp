@@ -25,6 +25,7 @@ struct SteveState {
     float fov_y{0.8378f};
     float feet[3]{};
     float yaw{0.f};
+    float swing{0.f}; // arm swing progress 0..1 (0 = idle)
 };
 
 // Tuning read from mc_er_steve.txt (key=value lines).

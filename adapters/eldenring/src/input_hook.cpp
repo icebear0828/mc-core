@@ -7,6 +7,7 @@
 #include <MinHook.h>
 
 #include <atomic>
+#include <cstring>
 #include <mutex>
 #include <set>
 #include <unordered_map>
@@ -21,6 +22,7 @@ enum class Kind { Mouse, Keyboard, Other };
 constexpr UINT kVtblCreateDevice = 3;
 constexpr UINT kVtblGetDeviceState = 9;
 constexpr UINT kVtblGetDeviceData = 10;
+constexpr size_t kMouseWheelOffset = 8;    // lZ: wheel delta since the last poll (WHEEL_DELTA = 120 per notch)
 constexpr size_t kMouseButtonsOffset = 12; // DIMOUSESTATE / DIMOUSESTATE2: lX, lY, lZ, then rgbButtons
 
 LogFn g_log = nullptr;
@@ -30,6 +32,7 @@ std::set<void*> g_hooked_functions;
 std::atomic<bool> g_suppress{false};
 std::atomic<bool> g_left_edge{false};
 std::atomic<bool> g_left_prev{false};
+std::atomic<int> g_wheel{0};
 std::atomic<unsigned> g_mouse_state{0}, g_mouse_data{0}, g_keyboard_state{0}, g_keyboard_data{0}, g_other{0}, g_cleared{0};
 
 using CreateDeviceFn = HRESULT(STDMETHODCALLTYPE*)(void*, REFGUID, void**, LPUNKNOWN);
@@ -64,6 +67,11 @@ HRESULT STDMETHODCALLTYPE GetStateDetour(void* self, DWORD cb, LPVOID data) {
             const bool down = (static_cast<BYTE*>(data)[kMouseButtonsOffset] & 0x80) != 0;
             if (down && !g_left_prev.load()) g_left_edge.store(true);
             g_left_prev.store(down);
+        }
+        if (k == Kind::Mouse && data != nullptr && cb >= kMouseWheelOffset + sizeof(LONG)) {
+            LONG z = 0;
+            memcpy(&z, static_cast<BYTE*>(data) + kMouseWheelOffset, sizeof(z));
+            if (z != 0) g_wheel.fetch_add(static_cast<int>(z));
         }
         if (k == Kind::Mouse && g_suppress.load(std::memory_order_relaxed) && data != nullptr && cb >= kMouseButtonsOffset + 2) {
             auto* buttons = static_cast<BYTE*>(data) + kMouseButtonsOffset;
@@ -166,6 +174,8 @@ void OnDirectInputCreated(REFIID riid, void* iface) {
 }
 
 bool TakeLeftClick() { return g_left_edge.exchange(false); }
+
+int TakeWheelNotches() { return g_wheel.exchange(0) / 120; }
 
 void SetSuppressMouseButtons(bool on) { g_suppress.store(on, std::memory_order_relaxed); }
 

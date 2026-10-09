@@ -468,3 +468,12 @@ TEST(EldenRingModel, HideAndRestoreOnlyTouchMaskedBits) {
     EXPECT_EQ(restoreBits(0x00010080u, 0x000100A1u, 0x10001u), 0x00010081u);
     EXPECT_EQ(restoreBits(0x000100A0u, 0x000100A1u, 0x1u), 0x000100A1u);
 }
+
+TEST(EldenRingModel, IsFallingReadsPhysicsByte) {
+    FakeMemory m = makeWorld();
+    const uintptr_t phys = kPlayer + 0x3000;
+    EXPECT_FALSE(detail::readIsFalling(m, kBase, kPlayer));
+    m.put<uint8_t>(phys + layout::kIsFallingInPhysics, 1);
+    EXPECT_TRUE(detail::readIsFalling(m, kBase, kPlayer));
+    EXPECT_FALSE(detail::readIsFalling(m, kBase, 0)); // unreadable chr
+}

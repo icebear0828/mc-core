@@ -25,10 +25,13 @@
 #include <unordered_map>
 #include <vector>
 
+#include "mc/contracts/combat_adapter.hpp"
+
 #include "input_hook.hpp"
 #include "overlay_d3d12.hpp"
 #include "eldenring_camera.hpp"
 #include "eldenring_damage.hpp"
+#include "eldenring_melee.hpp"
 #include "eldenring_model.hpp"
 #include "eldenring_pick.hpp"
 #include "eldenring_steve.hpp"
@@ -212,7 +215,6 @@ std::atomic<bool> g_damage_enabled{false};
 std::atomic<bool> g_mc_mode{false};
 std::atomic<bool> g_input_enabled{false};
 std::atomic<bool> g_click_attack{false};
-std::atomic<int> g_selected_slot{0};
 std::atomic<bool> g_steve_enabled{false};
 std::atomic<bool> g_hide_native{false};
 std::unordered_map<uintptr_t, uint32_t> g_hidden_flags; // flag word addresses we cleared -> their original value
@@ -221,6 +223,18 @@ std::atomic<uint32_t> g_hide_mask2{1};         // bits cleared in disp_flags2 (+
 float g_steve_yaw_offset = 0.f;
 std::atomic<bool> g_require_victim_updating{true};
 DamageQueue g_queue;
+
+// Attack rules come from mc::CombatEngine; hits are applied through g_queue, so this port only exists to build the engine.
+class NoCombatPort : public mc::ICombatAdapter {
+public:
+    bool processHit(const mc::HitIntent&) override { return false; }
+    float getMaxHealth(mc::EntityId) override { return 0.f; }
+    void triggerStaggerOrRagdoll(mc::EntityId, const mc::Vec3&, float) override {}
+};
+NoCombatPort g_no_combat_port;
+mc::CombatEngine g_combat_engine{g_no_combat_port};
+std::mutex g_melee_mutex; // KeyThread writes, the Present thread reads
+MeleeController g_melee;
 std::optional<HitTemplate> g_template;
 using ClampFn = void*(__fastcall*)(void*, int32_t);
 ClampFn g_clamp_orig = nullptr;
@@ -329,7 +343,7 @@ void EnqueueNearestHostile() {
 }
 
 // MC left click: the hostile enemy under the crosshair, in melee reach.
-void ClickAttack() {
+void ClickAttack(float charged) {
     const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
     if (world == 0) return;
     CameraPose cam;
@@ -365,8 +379,20 @@ void ClickAttack() {
         return;
     }
     const EnemyInfo& e = list[static_cast<size_t>(idx)];
-    const bool ok = g_queue.enqueue(e.chr, 50, NowTick());
-    Log("click: queued 50 on chr=%p npc=%d hp=%d (%s)", reinterpret_cast<void*>(e.chr), e.npc_id, e.hp, ok ? "ok" : "queue full");
+    const bool falling = detail::readIsFalling(g_reader, g_img.base, static_cast<uintptr_t>(player));
+    mc::ItemId held;
+    mc::HitIntent intent;
+    {
+        std::lock_guard<std::mutex> g(g_melee_mutex);
+        held = g_melee.heldItem();
+        intent = g_melee.makeIntent(g_combat_engine, mc::EntityId::LocalPlayer, mc::EntityId::None, charged, falling, !falling,
+                                    {}, {cam.forward[0], cam.forward[1], cam.forward[2]});
+    }
+    const int dmg = erDamage(intent, e.max_hp);
+    const bool ok = dmg > 0 && g_queue.enqueue(e.chr, dmg, NowTick());
+    Log("click: item=%d charged=%.2f falling=%d crit=%d sweep=%d mc_dmg=%.2f -> %d on chr=%p npc=%d hp=%d/%d (%s)", static_cast<int>(held),
+        charged, falling ? 1 : 0, intent.is_critical ? 1 : 0, intent.is_sweeping ? 1 : 0, intent.damage, dmg,
+        reinterpret_cast<void*>(e.chr), e.npc_id, e.hp, e.max_hp, ok ? "ok" : "not queued");
 }
 
 // Should the native character ignore the mouse buttons right now? Only while the MC HUD is on and the game shows no UI.
@@ -383,12 +409,43 @@ bool WantSuppress() {
 
 DWORD WINAPI KeyThread(LPVOID) {
     bool prev8 = false, prev6 = false, prev7 = false;
+    bool prev_digit[MeleeController::kSlots] = {};
+    uint64_t last_ms = GetTickCount64();
     for (;;) {
         Sleep(15);
         const bool fg = GameInForeground();
+        const uint64_t now_ms = GetTickCount64();
+        const float dt = static_cast<float>(now_ms - last_ms) / 1000.f;
+        last_ms = now_ms;
+        {
+            std::lock_guard<std::mutex> g(g_melee_mutex);
+            g_melee.tick(dt);
+        }
+        if (g_input_enabled.load()) {
+            const int notches = erin::TakeWheelNotches();
+            if (notches != 0 && fg && WantSuppress()) {
+                std::lock_guard<std::mutex> g(g_melee_mutex);
+                g_melee.scroll(-notches); // wheel away from the user = previous slot, as in Minecraft
+            }
+        }
+        if (fg && WantSuppress()) {
+            for (int i = 0; i < MeleeController::kSlots; ++i) {
+                const bool d = (GetAsyncKeyState('1' + i) & 0x8000) != 0;
+                if (d && !prev_digit[i]) {
+                    std::lock_guard<std::mutex> g(g_melee_mutex);
+                    g_melee.select(i);
+                }
+                prev_digit[i] = d;
+            }
+        }
         if (g_input_enabled.load()) erin::SetSuppressMouseButtons(fg && WantSuppress());
-        if (g_input_enabled.load() && erin::TakeLeftClick() && fg && g_click_attack.load() && g_damage_enabled.load() && WantSuppress()) {
-            ClickAttack();
+        if (g_input_enabled.load() && erin::TakeLeftClick() && fg && g_click_attack.load() && WantSuppress()) {
+            float charged;
+            {
+                std::lock_guard<std::mutex> g(g_melee_mutex);
+                charged = g_melee.startSwing();
+            }
+            if (g_damage_enabled.load()) ClickAttack(charged);
         }
         const bool d8 = fg && (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
         const bool d6 = fg && (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
@@ -519,7 +576,11 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     out.mc_mode = g_mc_mode.load();
     out.hp = v.hp;
     out.max_hp = v.max_hp;
-    out.selected_slot = g_selected_slot.load();
+    {
+        std::lock_guard<std::mutex> g(g_melee_mutex);
+        out.selected_slot = g_melee.selectedSlot();
+        steve.swing = g_melee.swingProgress();
+    }
     out.show = have_state && !ms.menu_focused && !ms.popup_open && !ls.screen_loading && fade < 0.02f;
 
     if (g_hide_native.load()) UpdateNativeModel(static_cast<uintptr_t>(player), out.show && out.mc_mode);

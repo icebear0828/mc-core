@@ -336,7 +336,9 @@ void RenderFrame(IDXGISwapChain* sc) {
     if (steve.draw && g_steve.ready()) {
         const float scene_h = g_steve_cfg.scene_height > 0.f ? g_steve_cfg.scene_height : static_cast<float>(g_s.height);
         const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
-        g_anim.update(dt, g_motion.update(dt, steve.feet, steve.yaw));
+        mc::SteveAnimInput anim_in = g_motion.update(dt, steve.feet, steve.yaw);
+        anim_in.swing_progress = steve.swing;
+        g_anim.update(dt, anim_in);
         const auto parts = eldenring::render::posedMatrices(g_anim.getTransforms(), {steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw);
         SteveParams sp;
         sp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.debug == 2 ? 3.f : (g_steve_cfg.debug != 0 ? 2.f : (g_steve_cfg.occlusion ? 1.f : 0.f)));
