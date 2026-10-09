@@ -31,6 +31,7 @@
 #include "overlay_d3d12.hpp"
 #include "eldenring_camera.hpp"
 #include "eldenring_damage.hpp"
+#include "eldenring_los.hpp"
 #include "eldenring_melee.hpp"
 #include "eldenring_model.hpp"
 #include "eldenring_pick.hpp"
@@ -263,6 +264,53 @@ bool CallVfunc7(uintptr_t damage_module, uintptr_t attacker, void* ctx) {
     }
 }
 
+// ---- line of sight (the game's static-geometry ray, docs/ELDENRING_REVERSE.md 1.6) -------------------------------------
+struct alignas(16) HkVec4 {
+    float v[4];
+};
+// bool wrapper(physWorld, filter, from*, disp*, outPos*, outNormal*, outFraction*): vectors must be 16-byte aligned
+using RaycastFn = bool(__fastcall*)(void* phys_world, uint32_t filter, const HkVec4* from, const HkVec4* disp, HkVec4* out_pos,
+                                    HkVec4* out_normal, float* out_fraction);
+RaycastFn g_raycast = nullptr;
+std::atomic<bool> g_los_enabled{false};
+std::atomic<unsigned> g_los_blocked{0};
+
+thread_local RayResult t_last_ray;
+
+RayResult CastStaticRay(const float from[3], const float disp[3]) {
+    t_last_ray = RayResult{};
+    RayResult r;
+    uint64_t havok = 0, world = 0;
+    if (!SafeCopy(g_img.base + los::kHavokManGlobalRva, &havok, sizeof(havok)) || havok == 0) return r;
+    uint64_t vt = 0;
+    if (!SafeCopy(static_cast<uintptr_t>(havok), &vt, sizeof(vt)) || vt != g_img.base + los::kHavokManVtableRva) return r;
+    if (!SafeCopy(static_cast<uintptr_t>(havok) + los::kPhysWorldInHavokMan, &world, sizeof(world)) || world == 0) return r;
+    alignas(16) HkVec4 f = {{from[0], from[1], from[2], 0.f}};
+    alignas(16) HkVec4 d = {{disp[0], disp[1], disp[2], 0.f}};
+    alignas(16) HkVec4 pos = {}, normal = {};
+    float fraction = 1.f;
+    __try {
+        r.hit = g_raycast(reinterpret_cast<void*>(world), los::kStaticGeometryFilter, &f, &d, &pos, &normal, &fraction);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_los_enabled.store(false); // never retry a ray that faulted
+        return RayResult{};
+    }
+    r.ok = std::isfinite(fraction);
+    r.fraction = fraction;
+    t_last_ray = r;
+    return r;
+}
+
+bool PlayerCanSee(const float player_feet[3], const float victim_feet[3]) {
+    const float from[3] = {player_feet[0], player_feet[1] + los::kEyeHeight, player_feet[2]};
+    const float to[3] = {victim_feet[0], victim_feet[1] + los::kTargetHeight, victim_feet[2]};
+    const bool visible = hasLineOfSight(CastStaticRay, from, to);
+    const float dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
+    Log("los: dist=%.2f ray ok=%d hit=%d at=%.2f m -> %s", std::sqrt(dx * dx + dy * dy + dz * dz), t_last_ray.ok ? 1 : 0, t_last_ray.hit ? 1 : 0,
+        t_last_ray.fraction * std::sqrt(dx * dx + dy * dy + dz * dz), visible ? "visible" : "BLOCKED");
+    return visible;
+}
+
 const char* OutcomeName(DamageOutcome o) {
     switch (o) {
         case DamageOutcome::Applied: return "Applied";
@@ -275,6 +323,7 @@ const char* OutcomeName(DamageOutcome o) {
         case DamageOutcome::VictimDead: return "VictimDead";
         case DamageOutcome::NotHostile: return "NotHostile";
         case DamageOutcome::BadDamage: return "BadDamage";
+        case DamageOutcome::NoLineOfSight: return "NoLineOfSight";
     }
     return "?";
 }
@@ -315,6 +364,7 @@ void DrainOnce(uintptr_t updating_data_module) {
     c.updating_data_module = updating_data_module;
     c.require_victim_updating = g_require_victim_updating.load();
     c.hit_template = g_template ? &*g_template : nullptr;
+    if (g_los_enabled.load()) c.line_of_sight = PlayerCanSee;
     c.max_per_drain = 1;
     c.expire_after_ticks = 60 * 5;
     c.invoke = [](uintptr_t dmg, uintptr_t attacker, void* ctx) {
@@ -356,6 +406,7 @@ void DrainOnce(uintptr_t updating_data_module) {
             g_feedback.onHit((r.request.tag & 1u) != 0);
             if (t_hp_after == 0) g_feedback.onKill(); // HP is clamped to [0, max]; -1 means unreadable, not a kill
         }
+        if (r.outcome == DamageOutcome::NoLineOfSight) ++g_los_blocked;
         if (r.outcome != DamageOutcome::Applied) {
             Log("DAMAGE: request chr=%p -> %s", reinterpret_cast<void*>(r.request.victim_chr), OutcomeName(r.outcome));
         }
@@ -651,6 +702,19 @@ void SetupDamage() {
         g_pdc_hooked.store(true);
         Log("damage: ProcessDamageContext hooked at %p (RVA 0x%llX): final damage is replaced for our own hits", reinterpret_cast<void*>(pdc),
             static_cast<unsigned long long>(pdc - g_img.base));
+    }
+    if (FileExists(g_game_dir + "mc_er_nolos.txt")) {
+        Log("los: disabled by mc_er_nolos.txt");
+    } else {
+        uintptr_t ray = 0;
+        if (!LocateByPrefix(g_img, sigs::kRaycastWrapper, ray)) {
+            Log("los: raycast wrapper signature not unique, walls do not block hits");
+        } else {
+            g_raycast = reinterpret_cast<RaycastFn>(ray);
+            g_los_enabled.store(true);
+            Log("los: raycast wrapper at %p (RVA 0x%llX), filter 0x%X, walls block hits", reinterpret_cast<void*>(ray),
+                static_cast<unsigned long long>(ray - g_img.base), los::kStaticGeometryFilter);
+        }
     }
     // mc_er_anyvictim.txt: do not wait for the victim to be the entity being updated (lower latency, small race risk).
     g_require_victim_updating.store(!FileExists(g_game_dir + "mc_er_anyvictim.txt"));

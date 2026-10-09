@@ -433,3 +433,37 @@ TEST(EldenRingDamage, RequestTagSurvivesToTheResult) {
     EXPECT_EQ(res[0].request.tag, 1u);
     EXPECT_EQ(res[0].request.base_damage, 16);
 }
+
+TEST(EldenRingDamage, AWallBetweenPlayerAndVictimStopsTheHit) {
+    const Mem m = makeWorld();
+    const HitTemplate t = makeTemplate();
+    std::vector<Call> calls;
+    DamageQueue q;
+    q.enqueue(kEnemy, 11, 10);
+    DrainContext c = baseCtx(m, t, calls);
+    int asked = 0;
+    c.line_of_sight = [&](const float*, const float*) {
+        ++asked;
+        return false;
+    };
+    const auto res = q.drain(c);
+    ASSERT_EQ(res.size(), 1u);
+    EXPECT_EQ(res[0].outcome, DamageOutcome::NoLineOfSight);
+    EXPECT_EQ(asked, 1);
+    EXPECT_TRUE(calls.empty());   // the game was never called
+    EXPECT_EQ(q.pending(), 0u);   // and the request is dropped, not retried
+}
+
+TEST(EldenRingDamage, ClearLineOfSightStillHits) {
+    const Mem m = makeWorld();
+    const HitTemplate t = makeTemplate();
+    std::vector<Call> calls;
+    DamageQueue q;
+    q.enqueue(kEnemy, 11, 10);
+    DrainContext c = baseCtx(m, t, calls);
+    c.line_of_sight = [](const float*, const float*) { return true; };
+    const auto res = q.drain(c);
+    ASSERT_EQ(res.size(), 1u);
+    EXPECT_EQ(res[0].outcome, DamageOutcome::Applied);
+    EXPECT_EQ(calls.size(), 1u);
+}

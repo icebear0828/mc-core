@@ -113,6 +113,7 @@ enum class DamageOutcome {
     VictimDead,   // hp <= 0 (a dead target re-runs the death check)
     NotHostile,
     BadDamage,
+    NoLineOfSight, // a wall (static geometry) lies between the player and the victim
 };
 
 struct DamageRequest {
@@ -143,6 +144,9 @@ struct DrainContext {
     bool require_victim_updating{true};
     const HitTemplate* hit_template{nullptr};
     DamageInvoker invoke;
+    // Optional: false = something static is in the way. Called on the game thread right before the hit, with the player's
+    // and the victim's standing points (game metres).
+    std::function<bool(const float player_feet[3], const float victim_feet[3])> line_of_sight;
     size_t max_per_drain{4};
     uint64_t expire_after_ticks{120};
 };
@@ -267,6 +271,12 @@ private:
             return DamageOutcome::Deferred;
         }
 
+        if (ctx.line_of_sight) {
+            float player_feet[3];
+            if (detail::readPhysicsPosition(rd, base, player_chr, player_feet) && !ctx.line_of_sight(player_feet, pos)) {
+                return DamageOutcome::NoLineOfSight;
+            }
+        }
         HitContext hit = buildHitContext(*ctx.hit_template, player_chr, victim, r.base_damage, pos);
         ctx.invoke(dmg, player_chr, hit.bytes);
         return DamageOutcome::Applied;
