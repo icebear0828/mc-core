@@ -44,6 +44,8 @@ struct SteveConfig {
     float scene_height{0.f}; // 0: use the back buffer height for the projection aspect
 };
 void SetSteveConfig(const SteveConfig& cfg);
+// The Steve skin (RGBA8, 64x64) the loader decoded; call before the overlay is created. Without it the figure is flat grey-brown.
+void SetSteveSkin(const uint8_t* rgba, unsigned width, unsigned height);
 // Debug: bind the next captured 1920x1080 R32G8X24 depth resource (the game creates several).
 void CycleDepthCandidate();
 

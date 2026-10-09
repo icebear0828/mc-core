@@ -1,6 +1,6 @@
 #pragma once
 
-// Draws the 12-part Steve rig into the game's back buffer with D3D12 (milestone 2). Flat shaded for now (no skin).
+// Draws the 12-part Steve rig into the game's back buffer with D3D12 (milestone 2). Textured with the locally extracted Minecraft skin (flat grey-brown when it is missing).
 // The game's depth buffer is read in the pixel shader to hide the figure behind the scene (reverse-Z, same rule as
 // the Sekiro D3D11 renderer: mc::rig::sceneOccludes).
 
@@ -29,6 +29,10 @@ public:
     void release();
     [[nodiscard]] bool ready() const { return pso_ != nullptr; }
 
+    // Creates the skin texture (RGBA8, usually 64x64) and its SRV at `slot`, which must directly follow the depth SRV in the
+    // heap (the two share one descriptor table: t0 depth, t1 skin). The pixels are copied to the GPU by the first draw().
+    bool setSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+
     // (Re)creates the depth SRV at `slot`; a null resource writes a null descriptor (occlusion must then be off).
     void setDepthView(ID3D12Device* device, ID3D12Resource* depth, D3D12_CPU_DESCRIPTOR_HANDLE slot);
 
@@ -51,6 +55,10 @@ private:
     ID3D12Resource* stats_{nullptr};
     ID3D12Resource* stats_init_{nullptr};
     ID3D12Resource* stats_readback_{nullptr};
+    ID3D12Resource* skin_tex_{nullptr};
+    ID3D12Resource* skin_upload_{nullptr};
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT skin_footprint_{};
+    bool skin_pending_{false};
     ID3D12Resource* vertices_{nullptr};
     ID3D12Resource* indices_{nullptr};
     D3D12_VERTEX_BUFFER_VIEW vbv_{};

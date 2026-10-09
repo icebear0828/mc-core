@@ -29,6 +29,7 @@
 
 #include "input_hook.hpp"
 #include "overlay_d3d12.hpp"
+#include "png_wic.hpp"
 #include "eldenring_camera.hpp"
 #include "eldenring_damage.hpp"
 #include "eldenring_los.hpp"
@@ -1112,6 +1113,17 @@ void SetupOverlay() {
             }
         }
         erov::SetSteveConfig(cfg);
+        {
+            std::vector<uint8_t> skin;
+            unsigned sw = 0, sh = 0;
+            const std::string skin_path = g_game_dir + "mods\\mc_adapter\\steve.png";
+            if (erov::DecodePngFile(skin_path, skin, sw, sh) && sw == 64 && sh == 64) {
+                erov::SetSteveSkin(skin.data(), sw, sh);
+                Log("skin: external file %s (%ux%u)", skin_path.c_str(), sw, sh);
+            } else {
+                Log("skin: %s missing or not 64x64, the figure stays flat grey-brown (extract it with tools/extract_mc_assets.py --export-steve-skin)", skin_path.c_str());
+            }
+        }
         g_steve_enabled.store(true);
         Log("steve: hide_native=%d mask1=0x%X mask2=0x%X slots=0x%X", g_hide_native.load() ? 1 : 0, g_hide_mask1.load(), g_hide_mask2.load(),
         g_hide_slots.load());

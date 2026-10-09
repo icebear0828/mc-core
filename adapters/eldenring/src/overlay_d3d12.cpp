@@ -44,6 +44,8 @@ using CreateDsvFn = void(STDMETHODCALLTYPE*)(ID3D12Device*, ID3D12Resource*, con
 CreateDsvFn g_create_dsv_orig = nullptr;
 
 SteveConfig g_steve_cfg;
+std::vector<uint8_t> g_skin_rgba; // decoded by the loader; applied when the renderer is created
+unsigned g_skin_w = 0, g_skin_h = 0;
 SteveRenderer g_steve;
 mc::SteveAnimator g_anim;
 eldenring::render::SteveMotion g_motion;
@@ -182,7 +184,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
     rtv_desc.NumDescriptors = g_s.buffers;
     D3D12_DESCRIPTOR_HEAP_DESC srv_desc{};
     srv_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    srv_desc.NumDescriptors = 2; // 0: ImGui font, 1: scene depth
+    srv_desc.NumDescriptors = 3; // 0: ImGui font, 1: scene depth, 2: Steve skin (1 and 2 form one table)
     srv_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(g_s.device->CreateDescriptorHeap(&rtv_desc, IID_PPV_ARGS(&g_s.rtv_heap))) ||
         FAILED(g_s.device->CreateDescriptorHeap(&srv_desc, IID_PPV_ARGS(&g_s.srv_heap)))) {
@@ -236,7 +238,31 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
         g_depth_gpu = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
         g_depth_gpu.ptr += srv_inc;
         g_steve.setDepthView(g_s.device, nullptr, g_depth_cpu);
-        if (!g_steve.init(g_s.device, g_s.format, g_log)) Logf("overlay: Steve renderer unavailable");
+        if (!g_steve.init(g_s.device, g_s.format, g_log)) {
+            Logf("overlay: Steve renderer unavailable");
+        } else {
+            D3D12_CPU_DESCRIPTOR_HANDLE skin_cpu = g_depth_cpu;
+            skin_cpu.ptr += srv_inc;
+            // The skin the loader decoded from mods\mc_adapter\steve.png, or the flat grey-brown that was used before the skin existed.
+            std::vector<uint8_t> flat;
+            const std::vector<uint8_t>* pixels = &g_skin_rgba;
+            unsigned sw = g_skin_w, sh = g_skin_h;
+            if (pixels->empty() || sw == 0 || sh == 0) {
+                sw = sh = 64;
+                flat.resize(static_cast<size_t>(sw) * sh * 4);
+                for (size_t k = 0; k < flat.size(); k += 4) {
+                    flat[k] = 199;
+                    flat[k + 1] = 153;
+                    flat[k + 2] = 117;
+                    flat[k + 3] = 255;
+                }
+                pixels = &flat;
+                Logf("overlay: Steve skin: none given, flat colour");
+            } else {
+                Logf("overlay: Steve skin: %ux%u from file", sw, sh);
+            }
+            if (!g_steve.setSkin(g_s.device, pixels->data(), sw, sh, skin_cpu)) Logf("overlay: Steve skin upload failed");
+        }
         g_depth_dirty.store(true); // bind the depth captured so far
     }
     g_s.last_frame = std::chrono::steady_clock::now();
@@ -550,6 +576,12 @@ bool ResolveTargets(void*& present, void*& resize, void*& execute, void*& create
 } // namespace
 
 void SetSteveConfig(const SteveConfig& cfg) { g_steve_cfg = cfg; }
+
+void SetSteveSkin(const uint8_t* rgba, unsigned width, unsigned height) {
+    g_skin_rgba.assign(rgba, rgba + static_cast<size_t>(width) * height * 4);
+    g_skin_w = width;
+    g_skin_h = height;
+}
 
 void CycleDepthCandidate() {
     std::lock_guard<std::mutex> g(g_depth_mutex);
