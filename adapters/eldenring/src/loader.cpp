@@ -229,7 +229,6 @@ std::atomic<unsigned> g_native_reshown{0};     // times the game turned a hidden
 std::atomic<bool> g_slots_changed{false};
 std::atomic<int> g_slot_probe{-1}; // F9 probe: -1 = off (all slots), 0..26 = only that part slot is hidden
 std::atomic<uint32_t> g_hide_mask1{0x100A1}; // bits cleared in disp_flags1 (+0x20): visible + shadow (verified live, not bisected)
-std::atomic<int> g_hud_setting{-1}; // mc_er_steve.txt: hud_setting=N forces CSMenuMan+0x654C (the game's HUD option) while MC mode is on (experiment)
 std::atomic<bool> g_no_player_hit_vfx{false}; // mc_er_steve.txt: no_player_hit_vfx=1 (also implied by first person): no blood when the player is hit
 std::atomic<bool> g_first_person{false};  // mc_er_steve.txt: first_person=1 (experiment), F10 toggles
 std::atomic<float> g_eye_height{1.65f};
@@ -869,7 +868,9 @@ void SetupDamage() {
     if (g_log_player_hits.load()) Log("hitlog: logging the HitContext of every hit the player takes");
     {
         uintptr_t vfx = 0;
-        if (!LocateByPrefix(g_img, sigs::kHitVfxSpawn, vfx)) {
+        if (!FileExists(g_game_dir + "mc_er_hitvfx.txt")) {
+            // The game's own option (Settings: blood effects) already removes the blood, so this hook is opt-in.
+        } else if (!LocateByPrefix(g_img, sigs::kHitVfxSpawn, vfx)) {
             Log("hit vfx: spawner signature not unique, the player's blood effect cannot be removed");
         } else if (MH_CreateHook(reinterpret_cast<void*>(vfx), reinterpret_cast<void*>(&HitVfxDetour), reinterpret_cast<void**>(&g_hitvfx_orig)) != MH_OK ||
                    MH_EnableHook(reinterpret_cast<void*>(vfx)) != MH_OK) {
@@ -964,28 +965,14 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     out.mc_mode = g_mc_mode.load();
     out.slot_probe = g_slot_probe.load();
     {
-        // CSMenuMan+0x654C: candidate for the game's HUD option (auto / always / off). Logged when it changes; with hud_setting=N
-        // it is forced to N while MC mode is on and put back when MC mode is off.
-        static uint32_t last_seen = 0xFFFFFFFFu, original = 0xFFFFFFFFu;
-        static bool forced = false;
+        // CSMenuMan+0x654C was a candidate for the game's HUD option, but it reads 0x3D240000 (a float-looking value) and never
+        // changes, so it is NOT a 0/1/2 setting. Only logged when it changes; never written.
+        static uint32_t last_seen = 0xFFFFFFFFu;
         const uintptr_t menu = readSingleton(g_reader, g_img.base, g_rva_menu, sigs::kCSMenuMan);
         uint32_t now_value = 0;
-        if (menu != 0 && SafeCopy(menu + 0x654C, &now_value, sizeof(now_value))) {
-            if (now_value != last_seen) {
-                Log("hud setting: CSMenuMan+0x654C = %u", now_value);
-                last_seen = now_value;
-            }
-            const int want = g_hud_setting.load();
-            if (want >= 0 && out.mc_mode && out.show) {
-                if (!forced) {
-                    original = now_value;
-                    forced = true;
-                }
-                if (now_value != static_cast<uint32_t>(want)) SafeWrite32(menu + 0x654C, static_cast<uint32_t>(want));
-            } else if (forced) {
-                SafeWrite32(menu + 0x654C, original);
-                forced = false;
-            }
+        if (menu != 0 && SafeCopy(menu + 0x654C, &now_value, sizeof(now_value)) && now_value != last_seen) {
+            Log("menu +0x654C = 0x%08X", now_value);
+            last_seen = now_value;
         }
     }
     out.hp = v.hp;
@@ -1070,7 +1057,6 @@ void SetupOverlay() {
                 else if (key == "scene_height") cfg.scene_height = value;
                 else if (key == "yaw_offset_deg") g_steve_yaw_offset = value * 3.14159265f / 180.f;
                 else if (key == "hide_native") g_hide_native.store(value != 0.f);
-                else if (key == "hud_setting") g_hud_setting.store(static_cast<int>(value));
                 else if (key == "no_player_hit_vfx") g_no_player_hit_vfx.store(value != 0.f);
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "eye_height") g_eye_height.store(value);
