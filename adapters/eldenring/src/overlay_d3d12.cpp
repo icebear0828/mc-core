@@ -286,12 +286,12 @@ void DrawHud(const HudState& hud, float w, float h) {
     // hit marker: four diagonal ticks around the crosshair (Minecraft style); orange and longer for a critical hit
     if (hud.hit > 0.f) {
         const float a = std::clamp(hud.hit, 0.f, 1.f);
-        const float gap = (hud.hit_crit ? 7.f : 5.f) * scale, len = (hud.hit_crit ? 12.f : 8.f) * scale;
+        const float tick_gap = (hud.hit_crit ? 7.f : 5.f) * scale, len = (hud.hit_crit ? 12.f : 8.f) * scale;
         const ImU32 col = hud.hit_crit ? IM_COL32(255, 170, 0, static_cast<int>(255 * a)) : IM_COL32(255, 255, 255, static_cast<int>(255 * a));
         const float s = 0.70710678f;
         for (int sx = -1; sx <= 1; sx += 2) {
             for (int sy = -1; sy <= 1; sy += 2) {
-                dl->AddLine({cx + sx * gap * s, cy + sy * gap * s}, {cx + sx * (gap + len) * s, cy + sy * (gap + len) * s}, col,
+                dl->AddLine({cx + sx * tick_gap * s, cy + sy * tick_gap * s}, {cx + sx * (tick_gap + len) * s, cy + sy * (tick_gap + len) * s}, col,
                             2.5f * scale);
             }
         }
@@ -299,12 +299,12 @@ void DrawHud(const HudState& hud, float w, float h) {
     // kill marker: a red X, bigger and longer-lived
     if (hud.kill > 0.f) {
         const float a = std::clamp(hud.kill, 0.f, 1.f);
-        const float gap = 9.f * scale, len = 16.f * scale;
+        const float tick_gap = 9.f * scale, len = 16.f * scale;
         const ImU32 col = IM_COL32(225, 40, 40, static_cast<int>(255 * a));
         const float s = 0.70710678f;
         for (int sx = -1; sx <= 1; sx += 2) {
             for (int sy = -1; sy <= 1; sy += 2) {
-                dl->AddLine({cx + sx * gap * s, cy + sy * gap * s}, {cx + sx * (gap + len) * s, cy + sy * (gap + len) * s}, col,
+                dl->AddLine({cx + sx * tick_gap * s, cy + sy * tick_gap * s}, {cx + sx * (tick_gap + len) * s, cy + sy * (tick_gap + len) * s}, col,
                             3.5f * scale);
             }
         }
