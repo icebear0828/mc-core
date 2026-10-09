@@ -498,6 +498,13 @@ DWORD WINAPI KeyThread(LPVOID) {
                 std::lock_guard<std::mutex> g(g_melee_mutex);
                 charged = g_melee.startSwing();
             }
+            {
+                const uintptr_t w = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+                uint64_t p = 0;
+                const bool have = w != 0 && SafeCopy(w + layout::kPlayerInsInWorldChrMan, &p, sizeof(p)) && p != 0;
+                Log("swing: charged=%.2f airborne=%d", charged,
+                    have && detail::readAirborne(g_reader, g_img.base, static_cast<uintptr_t>(p)) ? 1 : 0);
+            }
             if (g_damage_enabled.load()) ClickAttack(charged);
         }
         const bool d8 = fg && (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
