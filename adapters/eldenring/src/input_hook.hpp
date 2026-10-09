@@ -35,5 +35,9 @@ int TakeWheelNotches();
 void TakeMouseDelta(int& dx, int& dy);
 // While on, the game's mouse reads show no movement and no wheel (the inventory is open and owns the mouse).
 void SetSuppressMouseMotion(bool on);
+// While on, the game's keyboard reads show nothing pressed (the inventory is open: no walking, rolling, Esc menu...).
+void SetSuppressKeyboard(bool on);
+// How many keyboard polls / mouse polls were blanked since the last call (diagnostics).
+void TakeSuppressStats(unsigned& keys_zeroed, unsigned& motion_zeroed);
 
 } // namespace erin

@@ -37,6 +37,8 @@ std::atomic<bool> g_right_prev{false};
 std::atomic<int> g_wheel{0};
 std::atomic<int> g_dx{0}, g_dy{0};
 std::atomic<bool> g_suppress_motion{false};
+std::atomic<bool> g_suppress_keys{false};
+std::atomic<unsigned> g_keys_zeroed{0}, g_motion_zeroed{0};
 std::atomic<unsigned> g_mouse_state{0}, g_mouse_data{0}, g_keyboard_state{0}, g_keyboard_data{0}, g_other{0}, g_cleared{0};
 
 using CreateDeviceFn = HRESULT(STDMETHODCALLTYPE*)(void*, REFGUID, void**, LPUNKNOWN);
@@ -67,6 +69,10 @@ HRESULT STDMETHODCALLTYPE GetStateDetour(void* self, DWORD cb, LPVOID data) {
     if (SUCCEEDED(hr)) {
         const Kind k = KindOf(self);
         Count(k, g_mouse_state, g_keyboard_state);
+        if (k == Kind::Keyboard && g_suppress_keys.load(std::memory_order_relaxed) && data != nullptr) {
+            memset(data, 0, cb); // the game sees a keyboard with nothing pressed (our own hotkeys read the OS state)
+            ++g_keys_zeroed;
+        }
         if (k == Kind::Mouse && data != nullptr && cb >= kMouseButtonsOffset + 2) {
             const bool down = (static_cast<BYTE*>(data)[kMouseButtonsOffset] & 0x80) != 0;
             if (down && !g_left_prev.load()) g_left_edge.store(true);
@@ -88,6 +94,7 @@ HRESULT STDMETHODCALLTYPE GetStateDetour(void* self, DWORD cb, LPVOID data) {
         }
         if (k == Kind::Mouse && g_suppress_motion.load(std::memory_order_relaxed) && data != nullptr && cb >= kMouseWheelOffset + sizeof(LONG)) {
             memset(data, 0, kMouseWheelOffset + sizeof(LONG)); // lX, lY, lZ: the game sees a mouse that does not move (read above)
+            ++g_motion_zeroed;
         }
         if (k == Kind::Mouse && g_suppress.load(std::memory_order_relaxed) && data != nullptr && cb >= kMouseButtonsOffset + 2) {
             auto* buttons = static_cast<BYTE*>(data) + kMouseButtonsOffset;
@@ -104,6 +111,10 @@ HRESULT STDMETHODCALLTYPE GetDataDetour(void* self, DWORD cb, LPDIDEVICEOBJECTDA
     if (SUCCEEDED(hr)) {
         const Kind k = KindOf(self);
         Count(k, g_mouse_data, g_keyboard_data);
+        if (k == Kind::Keyboard && g_suppress_keys.load(std::memory_order_relaxed) && count != nullptr) {
+            *count = 0; // buffered keyboard events are dropped
+            ++g_keys_zeroed;
+        }
         if (k == Kind::Mouse && data != nullptr && count != nullptr && cb >= sizeof(DIDEVICEOBJECTDATA)) {
             for (DWORD i = 0; i < *count; ++i) {
                 auto* e = reinterpret_cast<DIDEVICEOBJECTDATA*>(reinterpret_cast<BYTE*>(data) + static_cast<size_t>(i) * cb);
@@ -209,6 +220,13 @@ void TakeMouseDelta(int& dx, int& dy) {
 }
 
 void SetSuppressMouseMotion(bool on) { g_suppress_motion.store(on, std::memory_order_relaxed); }
+
+void SetSuppressKeyboard(bool on) { g_suppress_keys.store(on, std::memory_order_relaxed); }
+
+void TakeSuppressStats(unsigned& keys_zeroed, unsigned& motion_zeroed) {
+    keys_zeroed = g_keys_zeroed.exchange(0);
+    motion_zeroed = g_motion_zeroed.exchange(0);
+}
 
 void SetSuppressMouseButtons(bool on) { g_suppress.store(on, std::memory_order_relaxed); }
 

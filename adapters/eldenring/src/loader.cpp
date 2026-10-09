@@ -39,6 +39,7 @@
 #include "eldenring_survival.hpp"
 #include "mc/consumables.hpp"
 #include "mc/inventory_layout.hpp"
+#include "mc/hud_atlas.hpp"
 #include "mc/inventory.hpp"
 #include "eldenring_melee.hpp"
 #include "eldenring_particles.hpp"
@@ -387,7 +388,7 @@ using IsInputBlockedFn = uint64_t(__fastcall*)();
 using MenuFreezeFn = uint8_t(__fastcall*)(void*);
 IsInputBlockedFn g_isblocked_orig = nullptr;
 MenuFreezeFn g_menufreeze_orig = nullptr;
-std::atomic<unsigned> g_isblocked_forced{0};
+std::atomic<unsigned> g_isblocked_forced{0}, g_menufreeze_forced{0};
 
 uint64_t __fastcall IsInputBlockedDetour() {
     if (g_inv_open.load(std::memory_order_relaxed)) {
@@ -398,7 +399,10 @@ uint64_t __fastcall IsInputBlockedDetour() {
 }
 
 uint8_t __fastcall MenuFreezeDetour(void* self) {
-    if (g_inv_open.load(std::memory_order_relaxed)) return 1;
+    if (g_inv_open.load(std::memory_order_relaxed)) {
+        ++g_menufreeze_forced;
+        return 1;
+    }
     return g_menufreeze_orig(self);
 }
 
@@ -1120,6 +1124,7 @@ void InventoryTick(bool fg) {
         }
         g_inv_open.store(false);
         erin::SetSuppressMouseMotion(false);
+        erin::SetSuppressKeyboard(false);
         open = false;
         Log("inventory: closed (%s)", why);
     };
@@ -1137,6 +1142,7 @@ void InventoryTick(bool fg) {
             erin::TakeRightClick();
             erin::TakeWheelNotches();
             erin::SetSuppressMouseMotion(true);
+            erin::SetSuppressKeyboard(true);
             g_inv_open.store(true);
             open = true;
             Log("inventory: opened (%.0fx%.0f, gate calls so far %u)", w, h, g_isblocked_forced.load());
@@ -1151,6 +1157,17 @@ void InventoryTick(bool fg) {
         return;
     }
 
+    {
+        static uint64_t last_ms = 0;
+        const uint64_t now = GetTickCount64();
+        if (now - last_ms >= 1000) {
+            last_ms = now;
+            unsigned keys = 0, motion = 0;
+            erin::TakeSuppressStats(keys, motion);
+            Log("inventory: open; blanked %u keyboard / %u mouse polls, input gate forced %u, camera freeze forced %u, player speed %.2f m/s", keys, motion,
+                g_isblocked_forced.exchange(0), g_menufreeze_forced.exchange(0), g_walk_speed.load());
+        }
+    }
     float w = 0.f, h = 0.f;
     erov::ScreenSize(w, h);
     int dx = 0, dy = 0;
@@ -1717,11 +1734,12 @@ void SetupOverlay() {
             std::vector<uint8_t> atlas;
             unsigned aw = 0, ah = 0;
             const std::string atlas_path = g_game_dir + "mods\\mc_adapter\\mc_hud_atlas.png";
-            if (erov::DecodePngFile(atlas_path, atlas, aw, ah) && aw == 256 && ah == 256) {
+            if (erov::DecodePngFile(atlas_path, atlas, aw, ah) && aw == mc::hud::kHudAtlasWidth && ah == mc::hud::kHudAtlasHeight) {
                 erov::SetHudAtlas(atlas.data(), aw, ah);
                 Log("hud atlas: external file %s (%ux%u)", atlas_path.c_str(), aw, ah);
             } else {
-                Log("hud atlas: %s missing or not 256x256, the HUD stays plain rectangles", atlas_path.c_str());
+                Log("hud atlas: %s missing or not %ux%u (regenerate it with tools/extract_mc_assets.py), the HUD stays plain rectangles", atlas_path.c_str(),
+                    static_cast<unsigned>(mc::hud::kHudAtlasWidth), static_cast<unsigned>(mc::hud::kHudAtlasHeight));
             }
         }
         {
