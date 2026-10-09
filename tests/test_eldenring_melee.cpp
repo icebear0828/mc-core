@@ -101,3 +101,53 @@ TEST(EldenRingMelee, ErDamageScalesWithEnemyMaxHp) {
     EXPECT_EQ(erDamage(tiny, 100), 1); // never below 1 for a landed hit
     EXPECT_EQ(erDamage(sword, 0), 0);  // unknown max HP: nothing to scale
 }
+
+TEST(EldenRingJump, PressStartsAJumpThatEndsOnLanding) {
+    JumpTracker j;
+    EXPECT_FALSE(j.jumping());
+    j.update(0.016f, /*jump_pressed=*/true, /*airborne=*/false); // pressed on the ground: the wind-up counts
+    EXPECT_TRUE(j.jumping());
+    j.update(0.5f, false, false); // still winding up
+    EXPECT_TRUE(j.jumping());
+    j.update(0.05f, false, true); // left the ground
+    EXPECT_TRUE(j.jumping());
+    j.update(0.1f, false, false); // landed
+    EXPECT_FALSE(j.jumping());
+}
+
+TEST(EldenRingJump, WindUpThatNeverLeavesTheGroundTimesOut) {
+    JumpTracker j;
+    j.update(0.016f, true, false);
+    j.update(JumpTracker::kWindUpTimeoutSec + 0.1f, false, false);
+    EXPECT_FALSE(j.jumping());
+}
+
+TEST(EldenRingJump, AirborneWithoutPressIsAJump) {
+    JumpTracker j; // stepping off a ledge
+    j.update(0.016f, false, true);
+    EXPECT_TRUE(j.jumping());
+    j.update(0.3f, false, true);
+    EXPECT_TRUE(j.jumping());
+    j.update(0.016f, false, false);
+    EXPECT_FALSE(j.jumping());
+}
+
+TEST(EldenRingJump, PressDuringFlightDoesNotRestartTheTimeout) {
+    JumpTracker j;
+    j.update(0.016f, true, false);
+    j.update(0.1f, false, true);
+    j.update(0.5f, true, true); // pressed again in the air
+    EXPECT_TRUE(j.jumping());
+    j.update(0.016f, false, false);
+    EXPECT_FALSE(j.jumping()); // a landing ends it regardless
+}
+
+TEST(EldenRingJump, CanBeReArmedAfterLanding) {
+    JumpTracker j;
+    j.update(0.016f, true, false);
+    j.update(0.8f, false, true);
+    j.update(0.1f, false, false);
+    EXPECT_FALSE(j.jumping());
+    j.update(0.016f, true, false);
+    EXPECT_TRUE(j.jumping());
+}

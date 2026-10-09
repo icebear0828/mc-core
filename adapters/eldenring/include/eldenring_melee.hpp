@@ -65,6 +65,34 @@ private:
     float swing_{-1.f}; // seconds into the swing, < 0 = idle
 };
 
+// "Falling" for an MC critical hit. Elden Ring's jump has a ~0.8 s wind-up after the key press and then only ~0.1 s with
+// PhysicsModule+0x92 == 0 (measured, mc_er.log 2026-10-09), so "airborne right now" almost never coincides with a click.
+// A jump therefore runs from the jump key press (on the ground) to the landing; stepping off a ledge also counts.
+class JumpTracker {
+public:
+    static constexpr float kWindUpTimeoutSec = 1.5f; // a press that never leaves the ground (cancelled, blocked) stops counting
+
+    void update(float dt, bool jump_pressed, bool airborne) {
+        if (airborne) {
+            state_ = State::Air;
+        } else if (state_ == State::Air) {
+            state_ = State::Idle; // landed
+        } else if (state_ == State::WindUp) {
+            wind_up_ += dt;
+            if (wind_up_ > kWindUpTimeoutSec) state_ = State::Idle;
+        } else if (jump_pressed) {
+            state_ = State::WindUp;
+            wind_up_ = 0.f;
+        }
+    }
+    [[nodiscard]] bool jumping() const { return state_ != State::Idle; }
+
+private:
+    enum class State { Idle, WindUp, Air };
+    State state_{State::Idle};
+    float wind_up_{0.f};
+};
+
 // Elden Ring hit points for a landed MC hit: a full diamond-sword hit (7 damage) is `max_hp_percent` of the enemy's
 // maximum health; everything else scales linearly with MC damage. At least 1 for a landed hit; 0 when the enemy's
 // maximum health is unknown.

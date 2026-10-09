@@ -235,6 +235,7 @@ NoCombatPort g_no_combat_port;
 mc::CombatEngine g_combat_engine{g_no_combat_port};
 std::mutex g_melee_mutex; // KeyThread writes, the Present thread reads
 MeleeController g_melee;
+JumpTracker g_jump; // KeyThread only
 std::optional<HitTemplate> g_template;
 using ClampFn = void*(__fastcall*)(void*, int32_t);
 ClampFn g_clamp_orig = nullptr;
@@ -416,7 +417,7 @@ void ClickAttack(float charged) {
         return;
     }
     const EnemyInfo& e = list[static_cast<size_t>(idx)];
-    const bool falling = detail::readAirborne(g_reader, g_img.base, static_cast<uintptr_t>(player));
+    const bool falling = g_jump.jumping();
     mc::ItemId held;
     mc::HitIntent intent;
     {
@@ -442,6 +443,13 @@ bool WantSuppress() {
         return false;
     }
     return !ms.menu_focused && !ms.popup_open && !ls.screen_loading;
+}
+
+bool PlayerAirborne() {
+    const uintptr_t w = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    uint64_t p = 0;
+    return w != 0 && SafeCopy(w + layout::kPlayerInsInWorldChrMan, &p, sizeof(p)) && p != 0 &&
+           detail::readAirborne(g_reader, g_img.base, static_cast<uintptr_t>(p));
 }
 
 // Diagnostic: the player's ground-contact bytes, one log line each time they change (jump / fall / roll / swim).
@@ -495,6 +503,7 @@ DWORD WINAPI KeyThread(LPVOID) {
         if (g_input_enabled.load()) erin::SetSuppressMouseButtons(fg && WantSuppress());
         const bool space = fg && (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0;
         if (space && !prev_space && g_mc_mode.load()) Log("key: space down");
+        g_jump.update(dt, space && !prev_space, g_mc_mode.load() && PlayerAirborne());
         prev_space = space;
         const bool click_edge = g_input_enabled.load() && erin::TakeLeftClick();
         const bool want_suppress = click_edge ? WantSuppress() : false;
@@ -507,13 +516,7 @@ DWORD WINAPI KeyThread(LPVOID) {
                 std::lock_guard<std::mutex> g(g_melee_mutex);
                 charged = g_melee.startSwing();
             }
-            {
-                const uintptr_t w = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
-                uint64_t p = 0;
-                const bool have = w != 0 && SafeCopy(w + layout::kPlayerInsInWorldChrMan, &p, sizeof(p)) && p != 0;
-                Log("swing: charged=%.2f airborne=%d", charged,
-                    have && detail::readAirborne(g_reader, g_img.base, static_cast<uintptr_t>(p)) ? 1 : 0);
-            }
+            Log("swing: charged=%.2f jumping=%d airborne=%d", charged, g_jump.jumping() ? 1 : 0, PlayerAirborne() ? 1 : 0);
             if (g_damage_enabled.load()) ClickAttack(charged);
         }
         const bool d8 = fg && (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
