@@ -220,6 +220,44 @@ def create_canonical_sprite(name: str) -> Image.Image:
             img.putpixel((x, y), col)
         return img
 
+    if name in ("heart_absorb_full", "heart_absorb_half"):
+        base = create_canonical_sprite("heart_full" if name.endswith("full") else "heart_half")
+        out = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        recolor = {(235, 18, 18): (255, 205, 40), (145, 0, 0): (170, 120, 0)}
+        for y in range(base.height):
+            for x in range(base.width):
+                r, g, b, a = base.getpixel((x, y))
+                if a:
+                    nr, ng, nb = recolor.get((r, g, b), (r, g, b))
+                    out.putpixel((x, y), (nr, ng, nb, a))
+        return out
+
+    if name == "particle_crit":
+        img = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+        for i in range(8):  # a plain four-point star
+            img.putpixel((3, i), (255, 255, 255, 255))
+            img.putpixel((4, i), (255, 255, 255, 255))
+            img.putpixel((i, 3), (255, 255, 255, 255))
+            img.putpixel((i, 4), (255, 255, 255, 255))
+        return img
+
+    if name == "particle_damage":
+        img = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+        for (x, y) in [(1, 2), (2, 1), (5, 1), (6, 2), (1, 3), (2, 3), (3, 3), (4, 3), (5, 3), (6, 3), (2, 4), (3, 4), (4, 4), (5, 4), (3, 5), (4, 5)]:
+            img.putpixel((x, y), (130, 0, 0, 255))
+        return img
+
+    if name.startswith("particle_sweep_"):
+        idx = int(name.rsplit("_", 1)[1])
+        img = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+        reach = 4 + idx * 3  # an arc that grows with the frame; the real frames replace it
+        for x in range(32):
+            for y in range(32):
+                d = ((x - 16) ** 2 + (y - 26) ** 2) ** 0.5
+                if reach - 1.5 <= d <= reach + 1.5 and y < 26:
+                    img.putpixel((x, y), (255, 255, 255, 255 - idx * 20))
+        return img
+
     if name == "hotbar":
         img = Image.new("RGBA", (182, 22), (40, 40, 40, 200))
         for x in range(182):
@@ -324,6 +362,19 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("item_bow", (16, 16)),
     ("item_elytra", (16, 16)),
     ("item_totem_of_undying", (16, 16)),
+    # appended after the original layout, so every earlier UV stays exactly where it was
+    ("heart_absorb_full", (9, 9)),
+    ("heart_absorb_half", (9, 9)),
+    ("particle_crit", (8, 8)),
+    ("particle_damage", (8, 8)),
+    ("particle_sweep_0", (32, 32)),
+    ("particle_sweep_1", (32, 32)),
+    ("particle_sweep_2", (32, 32)),
+    ("particle_sweep_3", (32, 32)),
+    ("particle_sweep_4", (32, 32)),
+    ("particle_sweep_5", (32, 32)),
+    ("particle_sweep_6", (32, 32)),
+    ("particle_sweep_7", (32, 32)),
 ]
 
 _JAR_HUD_SPRITES = {
@@ -342,6 +393,11 @@ _JAR_HUD_SPRITES = {
     "item_bow": "item/bow.png",
     "item_elytra": "item/elytra.png",
     "item_totem_of_undying": "item/totem_of_undying.png",
+    "heart_absorb_full": "gui/sprites/hud/heart/absorbing_full.png",
+    "heart_absorb_half": "gui/sprites/hud/heart/absorbing_half.png",
+    "particle_crit": "particle/critical_hit.png",
+    "particle_damage": "particle/damage.png",
+    **{f"particle_sweep_{i}": f"particle/sweep_{i}.png" for i in range(8)},
 }
 
 # Block items are drawn by Minecraft as isometric cubes: (top, left/right sides)

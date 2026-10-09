@@ -120,6 +120,7 @@ public:
     static constexpr float kHitSec = 0.25f;
     static constexpr float kKillSec = 0.6f;
     static constexpr float kTotemSec = 1.2f;
+    static constexpr float kHurtSec = 0.5f; // Minecraft: hurtTime 10 ticks
 
     void onHit(bool critical) {
         hit_ = 1.f;
@@ -127,21 +128,30 @@ public:
     }
     void onKill() { kill_ = 1.f; }
     void onTotem() { totem_ = 1.f; }
+    void onHurt(float side) {
+        hurt_ = 1.f;
+        hurt_side_ = side < 0.f ? -1.f : 1.f;
+    }
     void tick(float dt) {
         hit_ = std::max(0.f, hit_ - dt / kHitSec);
         kill_ = std::max(0.f, kill_ - dt / kKillSec);
         totem_ = std::max(0.f, totem_ - dt / kTotemSec);
+        hurt_ = std::max(0.f, hurt_ - dt / kHurtSec);
         if (hit_ <= 0.f) crit_ = false;
     }
     [[nodiscard]] float hit() const { return hit_; }
     [[nodiscard]] bool crit() const { return crit_ && hit_ > 0.f; }
     [[nodiscard]] float kill() const { return kill_; }
     [[nodiscard]] float totem() const { return totem_; }
+    [[nodiscard]] float hurt() const { return hurt_; }       // 1 just hurt .. 0
+    [[nodiscard]] float hurtSide() const { return hurt_side_; }
 
 private:
     float hit_{0.f};
     float kill_{0.f};
     float totem_{0.f};
+    float hurt_{0.f};
+    float hurt_side_{1.f};
     bool crit_{false};
 };
 

@@ -18,6 +18,7 @@ cbuffer Root : register(b0) {
     row_major float4x4 world;
     float4 scene; // x: depth * view z constant, y: relative bias, z: absolute bias (metres), w: mode (0 off, 1 occlude, 2 debug colours)
     float4 dims;  // x, y: depth texture size, z, w: back buffer size
+    float4 tint;  // rgb: colour the figure is mixed towards, a: how much (Minecraft's red hurt flash)
 };
 Texture2D<float2> scene_depth : register(t0);
 Texture2D<float4> skin : register(t1);
@@ -90,7 +91,7 @@ float4 PSMain(VSOut i) : SV_Target {
     float face = a.y > 0.7 ? 1.0 : (a.z > a.x ? 0.82 : 0.68);
     float4 texel = skin.Sample(skin_sampler, i.uv);
     if (texel.a < 0.5) discard; // the hat / jacket layers are cut out of the skin
-    return float4(texel.rgb * face, 1.0);
+    return float4(lerp(texel.rgb * face, tint.rgb, tint.a), 1.0);
 }
 )hlsl";
 
@@ -191,14 +192,14 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
                                         IID_PPV_ARGS(&stats_readback_));
     }
 
-    // Root signature: 40 root constants (view_proj, world, scene, dims) + a table with the depth SRV and the skin SRV.
+    // Root signature: 44 root constants (view_proj, world, scene, dims, tint) + a table with the depth SRV and the skin SRV.
     D3D12_DESCRIPTOR_RANGE range{};
     range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     range.NumDescriptors = 2; // t0: scene depth, t1: skin
     range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
     D3D12_ROOT_PARAMETER params[3]{};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.Num32BitValues = 40;
+    params[0].Constants.Num32BitValues = 44;
     params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     params[1].DescriptorTable.NumDescriptorRanges = 1;
@@ -503,6 +504,7 @@ void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* 
                             static_cast<float>(width),
                             static_cast<float>(height)};
     list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
+    list->SetGraphicsRoot32BitConstants(0, 4, params.tint, 40);
     for (size_t p = 0; p < static_cast<size_t>(mc::StevePart::Count); ++p) {
         list->SetGraphicsRoot32BitConstants(0, 16, parts[p].m.data(), 16);
         list->DrawIndexedInstanced(index_count_[p], 1, first_index_[p], base_vertex_[p], 0);

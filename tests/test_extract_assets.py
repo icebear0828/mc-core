@@ -155,8 +155,12 @@ HUD_KEYS = [
     "hotbar", "hotbar_selection",
     "item_diamond_sword", "item_diamond_pickaxe", "item_dirt", "item_stone", "item_tnt",
     "item_golden_apple", "item_bow", "item_elytra", "item_totem_of_undying",
+    "heart_absorb_full", "heart_absorb_half", "particle_crit", "particle_damage",
+    *[f"particle_sweep_{i}" for i in range(8)],
 ]
 HUD_SIZES = {
+    "heart_absorb_full": (9, 9), "heart_absorb_half": (9, 9), "particle_crit": (8, 8), "particle_damage": (8, 8),
+    **{f"particle_sweep_{i}": (32, 32) for i in range(8)},
     "crosshair": (15, 15), "hotbar": (182, 22), "hotbar_selection": (24, 23),
     "heart_container": (9, 9), "heart_full": (9, 9), "heart_half": (9, 9),
     "hunger_container": (9, 9), "hunger_full": (9, 9), "hunger_half": (9, 9),

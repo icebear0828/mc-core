@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "eldenring_hudtex.hpp"
+#include "eldenring_particles.hpp"
 #include "mc/hud_layout.hpp"
 #include "overlay_d3d12.hpp"
 #include "steve_renderer_d3d12.hpp"
@@ -57,6 +58,19 @@ bool g_atlas_pending = false;
 D3D12_GPU_DESCRIPTOR_HANDLE g_atlas_gpu{};
 bool g_atlas_ready = false;
 void CreateAtlasTexture(UINT srv_inc); // defined with the HUD drawing below
+// Combat particles: events queued by the loader, simulated and drawn here.
+struct FxEvent {
+    FxKind kind;
+    float pos[3];
+    int count;
+};
+std::mutex g_fx_mutex;
+std::vector<FxEvent> g_fx_events;
+eldenring::fx::ParticleSystem g_particles;
+eldenring::fx::Rng g_fx_rng{20251009u};
+mc::rig::Mat4 g_fx_vp{};
+float g_fx_fov = 0.8378f;
+bool g_fx_valid = false;
 std::atomic<int> g_trace_left{0}; // F12: frames of per-frame figure/camera positions still to write to the log
 std::vector<uint8_t> g_skin_rgba; // decoded by the loader; applied when the renderer is created
 unsigned g_skin_w = 0, g_skin_h = 0;
@@ -386,6 +400,44 @@ void RecordAtlasUpload(ID3D12GraphicsCommandList* list) {
     g_atlas_pending = false;
 }
 
+// Clip-space position of a world point (row vector times the matrix); false when it is behind the camera.
+bool ProjectToScreen(const mc::rig::Mat4& m, const float p[3], float w, float h, float fov_y, ImVec2& out, float& px_per_m) {
+    const auto& a = m.m;
+    const float cx = p[0] * a[0] + p[1] * a[4] + p[2] * a[8] + a[12];
+    const float cy = p[0] * a[1] + p[1] * a[5] + p[2] * a[9] + a[13];
+    const float cw = p[0] * a[3] + p[1] * a[7] + p[2] * a[11] + a[15];
+    if (!(cw > 0.05f)) return false;
+    out = {(cx / cw * 0.5f + 0.5f) * w, (0.5f - cy / cw * 0.5f) * h};
+    px_per_m = (h * 0.5f) / (std::tan(fov_y * 0.5f) * cw);
+    return true;
+}
+
+void DrawFx(ImDrawList* dl, ImTextureID atlas, float w, float h) {
+    if (!g_fx_valid || !g_atlas_ready) return;
+    for (const eldenring::fx::Particle& p : g_particles.alive()) {
+        ImVec2 s;
+        float ppm = 0.f;
+        if (!ProjectToScreen(g_fx_vp, p.pos, w, h, g_fx_fov, s, ppm)) continue;
+        const float half = std::max(2.f, p.size * ppm * 0.5f);
+        const float fade = eldenring::fx::ParticleSystem::fade(p);
+        const mc::hud::HudUV* uv = nullptr;
+        ImU32 col = IM_COL32(255, 255, 255, static_cast<int>(255 * std::min(1.f, fade * 1.5f)));
+        switch (p.kind) {
+            case eldenring::fx::Kind::Crit: uv = &mc::hud::kUV_PARTICLE_CRIT; break;
+            case eldenring::fx::Kind::Damage: uv = &mc::hud::kUV_PARTICLE_DAMAGE; break;
+            case eldenring::fx::Kind::Sweep: {
+                static const mc::hud::HudUV* const frames[8] = {&mc::hud::kUV_PARTICLE_SWEEP_0, &mc::hud::kUV_PARTICLE_SWEEP_1, &mc::hud::kUV_PARTICLE_SWEEP_2,
+                                                                  &mc::hud::kUV_PARTICLE_SWEEP_3, &mc::hud::kUV_PARTICLE_SWEEP_4, &mc::hud::kUV_PARTICLE_SWEEP_5,
+                                                                  &mc::hud::kUV_PARTICLE_SWEEP_6, &mc::hud::kUV_PARTICLE_SWEEP_7};
+                uv = frames[std::clamp(p.frame, 0, 7)];
+                col = IM_COL32(255, 255, 255, 255);
+                break;
+            }
+        }
+        dl->AddImage(atlas, {s.x - half, s.y - half}, {s.x + half, s.y + half}, {uv->u0, uv->v0}, {uv->u1, uv->v1}, col);
+    }
+}
+
 void DrawHud(const HudState& hud, float w, float h) {
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     const float scale = std::max(0.5f, h / 1080.f);
@@ -433,12 +485,12 @@ void DrawHud(const HudState& hud, float w, float h) {
         }
         // absorption (golden apple, totem): golden hearts in a row above the health, 2 Minecraft HP per heart
         {
-            const int golden = std::min(10, static_cast<int>(std::ceil(hud.absorption_mc / 2.f)));
-            for (int i = 0; i < golden; ++i) {
+            const int full = static_cast<int>(std::floor(hud.absorption_mc / 2.f));
+            const bool half = hud.absorption_mc - 2.f * static_cast<float>(full) >= 1.f;
+            for (int i = 0; i < std::min(10, full + (half ? 1 : 0)); ++i) {
                 mc::HudRect r = layout.heart(i);
                 r.y -= 10.f * static_cast<float>(layout.scale());
-                dl->AddImage(atlas, {r.x, r.y}, {r.x + r.w, r.y + r.h}, {mc::hud::kUV_HEART_FULL.u0, mc::hud::kUV_HEART_FULL.v0},
-                             {mc::hud::kUV_HEART_FULL.u1, mc::hud::kUV_HEART_FULL.v1}, IM_COL32(255, 205, 40, 255));
+                sprite(r, i < full ? mc::hud::kUV_HEART_ABSORB_FULL : mc::hud::kUV_HEART_ABSORB_HALF);
             }
         }
         text_x = layout.heart(0).x;
@@ -496,6 +548,7 @@ void DrawHud(const HudState& hud, float w, float h) {
             }
         }
     }
+    DrawFx(dl, atlas, w, h);
     // eating: a thin bar under the crosshair that fills in 1.6 s
     if (hud.eating > 0.f) {
         const float bw = 60.f * scale, bh = 5.f * scale, bx = cx - bw * 0.5f, by = cy + 22.f * scale;
@@ -547,6 +600,27 @@ void RenderFrame(IDXGISwapChain* sc) {
     io.DeltaTime = dt;
     ImGui_ImplDX12_NewFrame();
     ImGui::NewFrame();
+    {
+        // Combat particles: take the queued events, advance them, remember this frame's camera for the projection.
+        g_fx_valid = steve.cam_valid;
+        if (steve.cam_valid) {
+            g_fx_vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / static_cast<float>(g_s.height));
+            g_fx_fov = steve.fov_y;
+        }
+        std::vector<FxEvent> events;
+        {
+            std::lock_guard<std::mutex> g(g_fx_mutex);
+            events.swap(g_fx_events);
+        }
+        for (const FxEvent& e : events) {
+            switch (e.kind) {
+                case FxKind::Crit: g_particles.spawnCrit(e.pos, g_fx_rng); break;
+                case FxKind::Damage: g_particles.spawnDamage(e.pos, e.count, g_fx_rng); break;
+                case FxKind::Sweep: g_particles.spawnSweep(e.pos); break;
+            }
+        }
+        g_particles.update(dt);
+    }
     DrawHud(hud, io.DisplaySize.x, io.DisplaySize.y);
     ImGui::Render();
 
@@ -595,6 +669,9 @@ void RenderFrame(IDXGISwapChain* sc) {
         sp.abs_bias = g_steve_cfg.abs_bias;
         sp.depth_w = static_cast<float>(g_depth_w);
         sp.depth_h = static_cast<float>(g_depth_h);
+        sp.tint[0] = 1.f; // Minecraft's hurt flash: red over the lit skin for the 10 ticks after a hit
+        sp.tint[1] = sp.tint[2] = 0.f;
+        sp.tint[3] = 0.4f * std::min(1.f, steve.hurt * 4.f);
         if (g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
             g_steve.draw(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, parts, sp, f.rtv);
             g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr); // ImGui draws without a depth view
@@ -765,6 +842,12 @@ bool ResolveTargets(void*& present, void*& resize, void*& execute, void*& create
 void SetSteveConfig(const SteveConfig& cfg) { g_steve_cfg = cfg; }
 
 void RequestFrameTrace(int frames) { g_trace_left.store(frames); }
+
+void SpawnFx(FxKind kind, const float world_pos[3], int count) {
+    FxEvent e{kind, {world_pos[0], world_pos[1], world_pos[2]}, count};
+    std::lock_guard<std::mutex> g(g_fx_mutex);
+    if (g_fx_events.size() < 64) g_fx_events.push_back(e);
+}
 
 void SetHudAtlas(const uint8_t* rgba, unsigned width, unsigned height) {
     g_atlas_rgba.assign(rgba, rgba + static_cast<size_t>(width) * height * 4);

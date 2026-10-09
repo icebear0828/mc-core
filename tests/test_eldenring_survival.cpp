@@ -98,3 +98,15 @@ TEST(EldenRingFeedback, TotemPopFadesOverAboutASecond) {
     f.tick(HitFeedback::kTotemSec);
     EXPECT_FLOAT_EQ(f.totem(), 0.f);
 }
+
+TEST(EldenRingFeedback, HurtLastsHalfASecondAndKeepsItsSide) {
+    HitFeedback f;
+    EXPECT_FLOAT_EQ(f.hurt(), 0.f);
+    f.onHurt(-1.f);
+    EXPECT_FLOAT_EQ(f.hurt(), 1.f);
+    EXPECT_FLOAT_EQ(f.hurtSide(), -1.f);
+    f.tick(HitFeedback::kHurtSec * 0.5f);
+    EXPECT_NEAR(f.hurt(), 0.5f, 1e-3f);
+    f.tick(HitFeedback::kHurtSec);
+    EXPECT_FLOAT_EQ(f.hurt(), 0.f);
+}

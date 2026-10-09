@@ -38,6 +38,7 @@
 #include "eldenring_survival.hpp"
 #include "mc/consumables.hpp"
 #include "eldenring_melee.hpp"
+#include "eldenring_particles.hpp"
 #include "eldenring_model.hpp"
 #include "eldenring_pick.hpp"
 #include "eldenring_steve.hpp"
@@ -303,7 +304,9 @@ void __fastcall RenderCamCopyDetour(void* self) {
         }
     }
     uintptr_t pos_addr = 0;
+    uintptr_t axes_addr = 0;
     float saved[3] = {};
+    float saved_axes[8] = {};
     if (g_first_person.load(std::memory_order_relaxed)) {
         const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
         uint64_t cam = 0, player = 0;
@@ -320,12 +323,44 @@ void __fastcall RenderCamCopyDetour(void* self) {
             } __except (EXCEPTION_EXECUTE_HANDLER) {
                 pos_addr = 0;
             }
+            // Minecraft's hurt camera tilt: roll the view about the line of sight for a moment after a hit (right and up
+            // turn about forward; both are put back after the copy).
+            float hurt = 0.f, side = 1.f;
+            {
+                std::lock_guard<std::mutex> g(g_melee_mutex);
+                hurt = g_feedback.hurt();
+                side = g_feedback.hurtSide();
+            }
+            if (pos_addr != 0 && hurt > 0.f) {
+                const uintptr_t axes = static_cast<uintptr_t>(cam) + layout::kCamMatrix; // right at +0x10, up at +0x20
+                if (SafeCopy(axes, saved_axes, sizeof(saved_axes))) {
+                    const float a = eldenring::fx::hurtTiltRadians(hurt, side), c = std::cos(a), s = std::sin(a);
+                    float rolled[8];
+                    for (int i = 0; i < 3; ++i) {
+                        rolled[i] = saved_axes[i] * c + saved_axes[4 + i] * s;     // right
+                        rolled[4 + i] = saved_axes[4 + i] * c - saved_axes[i] * s; // up
+                    }
+                    rolled[3] = saved_axes[3];
+                    rolled[7] = saved_axes[7];
+                    __try {
+                        std::memcpy(reinterpret_cast<void*>(axes), rolled, sizeof(rolled));
+                        axes_addr = axes;
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    }
+                }
+            }
         }
     }
     g_rcc_orig(self);
     if (pos_addr != 0) {
         __try {
             std::memcpy(reinterpret_cast<void*>(pos_addr), saved, sizeof(saved));
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
+    }
+    if (axes_addr != 0) {
+        __try {
+            std::memcpy(reinterpret_cast<void*>(axes_addr), saved_axes, sizeof(saved_axes));
         } __except (EXCEPTION_EXECUTE_HANDLER) {
         }
     }
@@ -496,7 +531,7 @@ bool GiveHp(uintptr_t data_module, int amount) {
 }
 
 // Natural hits on the player: absorption soaks damage up, then a totem keeps a killing hit at 1 HP. Returns true when a totem was used.
-bool PlayerHitSurvival(void* module, uint8_t* ctx, uint8_t blocked, uint32_t& popped_heal_target) {
+bool PlayerHitSurvival(void* module, void* attacker, uint8_t* ctx, uint8_t blocked, uint32_t& popped_heal_target) {
     if (blocked != 0) return false; // a blocked hit deducts nothing
     uint64_t owner = 0;
     const uintptr_t player = PlayerChrPtr();
@@ -523,6 +558,18 @@ bool PlayerHitSurvival(void* module, uint8_t* ctx, uint8_t blocked, uint32_t& po
         }
     }
     eraudio::Play(popped ? "item.totem.use" : "entity.player.hurt");
+    {
+        // Which way the hurt camera rolls: by the side the attacker stands on (relative to the way the player faces).
+        float side = 1.f, pp[3], ap[3], q[4];
+        if (attacker != nullptr && detail::readPhysicsPosition(g_reader, g_img.base, player, pp) &&
+            detail::readPhysicsPosition(g_reader, g_img.base, reinterpret_cast<uintptr_t>(attacker), ap) &&
+            detail::readPhysicsOrientation(g_reader, g_img.base, player, q)) {
+            const float yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]);
+            side = ((ap[0] - pp[0]) * std::cos(yaw) - (ap[2] - pp[2]) * std::sin(yaw)) >= 0.f ? 1.f : -1.f;
+        }
+        std::lock_guard<std::mutex> g(g_melee_mutex);
+        g_feedback.onHurt(side);
+    }
     if (out != dmg) SafeWrite32(reinterpret_cast<uintptr_t>(ctx) + layout::kHitDamage, static_cast<uint32_t>(out));
     if (out != dmg || popped) {
         Log("SURVIVAL: hit %d -> %d (hp %d/%d)%s", dmg, out, v.hp, v.max_hp, popped ? " TOTEM" : "");
@@ -533,7 +580,7 @@ bool PlayerHitSurvival(void* module, uint8_t* ctx, uint8_t blocked, uint32_t& po
 uint64_t ProcessDamageDetour(void* module, void* attacker, uint8_t* ctx, uint32_t a4, uint8_t a5) {
     uint32_t heal_to = 0;
     bool popped = false;
-    if (!t_forced.armed) popped = PlayerHitSurvival(module, ctx, a5, heal_to);
+    if (!t_forced.armed) popped = PlayerHitSurvival(module, attacker, ctx, a5, heal_to);
     if (!t_forced.armed && g_log_player_hits.load(std::memory_order_relaxed)) LogPlayerHit(module, attacker, ctx, a5);
     if (t_forced.armed && !t_forced.applied) {
         t_forced.applied = overrideFinalDamage(ctx, t_forced.attacker, t_forced.victim, t_forced.value, &t_forced.engine_value);
@@ -613,6 +660,17 @@ void DrainOnce(uintptr_t updating_data_module) {
             std::lock_guard<std::mutex> g(g_melee_mutex);
             g_feedback.onHit((r.request.tag & 1u) != 0);
             // Minecraft's melee sounds: crit, sweep, otherwise strong (charged) or weak. A swing that hits nothing is silent.
+            {
+                // Minecraft's hit particles at the victim's chest: damage hearts (floor(damage * 0.5)), crit stars, the sweep arc.
+                float vpos[3];
+                if (detail::readPhysicsPosition(g_reader, g_img.base, r.request.victim_chr, vpos)) {
+                    vpos[1] += 1.0f;
+                    const int hearts = static_cast<int>((r.request.tag >> 8) & 0xFFu) / 2;
+                    if (hearts > 0) erov::SpawnFx(erov::FxKind::Damage, vpos, hearts);
+                    if (r.request.tag & 1u) erov::SpawnFx(erov::FxKind::Crit, vpos, 0);
+                    if (r.request.tag & 2u) erov::SpawnFx(erov::FxKind::Sweep, vpos, 0);
+                }
+            }
             eraudio::Play((r.request.tag & 1u) ? "entity.player.attack.crit"
                           : (r.request.tag & 2u) ? "entity.player.attack.sweep"
                           : (r.request.tag & 4u) ? "entity.player.attack.strong"
@@ -715,7 +773,8 @@ void ClickAttack(float charged) {
                                     {}, {cam.forward[0], cam.forward[1], cam.forward[2]});
     }
     const int dmg = erDamage(intent, e.max_hp);
-    const bool ok = dmg > 0 && g_queue.enqueue(e.chr, dmg, NowTick(), (intent.is_critical ? 1u : 0u) | (intent.is_sweeping ? 2u : 0u) | (charged > 0.848f ? 4u : 0u));
+    const bool ok = dmg > 0 && g_queue.enqueue(e.chr, dmg, NowTick(), (intent.is_critical ? 1u : 0u) | (intent.is_sweeping ? 2u : 0u) | (charged > 0.848f ? 4u : 0u) |
+                                                          (static_cast<uint32_t>(std::min(255.f, std::floor(intent.damage))) << 8));
     Log("click: item=%d charged=%.2f falling=%d crit=%d sweep=%d mc_dmg=%.2f -> %d on chr=%p npc=%d hp=%d/%d (%s)", static_cast<int>(held),
         charged, falling ? 1 : 0, intent.is_critical ? 1 : 0, intent.is_sweeping ? 1 : 0, intent.damage, dmg,
         reinterpret_cast<void*>(e.chr), e.npc_id, e.hp, e.max_hp, ok ? "ok" : "not queued");
@@ -1229,12 +1288,14 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     }
 
     steve.draw = false;
+    steve.cam_valid = false;
     CameraPose cam;
     float feet[3], q[4];
     if (g_steve_enabled.load() && readCamera(g_reader, g_img.base, world, cam) &&
         detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(player), feet) &&
         detail::readPhysicsOrientation(g_reader, g_img.base, static_cast<uintptr_t>(player), q)) {
         steve.draw = true;
+        steve.cam_valid = true;
         steve.cam.right = {cam.right[0], cam.right[1], cam.right[2]};
         steve.cam.up = {cam.up[0], cam.up[1], cam.up[2]};
         steve.cam.forward = {cam.forward[0], cam.forward[1], cam.forward[2]};
@@ -1244,6 +1305,10 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.feet[1] = feet[1];
         steve.feet[2] = feet[2];
         steve.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) + g_steve_yaw_offset;
+    }
+    {
+        std::lock_guard<std::mutex> g(g_melee_mutex);
+        steve.hurt = g_feedback.hurt();
     }
     steve.dead = v.max_hp > 0 && v.hp <= 0;
     {

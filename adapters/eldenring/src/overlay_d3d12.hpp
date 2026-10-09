@@ -36,6 +36,8 @@ struct SteveState {
     float yaw{0.f};
     float swing{0.f}; // arm swing progress 0..1 (0 = idle)
     bool dead{false}; // the player's HP is 0: the figure falls over (Minecraft death flip)
+    float hurt{0.f};  // 1 just hurt .. 0: the figure flashes red
+    bool cam_valid{false}; // cam/fov_y are a real camera this frame (also set while the figure itself is not drawn)
 };
 
 // Tuning read from mc_er_steve.txt (key=value lines).
@@ -56,6 +58,11 @@ void SetSteveSkin(const uint8_t* rgba, unsigned width, unsigned height);
 void SetHudAtlas(const uint8_t* rgba, unsigned width, unsigned height);
 // Writes `frames` lines of per-frame figure and camera positions to the log (diagnosing jitter).
 void RequestFrameTrace(int frames);
+
+// Combat particles (Minecraft's critical hit stars, damage hearts, sweep arc) at a world position (game metres); `count` is the
+// number of hearts for Damage. Thread safe; the overlay projects and draws them.
+enum class FxKind { Crit, Damage, Sweep };
+void SpawnFx(FxKind kind, const float world_pos[3], int count);
 // Debug: bind the next captured 1920x1080 R32G8X24 depth resource (the game creates several).
 void CycleDepthCandidate();
 

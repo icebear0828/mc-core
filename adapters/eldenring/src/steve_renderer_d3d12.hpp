@@ -19,6 +19,7 @@ struct SteveParams {
     float rel_bias{0.08f};
     float abs_bias{0.05f};
     float depth_w{0.f}, depth_h{0.f}; // size of the depth texture, to map back buffer pixels onto it
+    float tint[4]{0.f, 0.f, 0.f, 0.f}; // rgb + amount: mixed over the lit skin (hurt flash)
 };
 
 class SteveRenderer {
