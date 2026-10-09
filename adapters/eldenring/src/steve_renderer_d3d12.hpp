@@ -24,6 +24,7 @@ struct SteveParams {
     float tint[4]{0.f, 0.f, 0.f, 0.f}; // rgb + amount: mixed over the lit skin (hurt flash)
     uint16_t held_item{0};             // mc::ItemId in the right hand (0 or an item without a sprite: nothing is drawn)
     D3D12_GPU_DESCRIPTOR_HANDLE held_table{}; // descriptor table (scene depth, atlas) the held item is drawn with
+    bool keep_depth{false};            // the blocks were drawn just before: do not clear the figure's depth buffer
 };
 
 class SteveRenderer {
@@ -67,6 +68,13 @@ public:
 
     // Third person: the held item as Minecraft draws it (a flat sprite extruded one pixel, ItemInHandLayer transform), built from the
     // atlas cells for every item that is held as a sprite. It is drawn with the right arm's matrix so it follows the swing.
+    // The placed blocks: one world-space mesh (see eldenring_blockmesh.hpp) drawn textured from the atlas, with the scene's depth for
+    // occlusion. `table` is the (scene depth, atlas) descriptor table; `frame` is the back buffer index (each frame slot keeps its own
+    // copy of the mesh, so a rebuild never touches a buffer the GPU may still read). Returns whether anything was drawn.
+    void setBlocks(const mc::rig::RigMesh& mesh);
+    bool drawBlocks(ID3D12Device* device, ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE table,
+                    unsigned width, unsigned height, const mc::rig::Mat4& view_proj, const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv,
+                    unsigned frame);
     bool initHeldItems(ID3D12Device* device, const uint8_t* atlas_rgba, unsigned atlas_w, unsigned atlas_h, const std::vector<FpItemCell>& cells);
 
     // `rtv` is the back buffer view: the figure is drawn with its own depth buffer (so the faces of the boxes and the parts
@@ -97,6 +105,18 @@ private:
     D3D12_VERTEX_BUFFER_VIEW held_vbv_{};
     D3D12_INDEX_BUFFER_VIEW held_ibv_{};
     std::map<uint16_t, FpDraw> held_items_;
+    struct BlockSlot {
+        ID3D12Resource* vb{nullptr};
+        ID3D12Resource* ib{nullptr};
+        unsigned version{0};
+        unsigned index_count{0};
+        D3D12_VERTEX_BUFFER_VIEW vbv{};
+        D3D12_INDEX_BUFFER_VIEW ibv{};
+    };
+    BlockSlot block_slots_[4]{};
+    std::vector<mc::rig::RigVertex> block_vertices_cpu_;
+    std::vector<uint16_t> block_indices_cpu_;
+    unsigned block_version_{0};
     ID3D12Resource* own_depth_{nullptr};
     ID3D12DescriptorHeap* dsv_heap_{nullptr};
     unsigned own_depth_w_{0}, own_depth_h_{0};

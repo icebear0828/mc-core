@@ -93,6 +93,9 @@ UINT g_depth_w = 0, g_depth_h = 0;
 std::atomic<bool> g_depth_dirty{false};
 D3D12_CPU_DESCRIPTOR_HANDLE g_depth_cpu{};
 D3D12_GPU_DESCRIPTOR_HANDLE g_depth_gpu{};
+std::mutex g_block_mutex;
+mc::rig::RigMesh g_block_mesh;
+std::atomic<bool> g_blocks_dirty{false};
 D3D12_CPU_DESCRIPTOR_HANDLE g_depth_copy_cpu{}; // slot 6: the same depth view again, in front of the atlas (held item table)
 D3D12_GPU_DESCRIPTOR_HANDLE g_held_table_gpu{};
 
@@ -769,6 +772,24 @@ void RenderFrame(IDXGISwapChain* sc) {
         g_steve.drawDepthView(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, g_steve_cfg.depthview_gain,
                               static_cast<float>(g_depth_w), static_cast<float>(g_depth_h));
     }
+    bool blocks_drawn = false;
+    if (g_blocks_dirty.exchange(false)) {
+        std::lock_guard<std::mutex> g(g_block_mutex);
+        g_steve.setBlocks(g_block_mesh);
+    }
+    if (steve.cam_valid && g_steve.ready() && g_atlas_ready && g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
+        const float scene_h = g_steve_cfg.scene_height > 0.f ? g_steve_cfg.scene_height : static_cast<float>(g_s.height);
+        const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
+        SteveParams bp;
+        bp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.occlusion ? 1.f : 0.f);
+        bp.depth_const = g_steve_cfg.depth_const;
+        bp.rel_bias = g_steve_cfg.rel_bias;
+        bp.abs_bias = g_steve_cfg.abs_bias;
+        bp.depth_w = static_cast<float>(g_depth_w);
+        bp.depth_h = static_cast<float>(g_depth_h);
+        blocks_drawn = g_steve.drawBlocks(g_s.device, g_s.list, g_s.srv_heap, g_held_table_gpu, g_s.width, g_s.height, vp, bp, f.rtv, idx);
+        if (blocks_drawn) g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
+    }
     if (steve.draw && g_steve.ready()) {
         const float scene_h = g_steve_cfg.scene_height > 0.f ? g_steve_cfg.scene_height : static_cast<float>(g_s.height);
         const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
@@ -800,6 +821,7 @@ void RenderFrame(IDXGISwapChain* sc) {
         sp.tint[0] = 1.f; // Minecraft's hurt flash: red over the lit skin for the 10 ticks after a hit
         sp.tint[1] = sp.tint[2] = 0.f;
         sp.tint[3] = 0.4f * std::min(1.f, steve.hurt * 4.f);
+        sp.keep_depth = blocks_drawn; // the blocks left their depth in the figure's buffer: the figure sorts against them
         sp.held_item = steve.held_item;
         sp.held_table = g_atlas_ready ? g_held_table_gpu : D3D12_GPU_DESCRIPTOR_HANDLE{};
         if (g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
@@ -1014,6 +1036,12 @@ void SetSteveSkin(const uint8_t* rgba, unsigned width, unsigned height) {
     g_skin_rgba.assign(rgba, rgba + static_cast<size_t>(width) * height * 4);
     g_skin_w = width;
     g_skin_h = height;
+}
+
+void SetBlockMesh(const mc::rig::RigMesh& mesh) {
+    std::lock_guard<std::mutex> g(g_block_mutex);
+    g_block_mesh = mesh;
+    g_blocks_dirty.store(true);
 }
 
 void ScreenSize(float& width, float& height) {

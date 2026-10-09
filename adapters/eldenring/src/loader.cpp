@@ -35,6 +35,8 @@
 #include "eldenring_damage.hpp"
 #include "audio_xaudio2.hpp"
 #include "eldenring_audio_data.hpp"
+#include "eldenring_blockmesh.hpp"
+#include "eldenring_blocks.hpp"
 #include "eldenring_los.hpp"
 #include "eldenring_survival.hpp"
 #include "mc/consumables.hpp"
@@ -675,6 +677,10 @@ RayResult CastStaticRay(const float from[3], const float disp[3]) {
     }
     r.ok = std::isfinite(fraction);
     r.fraction = fraction;
+    for (int i = 0; i < 3; ++i) {
+        r.pos[i] = pos.v[i];
+        r.normal[i] = normal.v[i];
+    }
     t_last_ray = r;
     return r;
 }
@@ -1168,6 +1174,177 @@ void CycleHiddenSlot(int& cursor) {
     }
 }
 
+// ---- placed blocks (phase A: our own grid, no physics bodies in the game) ----------------------------------------------------
+// Right click with a block in hand places it, left click on a placed block breaks it. The game's physics knows nothing about the
+// blocks: the player is kept out of them by writing the physics position (soft collision); enemies and arrows ignore them.
+blocks::BlockGrid g_blocks;
+std::mutex g_blocks_mutex;
+std::atomic<bool> g_blocks_enabled{true};      // mc_er_steve.txt: blocks=0 turns placing and breaking off
+std::atomic<bool> g_block_collision{true};     // block_collision=0: the player walks through the blocks
+std::atomic<float> g_reach{4.5f};              // reach, metres (Minecraft survival)
+unsigned g_blocks_sent_version = ~0u;
+
+void SendBlockMesh() {
+    std::lock_guard<std::mutex> g(g_blocks_mutex);
+    if (g_blocks_sent_version == g_blocks.version()) return;
+    g_blocks_sent_version = g_blocks.version();
+    erov::SetBlockMesh(blocks::buildBlockMesh(g_blocks));
+}
+
+struct BlockTarget {
+    bool have{false};
+    bool on_block{false};        // the nearest surface is a placed block (else the game's terrain)
+    blocks::Cell cell;           // the placed block, when on_block
+    blocks::Cell place;          // where a new block would go
+};
+
+// The aim ray: from the player's eye along the camera's forward vector.
+bool AimRay(float eye[3], float dir[3]) {
+    const uintptr_t player = PlayerChrPtr();
+    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    CameraPose cam;
+    float feet[3];
+    if (player == 0 || world == 0 || !readCamera(g_reader, g_img.base, world, cam) || !detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) return false;
+    eye[0] = feet[0];
+    eye[1] = feet[1] + g_eye_height.load();
+    eye[2] = feet[2];
+    for (int i = 0; i < 3; ++i) dir[i] = cam.forward[i];
+    const float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+    if (!(len > 0.5f)) return false;
+    for (float& c : dir) c /= len;
+    return true;
+}
+
+BlockTarget FindBlockTarget() {
+    BlockTarget t;
+    float eye[3], dir[3];
+    if (!AimRay(eye, dir)) return t;
+    const float reach = g_reach.load();
+    std::optional<blocks::GridHit> grid_hit;
+    {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        grid_hit = blocks::raycastGrid(g_blocks, eye, dir, reach);
+    }
+    RayResult world_hit;
+    if (g_los_enabled.load()) {
+        const float disp[3] = {dir[0] * reach, dir[1] * reach, dir[2] * reach};
+        world_hit = CastStaticRay(eye, disp);
+    }
+    const bool terrain = world_hit.ok && world_hit.hit;
+    const float terrain_dist = terrain ? world_hit.fraction * reach : 1e9f;
+    if (grid_hit && grid_hit->distance <= terrain_dist + 0.05f) {
+        t.have = true;
+        t.on_block = true;
+        t.cell = grid_hit->cell;
+        t.place = blocks::placementCellForBlockHit(*grid_hit);
+    } else if (terrain) {
+        t.have = true;
+        t.place = blocks::placementCellForWorldHit(world_hit.pos, world_hit.normal);
+    }
+    return t;
+}
+
+const char* BlockSound(mc::BlockId id) {
+    switch (id) {
+        case mc::BlockId::Stone: return "block.stone.step";
+        case mc::BlockId::Dirt: return "block.gravel.step";
+        default: return "block.grass.step";
+    }
+}
+
+// Right click with a block in hand. Returns true when the click was used (placed, or refused for a reason the player can see).
+bool TryPlaceBlock() {
+    if (!g_blocks_enabled.load()) return false;
+    mc::ItemId held;
+    int slot;
+    {
+        std::lock_guard<std::mutex> g(g_melee_mutex);
+        held = g_melee.heldItem();
+        slot = g_melee.selectedSlot();
+        if (g_melee.countAt(slot) == 0) return false;
+    }
+    const mc::BlockId id = blocks::blockForItem(held);
+    if (id == mc::BlockId::Air) return false;
+    const BlockTarget t = FindBlockTarget();
+    if (!t.have) return true;
+    const uintptr_t player = PlayerChrPtr();
+    float feet[3];
+    if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, feet) && blocks::cellTouchesPlayer(t.place, feet)) return true; // not inside yourself
+    {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        if (!g_blocks.place(t.place, id)) return true;
+    }
+    {
+        std::lock_guard<std::mutex> g(g_melee_mutex);
+        g_melee.consumeAt(slot);
+        g_melee.startSwing();
+    }
+    SendBlockMesh();
+    eraudio::Play(BlockSound(id), 0.8f);
+    Log("blocks: placed %d at (%d %d %d)", static_cast<int>(id), t.place.x, t.place.y, t.place.z);
+    return true;
+}
+
+// Left click on a placed block within reach: breaks it and puts the block in the inventory. Returns true when a block was broken.
+bool TryBreakBlock() {
+    if (!g_blocks_enabled.load()) return false;
+    const BlockTarget t = FindBlockTarget();
+    if (!t.have || !t.on_block) return false;
+    mc::BlockId id;
+    {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        id = g_blocks.get(t.cell);
+        if (!g_blocks.remove(t.cell)) return false;
+    }
+    {
+        std::lock_guard<std::mutex> g(g_melee_mutex);
+        g_melee.inventory().add({blocks::itemForBlock(id), 1});
+        g_melee.startSwing();
+    }
+    SendBlockMesh();
+    eraudio::Play(BlockSound(id), 0.9f);
+    Log("blocks: broke %d at (%d %d %d)", static_cast<int>(id), t.cell.x, t.cell.y, t.cell.z);
+    return true;
+}
+
+// Called every key-thread tick: forgets the blocks when the game loads another map (the world coordinates are not the same any more),
+// and keeps the player out of the blocks.
+void BlocksTick() {
+    static bool prev_loading = false;
+    static unsigned pushes = 0;
+    LoadingState ls;
+    if (readLoadingState(g_reader, readSingleton(g_reader, g_img.base, g_rva_loading, sigs::kCSNowLoadingHelper), ls)) {
+        if (ls.screen_loading && !prev_loading) {
+            std::lock_guard<std::mutex> g(g_blocks_mutex);
+            if (g_blocks.count() != 0) Log("blocks: loading screen, %zu blocks forgotten", g_blocks.count());
+            g_blocks.clear();
+        }
+        prev_loading = ls.screen_loading;
+    }
+    SendBlockMesh();
+    if (!g_block_collision.load() || !g_mc_mode.load()) return;
+    const uintptr_t player = PlayerChrPtr();
+    if (player == 0) return;
+    float feet[3];
+    if (!detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) return;
+    blocks::Resolve r;
+    {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        if (g_blocks.count() == 0) return;
+        r = blocks::resolvePlayer(g_blocks, feet);
+    }
+    if (!r.moved) return;
+    const uintptr_t module = detail::readPhysicsModule(g_reader, g_img.base, player);
+    if (module == 0) return;
+    // +0x70 is the position, +0x80 the previous frame's: both move, so the push is not seen as speed
+    WriteBytesSafe(module + layout::kPhysicsPosition, r.feet, sizeof(r.feet));
+    WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, r.feet, sizeof(r.feet));
+    if (++pushes <= 20 || pushes % 200 == 0) {
+        Log("blocks: pushed the player out (%.2f %.2f %.2f) -> (%.2f %.2f %.2f)%s, %u so far", feet[0], feet[1], feet[2], r.feet[0], r.feet[1], r.feet[2],
+            r.standing ? " standing" : "", pushes);
+    }
+}
+
 // Opens / closes the inventory and drives its virtual pointer. Runs on the key thread before the normal MC input, and takes the
 // click edges while the screen is open so nothing else (attack, eating) reacts to them.
 void InventoryTick(bool fg) {
@@ -1340,8 +1517,12 @@ DWORD WINAPI KeyThread(LPVOID) {
             }
         }
         InventoryTick(fg);
+        BlocksTick();
         const bool inv_open = g_inv_open.load();
-        if (!inv_open && g_input_enabled.load() && erin::TakeRightClick() && fg && WantSuppress() && !PlayerDead()) {
+        const bool right_edge = !inv_open && g_input_enabled.load() && erin::TakeRightClick();
+        if (right_edge && fg && WantSuppress() && !PlayerDead() && TryPlaceBlock()) {
+            // a block was placed (or the click was refused): not a meal
+        } else if (right_edge && fg && WantSuppress() && !PlayerDead()) {
             std::lock_guard<std::mutex> g(g_melee_mutex);
             const mc::ItemId item = g_melee.heldItem();
             if (!g_eating.isEating() && g_melee.countAt(g_melee.selectedSlot()) > 0 && g_eating.startEating(item)) {
@@ -1377,7 +1558,9 @@ DWORD WINAPI KeyThread(LPVOID) {
         if (click_edge && !(fg && g_click_attack.load() && want_suppress) && g_mc_mode.load()) {
             Log("click dropped: fg=%d click_attack=%d suppress=%d", fg ? 1 : 0, g_click_attack.load() ? 1 : 0, want_suppress ? 1 : 0);
         }
-        if (click_edge && fg && g_click_attack.load() && want_suppress) {
+        if (click_edge && fg && g_click_attack.load() && want_suppress && TryBreakBlock()) {
+            // a placed block was broken: the click is used up
+        } else if (click_edge && fg && g_click_attack.load() && want_suppress) {
             float charged;
             {
                 std::lock_guard<std::mutex> g(g_melee_mutex);
@@ -1798,6 +1981,9 @@ void SetupOverlay() {
                 else if (key == "no_player_hit_vfx") g_no_player_hit_vfx.store(value != 0.f);
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "eye_height") g_eye_height.store(value);
+                else if (key == "blocks") g_blocks_enabled.store(value != 0.f);
+                else if (key == "block_collision") g_block_collision.store(value != 0.f);
+                else if (key == "reach") g_reach.store(std::clamp(value, 1.f, 8.f));
                 else if (key == "no_stagger") g_no_stagger.store(value != 0.f);
                 else if (key == "inv_key") g_inv_vk.store(static_cast<int>(value));
                 else if (key == "inv_sens") g_inv_sens.store(std::max(0.1f, value));

@@ -23,6 +23,8 @@ struct RayResult {
     bool ok{false};        // the cast ran; false = unavailable or failed
     bool hit{false};
     float fraction{1.f};   // of `disp`, valid when hit
+    float pos[3]{0.f, 0.f, 0.f};    // where the ray hit and the surface normal there, valid when hit (block placement)
+    float normal[3]{0.f, 1.f, 0.f};
 };
 
 // from, disp (= to - from) -> result.

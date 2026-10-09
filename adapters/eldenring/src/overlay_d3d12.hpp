@@ -78,6 +78,8 @@ enum class FxKind { Crit, Damage, Sweep };
 void SpawnFx(FxKind kind, const float world_pos[3], int count);
 // The back buffer size of the last frame (0 before the first one); the inventory screen needs it to lay itself out.
 void ScreenSize(float& width, float& height);
+// The mesh of the placed blocks (world space, game metres; see eldenring_blockmesh.hpp). Thread safe; the overlay uploads and draws it.
+void SetBlockMesh(const mc::rig::RigMesh& mesh);
 // Debug: bind the next captured 1920x1080 R32G8X24 depth resource (the game creates several).
 void CycleDepthCandidate();
 

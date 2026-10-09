@@ -1002,3 +1002,9 @@ Table 1                     Table 2
 3. "initVelo/gravityInRange 在 Param 头部浮点区、可改写运行时行内存"：没有偏移，没有字节证据；改全局 Param 会影响所有同 ID 子弹（含敌人），不可轻易做。
 4. `+0x44` 位 2 的"抛物线修正"、`+0x14` "槽位覆盖"：只有分支存在的证据，语义是推测。
 **结论**：请求体字段已足够写出一个"发射者 + 无目标 + 自定矩阵 + 指定 BulletParam ID"的最小请求；缺的仍是**一个确认能飞的 BulletParam ID**，要用运行时读 Param 表（`SoloParamRepository` 全局 `0x143D85F68`，未核）或在游戏里记录一次真实射箭的 `[源+0x44]` 来拿。建议先在 `spawn_bullet` 入口做只读日志（不改行为），玩家真射一箭时记下请求体。
+
+### 22.1 方块碰撞：逆向方第一份回复的审计（2026-10-09）
+- **成立（B+）**：`0x140C71128 mov rcx,[rbx+8]; call 0x141682E10` 在 `CSPhysWorld` 的成员清理函数里，`+0x08` 是被引用计数释放的成员。"它的虚表是 `0x142EF0DD8`（hknpWorld）"没有字节直接证明（只能说合理）。
+- **不成立**：`0x141934830` 不是 `hknpWorld::addBody`。我看到的是用 `0x1416C6A70`（字符串流）把 `"addBody Id="` 之类文本拼出来的函数，是 Havok 命令流的调试/转储。真正的 createBody/addBody 地址仍未找到。
+- **无字节证据**：Layer 0/1/3/5/8 的含义、`collisionFilterInfo = 0x00010001`、"步进完成后的同步点 = `WorldChrMan::PostUpdate` / `CSHavokManImp::vfunc[3]`"、`hknpBoxShape` 的存在（我没有在 RTTI 里核到）、写锁在 `hknpWorld+0x14`——都是 Havok 通用知识或推测。
+- 结论：阶段 B 仍缺 (1) 真正的 createBody/addBody 地址与签名，(2) 玩家/敌人碰撞过滤的实测值（要从一个已存在的静态刚体里读出），(3) 一个确认安全的钩子点。阶段 A（软碰撞）不依赖这些。
