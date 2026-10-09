@@ -32,8 +32,8 @@ public:
     // (Re)creates the depth SRV at `slot`; a null resource writes a null descriptor (occlusion must then be off).
     void setDepthView(ID3D12Device* device, ID3D12Resource* depth, D3D12_CPU_DESCRIPTOR_HANDLE slot);
 
-    // Calibration (mode 3): {sum of depth*z*1e6, pixel count, max, min} of the last frame the GPU finished.
-    bool readStats(uint32_t out[4]);
+    // Calibration (mode 3): histogram of K = depth * view z over the figure's pixels, 64 bins, bin = 8 * log2(K / 0.0005).
+    bool readStats(uint32_t out[64]);
 
     // Debug: the scene depth as a grey full-screen overlay (see PSDepthView).
     void drawDepthView(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table,

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
@@ -345,12 +346,23 @@ void RenderFrame(IDXGISwapChain* sc) {
         if (sp.mode > 2.5f) {
             static auto last_log = std::chrono::steady_clock::now();
             const auto t = std::chrono::steady_clock::now();
-            uint32_t st[4];
-            if (t - last_log > std::chrono::seconds(1) && g_steve.readStats(st)) {
+            uint32_t st[64];
+            if (t - last_log > std::chrono::seconds(2) && g_steve.readStats(st)) {
                 last_log = t;
-                if (g_log && st[1] > 0) {
-                    g_log("steve: depth * view z over %u pixels: mean %.5f  min %.5f  max %.5f  (the assumed constant is %.5f)", st[1],
-                          static_cast<double>(st[0]) / st[1] / 1e6, st[3] / 1e6, st[2] / 1e6, g_steve_cfg.depth_const);
+                uint64_t total = 0;
+                for (uint32_t c : st) total += c;
+                if (g_log && total > 0) {
+                    int order[64];
+                    for (int i = 0; i < 64; ++i) order[i] = i;
+                    std::sort(order, order + 64, [&](int x, int y) { return st[x] > st[y]; });
+                    char line[400];
+                    int n = snprintf(line, sizeof(line), "steve: K=depth*z histogram, %llu px; top bins:", static_cast<unsigned long long>(total));
+                    for (int i = 0; i < 5; ++i) {
+                        const double centre = 0.0005 * std::pow(2.0, (order[i] + 0.5) / 8.0);
+                        n += snprintf(line + n, sizeof(line) - static_cast<size_t>(n), " [K~%.5f: %.0f%%]", centre,
+                                      100.0 * st[order[i]] / static_cast<double>(total));
+                    }
+                    g_log("%s (assumed %.5f)", line, g_steve_cfg.depth_const);
                 }
             }
         }
