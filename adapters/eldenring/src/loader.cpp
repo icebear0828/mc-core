@@ -215,7 +215,9 @@ std::atomic<bool> g_click_attack{false};
 std::atomic<int> g_selected_slot{0};
 std::atomic<bool> g_steve_enabled{false};
 std::atomic<bool> g_hide_native{false};
-std::unordered_map<uintptr_t, uint32_t> g_hidden_flags; // disp_flags1 addresses we cleared -> their original value
+std::unordered_map<uintptr_t, uint32_t> g_hidden_flags; // flag word addresses we cleared -> their original value
+std::atomic<uint32_t> g_hide_mask1{layout::kDispVisibleBit}; // bits cleared in disp_flags1 (+0x20)
+std::atomic<uint32_t> g_hide_mask2{0};                       // bits cleared in disp_flags2 (+0x24)
 float g_steve_yaw_offset = 0.f;
 std::atomic<bool> g_require_victim_updating{true};
 DamageQueue g_queue;
@@ -478,18 +480,21 @@ void SetupDamage() {
 void UpdateNativeModel(uintptr_t player, bool hide) {
     if (!hide && g_hidden_flags.empty()) return;
     const std::vector<uintptr_t> addrs = collectDispFlagAddresses(g_reader, g_img.base, player);
-    for (uintptr_t a : addrs) {
-        uint32_t flags = 0;
-        if (!SafeCopy(a, &flags, sizeof(flags))) continue;
-        if (hide) {
-            if ((flags & layout::kDispVisibleBit) != 0) {
-                g_hidden_flags.emplace(a, flags);
-                SafeWrite32(a, flags & ~layout::kDispVisibleBit);
-            }
-        } else {
-            const auto it = g_hidden_flags.find(a);
-            if (it != g_hidden_flags.end()) {
-                SafeWrite32(a, flags | (it->second & layout::kDispVisibleBit));
+    const uint32_t masks[2] = {g_hide_mask1.load(), g_hide_mask2.load()};
+    for (uintptr_t base : addrs) {
+        for (unsigned w = 0; w < 2; ++w) {
+            const uintptr_t a = base + w * (layout::kDispFlags2 - layout::kDispFlags1);
+            if (masks[w] == 0) continue;
+            uint32_t flags = 0;
+            if (!SafeCopy(a, &flags, sizeof(flags))) continue;
+            if (hide) {
+                if ((flags & masks[w]) != 0) {
+                    g_hidden_flags.emplace(a, flags);
+                    SafeWrite32(a, hideBits(flags, masks[w]));
+                }
+            } else {
+                const auto it = g_hidden_flags.find(a);
+                if (it != g_hidden_flags.end()) SafeWrite32(a, restoreBits(flags, it->second, masks[w]));
             }
         }
     }
@@ -572,11 +577,13 @@ void SetupOverlay() {
                 else if (key == "scene_height") cfg.scene_height = value;
                 else if (key == "yaw_offset_deg") g_steve_yaw_offset = value * 3.14159265f / 180.f;
                 else if (key == "hide_native") g_hide_native.store(value != 0.f);
+                else if (key == "hide_mask1") g_hide_mask1.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));
+                else if (key == "hide_mask2") g_hide_mask2.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));
             }
         }
         erov::SetSteveConfig(cfg);
         g_steve_enabled.store(true);
-        Log("steve: hide_native=%d", g_hide_native.load() ? 1 : 0);
+        Log("steve: hide_native=%d mask1=0x%X mask2=0x%X", g_hide_native.load() ? 1 : 0, g_hide_mask1.load(), g_hide_mask2.load());
         Log("steve: enabled (occlusion=%d depth_const=%.4f rel_bias=%.3f abs_bias=%.3f scene_height=%.0f yaw_offset=%.1f deg)",
             cfg.occlusion ? 1 : 0, cfg.depth_const, cfg.rel_bias, cfg.abs_bias, cfg.scene_height, g_steve_yaw_offset * 180.f / 3.14159265f);
     }

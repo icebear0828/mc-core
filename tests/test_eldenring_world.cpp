@@ -459,3 +459,12 @@ TEST(EldenRingModel, RefusesAnObjectOfAnotherClassAndSkipsEmptySlots) {
     m.put<uint64_t>(kPlayer + layout::kAsmModelInPlayerIns, 0);
     EXPECT_TRUE(collectDispFlagAddresses(m, kBase, kPlayer).empty());
 }
+
+TEST(EldenRingModel, HideAndRestoreOnlyTouchMaskedBits) {
+    using namespace eldenring::live;
+    EXPECT_EQ(hideBits(0x000100A1u, 0x1u), 0x000100A0u);
+    EXPECT_EQ(hideBits(0x000100A1u, 0x10001u), 0x000000A0u);
+    // the game flipped bit 5 while hidden: restore must keep that change and only bring back the masked bits
+    EXPECT_EQ(restoreBits(0x00010080u, 0x000100A1u, 0x10001u), 0x00010081u);
+    EXPECT_EQ(restoreBits(0x000100A0u, 0x000100A1u, 0x1u), 0x000100A1u);
+}

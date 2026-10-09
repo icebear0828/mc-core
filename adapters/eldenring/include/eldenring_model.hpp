@@ -20,7 +20,13 @@ inline constexpr unsigned kAsmPartSlots = 27;
 inline constexpr uintptr_t kPartDispEntity = 0x18;
 inline constexpr uintptr_t kDispFlags1 = 0x20;
 inline constexpr uint32_t kDispVisibleBit = 1u;
+inline constexpr uintptr_t kDispFlags2 = 0x24;
 } // namespace layout
+
+// Clears `mask` bits of `flags`; restoring puts back only the masked bits from `original` and keeps the rest of the
+// current value (the game may have changed other bits meanwhile).
+inline uint32_t hideBits(uint32_t flags, uint32_t mask) { return flags & ~mask; }
+inline uint32_t restoreBits(uint32_t flags, uint32_t original, uint32_t mask) { return (flags & ~mask) | (original & mask); }
 
 // Addresses of the disp_flags1 words of every part currently attached to the player. Empty when the model object is
 // missing or not a CSChrAsmModelIns.
