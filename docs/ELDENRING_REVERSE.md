@@ -1051,3 +1051,8 @@ Table 1                     Table 2
 - 用户亲眼所见：瞬移到上方然后落下。
 ### 27.2 爆炸（`BulletParam` 偏移与 ID）
 - 结论"游戏里没有独立的爆炸管理器，爆炸是零初速的大半径子弹"：合理，但**没有给出任何 exe 字节**；`BulletParam` 的 267 字节布局和每个偏移（`hitRadiusMax +0x48`、`spreadTime +0x4C`、`isPenetrateObj +0x98` 等）、ID 10030101/10030201/4300700 都来自参数库（外部资料），**未验证**。想用 TNT/苦力怕的爆炸，需要先拿到弓箭线同样的东西：运行时读 Param 表确认行存在，并能让 `spawn_bullet` 生成成功。
+
+## 28. 审计：召唤物管线（`CSBuddyMan`，逆向方，2026-10-09）
+- 内容：`WorldChrMan` 全局 `[Base+0x3D65F88]`、`+0x1E538` 是 `CSBuddyMan`、`+0x20` 为待召唤骨灰 ID（-1 空）、`+0x24` 当前、`+0x3C` 石碑 ID、`+0x88` 忙计数；调用链 `0x1405120FF → 0x1404B86D0（UpdateTick）→ 0x1404B89C2 call 0x1404BBDD0（生成）`；BuddyParam/NpcParam ID（21200000、36610000…）。
+- **未核**：本轮没有逐条对字节。已知的是我们现有的 `WorldChrMan` 全局（`0x143D69FF8`，见 live.hpp，实测可用）与这份的 `0x143D65F88` **不一致**——必须先弄清楚哪一个才是 `WorldChrMan`（我们那一个已在游戏里验证了几十次），再看 `+0x1E538`。`+0x1E508`（玩家）与我们一致。BuddyParam/NpcParam ID 来自参数库，不是 exe（不采信，需运行时读 Param 表）。
+- 结论：召唤线仍然只有"想法 + 一条未核的调用链"，不做。

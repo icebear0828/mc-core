@@ -330,3 +330,9 @@
 - 清零前的值：`fall_t_before_reset=0.02`、`v1b8_before_reset=0.02`（都很小）——"引擎下落速度累积"的猜测**被推翻**。
 - 新线索：游戏每秒读键盘的次数（日志 `kbd state=`）平时 60，会出现整段为 0（61~78 s、113 s 之后），同时每秒一条 `input: CreateDevice keyboard`（游戏反复重建键盘设备却读不到）；鼠标一直正常。两次都出现在一次 `mcjump: landed` 之后约 1.5 s。键盘被切断时我们自己的 `GetAsyncKeyState` 也读不到 WASD（`pinned=1`），说明更像是游戏窗口丢了系统焦点。
 - 新诊断：`focus: the game is now/no longer the foreground window (foreground: hwnd pid class title)` 记录谁抢了前台；`input: N keyboard reads failed in the last second, last error 0x…` 记录键盘读取失败码。请复现后把这两类日志发来。
+
+## F33 "走不动"= 游戏丢了系统焦点（外部原因）— 提交 `5f0a1c9`
+- 日志：`[33.500] focus: the game is no longer the foreground window (foreground: pid=11988 class='ForegroundStaging')` + `input: 1 keyboard reads failed … 0x8007001E`，随后 `kbd state` 掉到 0，游戏每秒重建键盘设备却再也读不到；鼠标仍正常。pid 11988 是 `explorer.exe`，`ForegroundStaging` 是别的程序抢前台时 Windows 的过渡窗口。
+- 这台机器的交互桌面里同时有 `rustdesk.exe --cm`（远程连接管理器）、另一个项目的 `uvicorn`/`pyright`、微信 `shareSender`，焦点可能被它们抢走；与"跳上方块"本身没有因果（只是都发生在落地后 1~2 s，很可能巧合）。
+- 新增：游戏不在前台时每秒记一行 `focus: away for X s; the foreground is pid class title`（最多 12 行）；可选 `refocus=1`：`ForegroundStaging` 占前台超过 1.2 s 就把焦点抢回游戏（默认关，避免和你自己 Alt-Tab 打架）。
+- 请先关掉 RustDesk 连接和其它在桌面上弹窗的工具再测；如果还有，把 `focus:` 的几行发我。
