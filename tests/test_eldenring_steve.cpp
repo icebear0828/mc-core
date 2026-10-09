@@ -160,3 +160,28 @@ TEST(EldenRingSteve, DeathFallLaysTheFigureOnItsSide) {
     // the side is perpendicular to the heading
     EXPECT_NEAR(dx * std::sin(yaw) + dz * std::cos(yaw), 0.f, 1e-3);
 }
+
+#include "mc/item_model.hpp"
+
+// The third-person held item is built in the right arm's rest pose and drawn with the right arm's matrix: with the ER basis it must
+// end up next to the hand of a standing Steve (metres, y up), not at the feet or kilometres away.
+TEST(EldenRingSteve, HeldItemSitsAtTheRightHandWithTheErBasis) {
+    std::vector<uint8_t> atlas(16 * 16 * 4, 0);
+    for (int y = 2; y < 14; ++y) {
+        for (int x = 7; x < 9; ++x) atlas[(static_cast<size_t>(y) * 16 + x) * 4 + 3] = 255; // a vertical bar
+    }
+    const mc::rig::ItemSprite sprite{atlas.data(), 16, 16, 0, 0, 16, 16};
+    const mc::rig::RigMesh mesh = mc::rig::buildHeldItemMesh(sprite, mc::rig::HeldItemStyle::Handheld, eldenring::render::kBasis);
+    ASSERT_FALSE(mesh.vertices.empty());
+    const mc::rig::Mat4 arm = mc::rig::partMatrix(mc::StevePart::RightArm, mc::Quat{0.f, 0.f, 0.f, 1.f}, {0.f, 0.f, 0.f}, 0.f, eldenring::render::kBasis);
+    float lo_y = 1e9f, hi_y = -1e9f, max_horizontal = 0.f;
+    for (const mc::rig::RigVertex& v : mesh.vertices) {
+        const mc::Vec3 p = mc::rig::transformPoint(arm, {v.x, v.y, v.z});
+        lo_y = std::min(lo_y, p.y);
+        hi_y = std::max(hi_y, p.y);
+        max_horizontal = std::max(max_horizontal, std::sqrt(p.x * p.x + p.z * p.z));
+    }
+    EXPECT_GT(lo_y, 0.2f);
+    EXPECT_LT(hi_y, 1.9f);
+    EXPECT_LT(max_horizontal, 1.2f);
+}

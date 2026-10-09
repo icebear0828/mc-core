@@ -22,6 +22,8 @@ struct SteveParams {
     float abs_bias{0.05f};
     float depth_w{0.f}, depth_h{0.f}; // size of the depth texture, to map back buffer pixels onto it
     float tint[4]{0.f, 0.f, 0.f, 0.f}; // rgb + amount: mixed over the lit skin (hurt flash)
+    uint16_t held_item{0};             // mc::ItemId in the right hand (0 or an item without a sprite: nothing is drawn)
+    D3D12_GPU_DESCRIPTOR_HANDLE held_table{}; // descriptor table (scene depth, atlas) the held item is drawn with
 };
 
 class SteveRenderer {
@@ -63,6 +65,10 @@ public:
                          const mc::rig::Mat4& arm_world, const mc::rig::Mat4& item_world, uint16_t item, D3D12_CPU_DESCRIPTOR_HANDLE rtv);
     [[nodiscard]] bool firstPersonReady() const { return fp_vertices_ != nullptr; }
 
+    // Third person: the held item as Minecraft draws it (a flat sprite extruded one pixel, ItemInHandLayer transform), built from the
+    // atlas cells for every item that is held as a sprite. It is drawn with the right arm's matrix so it follows the swing.
+    bool initHeldItems(ID3D12Device* device, const uint8_t* atlas_rgba, unsigned atlas_w, unsigned atlas_h, const std::vector<FpItemCell>& cells);
+
     // `rtv` is the back buffer view: the figure is drawn with its own depth buffer (so the faces of the boxes and the parts
     // sort correctly), then the caller must bind its render target again without a depth view.
     void draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table,
@@ -86,6 +92,11 @@ private:
     D3D12_INDEX_BUFFER_VIEW fp_ibv_{};
     FpDraw fp_arm_[2]{};
     std::map<uint16_t, FpDraw> fp_items_;
+    ID3D12Resource* held_vertices_{nullptr};
+    ID3D12Resource* held_indices_{nullptr};
+    D3D12_VERTEX_BUFFER_VIEW held_vbv_{};
+    D3D12_INDEX_BUFFER_VIEW held_ibv_{};
+    std::map<uint16_t, FpDraw> held_items_;
     ID3D12Resource* own_depth_{nullptr};
     ID3D12DescriptorHeap* dsv_heap_{nullptr};
     unsigned own_depth_w_{0}, own_depth_h_{0};

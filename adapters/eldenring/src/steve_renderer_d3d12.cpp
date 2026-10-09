@@ -378,6 +378,41 @@ bool SteveRenderer::initFirstPerson(ID3D12Device* device, const uint8_t* atlas_r
     return true;
 }
 
+bool SteveRenderer::initHeldItems(ID3D12Device* device, const uint8_t* atlas_rgba, unsigned atlas_w, unsigned atlas_h,
+                                  const std::vector<FpItemCell>& cells) {
+    Rel(held_vertices_);
+    Rel(held_indices_);
+    held_items_.clear();
+    if (!atlas_rgba) return false;
+    std::vector<mc::rig::RigVertex> vertices;
+    std::vector<uint16_t> indices;
+    for (const FpItemCell& cell : cells) {
+        const mc::ItemId item = static_cast<mc::ItemId>(cell.item);
+        if (!mc::rig::isHeldAsFlatSprite(item)) continue;
+        const mc::rig::ItemSprite sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
+        const mc::rig::RigMesh mesh = mc::rig::buildHeldItemMesh(sprite, mc::rig::heldItemStyle(item), eldenring::render::kBasis);
+        if (mesh.vertices.empty()) continue;
+        FpDraw d;
+        d.base_vertex = static_cast<int>(vertices.size());
+        d.first_index = static_cast<unsigned>(indices.size());
+        d.index_count = static_cast<unsigned>(mesh.indices.size());
+        vertices.insert(vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
+        indices.insert(indices.end(), mesh.indices.begin(), mesh.indices.end());
+        held_items_[cell.item] = d;
+    }
+    if (vertices.empty()) return false;
+    held_vertices_ = UploadBuffer(device, vertices.data(), vertices.size() * sizeof(mc::rig::RigVertex));
+    held_indices_ = UploadBuffer(device, indices.data(), indices.size() * sizeof(uint16_t));
+    if (!held_vertices_ || !held_indices_) {
+        Rel(held_vertices_);
+        Rel(held_indices_);
+        return false;
+    }
+    held_vbv_ = {held_vertices_->GetGPUVirtualAddress(), static_cast<UINT>(vertices.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
+    held_ibv_ = {held_indices_->GetGPUVirtualAddress(), static_cast<UINT>(indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
+    return true;
+}
+
 void SteveRenderer::drawFirstPerson(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE skin_table,
                                     D3D12_GPU_DESCRIPTOR_HANDLE atlas_table, unsigned width, unsigned height, const mc::rig::Mat4& projection,
                                     const mc::rig::Mat4& arm_world, const mc::rig::Mat4& item_world, uint16_t item, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
@@ -598,6 +633,16 @@ void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* 
     for (size_t p = 0; p < static_cast<size_t>(mc::StevePart::Count); ++p) {
         list->SetGraphicsRoot32BitConstants(0, 16, parts[p].m.data(), 16);
         list->DrawIndexedInstanced(index_count_[p], 1, first_index_[p], base_vertex_[p], 0);
+    }
+    if (params.held_item != 0 && held_vertices_ && params.held_table.ptr != 0) {
+        const auto it = held_items_.find(params.held_item);
+        if (it != held_items_.end()) {
+            list->SetGraphicsRootDescriptorTable(1, params.held_table); // the item is a cell of the atlas, depth is the scene's
+            list->IASetVertexBuffers(0, 1, &held_vbv_);
+            list->IASetIndexBuffer(&held_ibv_);
+            list->SetGraphicsRoot32BitConstants(0, 16, parts[static_cast<size_t>(mc::StevePart::RightArm)].m.data(), 16);
+            list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
+        }
     }
     if (measure) {
         D3D12_RESOURCE_BARRIER b{};

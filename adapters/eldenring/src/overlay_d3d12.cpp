@@ -93,6 +93,8 @@ UINT g_depth_w = 0, g_depth_h = 0;
 std::atomic<bool> g_depth_dirty{false};
 D3D12_CPU_DESCRIPTOR_HANDLE g_depth_cpu{};
 D3D12_GPU_DESCRIPTOR_HANDLE g_depth_gpu{};
+D3D12_CPU_DESCRIPTOR_HANDLE g_depth_copy_cpu{}; // slot 6: the same depth view again, in front of the atlas (held item table)
+D3D12_GPU_DESCRIPTOR_HANDLE g_held_table_gpu{};
 
 // The DIRECT queue the game submits on. Written by any thread inside ExecuteCommandLists.
 std::atomic<ID3D12CommandQueue*> g_queue{nullptr};
@@ -223,7 +225,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
     rtv_desc.NumDescriptors = g_s.buffers;
     D3D12_DESCRIPTOR_HEAP_DESC srv_desc{};
     srv_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    srv_desc.NumDescriptors = 6; // 0: ImGui font, 1: scene depth, 2: Steve skin (1 and 2 form one table), 3: HUD atlas, 4: (unused depth), 5: atlas again (4 and 5 form the table for held items)
+    srv_desc.NumDescriptors = 8; // 0: ImGui font, 1: scene depth, 2: Steve skin (1 and 2 form one table), 3: HUD atlas, 4: (unused depth), 5: atlas again (4 and 5 form the table for first-person items), 6: scene depth copy, 7: atlas again (6 and 7 form the table for the third-person held item)
     srv_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(g_s.device->CreateDescriptorHeap(&rtv_desc, IID_PPV_ARGS(&g_s.rtv_heap))) ||
         FAILED(g_s.device->CreateDescriptorHeap(&srv_desc, IID_PPV_ARGS(&g_s.srv_heap)))) {
@@ -318,6 +320,9 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             }
             g_fp_built = g_steve.initFirstPerson(g_s.device, g_atlas_rgba.empty() ? nullptr : g_atlas_rgba.data(), g_atlas_w, g_atlas_h, cells);
             Logf(g_fp_built ? "overlay: first-person view model ready" : "overlay: first-person view model failed");
+            Logf(g_steve.initHeldItems(g_s.device, g_atlas_rgba.empty() ? nullptr : g_atlas_rgba.data(), g_atlas_w, g_atlas_h, cells)
+                     ? "overlay: third-person held items ready"
+                     : "overlay: third-person held items failed");
         }
     }
     g_s.last_frame = std::chrono::steady_clock::now();
@@ -402,6 +407,15 @@ void CreateAtlasTexture(UINT srv_inc) {
         g_s.device->CreateShaderResourceView(g_atlas_tex, &sd, c5);
         g_item_table_gpu = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
         g_item_table_gpu.ptr += static_cast<UINT64>(srv_inc) * 4;
+        // The third-person held item: slot 6 follows the scene depth (see RenderFrame), slot 7 is the atlas.
+        g_depth_copy_cpu = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
+        g_depth_copy_cpu.ptr += static_cast<SIZE_T>(srv_inc) * 6;
+        D3D12_CPU_DESCRIPTOR_HANDLE c7 = g_depth_copy_cpu;
+        c7.ptr += srv_inc;
+        g_steve.setDepthView(g_s.device, g_depth_res, g_depth_copy_cpu);
+        g_s.device->CreateShaderResourceView(g_atlas_tex, &sd, c7);
+        g_held_table_gpu = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
+        g_held_table_gpu.ptr += static_cast<UINT64>(srv_inc) * 6;
     }
     g_atlas_pending = true;
     g_atlas_ready = true;
@@ -695,6 +709,7 @@ void RenderFrame(IDXGISwapChain* sc) {
     if (g_depth_dirty.exchange(false)) {
         std::lock_guard<std::mutex> g(g_depth_mutex);
         g_steve.setDepthView(g_s.device, g_depth_res, g_depth_cpu);
+        if (g_depth_copy_cpu.ptr != 0) g_steve.setDepthView(g_s.device, g_depth_res, g_depth_copy_cpu);
     }
 
     const UINT idx = g_s.swap->GetCurrentBackBufferIndex();
@@ -785,6 +800,8 @@ void RenderFrame(IDXGISwapChain* sc) {
         sp.tint[0] = 1.f; // Minecraft's hurt flash: red over the lit skin for the 10 ticks after a hit
         sp.tint[1] = sp.tint[2] = 0.f;
         sp.tint[3] = 0.4f * std::min(1.f, steve.hurt * 4.f);
+        sp.held_item = steve.held_item;
+        sp.held_table = g_atlas_ready ? g_held_table_gpu : D3D12_GPU_DESCRIPTOR_HANDLE{};
         if (g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
             g_steve.draw(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, parts, sp, f.rtv);
             g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr); // ImGui draws without a depth view
