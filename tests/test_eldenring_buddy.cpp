@@ -212,3 +212,28 @@ TEST(BuddySummon, NewEntitiesAreTheOnesMissingFromTheBaseline) {
     EXPECT_TRUE(buddy::newEntities(after, after).empty());
     EXPECT_EQ(buddy::newEntities({}, after).size(), after.size());
 }
+
+TEST(Buddy, ReadsTheSpawnPointAndHeadingTheSpawnFunctionUses) {
+    // 0x1404BBDD0 adds [man+0xA0..0xAC] to each unit's offset, rotated by the angle at [man+0xB0].
+    auto m = world();
+    const float pos[4] = {101.5f, 22.25f, -7.75f, 1.0f};
+    for (int i = 0; i < 4; ++i) m.put<float>(kMan + 0xA0 + 4 * i, pos[i]);
+    m.put<float>(kMan + 0xB0, 1.5f);
+    const auto s = buddy::sample(m, kBase);
+    ASSERT_TRUE(s.valid);
+    EXPECT_FLOAT_EQ(s.spawn_pos[0], 101.5f);
+    EXPECT_FLOAT_EQ(s.spawn_pos[1], 22.25f);
+    EXPECT_FLOAT_EQ(s.spawn_pos[2], -7.75f);
+    EXPECT_FLOAT_EQ(s.spawn_pos[3], 1.0f);
+    EXPECT_FLOAT_EQ(s.spawn_yaw, 1.5f);
+    buddy::Monitor mon;
+    const std::string text = mon.update(s);
+    EXPECT_NE(text.find("spawn=(101.50 22.25 -7.75 1.00) yaw=1.50"), std::string::npos) << text;
+}
+
+TEST(Buddy, TheRawDumpCoversTheSpawnPointToo) {
+    auto m = world();
+    m.put<uint32_t>(kMan + 0xB0, 0xCAFEF00D);
+    buddy::Monitor mon;
+    EXPECT_NE(mon.update(buddy::sample(m, kBase)).find("CAFEF00D"), std::string::npos);
+}

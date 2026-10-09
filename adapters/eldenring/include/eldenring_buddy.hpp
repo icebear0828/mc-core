@@ -16,6 +16,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <optional>
 #include <algorithm>
 #include <string>
@@ -30,7 +31,9 @@ inline constexpr uintptr_t kActiveId = 0x24;                 // A (int32)
 inline constexpr uintptr_t kTabletId = 0x3C;                 // A (int32)
 inline constexpr uintptr_t kSummonedFlag = 0x80;             // B (int32): 1 once the world is up, 0 when leaving it (NOT 'ash summoned')
 inline constexpr uintptr_t kBusyCount = 0x88;                // A (int32): observed -1 in both states
-inline constexpr size_t kRawBytes = 0x98;                    // dumped on every change, to find the neighbours' meaning
+inline constexpr uintptr_t kSpawnPos = 0xA0;                 // B (4 floats): where the units appear; added to each unit's offset at 0x1404BC159
+inline constexpr uintptr_t kSpawnYaw = 0xB0;                 // B (float): heading the offsets are rotated by (0x1404BC09E)
+inline constexpr size_t kRawBytes = 0xC0;                    // dumped on every change, to find the neighbours' meaning
 } // namespace layout
 
 struct Snapshot {
@@ -42,6 +45,8 @@ struct Snapshot {
     int32_t tablet{-1};
     int32_t busy{0};
     int32_t summoned{0};
+    float spawn_pos[4]{};
+    float spawn_yaw{0.f};
     std::array<uint32_t, layout::kRawBytes / 4> raw{};
 
     [[nodiscard]] bool sameFields(const Snapshot& o) const {
@@ -65,6 +70,8 @@ inline Snapshot sample(const live::IMemoryReader& reader, uintptr_t image_base) 
     s.tablet = field(layout::kTabletId);
     s.busy = field(layout::kBusyCount);
     s.summoned = field(layout::kSummonedFlag);
+    std::memcpy(s.spawn_pos, &s.raw[layout::kSpawnPos / 4], sizeof(s.spawn_pos));
+    std::memcpy(&s.spawn_yaw, &s.raw[layout::kSpawnYaw / 4], sizeof(s.spawn_yaw));
     const uint64_t vt = (static_cast<uint64_t>(s.raw[1]) << 32) | s.raw[0];
     if (vt > image_base && vt - image_base < 0x10000000ull) s.vtable_rva = static_cast<uint32_t>(vt - image_base);
     s.valid = true;
@@ -93,6 +100,10 @@ private:
                       static_cast<unsigned long long>(s.buddy_man), s.vtable_rva, s.request, s.active, s.tablet, s.busy, s.summoned,
                       prev == nullptr ? " (first)" : "");
         out = buf;
+        std::snprintf(buf, sizeof(buf), "\nbuddy: spawn=(%.2f %.2f %.2f %.2f) yaw=%.2f", static_cast<double>(s.spawn_pos[0]),
+                      static_cast<double>(s.spawn_pos[1]), static_cast<double>(s.spawn_pos[2]), static_cast<double>(s.spawn_pos[3]),
+                      static_cast<double>(s.spawn_yaw));
+        out += buf;
         out += "\nbuddy: raw";
         for (size_t i = 0; i < s.raw.size(); ++i) {
             if (i % 8 == 0) {

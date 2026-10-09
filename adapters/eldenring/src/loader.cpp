@@ -1008,6 +1008,8 @@ void DrainOnce(uintptr_t updating_data_module) {
 
 // Experiment (mc_er_summon.txt + F2): asks the ash manager for a Wolf Pack summon the way the item code does (tablet id and
 // request together). Runs on the game thread. Logs the manager before and after, so a failure is visible either way.
+void LogPlayerPoseForBuddy(); // defined below
+
 void RunSummonExperiment() {
     constexpr int32_t kWolfPackRequest = 232000;     // ash 2320 * 100 + level 0, observed live
     constexpr int32_t kTabletEntityId = 1042360100;  // the tablet entity observed with it (Limgrave tile 42_36)
@@ -1029,6 +1031,10 @@ void RunSummonExperiment() {
     Log("summon: wrote tablet=%d request=%d (%s) | before request=%d active=%d tablet=%d | right after request=%d active=%d tablet=%d",
         plan->tablet, plan->request, r_ok ? "ok" : "WRITE FAILED", before.request, before.active, before.tablet, after.request, after.active,
         after.tablet);
+    Log("summon: spawn point in the manager was (%.2f %.2f %.2f %.2f) yaw=%.2f", static_cast<double>(before.spawn_pos[0]),
+        static_cast<double>(before.spawn_pos[1]), static_cast<double>(before.spawn_pos[2]), static_cast<double>(before.spawn_pos[3]),
+        static_cast<double>(before.spawn_yaw));
+    LogPlayerPoseForBuddy();
 }
 
 void* __fastcall ClampDetour(void* module, int32_t value) {
@@ -1176,6 +1182,18 @@ void LogPhysicsVectors() {
 // in the game directory (looked for once a second); works outside MC mode so ashes can be used normally. The request slot
 // (+0x20) lives for less than a frame, so while armed this thread polls as fast as it can (one core busy; delete the file
 // to stop). Never writes to the game.
+// The player's own position (PhysicsModule+0x70) and heading, next to a buddy log entry: to compare with the spawn point
+// the item code writes into the manager (read only).
+void LogPlayerPoseForBuddy() {
+    const uintptr_t player = PlayerChrPtr();
+    float pos[3], q[4];
+    if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, pos) &&
+        detail::readPhysicsOrientation(g_reader, g_img.base, player, q)) {
+        Log("buddy: player pos=(%.2f %.2f %.2f) heading=%.2f", pos[0], pos[1], pos[2],
+            eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]));
+    }
+}
+
 DWORD WINAPI BuddyThread(LPVOID) {
     eldenring::buddy::Monitor monitor;
     uint64_t last_check_ms = 0;
@@ -1193,7 +1211,10 @@ DWORD WINAPI BuddyThread(LPVOID) {
             continue;
         }
         const std::string text = monitor.update(eldenring::buddy::sample(g_reader, g_img.base));
-        if (!text.empty()) Log("%s", text.c_str());
+        if (!text.empty()) {
+            Log("%s", text.c_str());
+            LogPlayerPoseForBuddy();
+        }
         YieldProcessor();
         SwitchToThread();
     }
