@@ -1389,6 +1389,30 @@ void DriveVelocityFromKeys(uintptr_t module, bool force_zero) {
     WriteBytesSafe(module + 0x120 + 8, &vz, sizeof(vz));
 }
 
+// The fall module is slot 14 of the character's module container (three callers load it with [[chr+0x190]+0x70], REVERSE 26). Its +0x18
+// is a float the game compares with a threshold (the time spent in the air, per the reverser) and +0x1E a flag it checks. Standing on a
+// block or flying our own arc tells the game the player is in the air for far longer than the real ground allows, so the timer is kept at 0.
+uintptr_t FallModuleOf(uintptr_t chr) {
+    uint64_t container = 0, fall = 0;
+    if (chr == 0 || !SafeCopy(chr + layout::kModuleContainerInChrIns, &container, sizeof(container)) || container == 0 ||
+        !SafeCopy(static_cast<uintptr_t>(container) + 0x70, &fall, sizeof(fall))) {
+        return 0;
+    }
+    return static_cast<uintptr_t>(fall);
+}
+float FallTimer(uintptr_t chr) {
+    float t = -1.f;
+    if (const uintptr_t fall = FallModuleOf(chr)) SafeCopy(fall + 0x18, &t, sizeof(t));
+    return t;
+}
+void ResetFallTimer(uintptr_t chr) {
+    if (!g_fall_protect.load(std::memory_order_relaxed)) return;
+    if (const uintptr_t fall = FallModuleOf(chr)) {
+        const float zero = 0.f;
+        WriteBytesSafe(fall + 0x18, &zero, sizeof(zero));
+    }
+}
+
 // Keeps the player out of the blocks. Runs on the game thread, at the start of every camera update (the game's own per-frame hook), so
 // the physics position is never written while the game is using it and the camera sees the corrected position.
 void BlocksCollisionStep() {
@@ -1464,7 +1488,10 @@ void BlocksCollisionStep() {
         WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, final_feet, sizeof(final_feet));
     }
     if (module != 0 && supported && g_block_drive.load(std::memory_order_relaxed)) DriveVelocityFromKeys(module, pinned);
-    if (supported) g_movement_layer_ms.store(GetTickCount64(), std::memory_order_relaxed);
+    if (supported) {
+        g_movement_layer_ms.store(GetTickCount64(), std::memory_order_relaxed);
+        ResetFallTimer(player);
+    }
     if (module != 0 && supported) {
         // The game has no ground under a block, so it thinks the player is falling (no jump, restricted movement). While the player
         // rests on a block the "on the ground" flags the game itself shows after landing are set (ground: 92=1 93=1 1D0=0 1D1=1) and
@@ -1497,9 +1524,9 @@ void BlocksCollisionStep() {
         }
         float vel[3] = {};
         if (module != 0) SafeCopy(module + 0x120, vel, sizeof(vel));
-        Log("blocks: standing diag: feet=(%.2f %.2f %.2f) cam=(%.2f %.2f %.2f) first_person=%d 92=%u 93=%u vel=(%.2f %.2f %.2f) pinned=%d", final_feet[0], final_feet[1],
+        Log("blocks: standing diag: feet=(%.2f %.2f %.2f) cam=(%.2f %.2f %.2f) first_person=%d 92=%u 93=%u vel=(%.2f %.2f %.2f) pinned=%d fall_t=%.2f", final_feet[0], final_feet[1],
             final_feet[2], have_cam ? cam.position[0] : 0.f, have_cam ? cam.position[1] : 0.f, have_cam ? cam.position[2] : 0.f, g_first_person.load() ? 1 : 0, flags[0],
-            flags[1], vel[0], vel[1], vel[2], pinned ? 1 : 0);
+            flags[1], vel[0], vel[1], vel[2], pinned ? 1 : 0, FallTimer(player));
     }
 }
 
@@ -1575,6 +1602,7 @@ void McJumpStep() {
     }
 
     g_movement_layer_ms.store(GetTickCount64(), std::memory_order_relaxed);
+    ResetFallTimer(player);
     // integrate (semi-implicit Euler)
     vy -= g_mc_gravity.load() * dt;
     float ny = y + vy * dt;
@@ -1630,7 +1658,7 @@ void McJumpStep() {
         WriteBytesSafe(module + 0x1D1, &one, 1);
         WriteBytesSafe(module + 0x1D0, &zero, 1);
         active = false;
-        Log("mcjump: landed, peak %.2f m, %.2f s in the air", peak, static_cast<float>(GetTickCount64() - start_ms) / 1000.f);
+        Log("mcjump: landed, peak %.2f m, %.2f s in the air, fall timer %.2f", peak, static_cast<float>(GetTickCount64() - start_ms) / 1000.f, FallTimer(player));
     } else {
         WriteBytesSafe(module + 0x92, &zero, 1); // stay in the air state: the game must not snap the player to the ground
         WriteBytesSafe(module + 0x1D0, &one, 1);
