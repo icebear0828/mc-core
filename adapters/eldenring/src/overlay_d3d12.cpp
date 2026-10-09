@@ -57,6 +57,7 @@ bool g_atlas_pending = false;
 D3D12_GPU_DESCRIPTOR_HANDLE g_atlas_gpu{};
 bool g_atlas_ready = false;
 void CreateAtlasTexture(UINT srv_inc); // defined with the HUD drawing below
+std::atomic<int> g_trace_left{0}; // F12: frames of per-frame figure/camera positions still to write to the log
 std::vector<uint8_t> g_skin_rgba; // decoded by the loader; applied when the renderer is created
 unsigned g_skin_w = 0, g_skin_h = 0;
 SteveRenderer g_steve;
@@ -534,6 +535,14 @@ void RenderFrame(IDXGISwapChain* sc) {
         mc::SteveAnimInput anim_in = g_motion.update(dt, steve.feet, steve.yaw);
         anim_in.swing_progress = steve.swing;
         g_anim.update(dt, anim_in);
+        if (g_trace_left.load() > 0) {
+            g_trace_left.fetch_sub(1);
+            char tr[220];
+            snprintf(tr, sizeof(tr), "trace: dt=%.4f feet=%.4f %.4f %.4f cam=%.4f %.4f %.4f yaw=%.3f fwd=%.3f strafe=%.3f", dt, steve.feet[0],
+                     steve.feet[1], steve.feet[2], steve.cam.position.x, steve.cam.position.y, steve.cam.position.z, steve.yaw,
+                     anim_in.forward_speed, anim_in.strafe_speed);
+            Logf(tr);
+        }
         auto parts = eldenring::render::posedMatrices(g_anim.getTransforms(), {steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw);
         g_death_seconds = steve.dead ? g_death_seconds + dt : 0.f;
         if (g_death_seconds > 0.f) {
@@ -548,7 +557,10 @@ void RenderFrame(IDXGISwapChain* sc) {
         sp.abs_bias = g_steve_cfg.abs_bias;
         sp.depth_w = static_cast<float>(g_depth_w);
         sp.depth_h = static_cast<float>(g_depth_h);
-        g_steve.draw(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, parts, sp);
+        if (g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
+            g_steve.draw(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, parts, sp, f.rtv);
+            g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr); // ImGui draws without a depth view
+        }
         if (sp.mode > 2.5f) {
             static auto last_log = std::chrono::steady_clock::now();
             const auto t = std::chrono::steady_clock::now();
@@ -713,6 +725,8 @@ bool ResolveTargets(void*& present, void*& resize, void*& execute, void*& create
 } // namespace
 
 void SetSteveConfig(const SteveConfig& cfg) { g_steve_cfg = cfg; }
+
+void RequestFrameTrace(int frames) { g_trace_left.store(frames); }
 
 void SetHudAtlas(const uint8_t* rgba, unsigned width, unsigned height) {
     g_atlas_rgba.assign(rgba, rgba + static_cast<size_t>(width) * height * 4);

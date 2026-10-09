@@ -33,6 +33,9 @@ public:
     // heap (the two share one descriptor table: t0 depth, t1 skin). The pixels are copied to the GPU by the first draw().
     bool setSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
 
+    // The figure's own depth buffer (D32_FLOAT, standard 0..1 depth, cleared by draw()). Recreated when the size changes.
+    bool ensureDepth(ID3D12Device* device, unsigned width, unsigned height);
+
     // (Re)creates the depth SRV at `slot`; a null resource writes a null descriptor (occlusion must then be off).
     void setDepthView(ID3D12Device* device, ID3D12Resource* depth, D3D12_CPU_DESCRIPTOR_HANDLE slot);
 
@@ -44,9 +47,11 @@ public:
                        unsigned width, unsigned height, float gain, float depth_w, float depth_h);
 
     // Records the draw calls. `srv_heap` must be the heap that holds the depth SRV at `depth_table` (GPU handle).
+    // `rtv` is the back buffer view: the figure is drawn with its own depth buffer (so the faces of the boxes and the parts
+    // sort correctly), then the caller must bind its render target again without a depth view.
     void draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table,
               unsigned width, unsigned height, const mc::rig::Mat4& view_proj, const eldenring::render::PartMatrices& parts,
-              const SteveParams& params);
+              const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv);
 
 private:
     ID3D12RootSignature* root_{nullptr};
@@ -55,6 +60,9 @@ private:
     ID3D12Resource* stats_{nullptr};
     ID3D12Resource* stats_init_{nullptr};
     ID3D12Resource* stats_readback_{nullptr};
+    ID3D12Resource* own_depth_{nullptr};
+    ID3D12DescriptorHeap* dsv_heap_{nullptr};
+    unsigned own_depth_w_{0}, own_depth_h_{0};
     ID3D12Resource* skin_tex_{nullptr};
     ID3D12Resource* skin_upload_{nullptr};
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT skin_footprint_{};

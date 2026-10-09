@@ -258,7 +258,11 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
     pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE; // 12 boxes: no need to trust the mesh winding
     pd.RasterizerState.DepthClipEnable = TRUE;
-    pd.DepthStencilState.DepthEnable = FALSE; // occlusion is done in the pixel shader
+    // Occlusion by the game's scene is done in the pixel shader; the figure's own faces are sorted by its own depth buffer.
+    pd.DepthStencilState.DepthEnable = TRUE;
+    pd.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    pd.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+    pd.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pd.NumRenderTargets = 1;
     pd.RTVFormats[0] = rtv_format;
@@ -271,6 +275,8 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
         fd.VS = {vs_full->GetBufferPointer(), vs_full->GetBufferSize()};
         fd.PS = {ps_full->GetBufferPointer(), ps_full->GetBufferSize()};
         fd.InputLayout = {nullptr, 0};
+        fd.DepthStencilState.DepthEnable = FALSE; // the depth view overlay has no depth buffer
+        fd.DSVFormat = DXGI_FORMAT_UNKNOWN;
         fd.BlendState.RenderTarget[0].BlendEnable = TRUE;
         fd.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
         fd.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
@@ -291,6 +297,9 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
 }
 
 void SteveRenderer::release() {
+    Rel(own_depth_);
+    Rel(dsv_heap_);
+    own_depth_w_ = own_depth_h_ = 0;
     Rel(skin_tex_);
     Rel(skin_upload_);
     skin_pending_ = false;
@@ -312,6 +321,39 @@ bool SteveRenderer::readStats(uint32_t out[64]) {
     std::memcpy(out, mapped, 256);
     D3D12_RANGE none{0, 0};
     stats_readback_->Unmap(0, &none);
+    return true;
+}
+
+bool SteveRenderer::ensureDepth(ID3D12Device* device, unsigned width, unsigned height) {
+    if (own_depth_ && own_depth_w_ == width && own_depth_h_ == height) return true;
+    Rel(own_depth_);
+    if (!dsv_heap_) {
+        D3D12_DESCRIPTOR_HEAP_DESC hd{};
+        hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+        hd.NumDescriptors = 1;
+        if (FAILED(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&dsv_heap_)))) return false;
+    }
+    D3D12_HEAP_PROPERTIES hp{};
+    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC rd{};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    rd.Width = width;
+    rd.Height = height;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1;
+    rd.Format = DXGI_FORMAT_D32_FLOAT;
+    rd.SampleDesc.Count = 1;
+    rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    D3D12_CLEAR_VALUE cv{};
+    cv.Format = DXGI_FORMAT_D32_FLOAT;
+    cv.DepthStencil.Depth = 1.0f;
+    if (FAILED(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &cv, IID_PPV_ARGS(&own_depth_)))) {
+        return false;
+    }
+    device->CreateDepthStencilView(own_depth_, nullptr, dsv_heap_->GetCPUDescriptorHandleForHeapStart());
+    own_depth_w_ = width;
+    own_depth_h_ = height;
     return true;
 }
 
@@ -400,8 +442,8 @@ void SteveRenderer::drawDepthView(ID3D12GraphicsCommandList* list, ID3D12Descrip
 
 void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table,
                          unsigned width, unsigned height, const mc::rig::Mat4& view_proj,
-                         const eldenring::render::PartMatrices& parts, const SteveParams& params) {
-    if (!ready()) return;
+                         const eldenring::render::PartMatrices& parts, const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
+    if (!ready() || !own_depth_ || !dsv_heap_) return;
     if (skin_pending_ && skin_tex_ && skin_upload_) {
         D3D12_TEXTURE_COPY_LOCATION dst{};
         dst.pResource = skin_tex_;
@@ -425,6 +467,9 @@ void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* 
     D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
     list->RSSetViewports(1, &vp);
     list->RSSetScissorRects(1, &sc);
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
+    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+    list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
     list->SetPipelineState(pso_);
     list->SetGraphicsRootSignature(root_);
     ID3D12DescriptorHeap* heaps[] = {srv_heap};

@@ -746,6 +746,7 @@ DWORD WINAPI KeyThread(LPVOID) {
     bool prev9 = false;
     bool prev10 = false;
     bool prev11 = false;
+    bool prev12 = false;
     int slot_cursor = -1; // -1 = all slots, 0..26 = only that part slot
     uint64_t last_ms = GetTickCount64();
     for (;;) {
@@ -808,6 +809,12 @@ DWORD WINAPI KeyThread(LPVOID) {
         const bool d9 = fg && (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
         if (d9 && !prev9 && g_hide_native.load()) CycleHiddenSlot(slot_cursor);
         prev9 = d9;
+        const bool d12 = fg && (GetAsyncKeyState(VK_F12) & 0x8000) != 0;
+        if (d12 && !prev12) {
+            erov::RequestFrameTrace(240);
+            Log("F12: tracing 240 frames of figure and camera positions");
+        }
+        prev12 = d12;
         const bool d11 = fg && (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
         if (d11 && !prev11) SnapshotNativeParts();
         prev11 = d11;

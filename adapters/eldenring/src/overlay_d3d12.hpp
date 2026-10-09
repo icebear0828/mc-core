@@ -50,6 +50,8 @@ void SetSteveSkin(const uint8_t* rgba, unsigned width, unsigned height);
 // The HUD atlas (RGBA8, 256x256, the locally extracted mc_hud_atlas.png); call before the overlay is created. Without it the HUD
 // is drawn with plain rectangles.
 void SetHudAtlas(const uint8_t* rgba, unsigned width, unsigned height);
+// Writes `frames` lines of per-frame figure and camera positions to the log (diagnosing jitter).
+void RequestFrameTrace(int frames);
 // Debug: bind the next captured 1920x1080 R32G8X24 depth resource (the game creates several).
 void CycleDepthCandidate();
 
