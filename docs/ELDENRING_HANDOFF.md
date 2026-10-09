@@ -162,6 +162,7 @@
 6. 玩家被毒/腐败/坠落致死时图腾救不了（它们不走 `ProcessDamageContext`）；脚步材质固定草地。
 
 **方块（阶段 A 已做，待实测）**：`eldenring_blocks.hpp`（网格、射线、放置落点、软碰撞）、`eldenring_blockmesh.hpp`、渲染在 `SteveRenderer::drawBlocks`；真实 Havok 碰撞（阶段 B）见 REVERSE 22。
+**HUD 还原到原版 MC（用户 2026-10-09 提出，不急，后做）**：扣血/回血的原版动画（心形受伤闪烁、回血时心跳动/闪白、低血量抖动）、饥饿条（现在 HUD 只有心，没有饥饿格）、经验条与等级数字、护甲条、氧气泡。素材走 `tools/extract_mc_assets.py` 追加精灵（`gui/sprites/hud/...`），逻辑放纯函数写测试。
 **不做**：Havok 方块碰撞（阶段 B，逆向方自己降级为高风险）、敌人受击变红、手柄支持。
 
 ---
