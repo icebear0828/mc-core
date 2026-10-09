@@ -9,6 +9,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <psapi.h>
+#include <tlhelp32.h>
 #include <unknwn.h>
 
 #include <MinHook.h>
@@ -448,6 +449,94 @@ uint64_t __fastcall CameraStepDetour(uint64_t a1, uint64_t a2, uint64_t a3, uint
     const uint64_t r = g_camstep_orig(a1, a2, a3, a4, a5, a6, a7, a8);
     AfterCameraStep(have, addr, before);
     return r;
+}
+
+
+// ---- camera write watch (diagnostic, opt-in: mc_er_camwatch.txt) ----------------------------------------------------------
+// Hardware write breakpoints on ChrCam's position find which instructions write it each frame. Every distinct writer is logged
+// once with its module offset and the first stack words (return addresses), then counted.
+struct CamWatchHit {
+    uint64_t rip{0};
+    uint64_t stack[6]{};
+};
+CamWatchHit g_watch_ring[256];
+std::atomic<unsigned> g_watch_head{0};
+
+LONG CALLBACK CamWatchVeh(PEXCEPTION_POINTERS info) {
+    if (info->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP || (info->ContextRecord->Dr6 & 0xF) == 0) return EXCEPTION_CONTINUE_SEARCH;
+    const unsigned idx = g_watch_head.fetch_add(1) % 256;
+    CamWatchHit& h = g_watch_ring[idx];
+    h.rip = info->ContextRecord->Rip;
+    const uint64_t* sp = reinterpret_cast<const uint64_t*>(info->ContextRecord->Rsp);
+    for (int i = 0; i < 6; ++i) {
+        uint64_t v = 0;
+        SafeCopy(reinterpret_cast<uintptr_t>(sp + i), &v, sizeof(v));
+        h.stack[i] = v;
+    }
+    info->ContextRecord->Dr6 = 0;
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+void ArmThreadWatch(DWORD tid, uintptr_t addr) {
+    HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE, tid);
+    if (th == nullptr) return;
+    if (SuspendThread(th) != static_cast<DWORD>(-1)) {
+        CONTEXT ctx{};
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        if (GetThreadContext(th, &ctx)) {
+            ctx.Dr0 = addr;
+            ctx.Dr1 = addr + 8;
+            ctx.Dr7 = 0x1ull | (1ull << 16) | (3ull << 18) | (1ull << 2) | (1ull << 20) | (3ull << 22);
+            SetThreadContext(th, &ctx);
+        }
+        ResumeThread(th);
+    }
+    CloseHandle(th);
+}
+
+DWORD WINAPI CamWatchThread(LPVOID) {
+    AddVectoredExceptionHandler(1, CamWatchVeh);
+    std::unordered_map<DWORD, uintptr_t> armed;
+    std::unordered_map<uint64_t, unsigned> counts;
+    unsigned printed_head = 0, rounds = 0;
+    for (;;) {
+        Sleep(1000);
+        ++rounds;
+        uintptr_t addr = 0;
+        if (ChrCamPosAddress(addr)) {
+            if ((addr & 7) != 0) Log("camwatch: position address %p is not 8-aligned, watch not armed", reinterpret_cast<void*>(addr));
+            else {
+                const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+                if (snap != INVALID_HANDLE_VALUE) {
+                    THREADENTRY32 te{};
+                    te.dwSize = sizeof(te);
+                    for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+                        if (te.th32OwnerProcessID != GetCurrentProcessId() || te.th32ThreadID == GetCurrentThreadId()) continue;
+                        auto it = armed.find(te.th32ThreadID);
+                        if (it != armed.end() && it->second == addr) continue;
+                        ArmThreadWatch(te.th32ThreadID, addr);
+                        armed[te.th32ThreadID] = addr;
+                    }
+                    CloseHandle(snap);
+                }
+                if (rounds % 10 == 1) Log("camwatch: armed %zu threads on ChrCam pos %p", armed.size(), reinterpret_cast<void*>(addr));
+            }
+        }
+        const unsigned head = g_watch_head.load();
+        for (; printed_head < head && printed_head + 256 > head; ++printed_head) {
+            const CamWatchHit& h = g_watch_ring[printed_head % 256];
+            if (++counts[h.rip] == 1) {
+                Log("camwatch: NEW writer rip=%p (RVA 0x%llX) stack: %llX %llX %llX %llX %llX %llX", reinterpret_cast<void*>(h.rip),
+                    static_cast<unsigned long long>(h.rip - g_img.base), static_cast<unsigned long long>(h.stack[0] - g_img.base),
+                    static_cast<unsigned long long>(h.stack[1] - g_img.base), static_cast<unsigned long long>(h.stack[2] - g_img.base),
+                    static_cast<unsigned long long>(h.stack[3] - g_img.base), static_cast<unsigned long long>(h.stack[4] - g_img.base),
+                    static_cast<unsigned long long>(h.stack[5] - g_img.base));
+            }
+        }
+        if (rounds % 10 == 0) {
+            for (const auto& kv : counts) Log("camwatch: writer RVA 0x%llX hit %u times", static_cast<unsigned long long>(kv.first - g_img.base), kv.second);
+        }
+    }
 }
 
 // ---- player hit effect (blood) -----------------------------------------------------------------------------------------
@@ -1247,7 +1336,10 @@ void SetupDamage() {
     }
     {
         uintptr_t step = 0;
-        if (!LocateByPrefix(g_img, sigs::kCameraStepExecute, step)) {
+        if (FileExists(g_game_dir + "mc_er_camwatch.txt")) {
+            Log("camwatch: diagnostic on (mc_er_camwatch.txt): the camera task hook is not installed, writers of ChrCam position are logged");
+            CreateThread(nullptr, 0, CamWatchThread, nullptr, 0, nullptr);
+        } else if (!LocateByPrefix(g_img, sigs::kCameraStepExecute, step)) {
             Log("camstep: camera task signature not unique, hit effects stay at the third-person position in first person");
         } else if (MH_CreateHook(reinterpret_cast<void*>(step), reinterpret_cast<void*>(&CameraStepDetour), reinterpret_cast<void**>(&g_camstep_orig)) !=
                        MH_OK ||
