@@ -857,7 +857,7 @@ void RenderFrame(IDXGISwapChain* sc) {
         const float scene_h = g_steve_cfg.scene_height > 0.f ? g_steve_cfg.scene_height : static_cast<float>(g_s.height);
         const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
         SteveParams bp;
-        bp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.occlusion ? 1.f : 0.f);
+        bp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.occlusion ? 1.25f : 0.f); // 1.25: occluded by the scene, but not within 2.2 m of the camera
         bp.depth_const = g_steve_cfg.depth_const;
         bp.rel_bias = g_steve_cfg.rel_bias;
         bp.abs_bias = g_steve_cfg.abs_bias;

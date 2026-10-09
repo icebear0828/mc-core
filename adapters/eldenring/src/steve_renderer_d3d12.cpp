@@ -85,7 +85,10 @@ float4 PSMain(VSOut i) : SV_Target {
             if (r < 2.0) return float4(0.0, 0.8, 0.2, 1.0);                   // green: the scene is farther
             return float4(0.0, 0.4, 1.0, 1.0);                                // blue: far behind
         }
-        if (gd > 0.0 && scene.x / gd < steve_z * (1.0 - scene.y) - scene.z) discard;
+        // Mode 1.25 (the placed blocks): within 2.2 m of the camera nothing in the scene can hide a block. The game's depth there holds the
+        // player's own hidden body (first person looks down onto it), which would make a block under or next to the player vanish.
+        const float near_skip = (scene.w > 1.1 && scene.w < 1.4) ? 2.2 : 0.0;
+        if (steve_z > near_skip && gd > 0.0 && scene.x / gd < steve_z * (1.0 - scene.y) - scene.z) discard;
     }
     // Minecraft's fixed face shading (top 1.0, north/south 0.8, east/west 0.6), from the face normal.
     float3 n = normalize(cross(ddx(i.wpos), ddy(i.wpos)));
