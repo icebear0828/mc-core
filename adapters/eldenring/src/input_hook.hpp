@@ -24,5 +24,8 @@ void SetLog(LogFn log);
 void OnDirectInputCreated(REFIID riid, void* iface);
 void SetSuppressMouseButtons(bool on);
 Counters TakeCounters(); // returns the counts since the last call and resets them
+// True once per left-button press seen at the DirectInput layer (read before any clearing). GetAsyncKeyState cannot be
+// used for this: with exclusive DirectInput the system no longer reports the mouse buttons.
+bool TakeLeftClick();
 
 } // namespace erin

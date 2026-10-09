@@ -28,6 +28,8 @@ std::mutex g_mutex;
 std::unordered_map<void*, Kind> g_kinds;
 std::set<void*> g_hooked_functions;
 std::atomic<bool> g_suppress{false};
+std::atomic<bool> g_left_edge{false};
+std::atomic<bool> g_left_prev{false};
 std::atomic<unsigned> g_mouse_state{0}, g_mouse_data{0}, g_keyboard_state{0}, g_keyboard_data{0}, g_other{0}, g_cleared{0};
 
 using CreateDeviceFn = HRESULT(STDMETHODCALLTYPE*)(void*, REFGUID, void**, LPUNKNOWN);
@@ -58,6 +60,11 @@ HRESULT STDMETHODCALLTYPE GetStateDetour(void* self, DWORD cb, LPVOID data) {
     if (SUCCEEDED(hr)) {
         const Kind k = KindOf(self);
         Count(k, g_mouse_state, g_keyboard_state);
+        if (k == Kind::Mouse && data != nullptr && cb >= kMouseButtonsOffset + 2) {
+            const bool down = (static_cast<BYTE*>(data)[kMouseButtonsOffset] & 0x80) != 0;
+            if (down && !g_left_prev.load()) g_left_edge.store(true);
+            g_left_prev.store(down);
+        }
         if (k == Kind::Mouse && g_suppress.load(std::memory_order_relaxed) && data != nullptr && cb >= kMouseButtonsOffset + 2) {
             auto* buttons = static_cast<BYTE*>(data) + kMouseButtonsOffset;
             if (buttons[0] != 0 || buttons[1] != 0) ++g_cleared;
@@ -157,6 +164,8 @@ void OnDirectInputCreated(REFIID riid, void* iface) {
         g_log("input: hooked IDirectInput8::CreateDevice at %p", fn);
     }
 }
+
+bool TakeLeftClick() { return g_left_edge.exchange(false); }
 
 void SetSuppressMouseButtons(bool on) { g_suppress.store(on, std::memory_order_relaxed); }
 

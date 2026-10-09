@@ -325,7 +325,26 @@ void ClickAttack() {
     if (!enumerateEnemies(g_reader, g_img.base, list, 2000)) return;
     const float cam_rel[3] = {cam.position[0] - feet[0], cam.position[1] - feet[1], cam.position[2] - feet[2]};
     const int idx = pickTarget(cam_rel, cam.forward, list);
-    if (idx < 0) return;
+    if (idx < 0) {
+        int near_count = 0;
+        char detail_buf[400];
+        int dn = snprintf(detail_buf, sizeof(detail_buf), "[");
+        for (const EnemyInfo& e : list) {
+            if (!e.hostile) continue;
+            const float d = std::sqrt(e.rel_x * e.rel_x + e.rel_y * e.rel_y + e.rel_z * e.rel_z);
+            if (d > 8.f || near_count >= 3) continue;
+            ++near_count;
+            const float c[3] = {e.rel_x - cam_rel[0], e.rel_y + 1.f - cam_rel[1], e.rel_z - cam_rel[2]};
+            const float t = c[0] * cam.forward[0] + c[1] * cam.forward[1] + c[2] * cam.forward[2];
+            const float q[3] = {c[0] - cam.forward[0] * t, c[1] - cam.forward[1] * t, c[2] - cam.forward[2] * t};
+            dn += snprintf(detail_buf + dn, sizeof(detail_buf) - static_cast<size_t>(dn), " (dist %.1f t %.1f off-ray %.1f)", d, t,
+                           std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]));
+        }
+        snprintf(detail_buf + dn, sizeof(detail_buf) - static_cast<size_t>(dn), " ]");
+        Log("click: no target (cam_rel %.1f %.1f %.1f, fwd %.2f %.2f %.2f, enemies<=8m: %s)", cam_rel[0], cam_rel[1], cam_rel[2],
+            cam.forward[0], cam.forward[1], cam.forward[2], detail_buf);
+        return;
+    }
     const EnemyInfo& e = list[static_cast<size_t>(idx)];
     const bool ok = g_queue.enqueue(e.chr, 50, NowTick());
     Log("click: queued 50 on chr=%p npc=%d hp=%d (%s)", reinterpret_cast<void*>(e.chr), e.npc_id, e.hp, ok ? "ok" : "queue full");
@@ -344,14 +363,14 @@ bool WantSuppress() {
 }
 
 DWORD WINAPI KeyThread(LPVOID) {
-    bool prev8 = false, prev6 = false, prevl = false;
+    bool prev8 = false, prev6 = false;
     for (;;) {
         Sleep(15);
         const bool fg = GameInForeground();
         if (g_input_enabled.load()) erin::SetSuppressMouseButtons(fg && WantSuppress());
-        const bool left = fg && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-        if (left && !prevl && g_click_attack.load() && g_damage_enabled.load() && WantSuppress()) ClickAttack();
-        prevl = left;
+        if (g_input_enabled.load() && erin::TakeLeftClick() && fg && g_click_attack.load() && g_damage_enabled.load() && WantSuppress()) {
+            ClickAttack();
+        }
         const bool d8 = fg && (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
         const bool d6 = fg && (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
         if (d8 && !prev8 && g_damage_enabled.load()) EnqueueNearestHostile();
