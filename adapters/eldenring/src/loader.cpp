@@ -1403,11 +1403,11 @@ void BlocksCollisionStep() {
                 const float fl = std::sqrt(fx * fx + fz * fz), rl = std::sqrt(rx * rx + rz * rz);
                 if (fl > 1e-3f && rl > 1e-3f) {
                     fx /= fl; fz /= fl; rx /= rl; rz /= rl;
-                    float dx = fwd_key * fx + right_key * rx, dz = fwd_key * fz + right_key * rz;
-                    const float dl = std::sqrt(dx * dx + dz * dz);
-                    if (dl > 1e-3f) {
-                        vx = dx / dl * g_block_walk_speed.load();
-                        vz = dz / dl * g_block_walk_speed.load();
+                    const float wx = fwd_key * fx + right_key * rx, wz = fwd_key * fz + right_key * rz;
+                    const float wl = std::sqrt(wx * wx + wz * wz);
+                    if (wl > 1e-3f) {
+                        vx = wx / wl * g_block_walk_speed.load();
+                        vz = wz / wl * g_block_walk_speed.load();
                     }
                 }
             }
