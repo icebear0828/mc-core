@@ -23,6 +23,9 @@ public:
     [[nodiscard]] HudRect item(int slot) const;    // 16x16 icon inside slot 0..8
     [[nodiscard]] HudRect heart(int index) const;  // 9x9 at an 8px pitch (icons overlap by 1 GUI px); 0 = leftmost
     [[nodiscard]] HudRect food(int index) const;   // 9x9, right-aligned to the hotbar; 0 = rightmost
+    [[nodiscard]] HudRect xpBar() const;           // 182x5, directly above the hotbar
+    [[nodiscard]] float xpLevelTextTop() const;    // top of the level number (Minecraft: height - 31 - 4)
+    [[nodiscard]] float xpLevelCentreX() const;    // the number is centred on the screen
     [[nodiscard]] float itemNameBaselineY() const; // top of the selected-item label
     [[nodiscard]] float textSize() const { return 8.0f * static_cast<float>(scale_); } // Minecraft's font is 8 GUI px tall
 

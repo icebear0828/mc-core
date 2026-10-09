@@ -160,6 +160,7 @@ HUD_KEYS = [
     "item_arrow", "item_trident", "item_flint_and_steel", "item_ender_pearl", "item_enchanted_golden_apple",
     "item_bread", "item_cooked_beef", "item_firework_rocket", "container_top", "container_bottom",
     "block_dirt", "block_stone", "block_tnt_top", "block_tnt_side", "block_tnt_bottom",
+    "heart_container_blinking", "heart_full_blinking", "heart_half_blinking", "xp_bar_background", "xp_bar_progress",
 ]
 HUD_SIZES = {
     "heart_absorb_full": (9, 9), "heart_absorb_half": (9, 9), "particle_crit": (8, 8), "particle_damage": (8, 8),
@@ -168,6 +169,8 @@ HUD_SIZES = {
     "heart_container": (9, 9), "heart_full": (9, 9), "heart_half": (9, 9),
     "hunger_container": (9, 9), "hunger_full": (9, 9), "hunger_half": (9, 9),
     "container_top": (176, 71), "container_bottom": (176, 96),
+    "xp_bar_background": (182, 5), "xp_bar_progress": (182, 5),
+    "heart_container_blinking": (9, 9), "heart_full_blinking": (9, 9), "heart_half_blinking": (9, 9),
 }
 
 
@@ -199,6 +202,11 @@ def _sprite_colors():
         "item/cooked_beef.png": _solid((16, 16), (46, 47, 48, 255)),
         "item/firework_rocket.png": _solid((16, 16), (49, 50, 51, 255)),
         "block/tnt_bottom.png": _solid((16, 16), (52, 53, 54, 255)),
+        "gui/sprites/hud/heart/container_blinking.png": _solid((9, 9), (61, 62, 63, 255)),
+        "gui/sprites/hud/heart/full_blinking.png": _solid((9, 9), (64, 65, 66, 255)),
+        "gui/sprites/hud/heart/half_blinking.png": _solid((9, 9), (67, 68, 69, 255)),
+        "gui/sprites/hud/experience_bar_background.png": _solid((182, 5), (70, 71, 72, 255)),
+        "gui/sprites/hud/experience_bar_progress.png": _solid((182, 5), (73, 74, 75, 255)),
     }
 
 
@@ -338,6 +346,17 @@ def test_block_face_sprites_are_the_flat_block_textures(tmp_path):
     for key, color in expect.items():
         region = _hud_region(atlas, uv[key])
         assert {region.getpixel((x, y)) for x in range(16) for y in range(16)} == {color}, key
+
+
+def test_blinking_hearts_and_the_experience_bar_are_copied(tmp_path):
+    from extract_mc_assets import build_hud_atlas
+
+    atlas, uv = build_hud_atlas(_hud_jar(tmp_path / "client.jar"))
+    expect = {"heart_container_blinking": (61, 62, 63, 255), "heart_full_blinking": (64, 65, 66, 255), "heart_half_blinking": (67, 68, 69, 255),
+              "xp_bar_background": (70, 71, 72, 255), "xp_bar_progress": (73, 74, 75, 255)}
+    for key, color in expect.items():
+        region = _hud_region(atlas, uv[key])
+        assert {region.getpixel((x, y)) for x in range(region.width) for y in range(region.height)} == {color}, key
 
 
 def test_committed_generated_headers_match_the_tool_output(tmp_path):

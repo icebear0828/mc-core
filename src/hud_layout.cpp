@@ -55,6 +55,12 @@ HudRect HudLayout::food(int index) const {
     return box(kHotbarWidth - kIconSize - kIconPitch * static_cast<float>(index), -kStatusRowFromBottom, kIconSize, kIconSize);
 }
 
+HudRect HudLayout::xpBar() const { return box(0.f, -29.f, kHotbarWidth, 5.f); } // ExperienceBar: y = height - 32 + 3
+
+float HudLayout::xpLevelTextTop() const { return screen_h_ - 35.f * static_cast<float>(scale_); }
+
+float HudLayout::xpLevelCentreX() const { return screen_w_ * 0.5f; }
+
 float HudLayout::itemNameBaselineY() const {
     return screen_h_ - kItemNameFromBottom * static_cast<float>(scale_);
 }

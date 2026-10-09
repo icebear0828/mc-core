@@ -267,6 +267,21 @@ def create_canonical_sprite(name: str) -> Image.Image:
                     img.putpixel((x, y), (255, 255, 255, 255 - idx * 20))
         return img
 
+    if name in ("heart_container_blinking", "heart_full_blinking", "heart_half_blinking"):
+        base = create_canonical_sprite({"heart_container_blinking": "heart_container", "heart_full_blinking": "heart_full",
+                                        "heart_half_blinking": "heart_half"}[name])
+        out = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        for y in range(base.height):
+            for x in range(base.width):
+                r, g, b, a = base.getpixel((x, y))
+                if a:  # the same shape in white
+                    out.putpixel((x, y), (255, 255, 255, a) if (r, g, b) != (0, 0, 0) else (r, g, b, a))
+        return out
+
+    if name in ("xp_bar_background", "xp_bar_progress"):
+        col = (50, 50, 50, 255) if name == "xp_bar_background" else (128, 255, 32, 255)
+        return Image.new("RGBA", (182, 5), col)
+
     if name in ("container_top", "container_bottom"):
         h = 71 if name == "container_top" else 96
         img = Image.new("RGBA", (176, h), (198, 198, 198, 255))
@@ -422,6 +437,12 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("block_tnt_top", (16, 16)),
     ("block_tnt_side", (16, 16)),
     ("block_tnt_bottom", (16, 16)),
+    # the heart blink (a hit flashes the container and shows the lost hearts white) and the experience bar
+    ("heart_container_blinking", (9, 9)),
+    ("heart_full_blinking", (9, 9)),
+    ("heart_half_blinking", (9, 9)),
+    ("xp_bar_background", (182, 5)),
+    ("xp_bar_progress", (182, 5)),
 ]
 
 _JAR_HUD_SPRITES = {
@@ -457,6 +478,11 @@ _JAR_HUD_SPRITES = {
     "block_tnt_top": "block/tnt_top.png",
     "block_tnt_side": "block/tnt_side.png",
     "block_tnt_bottom": "block/tnt_bottom.png",
+    "heart_container_blinking": "gui/sprites/hud/heart/container_blinking.png",
+    "heart_full_blinking": "gui/sprites/hud/heart/full_blinking.png",
+    "heart_half_blinking": "gui/sprites/hud/heart/half_blinking.png",
+    "xp_bar_background": "gui/sprites/hud/experience_bar_background.png",
+    "xp_bar_progress": "gui/sprites/hud/experience_bar_progress.png",
 }
 
 # The 3-row container background (gui/container/generic_54.png): its top part is 17 + 3 * 18 rows, its bottom part (the

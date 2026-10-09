@@ -23,6 +23,7 @@
 #include "eldenring_hudtex.hpp"
 #include "eldenring_particles.hpp"
 #include "eldenring_blockicon.hpp"
+#include "eldenring_heart_anim.hpp"
 #include "eldenring_blocks.hpp"
 #include "mc/hud_layout.hpp"
 #include "mc/inventory_layout.hpp"
@@ -582,6 +583,8 @@ void DrawInventory(const HudState& hud, float w, float h) {
     dl->AddTriangle(m, {m.x, m.y + 11.f * u}, {m.x + 7.f * u, m.y + 8.f * u}, IM_COL32(0, 0, 0, 255), 1.f);
 }
 
+eldenring::live::HeartAnimator g_hearts;
+
 void DrawHud(const HudState& hud, float w, float h) {
     if (hud.inv_open) {
         DrawInventory(hud, w, h);
@@ -608,12 +611,66 @@ void DrawHud(const HudState& hud, float w, float h) {
         sprite(layout.hotbar(), mc::hud::kUV_HOTBAR);
         for (int i = 0; i < 9; ++i) DrawItemIcon(dl, atlas, layout.item(i), static_cast<mc::ItemId>(hud.hotbar[i]));
         sprite(layout.selection(std::clamp(hud.selected_slot, 0, 8)), mc::hud::kUV_HOTBAR_SELECTION);
+        // The hearts as Gui.renderHearts draws them: the container blinks after a hit and the hearts just lost show white, one heart jumps
+        // while Regeneration is active, and the row shakes at two hearts or less.
+        const int abs_halves = static_cast<int>(std::lround(hud.absorption_mc));
+        g_hearts.update(ImGui::GetIO().DeltaTime, hp_halves, abs_halves, hud.regen);
+        const bool blink = g_hearts.blink();
+        const int shown_before = g_hearts.displayHealth();
+        const float gs = static_cast<float>(layout.scale());
         for (int i = 0; i < 10; ++i) {
-            sprite(layout.heart(i), mc::hud::kUV_HEART_CONTAINER);
-            if (hp_halves >= 2 * (i + 1)) {
-                sprite(layout.heart(i), mc::hud::kUV_HEART_FULL);
-            } else if (hp_halves == 2 * i + 1) {
-                sprite(layout.heart(i), mc::hud::kUV_HEART_HALF);
+            mc::HudRect r = layout.heart(i);
+            if (g_hearts.regenIndex() == i) r.y -= 2.f * gs;
+            r.y += static_cast<float>(g_hearts.shake(i)) * gs;
+            sprite(r, blink ? mc::hud::kUV_HEART_CONTAINER_BLINKING : mc::hud::kUV_HEART_CONTAINER);
+            if (blink) {
+                if (2 * i + 1 < shown_before) sprite(r, mc::hud::kUV_HEART_FULL_BLINKING);
+                else if (2 * i + 1 == shown_before) sprite(r, mc::hud::kUV_HEART_HALF_BLINKING);
+            }
+            if (2 * i + 1 < hp_halves) sprite(r, mc::hud::kUV_HEART_FULL);
+            else if (2 * i + 1 == hp_halves) sprite(r, mc::hud::kUV_HEART_HALF);
+        }
+        // hunger: ten icons from the right, shaking once the saturation is used up
+        {
+            static uint32_t food_rng = 7u;
+            static float food_clock = 0.f;
+            static int food_shake[10] = {};
+            food_clock += ImGui::GetIO().DeltaTime;
+            if (food_clock >= 0.05f) {
+                food_clock = 0.f;
+                for (int& v : food_shake) {
+                    food_rng = food_rng * 1664525u + 1013904223u;
+                    v = static_cast<int>((food_rng >> 16) % 3u) - 1;
+                }
+            }
+            for (int i = 0; i < 10; ++i) {
+                mc::HudRect r = layout.food(i);
+                if (hud.food_shaking) r.y += static_cast<float>(food_shake[i]) * gs;
+                sprite(r, mc::hud::kUV_HUNGER_CONTAINER);
+                if (2 * i + 1 < hud.food) sprite(r, mc::hud::kUV_HUNGER_FULL);
+                else if (2 * i + 1 == hud.food) sprite(r, mc::hud::kUV_HUNGER_HALF);
+            }
+        }
+        // experience bar and level number
+        {
+            const mc::HudRect bar = layout.xpBar();
+            sprite(bar, mc::hud::kUV_XP_BAR_BACKGROUND);
+            const int px = std::clamp(static_cast<int>(hud.xp_progress * 183.f), 0, 182);
+            if (px > 0) {
+                const mc::hud::HudUV& uv = mc::hud::kUV_XP_BAR_PROGRESS;
+                const float frac = static_cast<float>(px) / 182.f;
+                dl->AddImage(atlas, {bar.x, bar.y}, {bar.x + bar.w * frac, bar.y + bar.h}, {uv.u0, uv.v0}, {uv.u0 + (uv.u1 - uv.u0) * frac, uv.v1});
+            }
+            if (hud.xp_level > 0) {
+                char lvl[8];
+                snprintf(lvl, sizeof(lvl), "%d", hud.xp_level);
+                const float fs = layout.textSize();
+                const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, 1e9f, 0.f, lvl);
+                const float tx = layout.xpLevelCentreX() - sz.x * 0.5f, ty = layout.xpLevelTextTop();
+                for (const ImVec2 o : {ImVec2{gs, 0.f}, ImVec2{-gs, 0.f}, ImVec2{0.f, gs}, ImVec2{0.f, -gs}}) {
+                    dl->AddText(ImGui::GetFont(), fs, {tx + o.x, ty + o.y}, IM_COL32(0, 0, 0, 255), lvl); // the black outline
+                }
+                dl->AddText(ImGui::GetFont(), fs, {tx, ty}, IM_COL32(0x80, 0xFF, 0x20, 255), lvl);
             }
         }
         // stack sizes (Minecraft: bottom right of the icon, white with a dark shadow, only above 1)
@@ -621,7 +678,6 @@ void DrawHud(const HudState& hud, float w, float h) {
             if (hud.hotbar_count[i] <= 1 || hud.hotbar[i] == 0) continue;
             char cnt[8];
             snprintf(cnt, sizeof(cnt), "%u", static_cast<unsigned>(hud.hotbar_count[i]));
-            const float gs = static_cast<float>(layout.scale());
             const float fs = layout.textSize();
             const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, 1e9f, 0.f, cnt);
             const mc::HudRect r = layout.item(i);

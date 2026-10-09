@@ -37,6 +37,8 @@ EVENTS = [
     "block.grass.step", "block.stone.step", "block.gravel.step", "block.sand.step", "block.wood.step",
     "block.grass.fall", "block.stone.fall",
     # bow and arrows
+    # experience
+    "entity.experience_orb.pickup", "entity.player.levelup",
     "entity.arrow.shoot", "entity.arrow.hit", "entity.arrow.hit_player", "item.crossbow.shoot",
 ]
 

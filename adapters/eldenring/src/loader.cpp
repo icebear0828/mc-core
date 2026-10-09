@@ -39,6 +39,8 @@
 #include "eldenring_blocks.hpp"
 #include "eldenring_los.hpp"
 #include "eldenring_survival.hpp"
+#include "eldenring_xp.hpp"
+#include "eldenring_hunger.hpp"
 #include "mc/consumables.hpp"
 #include "mc/inventory_layout.hpp"
 #include "mc/hud_atlas.hpp"
@@ -266,6 +268,9 @@ std::mutex g_melee_mutex; // KeyThread writes, the Present thread reads
 MeleeController g_melee;
 JumpTracker g_jump; // KeyThread only
 SurvivalState g_survival;          // regeneration / absorption, guarded by g_melee_mutex
+HungerModel g_hunger;              // food level, saturation, exhaustion (guarded by g_melee_mutex)
+XpModel g_xp;                      // experience level and bar (guarded by g_melee_mutex)
+float g_hunger_heal_carry = 0.f;   // Elden Ring hit points not yet whole, from the natural regeneration (key thread only)
 mc::ConsumableSystem g_eating;     // right click on food, guarded by g_melee_mutex
 std::atomic<float> g_sound_volume{0.8f}; // mc_er_steve.txt: sound_volume
 std::atomic<float> g_walk_speed{0.f}; // horizontal speed of the player (m/s), measured by the key thread
@@ -847,6 +852,7 @@ bool PlayerHitSurvival(void* module, void* attacker, uint8_t* ctx, uint8_t block
         }
         std::lock_guard<std::mutex> g(g_melee_mutex);
         g_feedback.onHurt(side);
+        g_hunger.addExhaustion(0.1f); // Minecraft: taking damage
     }
     if (out != dmg) SafeWrite32(reinterpret_cast<uintptr_t>(ctx) + layout::kHitDamage, static_cast<uint32_t>(out));
     if (out != dmg || popped) {
@@ -953,7 +959,14 @@ void DrainOnce(uintptr_t updating_data_module) {
                           : (r.request.tag & 2u) ? "entity.player.attack.sweep"
                           : (r.request.tag & 4u) ? "entity.player.attack.strong"
                                                  : "entity.player.attack.weak");
-            if (t_hp_after == 0) g_feedback.onKill(); // HP is clamped to [0, max]; -1 means unreadable, not a kill
+            if (t_hp_after == 0) { // HP is clamped to [0, max]; -1 means unreadable, not a kill
+                g_feedback.onKill();
+                Vitals victim;
+                const int xp = xpForKill(readVitals(g_reader, g_img.base, r.request.victim_chr, victim) ? victim.max_hp : 0);
+                const int ups = g_xp.add(xp);
+                eraudio::Play(ups > 0 ? "entity.player.levelup" : "entity.experience_orb.pickup", 0.7f);
+                Log("XP: +%d (level %d, %.0f%%)%s", xp, g_xp.level(), g_xp.progress() * 100.f, ups > 0 ? " LEVEL UP" : "");
+            }
         }
         if (r.outcome == DamageOutcome::NoLineOfSight) ++g_los_blocked;
         if (r.outcome != DamageOutcome::Applied) {
@@ -1625,15 +1638,23 @@ DWORD WINAPI KeyThread(LPVOID) {
                     std::lock_guard<std::mutex> g(g_melee_mutex);
                     if (v.hp > 0) {
                         heal += g_survival.tick(dt, v.max_hp);
+                        // Minecraft's natural regeneration, from the food level (eating no longer heals directly)
+                        g_hunger_heal_carry += g_hunger.tick(dt, v.hp < v.max_hp) * static_cast<float>(v.max_hp) / kMcPlayerHealth;
+                        const int whole = static_cast<int>(g_hunger_heal_carry);
+                        g_hunger_heal_carry -= static_cast<float>(whole);
+                        heal += whole;
+                        if (const int starved = g_hunger.takeStarvationHits()) Log("SURVIVAL: starving (%d hit(s) not applied)", starved);
+                        if (g_walk_speed.load() > 5.f) g_hunger.addExhaustion(0.1f * g_walk_speed.load() * dt); // sprinting: 0.1 per metre
                         if (g_eating.isEating() && g_melee.heldItem() != g_eating.getCurrentItem()) g_eating.cancel(); // switched away
+                        const mc::ItemId meal = g_eating.getCurrentItem();
                         const mc::EatingEvent e = g_eating.update(dt);
                         if (e.chew_sound) eraudio::Play("entity.generic.eat", 0.8f);
                         if (e.completed) {
                             if (e.play_burp_sound) eraudio::Play("entity.player.burp");
                             g_survival.apply(e.effects);
-                            heal += mealHeal(e, v.max_hp);
+                            g_hunger.eat(meal);
                             g_melee.consumeAt(g_melee.selectedSlot());
-                            Log("SURVIVAL: finished eating (+%d now, regen/absorption from the item)", mealHeal(e, v.max_hp));
+                            Log("SURVIVAL: finished eating: food %d, saturation %.1f (regen/absorption from the item)", g_hunger.food(), g_hunger.saturation());
                         }
                     } else {
                         g_eating.cancel();
@@ -1651,7 +1672,7 @@ DWORD WINAPI KeyThread(LPVOID) {
         } else if (right_edge && fg && WantSuppress() && !PlayerDead()) {
             std::lock_guard<std::mutex> g(g_melee_mutex);
             const mc::ItemId item = g_melee.heldItem();
-            if (!g_eating.isEating() && g_melee.countAt(g_melee.selectedSlot()) > 0 && g_eating.startEating(item)) {
+            if (!g_eating.isEating() && g_melee.countAt(g_melee.selectedSlot()) > 0 && g_hunger.canEat(item) && g_eating.startEating(item)) {
                 Log("SURVIVAL: started eating item %d", static_cast<int>(item));
             }
         }
@@ -1676,6 +1697,10 @@ DWORD WINAPI KeyThread(LPVOID) {
         const bool space = fg && (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0;
         if (space && !prev_space && g_mc_mode.load()) Log("key: space down");
         g_jump.update(dt, space && !prev_space, g_mc_mode.load() && PlayerAirborne());
+        if (space && !prev_space && g_mc_mode.load() && !PlayerAirborne()) {
+            std::lock_guard<std::mutex> g(g_melee_mutex);
+            g_hunger.addExhaustion(0.05f); // Minecraft: jumping
+        }
         prev_space = space;
         // A dead player cannot swing, eat or hit anything (the click edges are still taken so they do not pile up).
         const bool alive = !PlayerDead();
@@ -1691,6 +1716,7 @@ DWORD WINAPI KeyThread(LPVOID) {
             {
                 std::lock_guard<std::mutex> g(g_melee_mutex);
                 charged = g_melee.startSwing();
+                g_hunger.addExhaustion(0.1f); // Minecraft: attacking
             }
             Log("swing: charged=%.2f jumping=%d airborne=%d", charged, g_jump.jumping() ? 1 : 0, PlayerAirborne() ? 1 : 0);
             if (g_damage_enabled.load()) ClickAttack(charged);
@@ -2011,6 +2037,11 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
             out.inv_item[i] = static_cast<uint16_t>(inv.slot(i).item);
             out.inv_count[i] = static_cast<uint8_t>(std::min(255u, inv.slot(i).count));
         }
+        out.food = g_hunger.food();
+        out.food_shaking = g_hunger.shaking();
+        out.regen = g_survival.regenerating();
+        out.xp_level = g_xp.level();
+        out.xp_progress = g_xp.progress();
         out.cursor_item = static_cast<uint16_t>(inv.cursor().item);
         out.cursor_count = static_cast<uint8_t>(std::min(255u, inv.cursor().count));
     }
