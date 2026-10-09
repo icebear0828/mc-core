@@ -25,6 +25,13 @@ struct HudState {
     float eating{0.f};    // 0..1 progress of the meal being eaten (0 = not eating)
     float totem{0.f};     // 0..1 totem-of-undying pop animation (1 = just popped)
     int slot_probe{-1};   // >= 0: the F9 part-slot probe is on, this is the only hidden part slot
+    // The inventory screen (all 36 slots, hotbar first, the stack on the cursor and the virtual mouse in screen pixels).
+    bool inv_open{false};
+    uint16_t inv_item[36]{};
+    uint8_t inv_count[36]{};
+    uint16_t cursor_item{0};
+    uint8_t cursor_count{0};
+    float mouse_x{0.f}, mouse_y{0.f};
 };
 
 // The 3D figure for this frame: camera, standing point (feet, game metres) and heading (rotation about +Y).
@@ -69,6 +76,8 @@ void RequestFrameTrace(int frames);
 // number of hearts for Damage. Thread safe; the overlay projects and draws them.
 enum class FxKind { Crit, Damage, Sweep };
 void SpawnFx(FxKind kind, const float world_pos[3], int count);
+// The back buffer size of the last frame (0 before the first one); the inventory screen needs it to lay itself out.
+void ScreenSize(float& width, float& height);
 // Debug: bind the next captured 1920x1080 R32G8X24 depth resource (the game creates several).
 void CycleDepthCandidate();
 

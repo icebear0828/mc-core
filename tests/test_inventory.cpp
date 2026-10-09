@@ -176,3 +176,17 @@ TEST(Inventory, DefaultHotbarMatchesTheOldController) {
     EXPECT_EQ(inv.slot(5).count, 8u);
     EXPECT_EQ(inv.slot(8).item, ItemId::TotemOfUndying);
 }
+
+TEST(Inventory, ReturnCursorPutsTheStackBackAndDropsWhatDoesNotFit) {
+    Inventory inv;
+    inv.setSlot(0, {ItemId::BlockDirt, 10});
+    inv.click(0, Button::Left);
+    inv.returnCursor();
+    EXPECT_TRUE(inv.cursor().empty());
+    EXPECT_EQ(inv.slot(0).count, 10u);
+    for (int i = 0; i < 36; ++i) inv.setSlot(i, {ItemId::DiamondSword, 1});
+    inv.click(5, Button::Left);
+    inv.setSlot(5, {ItemId::DiamondSword, 1}); // the cursor now holds a second sword and there is no room
+    inv.returnCursor();
+    EXPECT_TRUE(inv.cursor().empty()); // lost, as an item dropped out of a full inventory
+}

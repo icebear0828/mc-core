@@ -31,5 +31,9 @@ bool TakeLeftClick();
 bool TakeRightClick();
 // Wheel notches (+ = away from the user) since the last call, read from the DirectInput mouse state.
 int TakeWheelNotches();
+// Mouse movement (counts) since the last call, read before any suppression. Drives the inventory's virtual cursor.
+void TakeMouseDelta(int& dx, int& dy);
+// While on, the game's mouse reads show no movement and no wheel (the inventory is open and owns the mouse).
+void SetSuppressMouseMotion(bool on);
 
 } // namespace erin

@@ -120,6 +120,12 @@ inline constexpr const char* kApplyHpChange =
 inline constexpr const char* kCameraStepExecute =
     "4C 8B DC 55 56 57 41 54 41 55 41 56 49 8D 6B A1 48 81 EC F8 00 00 00 45 0F 29 43 98 45 0F 29 4B 88 48 8B 05 ?? ?? ?? ?? 48 33 C4 "
     "48 89 45 D7 49 8B 80 90 01 00 00 48 8B F9 49 89 5B 20 49 8B F0";
+// The input master gate (0x14067B020): reads [[global]+0xC34]; movement, roll, attack and the input dispatch all ask it. 15 bytes,
+// one match in 2.7.1.0; six callers (REVERSE 12).
+inline constexpr const char* kIsInputBlocked = "48 8B 05 ?? ?? ?? ?? 0F B6 80 34 0C 00 00 C3";
+// The camera-rotation freeze test (0x140766C60): true when a full-screen menu is open. An identical twin at 0x140766BC0 differs only
+// in its call displacements, so the first call's literal displacement is part of the signature. 33 bytes, one match.
+inline constexpr const char* kMenuFreezesCamera = "40 53 48 83 EC 20 48 8B D9 BA 3D 00 00 00 48 8D 4C 24 38 E8 F8 1F 00 00 0F B7 00 66 83 F8 47 73 12";
 inline constexpr const char* kGetEffectiveTeamType = "48 89 5C 24 10 57 48 83 EC 20 0F B6 41 6C 48 8B F9 88 02";
 } // namespace sigs
 

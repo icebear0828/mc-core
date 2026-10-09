@@ -38,6 +38,8 @@
 #include "eldenring_los.hpp"
 #include "eldenring_survival.hpp"
 #include "mc/consumables.hpp"
+#include "mc/inventory_layout.hpp"
+#include "mc/inventory.hpp"
 #include "eldenring_melee.hpp"
 #include "eldenring_particles.hpp"
 #include "eldenring_model.hpp"
@@ -371,6 +373,33 @@ void __fastcall RenderCamCopyDetour(void* self) {
         } __except (EXCEPTION_EXECUTE_HANDLER) {
         }
     }
+}
+
+// ---- inventory screen ----------------------------------------------------------------------------------------------------
+// While the inventory is open the game must not walk, roll, attack or turn the camera: the input master gate (0x14067B020) and the
+// camera-rotation freeze test (0x140766C60) both report "blocked" (REVERSE 12). Both are optional: without them the mouse buttons and
+// motion are still taken away from the game, and only the keyboard and gamepad keep moving the character.
+std::atomic<bool> g_inv_open{false};
+std::atomic<float> g_inv_mx{0.f}, g_inv_my{0.f}; // the virtual pointer, back buffer pixels
+std::atomic<int> g_inv_vk{'I'};                  // mc_er_steve.txt: inv_key=<virtual key code>
+std::atomic<float> g_inv_sens{1.f};              // pixels per mouse count
+using IsInputBlockedFn = uint64_t(__fastcall*)();
+using MenuFreezeFn = uint8_t(__fastcall*)(void*);
+IsInputBlockedFn g_isblocked_orig = nullptr;
+MenuFreezeFn g_menufreeze_orig = nullptr;
+std::atomic<unsigned> g_isblocked_forced{0};
+
+uint64_t __fastcall IsInputBlockedDetour() {
+    if (g_inv_open.load(std::memory_order_relaxed)) {
+        ++g_isblocked_forced;
+        return 1;
+    }
+    return g_isblocked_orig();
+}
+
+uint8_t __fastcall MenuFreezeDetour(void* self) {
+    if (g_inv_open.load(std::memory_order_relaxed)) return 1;
+    return g_menufreeze_orig(self);
 }
 
 // ---- persistent eye camera ----------------------------------------------------------------------------------------------
@@ -1075,6 +1104,91 @@ void CycleHiddenSlot(int& cursor) {
     }
 }
 
+// Opens / closes the inventory and drives its virtual pointer. Runs on the key thread before the normal MC input, and takes the
+// click edges while the screen is open so nothing else (attack, eating) reacts to them.
+void InventoryTick(bool fg) {
+    static bool prev_key = false, prev_esc = false;
+    static bool prev_digit[mc::Inventory::kHotbar] = {};
+    const bool want = fg && WantSuppress() && g_mc_mode.load();
+    bool open = g_inv_open.load();
+    const bool key = fg && (GetAsyncKeyState(g_inv_vk.load()) & 0x8000) != 0;
+    const bool esc = fg && (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
+    auto closeIt = [&](const char* why) {
+        {
+            std::lock_guard<std::mutex> g(g_melee_mutex);
+            g_melee.inventory().returnCursor();
+        }
+        g_inv_open.store(false);
+        erin::SetSuppressMouseMotion(false);
+        open = false;
+        Log("inventory: closed (%s)", why);
+    };
+    if (key && !prev_key) {
+        if (open) {
+            closeIt("key");
+        } else if (want && g_input_enabled.load()) {
+            float w = 0.f, h = 0.f;
+            erov::ScreenSize(w, h);
+            g_inv_mx.store(w * 0.5f);
+            g_inv_my.store(h * 0.5f);
+            int dx = 0, dy = 0;
+            erin::TakeMouseDelta(dx, dy);
+            erin::TakeLeftClick();
+            erin::TakeRightClick();
+            erin::TakeWheelNotches();
+            erin::SetSuppressMouseMotion(true);
+            g_inv_open.store(true);
+            open = true;
+            Log("inventory: opened (%.0fx%.0f, gate calls so far %u)", w, h, g_isblocked_forced.load());
+        }
+    }
+    if (open && esc && !prev_esc) closeIt("Esc");
+    if (open && !want) closeIt("menu, loading or MC mode off");
+    prev_key = key;
+    prev_esc = esc;
+    if (!open) {
+        for (bool& d : prev_digit) d = false;
+        return;
+    }
+
+    float w = 0.f, h = 0.f;
+    erov::ScreenSize(w, h);
+    int dx = 0, dy = 0;
+    erin::TakeMouseDelta(dx, dy);
+    const float sens = g_inv_sens.load();
+    const float mx = std::clamp(g_inv_mx.load() + static_cast<float>(dx) * sens, 0.f, std::max(0.f, w - 1.f));
+    const float my = std::clamp(g_inv_my.load() + static_cast<float>(dy) * sens, 0.f, std::max(0.f, h - 1.f));
+    g_inv_mx.store(mx);
+    g_inv_my.store(my);
+    erin::TakeWheelNotches();
+
+    const mc::InventoryLayout lay(w, h);
+    const mc::SlotRef ref = lay.hitTest(mx, my);
+    const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    auto click = [&](mc::Button button) {
+        std::lock_guard<std::mutex> g(g_melee_mutex);
+        mc::Inventory& inv = g_melee.inventory();
+        switch (ref.kind) {
+            case mc::SlotRef::Kind::Inventory: inv.click(ref.index, button, shift); break;
+            case mc::SlotRef::Kind::Palette:
+                if (static_cast<size_t>(ref.index) < mc::paletteItems().size()) inv.clickPalette(mc::paletteItems()[static_cast<size_t>(ref.index)], button, shift);
+                break;
+            case mc::SlotRef::Kind::None: inv.clickOutside(); break;
+            case mc::SlotRef::Kind::Panel: break;
+        }
+    };
+    if (erin::TakeLeftClick()) click(mc::Button::Left);
+    if (erin::TakeRightClick()) click(mc::Button::Right);
+    for (int i = 0; i < mc::Inventory::kHotbar; ++i) {
+        const bool d = (GetAsyncKeyState('1' + i) & 0x8000) != 0;
+        if (d && !prev_digit[i] && ref.kind == mc::SlotRef::Kind::Inventory) {
+            std::lock_guard<std::mutex> g(g_melee_mutex);
+            g_melee.inventory().swapWithHotbar(ref.index, i);
+        }
+        prev_digit[i] = d;
+    }
+}
+
 DWORD WINAPI KeyThread(LPVOID) {
     bool prev8 = false, prev6 = false, prev7 = false;
     bool prev_digit[MeleeController::kSlots] = {};
@@ -1148,7 +1262,9 @@ DWORD WINAPI KeyThread(LPVOID) {
                 if (heal > 0) g_heal_pending.fetch_add(heal);
             }
         }
-        if (g_input_enabled.load() && erin::TakeRightClick() && fg && WantSuppress()) {
+        InventoryTick(fg);
+        const bool inv_open = g_inv_open.load();
+        if (!inv_open && g_input_enabled.load() && erin::TakeRightClick() && fg && WantSuppress()) {
             std::lock_guard<std::mutex> g(g_melee_mutex);
             const mc::ItemId item = g_melee.heldItem();
             if (!g_eating.isEating() && g_melee.countAt(g_melee.selectedSlot()) > 0 && g_eating.startEating(item)) {
@@ -1157,12 +1273,12 @@ DWORD WINAPI KeyThread(LPVOID) {
         }
         if (g_input_enabled.load()) {
             const int notches = erin::TakeWheelNotches();
-            if (notches != 0 && fg && WantSuppress()) {
+            if (notches != 0 && fg && !inv_open && WantSuppress()) {
                 std::lock_guard<std::mutex> g(g_melee_mutex);
                 g_melee.scroll(-notches); // wheel away from the user = previous slot, as in Minecraft
             }
         }
-        if (fg && WantSuppress()) {
+        if (fg && !inv_open && WantSuppress()) {
             for (int i = 0; i < MeleeController::kSlots; ++i) {
                 const bool d = (GetAsyncKeyState('1' + i) & 0x8000) != 0;
                 if (d && !prev_digit[i]) {
@@ -1177,7 +1293,7 @@ DWORD WINAPI KeyThread(LPVOID) {
         if (space && !prev_space && g_mc_mode.load()) Log("key: space down");
         g_jump.update(dt, space && !prev_space, g_mc_mode.load() && PlayerAirborne());
         prev_space = space;
-        const bool click_edge = g_input_enabled.load() && erin::TakeLeftClick();
+        const bool click_edge = !inv_open && g_input_enabled.load() && erin::TakeLeftClick();
         const bool want_suppress = click_edge ? WantSuppress() : false;
         if (click_edge && !(fg && g_click_attack.load() && want_suppress) && g_mc_mode.load()) {
             Log("click dropped: fg=%d click_attack=%d suppress=%d", fg ? 1 : 0, g_click_attack.load() ? 1 : 0, want_suppress ? 1 : 0);
@@ -1352,6 +1468,25 @@ void SetupDamage() {
                 reinterpret_cast<void*>(step), static_cast<unsigned long long>(step - g_img.base));
         }
     }
+    {
+        uintptr_t gate = 0, freeze = 0;
+        if (!LocateByPrefix(g_img, sigs::kIsInputBlocked, gate)) {
+            Log("inventory: input gate signature not unique, the character keeps moving while the inventory is open");
+        } else if (MH_CreateHook(reinterpret_cast<void*>(gate), reinterpret_cast<void*>(&IsInputBlockedDetour), reinterpret_cast<void**>(&g_isblocked_orig)) != MH_OK ||
+                   MH_EnableHook(reinterpret_cast<void*>(gate)) != MH_OK) {
+            Log("inventory: hooking the input gate %p failed", reinterpret_cast<void*>(gate));
+        } else {
+            Log("inventory: input gate hooked at %p (RVA 0x%llX)", reinterpret_cast<void*>(gate), static_cast<unsigned long long>(gate - g_img.base));
+        }
+        if (!LocateByPrefix(g_img, sigs::kMenuFreezesCamera, freeze)) {
+            Log("inventory: camera freeze signature not unique, the camera keeps turning while the inventory is open");
+        } else if (MH_CreateHook(reinterpret_cast<void*>(freeze), reinterpret_cast<void*>(&MenuFreezeDetour), reinterpret_cast<void**>(&g_menufreeze_orig)) != MH_OK ||
+                   MH_EnableHook(reinterpret_cast<void*>(freeze)) != MH_OK) {
+            Log("inventory: hooking the camera freeze %p failed", reinterpret_cast<void*>(freeze));
+        } else {
+            Log("inventory: camera freeze hooked at %p (RVA 0x%llX)", reinterpret_cast<void*>(freeze), static_cast<unsigned long long>(freeze - g_img.base));
+        }
+    }
     if (FileExists(g_game_dir + "mc_er_nolos.txt")) {
         Log("los: disabled by mc_er_nolos.txt");
     } else {
@@ -1466,7 +1601,17 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         out.hit = g_feedback.hit();
         out.hit_crit = g_feedback.crit();
         out.kill = g_feedback.kill();
+        const mc::Inventory& inv = g_melee.inventory();
+        for (int i = 0; i < mc::Inventory::kSlots; ++i) {
+            out.inv_item[i] = static_cast<uint16_t>(inv.slot(i).item);
+            out.inv_count[i] = static_cast<uint8_t>(std::min(255u, inv.slot(i).count));
+        }
+        out.cursor_item = static_cast<uint16_t>(inv.cursor().item);
+        out.cursor_count = static_cast<uint8_t>(std::min(255u, inv.cursor().count));
     }
+    out.inv_open = g_inv_open.load();
+    out.mouse_x = g_inv_mx.load();
+    out.mouse_y = g_inv_my.load();
     out.show = have_state && !ms.menu_focused && !ms.popup_open && !ls.screen_loading && fade < 0.02f;
 
     if (g_hide_native.load()) {
@@ -1558,6 +1703,8 @@ void SetupOverlay() {
                 else if (key == "no_player_hit_vfx") g_no_player_hit_vfx.store(value != 0.f);
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "eye_height") g_eye_height.store(value);
+                else if (key == "inv_key") g_inv_vk.store(static_cast<int>(value));
+                else if (key == "inv_sens") g_inv_sens.store(std::max(0.1f, value));
                 else if (key == "kb_force") g_kb_force.store(value);
                 else if (key == "hide_slots") g_hide_slots.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));
                 else if (key == "hide_mask1") g_hide_mask1.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));

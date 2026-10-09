@@ -35,6 +35,8 @@ std::atomic<bool> g_left_prev{false};
 std::atomic<bool> g_right_edge{false};
 std::atomic<bool> g_right_prev{false};
 std::atomic<int> g_wheel{0};
+std::atomic<int> g_dx{0}, g_dy{0};
+std::atomic<bool> g_suppress_motion{false};
 std::atomic<unsigned> g_mouse_state{0}, g_mouse_data{0}, g_keyboard_state{0}, g_keyboard_data{0}, g_other{0}, g_cleared{0};
 
 using CreateDeviceFn = HRESULT(STDMETHODCALLTYPE*)(void*, REFGUID, void**, LPUNKNOWN);
@@ -73,10 +75,19 @@ HRESULT STDMETHODCALLTYPE GetStateDetour(void* self, DWORD cb, LPVOID data) {
             if (right_down && !g_right_prev.load()) g_right_edge.store(true);
             g_right_prev.store(right_down);
         }
+        if (k == Kind::Mouse && data != nullptr && cb >= kMouseWheelOffset) {
+            LONG xy[2] = {};
+            memcpy(xy, data, sizeof(xy));
+            if (xy[0] != 0) g_dx.fetch_add(static_cast<int>(xy[0]));
+            if (xy[1] != 0) g_dy.fetch_add(static_cast<int>(xy[1]));
+        }
         if (k == Kind::Mouse && data != nullptr && cb >= kMouseWheelOffset + sizeof(LONG)) {
             LONG z = 0;
             memcpy(&z, static_cast<BYTE*>(data) + kMouseWheelOffset, sizeof(z));
             if (z != 0) g_wheel.fetch_add(static_cast<int>(z));
+        }
+        if (k == Kind::Mouse && g_suppress_motion.load(std::memory_order_relaxed) && data != nullptr && cb >= kMouseWheelOffset + sizeof(LONG)) {
+            memset(data, 0, kMouseWheelOffset + sizeof(LONG)); // lX, lY, lZ: the game sees a mouse that does not move (read above)
         }
         if (k == Kind::Mouse && g_suppress.load(std::memory_order_relaxed) && data != nullptr && cb >= kMouseButtonsOffset + 2) {
             auto* buttons = static_cast<BYTE*>(data) + kMouseButtonsOffset;
@@ -93,6 +104,14 @@ HRESULT STDMETHODCALLTYPE GetDataDetour(void* self, DWORD cb, LPDIDEVICEOBJECTDA
     if (SUCCEEDED(hr)) {
         const Kind k = KindOf(self);
         Count(k, g_mouse_data, g_keyboard_data);
+        if (k == Kind::Mouse && data != nullptr && count != nullptr && cb >= sizeof(DIDEVICEOBJECTDATA)) {
+            for (DWORD i = 0; i < *count; ++i) {
+                auto* e = reinterpret_cast<DIDEVICEOBJECTDATA*>(reinterpret_cast<BYTE*>(data) + static_cast<size_t>(i) * cb);
+                if (e->dwOfs == DIMOFS_X) g_dx.fetch_add(static_cast<int>(static_cast<LONG>(e->dwData)));
+                if (e->dwOfs == DIMOFS_Y) g_dy.fetch_add(static_cast<int>(static_cast<LONG>(e->dwData)));
+                if (g_suppress_motion.load(std::memory_order_relaxed) && (e->dwOfs == DIMOFS_X || e->dwOfs == DIMOFS_Y || e->dwOfs == DIMOFS_Z)) e->dwData = 0;
+            }
+        }
         if (k == Kind::Mouse && g_suppress.load(std::memory_order_relaxed) && data != nullptr && count != nullptr &&
             cb >= sizeof(DIDEVICEOBJECTDATA)) {
             for (DWORD i = 0; i < *count; ++i) {
@@ -183,6 +202,13 @@ bool TakeLeftClick() { return g_left_edge.exchange(false); }
 bool TakeRightClick() { return g_right_edge.exchange(false); }
 
 int TakeWheelNotches() { return g_wheel.exchange(0) / 120; }
+
+void TakeMouseDelta(int& dx, int& dy) {
+    dx = g_dx.exchange(0);
+    dy = g_dy.exchange(0);
+}
+
+void SetSuppressMouseMotion(bool on) { g_suppress_motion.store(on, std::memory_order_relaxed); }
 
 void SetSuppressMouseButtons(bool on) { g_suppress.store(on, std::memory_order_relaxed); }
 

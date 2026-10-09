@@ -24,6 +24,7 @@
 #include "eldenring_particles.hpp"
 #include "mc/hud_layout.hpp"
 #include "mc/inventory_layout.hpp"
+#include "mc/hud.hpp"
 #include "overlay_d3d12.hpp"
 #include "steve_renderer_d3d12.hpp"
 
@@ -469,7 +470,88 @@ void DrawFx(ImDrawList* dl, ImTextureID atlas, float w, float h) {
     }
 }
 
+// The inventory screen: Minecraft's 3-row container (item palette on top, the player's slots below), the stack on the cursor,
+// a tooltip and our own mouse pointer.
+void DrawInventory(const HudState& hud, float w, float h) {
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    const ImTextureID atlas = reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(g_atlas_gpu.ptr));
+    dl->AddRectFilled({0.f, 0.f}, {w, h}, IM_COL32(16, 16, 16, 150)); // Minecraft dims the world behind a screen
+    const mc::InventoryLayout lay(w, h);
+    const mc::HudRect p = lay.panel();
+    const float gs = static_cast<float>(lay.scale());
+    auto image = [&](float x, float y, float rw, float rh, const mc::hud::HudUV& uv) {
+        dl->AddImage(atlas, {x, y}, {x + rw, y + rh}, {uv.u0, uv.v0}, {uv.u1, uv.v1});
+    };
+    if (g_atlas_ready) {
+        image(p.x, p.y, 176.f * gs, 71.f * gs, mc::hud::kUV_CONTAINER_TOP);
+        image(p.x, p.y + 71.f * gs, 176.f * gs, 96.f * gs, mc::hud::kUV_CONTAINER_BOTTOM);
+    } else {
+        dl->AddRectFilled({p.x, p.y}, {p.x + p.w, p.y + p.h}, IM_COL32(198, 198, 198, 255));
+    }
+    const float fs = 8.f * gs;
+    const ImU32 label = IM_COL32(64, 64, 64, 255);
+    dl->AddText(ImGui::GetFont(), fs, {lay.titleItems().x, lay.titleItems().y}, label, "Items");
+    dl->AddText(ImGui::GetFont(), fs, {lay.titleInventory().x, lay.titleInventory().y}, label, "Inventory");
+
+    auto stackCount = [&](const mc::HudRect& r, unsigned n) {
+        if (n <= 1) return;
+        char cnt[8];
+        snprintf(cnt, sizeof(cnt), "%u", n);
+        const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, 1e9f, 0.f, cnt);
+        const ImVec2 pos{r.x + 17.f * gs - sz.x, r.y + 9.f * gs};
+        dl->AddText(ImGui::GetFont(), fs, {pos.x + gs, pos.y + gs}, IM_COL32(40, 40, 40, 255), cnt);
+        dl->AddText(ImGui::GetFont(), fs, pos, IM_COL32(255, 255, 255, 255), cnt);
+    };
+    auto icon = [&](const mc::HudRect& r, mc::ItemId item) {
+        if (const mc::hud::HudUV* uv = eldenring::render::uvForItem(item)) image(r.x, r.y, r.w, r.h, *uv);
+    };
+    const auto& palette = mc::paletteItems();
+    for (size_t i = 0; i < palette.size() && i < mc::InventoryLayout::kPaletteSlots; ++i) icon(lay.paletteSlot(static_cast<int>(i)), palette[i]);
+    for (int i = 0; i < 36; ++i) {
+        const mc::ItemId item = static_cast<mc::ItemId>(hud.inv_item[i]);
+        if (item == mc::ItemId::None) continue;
+        icon(lay.invSlot(i), item);
+        stackCount(lay.invSlot(i), hud.inv_count[i]);
+    }
+    // hover: the vanilla slot highlight and the item name
+    const mc::SlotRef hover = lay.hitTest(hud.mouse_x, hud.mouse_y);
+    mc::ItemId hovered = mc::ItemId::None;
+    if (hover.kind == mc::SlotRef::Kind::Palette && static_cast<size_t>(hover.index) < palette.size()) {
+        hovered = palette[static_cast<size_t>(hover.index)];
+    } else if (hover.kind == mc::SlotRef::Kind::Inventory) {
+        hovered = static_cast<mc::ItemId>(hud.inv_item[hover.index]);
+    }
+    if (hover.kind == mc::SlotRef::Kind::Palette || hover.kind == mc::SlotRef::Kind::Inventory) {
+        const mc::HudRect r = hover.kind == mc::SlotRef::Kind::Palette ? lay.paletteSlot(hover.index) : lay.invSlot(hover.index);
+        dl->AddRectFilled({r.x, r.y}, {r.x + r.w, r.y + r.h}, IM_COL32(255, 255, 255, 128));
+    }
+    // the stack on the cursor is drawn centred on the pointer, above everything
+    const mc::ItemId held = static_cast<mc::ItemId>(hud.cursor_item);
+    if (held != mc::ItemId::None) {
+        const mc::HudRect r{hud.mouse_x - 8.f * gs, hud.mouse_y - 8.f * gs, 16.f * gs, 16.f * gs};
+        icon(r, held);
+        stackCount(r, hud.cursor_count);
+    } else if (hovered != mc::ItemId::None) {
+        const char* name = mc::HudEngine::getItemDisplayName(hovered);
+        const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, 1e9f, 0.f, name);
+        const float pad = 3.f * gs;
+        const float tx = std::min(hud.mouse_x + 12.f * gs, w - sz.x - 2.f * pad), ty = hud.mouse_y - 12.f * gs;
+        dl->AddRectFilled({tx - pad, ty - pad}, {tx + sz.x + pad, ty + sz.y + pad}, IM_COL32(16, 0, 16, 230));
+        dl->AddRect({tx - pad, ty - pad}, {tx + sz.x + pad, ty + sz.y + pad}, IM_COL32(80, 0, 160, 255), 0.f, 0, gs);
+        dl->AddText(ImGui::GetFont(), fs, {tx, ty}, IM_COL32(255, 255, 255, 255), name);
+    }
+    // the pointer (the game's own cursor is not shown while the mouse is captured)
+    const float u = std::max(1.f, gs);
+    const ImVec2 m{hud.mouse_x, hud.mouse_y};
+    dl->AddTriangleFilled(m, {m.x, m.y + 11.f * u}, {m.x + 7.f * u, m.y + 8.f * u}, IM_COL32(255, 255, 255, 255));
+    dl->AddTriangle(m, {m.x, m.y + 11.f * u}, {m.x + 7.f * u, m.y + 8.f * u}, IM_COL32(0, 0, 0, 255), 1.f);
+}
+
 void DrawHud(const HudState& hud, float w, float h) {
+    if (hud.inv_open) {
+        DrawInventory(hud, w, h);
+        return;
+    }
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     const float scale = std::max(0.5f, h / 1080.f);
     const float cell = 20.f * scale;
@@ -915,6 +997,11 @@ void SetSteveSkin(const uint8_t* rgba, unsigned width, unsigned height) {
     g_skin_rgba.assign(rgba, rgba + static_cast<size_t>(width) * height * 4);
     g_skin_w = width;
     g_skin_h = height;
+}
+
+void ScreenSize(float& width, float& height) {
+    width = static_cast<float>(g_s.width);
+    height = static_cast<float>(g_s.height);
 }
 
 void CycleDepthCandidate() {

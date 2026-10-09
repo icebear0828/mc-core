@@ -136,6 +136,11 @@ public:
         }
     }
     void clickOutside() { cursor_ = {}; }
+    // Closing the screen: the stack on the cursor goes back into the inventory; what does not fit is dropped.
+    void returnCursor() {
+        if (!cursor_.empty()) add(cursor_);
+        cursor_ = {};
+    }
 
     // The creative item palette: left takes a full stack (replacing a different item on the cursor), right takes one,
     // shift puts a full stack straight into the inventory.
