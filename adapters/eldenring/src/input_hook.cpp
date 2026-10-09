@@ -40,6 +40,8 @@ std::atomic<bool> g_suppress_motion{false};
 std::atomic<bool> g_suppress_keys{false};
 std::atomic<int> g_masked_dik{0}; // one key (a DIK scan code) the game must not see, 0 = none
 std::atomic<unsigned> g_keys_zeroed{0}, g_motion_zeroed{0};
+std::atomic<unsigned> g_kb_failed{0};
+std::atomic<long> g_kb_last_hr{0};
 std::atomic<unsigned> g_mouse_state{0}, g_mouse_data{0}, g_keyboard_state{0}, g_keyboard_data{0}, g_other{0}, g_cleared{0};
 
 using CreateDeviceFn = HRESULT(STDMETHODCALLTYPE*)(void*, REFGUID, void**, LPUNKNOWN);
@@ -67,6 +69,10 @@ void Count(Kind k, std::atomic<unsigned>& mouse, std::atomic<unsigned>& keyboard
 
 HRESULT STDMETHODCALLTYPE GetStateDetour(void* self, DWORD cb, LPVOID data) {
     const HRESULT hr = g_state_orig(self, cb, data);
+    if (FAILED(hr) && KindOf(self) == Kind::Keyboard) {
+        ++g_kb_failed;
+        g_kb_last_hr.store(static_cast<long>(hr));
+    }
     if (SUCCEEDED(hr)) {
         const Kind k = KindOf(self);
         Count(k, g_mouse_state, g_keyboard_state);
@@ -230,6 +236,11 @@ void TakeMouseDelta(int& dx, int& dy) {
 }
 
 void SetSuppressMouseMotion(bool on) { g_suppress_motion.store(on, std::memory_order_relaxed); }
+
+unsigned TakeKeyboardFailures(long& last_hr) {
+    last_hr = g_kb_last_hr.load();
+    return g_kb_failed.exchange(0);
+}
 
 void SetMaskedKey(int dik) { g_masked_dik.store(dik, std::memory_order_relaxed); }
 

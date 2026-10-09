@@ -40,6 +40,8 @@ void SetSuppressKeyboard(bool on);
 // Hides one key (a DirectInput scan code, e.g. 0x39 = Space) from the game while everything else passes; 0 = none. Used by the jump
 // experiment so the game's own jump (with its wind-up) never starts.
 void SetMaskedKey(int dik);
+// Failed keyboard reads (GetDeviceState returned an error) since the last call, and the last error code (DIERR_NOTACQUIRED 0x8007000C ...).
+unsigned TakeKeyboardFailures(long& last_hr);
 // How many keyboard polls / mouse polls were blanked since the last call (diagnostics).
 void TakeSuppressStats(unsigned& keys_zeroed, unsigned& motion_zeroed);
 

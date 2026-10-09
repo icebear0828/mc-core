@@ -1791,6 +1791,32 @@ DWORD WINAPI KeyThread(LPVOID) {
     for (;;) {
         Sleep(15);
         const bool fg = GameInForeground();
+        {
+            // Who has the keyboard: log every change of the game's foreground state with the window that took it (the game stops
+            // polling its keyboard while it is not the active window).
+            static int prev_fg = -1;
+            static uint64_t last_fail_log = 0;
+            if (static_cast<int>(fg) != prev_fg) {
+                prev_fg = static_cast<int>(fg);
+                HWND top = GetForegroundWindow();
+                char cls[80] = {}, title[120] = {};
+                DWORD pid = 0;
+                if (top != nullptr) {
+                    GetClassNameA(top, cls, sizeof(cls) - 1);
+                    GetWindowTextA(top, title, sizeof(title) - 1);
+                    GetWindowThreadProcessId(top, &pid);
+                }
+                Log("focus: the game is %s the foreground window (foreground: hwnd=%p pid=%lu class='%s' title='%s')", fg ? "now" : "no longer", reinterpret_cast<void*>(top),
+                    static_cast<unsigned long>(pid), cls, title);
+            }
+            long hr = 0;
+            const unsigned failed = erin::TakeKeyboardFailures(hr);
+            const uint64_t t = GetTickCount64();
+            if (failed > 0 && t - last_fail_log >= 1000) {
+                last_fail_log = t;
+                Log("input: %u keyboard reads failed in the last second, last error 0x%08lX", failed, static_cast<unsigned long>(hr));
+            }
+        }
         const uint64_t now_ms = GetTickCount64();
         const float dt = static_cast<float>(now_ms - last_ms) / 1000.f;
         last_ms = now_ms;

@@ -375,3 +375,135 @@ def test_committed_generated_headers_match_the_tool_output(tmp_path):
 
     committed_png = Image.open(root / "assets/source/textures/mc_hud_atlas.png").convert("RGBA")
     assert committed_png.tobytes() == atlas.tobytes()
+
+
+def test_parse_geometry_json_bedrock_1_12():
+    from extract_mc_assets import parse_geometry_json
+
+    sample_json = """{
+        "format_version": "1.12.0",
+        "minecraft:geometry": [
+            {
+                "description": {
+                    "identifier": "geometry.creeper",
+                    "texture_width": 64,
+                    "texture_height": 32
+                },
+                "bones": [
+                    {
+                        "name": "head",
+                        "pivot": [0, 18, 0],
+                        "cubes": [
+                            {"origin": [-4, 18, -4], "size": [8, 8, 8], "uv": [0, 0]}
+                        ]
+                    },
+                    {
+                        "name": "body",
+                        "pivot": [0, 18, 0],
+                        "cubes": [
+                            {"origin": [-4, 6, -2], "size": [8, 12, 4], "uv": [16, 16], "inflate": 0.25}
+                        ]
+                    },
+                    {
+                        "name": "leg0",
+                        "parent": "body",
+                        "pivot": [-2, 6, 4],
+                        "rotation": [0, 15, 0],
+                        "cubes": [
+                            {"origin": [-4, 0, 2], "size": [4, 6, 4], "uv": [0, 16], "mirror": true}
+                        ]
+                    }
+                ]
+            }
+        ]
+    }"""
+    geo = parse_geometry_json(sample_json)
+    assert geo["identifier"] == "geometry.creeper"
+    assert geo["texture_width"] == 64
+    assert geo["texture_height"] == 32
+    assert len(geo["bones"]) == 3
+
+    head = geo["bones"][0]
+    assert head["name"] == "head"
+    assert head["pivot"] == (0, 18, 0)
+    assert len(head["cubes"]) == 1
+    assert head["cubes"][0]["origin"] == (-4, 18, -4)
+    assert head["cubes"][0]["size"] == (8, 8, 8)
+    assert head["cubes"][0]["uv"] == (0, 0)
+
+    body = geo["bones"][1]
+    assert body["name"] == "body"
+    assert body["cubes"][0]["inflate"] == 0.25
+
+    leg0 = geo["bones"][2]
+    assert leg0["name"] == "leg0"
+    assert leg0["parent"] == "body"
+    assert leg0["rotation"] == (0, 15, 0)
+    assert leg0["cubes"][0]["mirror"] is True
+
+
+def test_parse_geometry_json_bedrock_1_8():
+    from extract_mc_assets import parse_geometry_json
+
+    sample_1_8 = """{
+        "format_version": "1.8.0",
+        "geometry.zombie": {
+            "texturewidth": 64,
+            "textureheight": 64,
+            "bones": [
+                {
+                    "name": "head",
+                    "pivot": [0, 24, 0],
+                    "cubes": [
+                        {"origin": [-4, 24, -4], "size": [8, 8, 8], "uv": [0, 0]}
+                    ]
+                }
+            ]
+        }
+    }"""
+    geo = parse_geometry_json(sample_1_8)
+    assert geo["identifier"] == "geometry.zombie"
+    assert geo["texture_width"] == 64
+    assert geo["texture_height"] == 64
+    assert len(geo["bones"]) == 1
+    assert geo["bones"][0]["name"] == "head"
+
+
+def test_build_geometry_mesh_generates_valid_triangles():
+    from extract_mc_assets import parse_geometry_json, build_geometry_mesh
+
+    sample_json = """{
+        "format_version": "1.12.0",
+        "minecraft:geometry": [
+            {
+                "description": {
+                    "identifier": "geometry.box",
+                    "texture_width": 64,
+                    "texture_height": 32
+                },
+                "bones": [
+                    {
+                        "name": "cube",
+                        "pivot": [0, 0, 0],
+                        "cubes": [
+                            {"origin": [-2, 0, -2], "size": [4, 4, 4], "uv": [0, 0]}
+                        ]
+                    }
+                ]
+            }
+        ]
+    }"""
+    geo = parse_geometry_json(sample_json)
+    parts = build_geometry_mesh(geo)
+    assert "cube" in parts
+    mesh = parts["cube"]
+    # 6 faces * 4 vertices = 24 vertices
+    assert len(mesh["positions"]) == 24
+    assert len(mesh["normals"]) == 24
+    assert len(mesh["uv"]) == 24
+    # 6 faces * 2 triangles * 3 indices = 36 indices
+    assert len(mesh["triangles"]) == 36
+    for u, v in mesh["uv"]:
+        assert 0.0 <= u <= 1.0
+        assert 0.0 <= v <= 1.0
+
