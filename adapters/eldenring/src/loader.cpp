@@ -229,6 +229,7 @@ std::atomic<unsigned> g_native_reshown{0};     // times the game turned a hidden
 std::atomic<bool> g_slots_changed{false};
 std::atomic<int> g_slot_probe{-1}; // F9 probe: -1 = off (all slots), 0..26 = only that part slot is hidden
 std::atomic<uint32_t> g_hide_mask1{0x100A1}; // bits cleared in disp_flags1 (+0x20): visible + shadow (verified live, not bisected)
+std::atomic<bool> g_no_player_hit_vfx{false}; // mc_er_steve.txt: no_player_hit_vfx=1 (also implied by first person): no blood when the player is hit
 std::atomic<bool> g_first_person{false};  // mc_er_steve.txt: first_person=1 (experiment), F10 toggles
 std::atomic<float> g_eye_height{1.65f};
 std::atomic<float> g_kb_force{-1.f}; // mc_er_steve.txt: kb_force (>= 0 overrides HitContext+0xFC of our own hits; experiment)
@@ -317,6 +318,26 @@ void __fastcall RenderCamCopyDetour(void* self) {
         } __except (EXCEPTION_EXECUTE_HANDLER) {
         }
     }
+}
+
+// ---- player hit effect (blood) -----------------------------------------------------------------------------------------
+// 0x140450120 spawns the hit particles; its first gate is IsMainPlayer(victim), so it only runs for hits the player takes.
+// For those it returns "nothing spawned" (0) without calling the game, when the experiment is on.
+using HitVfxFn = uint8_t(__fastcall*)(void* damage_module, void* attacker, uint8_t* ctx, void* flags);
+HitVfxFn g_hitvfx_orig = nullptr;
+std::atomic<unsigned> g_hitvfx_skipped{0};
+
+uint8_t __fastcall HitVfxDetour(void* damage_module, void* attacker, uint8_t* ctx, void* flags) {
+    if (g_no_player_hit_vfx.load(std::memory_order_relaxed) || g_first_person.load(std::memory_order_relaxed)) {
+        uint64_t owner = 0, player = 0;
+        const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+        if (world != 0 && SafeCopy(reinterpret_cast<uintptr_t>(damage_module) + layout::kOwnerInDataModule, &owner, sizeof(owner)) &&
+            SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) && owner != 0 && owner == player) {
+            ++g_hitvfx_skipped;
+            return 0;
+        }
+    }
+    return g_hitvfx_orig(damage_module, attacker, ctx, flags);
 }
 
 // ---- line of sight (the game's static-geometry ray, docs/ELDENRING_REVERSE.md 1.6) -------------------------------------
@@ -418,10 +439,10 @@ void LogPlayerHit(void* module, void* attacker, const uint8_t* ctx, uint8_t bloc
     uint8_t team = 0;
     SafeCopy(reinterpret_cast<uintptr_t>(attacker) + layout::kNpcIdInChrIns, &npc, sizeof(npc));
     SafeCopy(reinterpret_cast<uintptr_t>(attacker) + layout::kTeamTypeInChrIns, &team, sizeof(team));
-    Log("HIT-IN: dmg=%u poise=%u tier=%u kb+FC=%.2f f+50=%.2f %.2f %.2f u8[67]=%u u8[D9]=%u u8[DA]=%u u8[114]=%02X u8[115]=%02X "
+    Log("HIT-IN: dmg=%u poise=%u tier=%u kb+FC=%.2f f+50=%.2f %.2f %.2f u8[67]=%u u8[D9]=%u u8[DA]=%u u8[114]=%02X u8[115]=%02X u32[54]=%u "
         "u32[21C]=%u u32[230]=%u blocked_arg=%u attacker=%p npc=%d team=%u",
         u32(layout::kHitDamage), u32(0x40), u32(0x44), f32(layout::kHitKnockbackIn), f32(0x50), f32(0x54), f32(0x58), b[0x67], b[0xD9], b[0xDA],
-        b[0x114], b[0x115], u32(0x21C), u32(0x230), static_cast<unsigned>(blocked_flag), attacker, npc, static_cast<unsigned>(team));
+        b[0x114], b[0x115], u32(0x54), u32(0x21C), u32(0x230), static_cast<unsigned>(blocked_flag), attacker, npc, static_cast<unsigned>(team));
 }
 
 uint64_t ProcessDamageDetour(void* module, void* attacker, uint8_t* ctx, uint32_t a4, uint8_t a5) {
@@ -838,6 +859,18 @@ void SetupDamage() {
     }
     g_log_player_hits.store(FileExists(g_game_dir + "mc_er_hitlog.txt"));
     if (g_log_player_hits.load()) Log("hitlog: logging the HitContext of every hit the player takes");
+    {
+        uintptr_t vfx = 0;
+        if (!LocateByPrefix(g_img, sigs::kHitVfxSpawn, vfx)) {
+            Log("hit vfx: spawner signature not unique, the player's blood effect cannot be removed");
+        } else if (MH_CreateHook(reinterpret_cast<void*>(vfx), reinterpret_cast<void*>(&HitVfxDetour), reinterpret_cast<void**>(&g_hitvfx_orig)) != MH_OK ||
+                   MH_EnableHook(reinterpret_cast<void*>(vfx)) != MH_OK) {
+            Log("hit vfx: hooking %p failed", reinterpret_cast<void*>(vfx));
+        } else {
+            Log("hit vfx: spawner hooked at %p (RVA 0x%llX); no_player_hit_vfx=1 or first person removes the player's hit effect",
+                reinterpret_cast<void*>(vfx), static_cast<unsigned long long>(vfx - g_img.base));
+        }
+    }
     if (FileExists(g_game_dir + "mc_er_nolos.txt")) {
         Log("los: disabled by mc_er_nolos.txt");
     } else {
@@ -944,6 +977,8 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
             last_report_ms = now_ms;
             const unsigned n = g_native_reshown.exchange(0);
             if (n != 0) Log("native: the game turned hidden parts back on %u time(s) in the last second", n);
+            const unsigned sk = g_hitvfx_skipped.exchange(0);
+            if (sk != 0) Log("hit vfx: skipped the player's hit effect %u time(s)", sk);
         }
     }
 
@@ -1002,6 +1037,7 @@ void SetupOverlay() {
                 else if (key == "scene_height") cfg.scene_height = value;
                 else if (key == "yaw_offset_deg") g_steve_yaw_offset = value * 3.14159265f / 180.f;
                 else if (key == "hide_native") g_hide_native.store(value != 0.f);
+                else if (key == "no_player_hit_vfx") g_no_player_hit_vfx.store(value != 0.f);
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "eye_height") g_eye_height.store(value);
                 else if (key == "kb_force") g_kb_force.store(value);

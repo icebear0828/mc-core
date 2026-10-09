@@ -107,6 +107,9 @@ inline constexpr const char* kProcessDamageContext =
 inline constexpr const char* kRenderCameraCopy =
     "40 53 48 83 EC 20 48 8B D9 48 83 C1 48 E8 ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 85 C0 74 38 48 8B 80 E0 EC 01 00 48 85 C0 74 2C 0F 28 40 10 "
     "0F 29 83 80 00 00 00";
+// The hit VFX spawner (0x140450120): (damageModule, attackerChr, hitContext*, flags) -> bool. Its first gate is
+// IsMainPlayer(victim), so it only ever makes the effect for hits the player takes. Unique in 2.7.1.0.
+inline constexpr const char* kHitVfxSpawn = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 49 8B F9 49 8B D8 48 8B EA 48 8B F1";
 inline constexpr const char* kGetEffectiveTeamType = "48 89 5C 24 10 57 48 83 EC 20 0F B6 41 6C 48 8B F9 88 02";
 } // namespace sigs
 
