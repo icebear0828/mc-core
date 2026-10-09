@@ -224,11 +224,11 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
     }
     g_s.imgui_ready = true;
     {
-        const UINT inc = g_s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        const UINT srv_inc = g_s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         g_depth_cpu = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
-        g_depth_cpu.ptr += inc;
+        g_depth_cpu.ptr += srv_inc;
         g_depth_gpu = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
-        g_depth_gpu.ptr += inc;
+        g_depth_gpu.ptr += srv_inc;
         g_steve.setDepthView(g_s.device, nullptr, g_depth_cpu);
         if (!g_steve.init(g_s.device, g_s.format, g_log)) Logf("overlay: Steve renderer unavailable");
         g_depth_dirty.store(true); // bind the depth captured so far
