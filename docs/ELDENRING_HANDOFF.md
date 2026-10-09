@@ -72,8 +72,8 @@
 | `ProcessDamageContext` | `0x448910` | `sigs::kProcessDamageContext` | **最终伤害替换**（我们的命中，`ctx+0x228`）；玩家被打时的吸收和图腾夹伤；`HIT-IN` 日志 |
 | 渲染相机拷贝 | `0x4A7190` | `sigs::kRenderCameraCopy` | 渲染前：第一人称改相机位置/受击倾斜（拷贝后还原）；清除原模型显示位 |
 | 相机更新 | `0x3B11D0` | `sigs::kCameraStepExecute` | 签名 `(ChrCam*, float dt@xmm1, ChrIns*, bool)`。执行前还原引擎相机，执行后把眼睛位置写进 ChrCam+0x40 并保持到下一帧，使特效/粒子/声音等所有读相机处都用眼睛位置（`fp_persist=0` 关闭）。**由硬件写断点（`mc_er_camwatch.txt`，会卡死，别常开）在 `0x3B1929 movaps [rdi+0x40]` 抓到；`0x3BC070` 不是它（日志 changed=0），已证伪。** |
-| 输入总闸门 | `0x14067B020` | `sigs::kIsInputBlocked` | 背包打开时返回 1（6 个调用者：移动/翻滚/攻击/总调度 + 2 个含义未知）。**待实测** |
-| 相机转动冻结 | `0x140766C60` | `sigs::kMenuFreezesCamera` | 背包打开时返回 1。有一个只差 call 位移的孪生函数 `0x140766BC0`，签名带了字面位移才唯一。**待实测** |
+| 输入总闸门 | `0x14067B020` | `sigs::kIsInputBlocked` | 背包打开时返回 1（6 个调用者）。**实测背包开着时从未被调用（forced=0），键盘屏蔽靠 DirectInput 层清零；保留但不是必需** |
+| 相机转动冻结 | `0x140766C60` | `sigs::kMenuFreezesCamera` | 背包打开时返回 1。**实测有效（每秒 120 次）**。有一个只差 call 位移的孪生函数 `0x140766BC0`，签名带了字面位移才唯一。 |
 | 受击特效生成（可选） | `0x450120` | `sigs::kHitVfxSpawn` | 放 `mc_er_hitvfx.txt` 才装；血液已用游戏设置关掉，通常不需要 |
 | `ApplyHPChange`（调用，非钩子） | `0x437450` | `sigs::kApplyHpChange` | 回血，**游戏线程** |
 | 射线包装（调用） | `0xC71D70` | `sigs::kRaycastWrapper` | 墙体遮挡，过滤器 `0x5D`，在 `DamageQueue` 里（游戏线程）调用 |
@@ -156,7 +156,7 @@
 3. 弓箭：`spawn_bullet`（`0x1403A2CB0`）的 `BulletSpawnData`（`+0x00/+0x08` 是句柄，怎么由 `ChrIns` 得到）+ 我们自己的右键拉弓玩法（素材 `entity.arrow.*` 已提取，没接事件）。
 
 **P1（不依赖逆向，我们自己做）**
-4. **背包界面**（用户最早问的）：扩展 `extract_mc_assets.py` 导出创造模式背景/分页/更多物品和方块图标；`HudEngine` 扩到 36 格并合并 `MeleeController` 的热键栏；输入接管方案已定（`REVERSE §12`）：挂 `IsInputBlocked`（`0x14067B020`，签名 `48 8B 05 ?? ?? ?? ?? 0F B6 80 34 0C 00 00 C3`，**有 6 个调用者，其中 `0x140257E12`、`0x140AFED08` 含义未知**）和 `IsAnyBlockingMenuOpen`（`0x140766C60`，只有相机函数调用，100% 安全），背包打开时返回 1；虚拟光标用 DirectInput 的 `lX/lY`；开关键要避开 `E`（ER 的"互动"）和 `Esc`。
+4. ~~**背包界面**~~（**已完成并通过实测 2026-10-09**；剩：物品存档、手柄屏蔽、Esc 同时开游戏菜单的问题已被键盘清零解决）。原计划：：扩展 `extract_mc_assets.py` 导出创造模式背景/分页/更多物品和方块图标；`HudEngine` 扩到 36 格并合并 `MeleeController` 的热键栏；输入接管方案已定（`REVERSE §12`）：挂 `IsInputBlocked`（`0x14067B020`，签名 `48 8B 05 ?? ?? ?? ?? 0F B6 80 34 0C 00 00 C3`，**有 6 个调用者，其中 `0x140257E12`、`0x140AFED08` 含义未知**）和 `IsAnyBlockingMenuOpen`（`0x140766C60`，只有相机函数调用，100% 安全），背包打开时返回 1；虚拟光标用 DirectInput 的 `lX/lY`；开关键要避开 `E`（ER 的"互动"）和 `Esc`。
 5. 手持方块的 3D 模型（现在是等距图标，扁平）；给 Steve 和 view model 加环境光；伤害数字（原版没有，没做）。
 6. 玩家被毒/腐败/坠落致死时图腾救不了（它们不走 `ProcessDamageContext`）；脚步材质固定草地。
 
