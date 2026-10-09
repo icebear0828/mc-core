@@ -93,6 +93,32 @@ private:
     float wind_up_{0.f};
 };
 
+// Crosshair feedback for our own hits, all values 0..1 and fading by themselves. A kill marker outlives the hit marker.
+class HitFeedback {
+public:
+    static constexpr float kHitSec = 0.25f;
+    static constexpr float kKillSec = 0.6f;
+
+    void onHit(bool critical) {
+        hit_ = 1.f;
+        crit_ = critical;
+    }
+    void onKill() { kill_ = 1.f; }
+    void tick(float dt) {
+        hit_ = std::max(0.f, hit_ - dt / kHitSec);
+        kill_ = std::max(0.f, kill_ - dt / kKillSec);
+        if (hit_ <= 0.f) crit_ = false;
+    }
+    [[nodiscard]] float hit() const { return hit_; }
+    [[nodiscard]] bool crit() const { return crit_ && hit_ > 0.f; }
+    [[nodiscard]] float kill() const { return kill_; }
+
+private:
+    float hit_{0.f};
+    float kill_{0.f};
+    bool crit_{false};
+};
+
 // Elden Ring hit points for a landed MC hit: a full diamond-sword hit (7 damage) is `max_hp_percent` of the enemy's
 // maximum health; everything else scales linearly with MC damage. At least 1 for a landed hit; 0 when the enemy's
 // maximum health is unknown.

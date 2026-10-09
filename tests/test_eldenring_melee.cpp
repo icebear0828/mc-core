@@ -151,3 +151,40 @@ TEST(EldenRingJump, CanBeReArmedAfterLanding) {
     j.update(0.016f, true, false);
     EXPECT_TRUE(j.jumping());
 }
+
+TEST(EldenRingFeedback, HitMarkerFadesAndKeepsItsKindWhileVisible) {
+    HitFeedback f;
+    EXPECT_FLOAT_EQ(f.hit(), 0.f);
+    f.onHit(false);
+    EXPECT_FLOAT_EQ(f.hit(), 1.f);
+    EXPECT_FALSE(f.crit());
+    f.tick(HitFeedback::kHitSec * 0.5f);
+    EXPECT_NEAR(f.hit(), 0.5f, 1e-3f);
+    f.tick(HitFeedback::kHitSec);
+    EXPECT_FLOAT_EQ(f.hit(), 0.f);
+}
+
+TEST(EldenRingFeedback, CritMarkerLatchesUntilItFades) {
+    HitFeedback f;
+    f.onHit(true);
+    EXPECT_TRUE(f.crit());
+    f.tick(HitFeedback::kHitSec * 0.5f);
+    f.onHit(false); // a plain hit right after: refreshes, the crit look is replaced by the newest hit
+    EXPECT_FLOAT_EQ(f.hit(), 1.f);
+    EXPECT_FALSE(f.crit());
+    f.onHit(true);
+    f.tick(10.f);
+    EXPECT_FALSE(f.crit()); // faded: no stale flag
+}
+
+TEST(EldenRingFeedback, KillMarkerIsSeparateAndLonger) {
+    HitFeedback f;
+    f.onHit(false);
+    f.onKill();
+    EXPECT_FLOAT_EQ(f.kill(), 1.f);
+    f.tick(HitFeedback::kHitSec + 0.01f);
+    EXPECT_FLOAT_EQ(f.hit(), 0.f);
+    EXPECT_GT(f.kill(), 0.4f); // still showing after the hit marker is gone
+    f.tick(HitFeedback::kKillSec);
+    EXPECT_FLOAT_EQ(f.kill(), 0.f);
+}

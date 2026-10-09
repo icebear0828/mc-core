@@ -16,6 +16,9 @@ struct HudState {
     int hp{0};
     int max_hp{0};
     int selected_slot{0}; // 0..8
+    float hit{0.f};       // crosshair hit marker 0..1 (fades by itself)
+    bool hit_crit{false}; // that marker is for a critical hit
+    float kill{0.f};      // kill marker 0..1
 };
 
 // The 3D figure for this frame: camera, standing point (feet, game metres) and heading (rotation about +Y).

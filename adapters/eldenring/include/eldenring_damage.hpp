@@ -119,6 +119,7 @@ struct DamageRequest {
     uintptr_t victim_chr{0};
     int32_t base_damage{0};
     uint64_t enqueued_tick{0};
+    uint32_t tag{0}; // caller's cookie, returned unchanged in the result (bit 0: the hit was an MC critical)
 };
 
 struct DamageResult {
@@ -150,10 +151,10 @@ class DamageQueue {
 public:
     static constexpr size_t kCapacity = 64;
 
-    bool enqueue(uintptr_t victim_chr, int32_t base_damage, uint64_t tick) {
+    bool enqueue(uintptr_t victim_chr, int32_t base_damage, uint64_t tick, uint32_t tag = 0) {
         std::lock_guard<std::mutex> g(m_);
         if (q_.size() >= kCapacity) return false;
-        q_.push_back({victim_chr, base_damage, tick});
+        q_.push_back({victim_chr, base_damage, tick, tag});
         return true;
     }
     [[nodiscard]] size_t pending() const {

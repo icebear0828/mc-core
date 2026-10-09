@@ -420,3 +420,16 @@ TEST(EldenRingDamage, OverrideFinalDamageOnlyForOurContext) {
     EXPECT_FALSE(overrideFinalDamage(ctx, player, victim, 0, &seen));  // nothing to force
     EXPECT_FALSE(overrideFinalDamage(nullptr, player, victim, 5, &seen));
 }
+
+TEST(EldenRingDamage, RequestTagSurvivesToTheResult) {
+    const Mem m = makeWorld();
+    const HitTemplate t = makeTemplate();
+    std::vector<Call> calls;
+    DamageQueue q;
+    ASSERT_TRUE(q.enqueue(kEnemy, 16, 10, 1u));
+    const auto res = q.drain(baseCtx(m, t, calls));
+    ASSERT_EQ(res.size(), 1u);
+    EXPECT_EQ(res[0].outcome, DamageOutcome::Applied);
+    EXPECT_EQ(res[0].request.tag, 1u);
+    EXPECT_EQ(res[0].request.base_damage, 16);
+}

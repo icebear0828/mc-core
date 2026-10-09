@@ -236,6 +236,8 @@ mc::CombatEngine g_combat_engine{g_no_combat_port};
 std::mutex g_melee_mutex; // KeyThread writes, the Present thread reads
 MeleeController g_melee;
 JumpTracker g_jump; // KeyThread only
+HitFeedback g_feedback; // guarded by g_melee_mutex
+thread_local int32_t t_hp_after = -1; // victim hp right after our vfunc[7] call (game thread)
 std::optional<HitTemplate> g_template;
 using ClampFn = void*(__fastcall*)(void*, int32_t);
 ClampFn g_clamp_orig = nullptr;
@@ -325,6 +327,7 @@ void DrainOnce(uintptr_t updating_data_module) {
         const ForcedDamage forced = t_forced;
         t_forced = ForcedDamage{};
         const int32_t after = HpOf(static_cast<uintptr_t>(owner));
+        t_hp_after = after;
         if (g_pdc_hooked.load()) {
             Log("DAMAGE: wanted=%d engine=%d override=%s hp delta=%d", wanted, forced.engine_value, forced.applied ? "applied" : "NOT applied",
                 before - after);
@@ -339,7 +342,13 @@ void DrainOnce(uintptr_t updating_data_module) {
                 GetCurrentThreadId());
         }
     };
+    t_hp_after = -1;
     for (const DamageResult& r : g_queue.drain(c)) {
+        if (r.outcome == DamageOutcome::Applied) {
+            std::lock_guard<std::mutex> g(g_melee_mutex);
+            g_feedback.onHit((r.request.tag & 1u) != 0);
+            if (t_hp_after == 0) g_feedback.onKill(); // HP is clamped to [0, max]; -1 means unreadable, not a kill
+        }
         if (r.outcome != DamageOutcome::Applied) {
             Log("DAMAGE: request chr=%p -> %s", reinterpret_cast<void*>(r.request.victim_chr), OutcomeName(r.outcome));
         }
@@ -427,7 +436,7 @@ void ClickAttack(float charged) {
                                     {}, {cam.forward[0], cam.forward[1], cam.forward[2]});
     }
     const int dmg = erDamage(intent, e.max_hp);
-    const bool ok = dmg > 0 && g_queue.enqueue(e.chr, dmg, NowTick());
+    const bool ok = dmg > 0 && g_queue.enqueue(e.chr, dmg, NowTick(), intent.is_critical ? 1u : 0u);
     Log("click: item=%d charged=%.2f falling=%d crit=%d sweep=%d mc_dmg=%.2f -> %d on chr=%p npc=%d hp=%d/%d (%s)", static_cast<int>(held),
         charged, falling ? 1 : 0, intent.is_critical ? 1 : 0, intent.is_sweeping ? 1 : 0, intent.damage, dmg,
         reinterpret_cast<void*>(e.chr), e.npc_id, e.hp, e.max_hp, ok ? "ok" : "not queued");
@@ -481,6 +490,7 @@ DWORD WINAPI KeyThread(LPVOID) {
         {
             std::lock_guard<std::mutex> g(g_melee_mutex);
             g_melee.tick(dt);
+            g_feedback.tick(dt);
         }
         if (g_mc_mode.load()) LogGroundBytesOnChange();
         if (g_input_enabled.load()) {
@@ -664,6 +674,9 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         std::lock_guard<std::mutex> g(g_melee_mutex);
         out.selected_slot = g_melee.selectedSlot();
         steve.swing = g_melee.swingProgress();
+        out.hit = g_feedback.hit();
+        out.hit_crit = g_feedback.crit();
+        out.kill = g_feedback.kill();
     }
     out.show = have_state && !ms.menu_focused && !ms.popup_open && !ls.screen_loading && fade < 0.02f;
 
