@@ -674,6 +674,35 @@ void LogGroundBytesOnChange() {
     Log("ground: 92=%u 93=%u 1D0=%u 1D1=%u", b[0], b[1], b[2], b[3]);
 }
 
+// F11: write down, right now, the state of every part slot of the player's native model, so a model that is visible in
+// first person can be compared with what we believe is hidden.
+void SnapshotNativeParts() {
+    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    uint64_t player = 0, model = 0;
+    if (world == 0 || !SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) || player == 0 ||
+        !SafeCopy(static_cast<uintptr_t>(player) + layout::kAsmModelInPlayerIns, &model, sizeof(model)) || model == 0) {
+        Log("snapshot: no player model");
+        return;
+    }
+    Log("snapshot: model=%p first_person=%d hide_wanted=%d slots=0x%X mask1=0x%X mask2=0x%X", reinterpret_cast<void*>(model),
+        g_first_person.load() ? 1 : 0, g_native_hide_wanted.load() ? 1 : 0, g_hide_slots.load(), g_hide_mask1.load(), g_hide_mask2.load());
+    std::lock_guard<std::mutex> lock(g_native_mutex);
+    for (unsigned i = 0; i < layout::kAsmPartSlots; ++i) {
+        uint64_t part = 0, disp = 0;
+        uint32_t f1 = 0, f2 = 0;
+        if (!SafeCopy(static_cast<uintptr_t>(model) + layout::kAsmPartPointers + i * 8, &part, sizeof(part)) || part == 0) continue;
+        if (!SafeCopy(static_cast<uintptr_t>(part) + layout::kPartDispEntity, &disp, sizeof(disp)) || disp == 0) {
+            Log("snapshot: slot %2u part=%p (no disp entity)", i, reinterpret_cast<void*>(part));
+            continue;
+        }
+        SafeCopy(static_cast<uintptr_t>(disp) + layout::kDispFlags1, &f1, sizeof(f1));
+        SafeCopy(static_cast<uintptr_t>(disp) + layout::kDispFlags2, &f2, sizeof(f2));
+        const bool ours = g_hidden_flags.count(static_cast<uintptr_t>(disp) + layout::kDispFlags1) != 0;
+        Log("snapshot: slot %2u part=%p disp=%p flags1=%08X flags2=%08X drawn=%d tracked=%d", i, reinterpret_cast<void*>(part),
+            reinterpret_cast<void*>(disp), f1, f2, (f1 & layout::kDispVisibleBit) ? 1 : 0, ours ? 1 : 0);
+    }
+}
+
 // F9: hide one part slot at a time (to find out which body part a slot is), then all of them again.
 void CycleHiddenSlot(int& cursor) {
     const uintptr_t w = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
@@ -705,6 +734,7 @@ DWORD WINAPI KeyThread(LPVOID) {
     bool prev_space = false;
     bool prev9 = false;
     bool prev10 = false;
+    bool prev11 = false;
     int slot_cursor = -1; // -1 = all slots, 0..26 = only that part slot
     uint64_t last_ms = GetTickCount64();
     for (;;) {
@@ -766,6 +796,9 @@ DWORD WINAPI KeyThread(LPVOID) {
         const bool d9 = fg && (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
         if (d9 && !prev9 && g_hide_native.load()) CycleHiddenSlot(slot_cursor);
         prev9 = d9;
+        const bool d11 = fg && (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
+        if (d11 && !prev11) SnapshotNativeParts();
+        prev11 = d11;
         const bool d10 = fg && (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
         if (d10 && !prev10) {
             g_first_person.store(!g_first_person.load());
