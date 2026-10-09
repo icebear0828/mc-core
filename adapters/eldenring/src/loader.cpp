@@ -692,7 +692,7 @@ void LogPlayerHit(void* module, void* attacker, const uint8_t* ctx, uint8_t bloc
     if (!SafeCopy(reinterpret_cast<uintptr_t>(module) + layout::kOwnerInDataModule, &owner, sizeof(owner)) || owner == 0) return;
     world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
     if (world == 0 || !SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) || owner != player) return;
-    uint8_t b[0x240];
+    uint8_t b[0x270];
     if (!SafeCopy(reinterpret_cast<uintptr_t>(ctx), b, sizeof(b))) return;
     auto u32 = [&](size_t o) { uint32_t v; std::memcpy(&v, b + o, 4); return v; };
     auto f32 = [&](size_t o) { float v; std::memcpy(&v, b + o, 4); return v; };
@@ -704,6 +704,15 @@ void LogPlayerHit(void* module, void* attacker, const uint8_t* ctx, uint8_t bloc
         "u32[21C]=%u u32[230]=%u blocked_arg=%u attacker=%p npc=%d team=%u",
         u32(layout::kHitDamage), u32(0x40), u32(0x44), f32(layout::kHitKnockbackIn), f32(0x50), f32(0x54), f32(0x58), b[0x67], b[0xD9], b[0xDA],
         b[0x114], b[0x115], u32(0x54), u32(0x21C), u32(0x230), static_cast<unsigned>(blocked_flag), attacker, npc, static_cast<unsigned>(team));
+    // What 0x447810 (which runs before this hook) left in the context: the stagger level and animation ids, and the data module
+    // words around +0x154 that it compares with ctx+0x22C (REVERSE 21: poise or stamina?).
+    uint32_t words[6] = {};
+    SafeCopy(reinterpret_cast<uintptr_t>(module) + 0x148, words, sizeof(words));
+    auto u16 = [&](size_t o) { uint16_t v; std::memcpy(&v, b + o, 2); return static_cast<unsigned>(v); };
+    Log("HIT-IN2: u32[22C]=%u u32[228]=%u anim[220]=%u [222]=%u [224]=%u [226]=%u u8[258]=%u u8[259]=%u u8[25A]=%u u8[266]=%02X u8[267]=%02X "
+        "module+148..15C=%u %u %u %u %u %u",
+        u32(0x22C), u32(0x228), u16(0x220), u16(0x222), u16(0x224), u16(0x226), b[0x258], b[0x259], b[0x25A], b[0x266], b[0x267], words[0], words[1],
+        words[2], words[3], words[4], words[5]);
 }
 
 uintptr_t PlayerChrPtr() {
