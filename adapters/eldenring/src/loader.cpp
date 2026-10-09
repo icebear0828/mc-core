@@ -293,6 +293,13 @@ RenderCamCopyFn g_rcc_orig = nullptr;
 
 void UpdateNativeModel(uintptr_t player, bool hide); // defined with the overlay code below
 
+// (a function of its own: the one with __try cannot also hold an object with a destructor)
+void ReadHurt(float& hurt, float& side) {
+    std::lock_guard<std::mutex> g(g_melee_mutex);
+    hurt = g_feedback.hurt();
+    side = g_feedback.hurtSide();
+}
+
 void __fastcall RenderCamCopyDetour(void* self) {
     // Hide the native model right before the frame is drawn: the game may turn parts back on during a hit reaction, and the
     // Present-time write alone would let that frame show them.
@@ -326,11 +333,7 @@ void __fastcall RenderCamCopyDetour(void* self) {
             // Minecraft's hurt camera tilt: roll the view about the line of sight for a moment after a hit (right and up
             // turn about forward; both are put back after the copy).
             float hurt = 0.f, side = 1.f;
-            {
-                std::lock_guard<std::mutex> g(g_melee_mutex);
-                hurt = g_feedback.hurt();
-                side = g_feedback.hurtSide();
-            }
+            ReadHurt(hurt, side);
             if (pos_addr != 0 && hurt > 0.f) {
                 const uintptr_t axes = static_cast<uintptr_t>(cam) + layout::kCamMatrix; // right at +0x10, up at +0x20
                 if (SafeCopy(axes, saved_axes, sizeof(saved_axes))) {
