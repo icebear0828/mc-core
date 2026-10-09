@@ -223,6 +223,7 @@ struct HiddenWord {
 };
 std::unordered_map<uintptr_t, HiddenWord> g_hidden_flags; // flag word addresses we cleared -> original value and the bits we cleared
 std::atomic<bool> g_slots_changed{false};
+std::atomic<int> g_slot_probe{-1}; // F9 probe: -1 = off (all slots), 0..26 = only that part slot is hidden
 std::atomic<uint32_t> g_hide_mask1{0x100A1}; // bits cleared in disp_flags1 (+0x20): visible + shadow (verified live, not bisected)
 std::atomic<uint32_t> g_hide_slots{0xFFFFFFFFu}; // bit n = part slot n of the native model (mc_er_steve.txt: hide_slots)
 std::atomic<uint32_t> g_hide_mask2{1};         // bits cleared in disp_flags2 (+0x24)
@@ -498,6 +499,7 @@ void CycleHiddenSlot(int& cursor) {
     }
     cursor = next;
     g_hide_slots.store(next < 0 ? 0xFFFFFFFFu : (1u << next));
+    g_slot_probe.store(next);
     g_slots_changed.store(true);
     if (next < 0) {
         Log("slots: hiding ALL part slots");
@@ -710,6 +712,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
                             readLoadingState(g_reader, readSingleton(g_reader, g_img.base, g_rva_loading, sigs::kCSNowLoadingHelper), ls) &&
                             readFadeAlpha(g_reader, readSingleton(g_reader, g_img.base, g_rva_fade, sigs::kCSFade), fade);
     out.mc_mode = g_mc_mode.load();
+    out.slot_probe = g_slot_probe.load();
     out.hp = v.hp;
     out.max_hp = v.max_hp;
     {
@@ -741,6 +744,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.feet[2] = feet[2];
         steve.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) + g_steve_yaw_offset;
     }
+    if (g_slot_probe.load() >= 0) steve.draw = false; // slot probing: show only the native model, with the one slot missing
     return true;
 }
 

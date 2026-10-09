@@ -309,6 +309,11 @@ void DrawHud(const HudState& hud, float w, float h) {
             }
         }
     }
+    if (hud.slot_probe >= 0) {
+        char pb[48];
+        snprintf(pb, sizeof(pb), "PART SLOT %d HIDDEN", hud.slot_probe);
+        dl->AddText(ImGui::GetFont(), 36.f * scale, {w * 0.5f - 200.f * scale, 60.f * scale}, IM_COL32(255, 230, 0, 255), pb);
+    }
     char buf[64];
     snprintf(buf, sizeof(buf), "MC %d/%d", hud.hp, hud.max_hp);
     dl->AddText({x0, y_hearts - 18.f * scale}, IM_COL32(255, 255, 255, 220), buf);
