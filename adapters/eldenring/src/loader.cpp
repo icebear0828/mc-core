@@ -1408,17 +1408,26 @@ float FallTimer(uintptr_t chr) {
 }
 // Our jump (and standing on a block) tells the game the player is in the air, and the landing never makes the game reset its air timer
 // (the fall module's +0x18). Measured: left alone it adds up over repeated jumps (1.0, 2.2, 3.1, 3.7 s) and past about 3 s the game stops
-// moving the player from the keys; forced to 0 the player crawls (real speed 0.07-0.5 of the commanded one). So it is held at a middle value.
-std::atomic<bool> g_fall_reset{true};   // mc_er_steve.txt: fall_reset=0 leaves the timer alone
-std::atomic<float> g_fall_hold{1.0f};   // fall_hold=<seconds>: the value the timer is held at
+// moving the player from the keys. Writing it EVERY frame is just as bad (0 makes the player crawl, a constant 1.0 freezes the movement
+// even with the keys down): the game advances the timer itself and switches state on how it changes. So the game's own behaviour is imitated:
+// reset once on our landing, and pull it back to 0 only when it has grown past `fall_hold` seconds; otherwise it is left alone.
+std::atomic<bool> g_fall_reset{true};   // mc_er_steve.txt: fall_reset=0 never touches the timer
+std::atomic<float> g_fall_hold{2.0f};   // fall_hold=<seconds>: the timer is reset to 0 when it passes this
 std::atomic<float> g_pre_fall_t{0.f};   // the timer as it was just before the last write
+void WriteFallTimer(uintptr_t chr, float value) {
+    if (const uintptr_t fall = FallModuleOf(chr)) {
+        g_pre_fall_t.store(FallTimer(chr));
+        WriteBytesSafe(fall + 0x18, &value, sizeof(value));
+    }
+}
+// Standing on a block: only when the timer has run past the limit.
 void ResetFallTimer(uintptr_t chr) {
     if (!g_fall_reset.load(std::memory_order_relaxed)) return;
-    if (const uintptr_t fall = FallModuleOf(chr)) {
-        const float hold = g_fall_hold.load(std::memory_order_relaxed);
-        g_pre_fall_t.store(FallTimer(chr));
-        WriteBytesSafe(fall + 0x18, &hold, sizeof(hold));
-    }
+    if (FallTimer(chr) > g_fall_hold.load(std::memory_order_relaxed)) WriteFallTimer(chr, 0.f);
+}
+// Our own landing: what the game does by itself when the player lands.
+void LandFallTimer(uintptr_t chr) {
+    if (g_fall_reset.load(std::memory_order_relaxed)) WriteFallTimer(chr, 0.f);
 }
 
 // Keeps the player out of the blocks. Runs on the game thread, at the start of every camera update (the game's own per-frame hook), so
@@ -1610,7 +1619,6 @@ void McJumpStep() {
     }
 
     g_movement_layer_ms.store(GetTickCount64(), std::memory_order_relaxed);
-    ResetFallTimer(player);
     // integrate (semi-implicit Euler)
     vy -= g_mc_gravity.load() * dt;
     float ny = y + vy * dt;
@@ -1666,7 +1674,8 @@ void McJumpStep() {
         WriteBytesSafe(module + 0x1D1, &one, 1);
         WriteBytesSafe(module + 0x1D0, &zero, 1);
         active = false;
-        Log("mcjump: landed, peak %.2f m, %.2f s in the air, fall timer %.2f", peak, static_cast<float>(GetTickCount64() - start_ms) / 1000.f, FallTimer(player));
+        Log("mcjump: landed, peak %.2f m, %.2f s in the air, fall timer was %.2f", peak, static_cast<float>(GetTickCount64() - start_ms) / 1000.f, FallTimer(player));
+        LandFallTimer(player);
     } else {
         WriteBytesSafe(module + 0x92, &zero, 1); // stay in the air state: the game must not snap the player to the ground
         WriteBytesSafe(module + 0x1D0, &one, 1);
