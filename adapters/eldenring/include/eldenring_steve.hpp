@@ -98,4 +98,33 @@ private:
     float smooth_forward_{0.f}, smooth_strafe_{0.f};
 };
 
+// Third-person head tracking: the head follows where the camera looks, like Minecraft's: up to 50 degrees off the
+// body's heading either way, pitch over the full range. `cam_*` is the camera's forward vector in game axes, `body_yaw`
+// the heading the body is drawn with (host rotation about +Y). Fills look_yaw (canonical: counter-clockwise positive,
+// so the opposite sign of the host's) and look_pitch (positive = looking down). When the camera is nearly opposite the
+// body it keeps the side the head was last on, so the head does not snap across as the angle wraps.
+class HeadTracker {
+public:
+    static constexpr float kMaxYaw = 0.8726646f; // 50 degrees
+
+    void update(float cam_x, float cam_y, float cam_z, float body_yaw, mc::SteveAnimInput& in) {
+        const float len = std::sqrt(cam_x * cam_x + cam_y * cam_y + cam_z * cam_z);
+        if (!std::isfinite(len) || !std::isfinite(body_yaw) || len < 1e-4f) {
+            in.look_yaw = in.look_pitch = 0.f;
+            return;
+        }
+        constexpr float kPi = 3.14159265f;
+        float offset = std::atan2(cam_x, cam_z) - body_yaw; // host: positive turns toward +X
+        offset = std::remainder(offset, 2.f * kPi);
+        const bool behind = std::fabs(offset) > kPi - 0.4f;
+        if (!behind) side_ = offset < 0.f ? -1.f : 1.f;
+        const float host_yaw = behind ? side_ * kMaxYaw : std::clamp(offset, -kMaxYaw, kMaxYaw);
+        in.look_yaw = -host_yaw;
+        in.look_pitch = -std::asin(std::clamp(cam_y / len, -1.f, 1.f));
+    }
+
+private:
+    float side_{1.f};
+};
+
 } // namespace eldenring::render

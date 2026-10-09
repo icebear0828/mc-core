@@ -185,3 +185,121 @@ TEST(EldenRingSteve, HeldItemSitsAtTheRightHandWithTheErBasis) {
     EXPECT_LT(hi_y, 1.9f);
     EXPECT_LT(max_horizontal, 1.2f);
 }
+
+// ---- head tracking: the third-person head follows the camera -------------------------------------------------
+
+namespace {
+constexpr float kDeg = 3.14159265f / 180.f;
+
+// Unit vector in game axes (Z forward, X right, Y up) at host yaw / elevation.
+mc::Vec3 lookDir(float yaw_deg, float elev_deg) {
+    const float y = yaw_deg * kDeg, e = elev_deg * kDeg;
+    return {std::sin(y) * std::cos(e), std::sin(e), std::cos(y) * std::cos(e)};
+}
+
+// Where the face points after the animator and the ER basis have posed the head: head matrix applied to a point
+// 10 cm in front of the neck pivot, minus the pivot's own image.
+mc::Vec3 renderedFace(const mc::SteveAnimInput& in, float body_yaw) {
+    mc::SteveAnimator anim;
+    anim.update(0.05f, in);
+    const auto parts = posedMatrices(anim.getTransforms(), {0.f, 0.f, 0.f}, body_yaw);
+    const auto& m = parts[static_cast<size_t>(mc::StevePart::Head)];
+    const mc::Vec3 pivot = mc::rig::partPivot(mc::StevePart::Head, kBasis);
+    const mc::Vec3 tip = pivot + kBasis.fromCanonical({10.f, 0.f, 0.f});
+    const mc::Vec3 a = mc::rig::transformPoint(m, tip), b = mc::rig::transformPoint(m, pivot);
+    return {a.x - b.x, a.y - b.y, a.z - b.z};
+}
+} // namespace
+
+TEST(EldenRingHead, LookingAlongTheBodyLeavesTheHeadStraight) {
+    HeadTracker h;
+    mc::SteveAnimInput in;
+    const mc::Vec3 d = lookDir(40.f, 0.f);
+    h.update(d.x, d.y, d.z, 40.f * kDeg, in);
+    EXPECT_NEAR(in.look_yaw, 0.f, 1e-4);
+    EXPECT_NEAR(in.look_pitch, 0.f, 1e-4);
+}
+
+TEST(EldenRingHead, PitchIsPositiveWhenLookingDown) {
+    HeadTracker h;
+    mc::SteveAnimInput in;
+    mc::Vec3 d = lookDir(0.f, -30.f);
+    h.update(d.x, d.y, d.z, 0.f, in);
+    EXPECT_NEAR(in.look_pitch, 30.f * kDeg, 1e-4);
+    d = lookDir(0.f, 45.f);
+    h.update(d.x, d.y, d.z, 0.f, in);
+    EXPECT_NEAR(in.look_pitch, -45.f * kDeg, 1e-4);
+}
+
+TEST(EldenRingHead, TheRenderedFaceTurnsTowardTheCamerasSide) {
+    HeadTracker h;
+    mc::SteveAnimInput in;
+    // Body faces +Z; the camera looks 30 degrees toward +X (the character's right).
+    mc::Vec3 d = lookDir(30.f, 0.f);
+    h.update(d.x, d.y, d.z, 0.f, in);
+    mc::Vec3 face = renderedFace(in, 0.f);
+    EXPECT_GT(face.x, 0.f);
+    EXPECT_NEAR(std::atan2(face.x, face.z) / kDeg, 30.f, 0.5f);
+    EXPECT_NEAR(face.y, 0.f, 1e-4);
+    // And the mirror image toward -X.
+    d = lookDir(-20.f, 0.f);
+    h.update(d.x, d.y, d.z, 0.f, in);
+    face = renderedFace(in, 0.f);
+    EXPECT_NEAR(std::atan2(face.x, face.z) / kDeg, -20.f, 0.5f);
+}
+
+TEST(EldenRingHead, TheRenderedFaceTipsUpAndDownWithTheCamera) {
+    HeadTracker h;
+    mc::SteveAnimInput in;
+    mc::Vec3 d = lookDir(0.f, 35.f);
+    h.update(d.x, d.y, d.z, 0.f, in);
+    EXPECT_NEAR(renderedFace(in, 0.f).y / 0.1f, std::sin(35.f * kDeg), 0.02);
+    d = lookDir(0.f, -35.f);
+    h.update(d.x, d.y, d.z, 0.f, in);
+    EXPECT_NEAR(renderedFace(in, 0.f).y / 0.1f, -std::sin(35.f * kDeg), 0.02);
+}
+
+TEST(EldenRingHead, FollowsTheBodyYawNotTheWorldAxes) {
+    HeadTracker h;
+    mc::SteveAnimInput in;
+    const float body = 100.f * kDeg;
+    const mc::Vec3 d = lookDir(100.f + 25.f, 0.f);
+    h.update(d.x, d.y, d.z, body, in);
+    const mc::Vec3 face = renderedFace(in, body);
+    EXPECT_NEAR(std::atan2(face.x, face.z) / kDeg, 125.f, 0.5f);
+}
+
+TEST(EldenRingHead, TurnsNoFurtherThanFiftyDegreesOffTheBody) {
+    HeadTracker h;
+    mc::SteveAnimInput in;
+    mc::Vec3 d = lookDir(90.f, 0.f);
+    h.update(d.x, d.y, d.z, 0.f, in);
+    EXPECT_NEAR(std::fabs(in.look_yaw), 50.f * kDeg, 1e-3);
+    d = lookDir(-90.f, 0.f);
+    h.update(d.x, d.y, d.z, 0.f, in);
+    EXPECT_NEAR(std::fabs(in.look_yaw), 50.f * kDeg, 1e-3);
+}
+
+TEST(EldenRingHead, CameraDirectlyOppositeKeepsTheLastSideInsteadOfSnapping) {
+    HeadTracker h;
+    mc::SteveAnimInput in;
+    mc::Vec3 d = lookDir(60.f, 0.f); // settled on the +X side
+    h.update(d.x, d.y, d.z, 0.f, in);
+    const float side = in.look_yaw;
+    for (float deg : {175.f, -175.f, 180.f, -178.f}) {
+        d = lookDir(deg, 0.f);
+        h.update(d.x, d.y, d.z, 0.f, in);
+        EXPECT_NEAR(in.look_yaw, side < 0.f ? -50.f * kDeg : 50.f * kDeg, 1e-3) << "deg=" << deg;
+    }
+}
+
+TEST(EldenRingHead, DegenerateCameraVectorLeavesTheHeadStraight) {
+    HeadTracker h;
+    mc::SteveAnimInput in;
+    h.update(0.f, 0.f, 0.f, 0.3f, in);
+    EXPECT_EQ(in.look_yaw, 0.f);
+    EXPECT_EQ(in.look_pitch, 0.f);
+    h.update(std::nanf(""), 0.f, 1.f, 0.f, in);
+    EXPECT_EQ(in.look_yaw, 0.f);
+    EXPECT_EQ(in.look_pitch, 0.f);
+}
