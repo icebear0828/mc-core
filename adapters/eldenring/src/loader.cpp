@@ -380,7 +380,8 @@ void __fastcall RenderCamCopyDetour(void* self) {
 // own value is put back first so its camera logic never sees ours. Game thread only (the camera task runs there).
 uintptr_t PlayerChrPtr(); // defined below
 
-using CameraStepFn = uint64_t(__fastcall*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+// (ChrCam* this, float dt in xmm1, ChrIns*, bool): the float is why the arguments must keep this exact shape.
+using CameraStepFn = uint64_t(__fastcall*)(uint64_t, float, uint64_t, uint64_t);
 CameraStepFn g_camstep_orig = nullptr;
 struct CamKeep {
     uintptr_t pos_addr{0};
@@ -441,12 +442,13 @@ void AfterCameraStep(bool have_before, uintptr_t addr, const float before[3]) {
     }
 }
 
-uint64_t __fastcall CameraStepDetour(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8) {
+uint64_t __fastcall CameraStepDetour(uint64_t self, float dt, uint64_t chr, uint64_t flag) {
     RestoreCamKeep();
     uintptr_t addr = 0;
     float before[3] = {};
-    const bool have = ChrCamPosAddress(addr) && SafeCopy(addr, before, sizeof(before));
-    const uint64_t r = g_camstep_orig(a1, a2, a3, a4, a5, a6, a7, a8);
+    // Only the player's ChrCam is touched; the function runs for any camera object.
+    const bool have = ChrCamPosAddress(addr) && addr == static_cast<uintptr_t>(self) + layout::kCamMatrix + 0x30 && SafeCopy(addr, before, sizeof(before));
+    const uint64_t r = g_camstep_orig(self, dt, chr, flag);
     AfterCameraStep(have, addr, before);
     return r;
 }
@@ -1337,16 +1339,16 @@ void SetupDamage() {
     {
         uintptr_t step = 0;
         if (FileExists(g_game_dir + "mc_er_camwatch.txt")) {
-            Log("camwatch: diagnostic on (mc_er_camwatch.txt): the camera task hook is not installed, writers of ChrCam position are logged");
+            Log("camwatch: diagnostic on (mc_er_camwatch.txt): the camera update hook is not installed, writers of ChrCam position are logged");
             CreateThread(nullptr, 0, CamWatchThread, nullptr, 0, nullptr);
         } else if (!LocateByPrefix(g_img, sigs::kCameraStepExecute, step)) {
-            Log("camstep: camera task signature not unique, hit effects stay at the third-person position in first person");
+            Log("camstep: camera update signature not unique, hit effects stay at the third-person position in first person");
         } else if (MH_CreateHook(reinterpret_cast<void*>(step), reinterpret_cast<void*>(&CameraStepDetour), reinterpret_cast<void**>(&g_camstep_orig)) !=
                        MH_OK ||
                    MH_EnableHook(reinterpret_cast<void*>(step)) != MH_OK) {
             Log("camstep: hooking %p failed", reinterpret_cast<void*>(step));
         } else {
-            Log("camstep: camera task hooked at %p (RVA 0x%llX): first person keeps the eye position for the whole frame (fp_persist=0 turns it off)",
+            Log("camstep: camera update hooked at %p (RVA 0x%llX): first person keeps the eye position for the whole frame (fp_persist=0 turns it off)",
                 reinterpret_cast<void*>(step), static_cast<unsigned long long>(step - g_img.base));
         }
     }

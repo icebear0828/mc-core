@@ -114,11 +114,12 @@ inline constexpr const char* kHitVfxSpawn = "48 89 5C 24 08 48 89 6C 24 10 48 89
 // maximum. 48 bytes, no relative operands, unique in 2.7.1.0. Must be called on the game thread.
 inline constexpr const char* kApplyHpChange =
     "48 89 5C 24 18 48 89 6C 24 20 89 54 24 10 56 57 41 56 48 83 EC 30 8B A9 38 01 00 00 48 8D B9 3C 01 00 00 45 33 F6 0F 29 74 24 20 44 89 74 24 50";
-// The camera task that recomputes ChrCam every frame (0x1403BC070; four camera tasks share it). The prologue is generic, so
-// the signature runs on into the table address that makes it unique. 71 bytes, one match in 2.7.1.0.
+// The camera update that copies the active camera mode's matrix into ChrCam each frame (0x1403B11D0, found with a hardware write
+// watch on ChrCam+0x40: the movaps at 0x3B1929 is the writer). Signature (ChrCam* this, float dt in xmm1, ChrIns*, bool).
+// 62 bytes, one match in 2.7.1.0; the stack cookie address is wildcarded.
 inline constexpr const char* kCameraStepExecute =
-    "48 8B C4 56 57 41 56 48 83 EC 70 48 C7 40 A0 FE FF FF FF 48 89 58 18 48 89 68 20 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 60 "
-    "48 8B F2 48 8B D9 45 33 F6 41 8B FE 48 8D 2D D3 BF ED 02 0F 1F 00 48 63 43 4C 89 43 48";
+    "4C 8B DC 55 56 57 41 54 41 55 41 56 49 8D 6B A1 48 81 EC F8 00 00 00 45 0F 29 43 98 45 0F 29 4B 88 48 8B 05 ?? ?? ?? ?? 48 33 C4 "
+    "48 89 45 D7 49 8B 80 90 01 00 00 48 8B F9 49 89 5B 20 49 8B F0";
 inline constexpr const char* kGetEffectiveTeamType = "48 89 5C 24 10 57 48 83 EC 20 0F B6 41 6C 48 8B F9 88 02";
 } // namespace sigs
 
