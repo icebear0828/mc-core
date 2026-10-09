@@ -19,6 +19,7 @@ struct HudState {
     float hit{0.f};       // crosshair hit marker 0..1 (fades by itself)
     bool hit_crit{false}; // that marker is for a critical hit
     float kill{0.f};      // kill marker 0..1
+    uint16_t hotbar[9]{}; // mc::ItemId of each hotbar slot
     int slot_probe{-1};   // >= 0: the F9 part-slot probe is on, this is the only hidden part slot
 };
 
@@ -46,6 +47,9 @@ struct SteveConfig {
 void SetSteveConfig(const SteveConfig& cfg);
 // The Steve skin (RGBA8, 64x64) the loader decoded; call before the overlay is created. Without it the figure is flat grey-brown.
 void SetSteveSkin(const uint8_t* rgba, unsigned width, unsigned height);
+// The HUD atlas (RGBA8, 256x256, the locally extracted mc_hud_atlas.png); call before the overlay is created. Without it the HUD
+// is drawn with plain rectangles.
+void SetHudAtlas(const uint8_t* rgba, unsigned width, unsigned height);
 // Debug: bind the next captured 1920x1080 R32G8X24 depth resource (the game creates several).
 void CycleDepthCandidate();
 

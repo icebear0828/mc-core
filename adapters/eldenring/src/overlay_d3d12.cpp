@@ -19,6 +19,8 @@
 #include <mutex>
 #include <vector>
 
+#include "eldenring_hudtex.hpp"
+#include "mc/hud_layout.hpp"
 #include "overlay_d3d12.hpp"
 #include "steve_renderer_d3d12.hpp"
 
@@ -44,6 +46,17 @@ using CreateDsvFn = void(STDMETHODCALLTYPE*)(ID3D12Device*, ID3D12Resource*, con
 CreateDsvFn g_create_dsv_orig = nullptr;
 
 SteveConfig g_steve_cfg;
+// The HUD atlas, enlarged 4x with nearest neighbour (ImGui's DX12 backend samples linearly), in heap slot 3.
+std::vector<uint8_t> g_atlas_rgba;
+unsigned g_atlas_w = 0, g_atlas_h = 0;
+constexpr unsigned kAtlasScale = 4;
+ID3D12Resource* g_atlas_tex = nullptr;
+ID3D12Resource* g_atlas_upload = nullptr;
+D3D12_PLACED_SUBRESOURCE_FOOTPRINT g_atlas_footprint{};
+bool g_atlas_pending = false;
+D3D12_GPU_DESCRIPTOR_HANDLE g_atlas_gpu{};
+bool g_atlas_ready = false;
+void CreateAtlasTexture(UINT srv_inc); // defined with the HUD drawing below
 std::vector<uint8_t> g_skin_rgba; // decoded by the loader; applied when the renderer is created
 unsigned g_skin_w = 0, g_skin_h = 0;
 SteveRenderer g_steve;
@@ -126,6 +139,9 @@ void Teardown() {
     SafeRelease(g_s.list);
     SafeRelease(g_s.rtv_heap);
     SafeRelease(g_s.srv_heap);
+    SafeRelease(g_atlas_tex);
+    SafeRelease(g_atlas_upload);
+    g_atlas_ready = false;
     SafeRelease(g_s.fence);
     if (g_s.fence_event) {
         CloseHandle(g_s.fence_event);
@@ -184,7 +200,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
     rtv_desc.NumDescriptors = g_s.buffers;
     D3D12_DESCRIPTOR_HEAP_DESC srv_desc{};
     srv_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    srv_desc.NumDescriptors = 3; // 0: ImGui font, 1: scene depth, 2: Steve skin (1 and 2 form one table)
+    srv_desc.NumDescriptors = 4; // 0: ImGui font, 1: scene depth, 2: Steve skin (1 and 2 form one table), 3: HUD atlas
     srv_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(g_s.device->CreateDescriptorHeap(&rtv_desc, IID_PPV_ARGS(&g_s.rtv_heap))) ||
         FAILED(g_s.device->CreateDescriptorHeap(&srv_desc, IID_PPV_ARGS(&g_s.srv_heap)))) {
@@ -266,6 +282,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             if (!g_steve.setSkin(g_s.device, pixels->data(), sw, sh, skin_cpu)) Logf("overlay: Steve skin upload failed");
         }
         g_depth_dirty.store(true); // bind the depth captured so far
+        CreateAtlasTexture(srv_inc);
     }
     g_s.last_frame = std::chrono::steady_clock::now();
     g_s.ready = true;
@@ -277,6 +294,97 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
     return true;
 }
 
+void CreateAtlasTexture(UINT srv_inc) {
+    g_atlas_ready = false;
+    if (g_atlas_rgba.empty() || g_atlas_w == 0 || g_atlas_h == 0) {
+        Logf("overlay: HUD atlas: none given, plain rectangles");
+        return;
+    }
+    const std::vector<uint8_t> big = eldenring::render::upscaleNearest(g_atlas_rgba.data(), g_atlas_w, g_atlas_h, kAtlasScale);
+    const unsigned w = g_atlas_w * kAtlasScale, h = g_atlas_h * kAtlasScale;
+    D3D12_HEAP_PROPERTIES hd{};
+    hd.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC td{};
+    td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    td.Width = w;
+    td.Height = h;
+    td.DepthOrArraySize = 1;
+    td.MipLevels = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    if (FAILED(g_s.device->CreateCommittedResource(&hd, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                   IID_PPV_ARGS(&g_atlas_tex)))) {
+        Logf("overlay: HUD atlas: texture creation failed");
+        return;
+    }
+    UINT rows = 0;
+    UINT64 row_bytes = 0, total = 0;
+    g_s.device->GetCopyableFootprints(&td, 0, 1, 0, &g_atlas_footprint, &rows, &row_bytes, &total);
+    D3D12_HEAP_PROPERTIES hu{};
+    hu.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC ud{};
+    ud.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    ud.Width = total;
+    ud.Height = 1;
+    ud.DepthOrArraySize = 1;
+    ud.MipLevels = 1;
+    ud.SampleDesc.Count = 1;
+    ud.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    void* mapped = nullptr;
+    D3D12_RANGE none{0, 0};
+    if (FAILED(g_s.device->CreateCommittedResource(&hu, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                   IID_PPV_ARGS(&g_atlas_upload))) ||
+        FAILED(g_atlas_upload->Map(0, &none, &mapped))) {
+        SafeRelease(g_atlas_tex);
+        SafeRelease(g_atlas_upload);
+        Logf("overlay: HUD atlas: upload buffer failed");
+        return;
+    }
+    for (UINT y = 0; y < rows; ++y) {
+        std::memcpy(static_cast<uint8_t*>(mapped) + g_atlas_footprint.Offset + static_cast<size_t>(y) * g_atlas_footprint.Footprint.RowPitch,
+                    big.data() + static_cast<size_t>(y) * w * 4, static_cast<size_t>(w) * 4);
+    }
+    g_atlas_upload->Unmap(0, nullptr);
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
+    cpu.ptr += static_cast<SIZE_T>(srv_inc) * 3;
+    g_atlas_gpu = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
+    g_atlas_gpu.ptr += static_cast<UINT64>(srv_inc) * 3;
+    D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
+    sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    sd.Texture2D.MipLevels = 1;
+    g_s.device->CreateShaderResourceView(g_atlas_tex, &sd, cpu);
+    g_atlas_pending = true;
+    g_atlas_ready = true;
+    char msg[96];
+    snprintf(msg, sizeof(msg), "overlay: HUD atlas: %ux%u from file, uploaded as %ux%u", g_atlas_w, g_atlas_h, w, h);
+    Logf(msg);
+}
+
+// Recorded at the start of the frame's command list, before anything samples the atlas.
+void RecordAtlasUpload(ID3D12GraphicsCommandList* list) {
+    if (!g_atlas_pending || !g_atlas_tex || !g_atlas_upload) return;
+    D3D12_TEXTURE_COPY_LOCATION dst{};
+    dst.pResource = g_atlas_tex;
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dst.SubresourceIndex = 0;
+    D3D12_TEXTURE_COPY_LOCATION src{};
+    src.pResource = g_atlas_upload;
+    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    src.PlacedFootprint = g_atlas_footprint;
+    list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = g_atlas_tex;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    list->ResourceBarrier(1, &b);
+    g_atlas_pending = false;
+}
+
 void DrawHud(const HudState& hud, float w, float h) {
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     const float scale = std::max(0.5f, h / 1080.f);
@@ -286,8 +394,34 @@ void DrawHud(const HudState& hud, float w, float h) {
     const float hotbar_w = 9.f * slot;
     const float x0 = (w - hotbar_w) * 0.5f;
     const float y_bar = h - slot - 8.f * scale;
+    const mc::HudLayout layout(w, h);
+    const ImTextureID atlas = reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(g_atlas_gpu.ptr));
+    auto sprite = [&](const mc::HudRect& r, const mc::hud::HudUV& uv) {
+        dl->AddImage(atlas, {r.x, r.y}, {r.x + r.w, r.y + r.h}, {uv.u0, uv.v0}, {uv.u1, uv.v1});
+    };
+    const float ratio_hp = hud.max_hp > 0 ? std::clamp(static_cast<float>(hud.hp) / static_cast<float>(hud.max_hp), 0.f, 1.f) : 0.f;
+    const int hp_halves = static_cast<int>(std::ceil(ratio_hp * 20.f));
+    float text_x = x0, text_y = y_bar - cell - 6.f * scale - 18.f * scale;
+    if (g_atlas_ready) {
+        // Real Minecraft sprites at vanilla positions (mc::HudLayout), the Minecraft GUI scale of this resolution.
+        sprite(layout.hotbar(), mc::hud::kUV_HOTBAR);
+        for (int i = 0; i < 9; ++i) {
+            if (const mc::hud::HudUV* uv = eldenring::render::uvForItem(static_cast<mc::ItemId>(hud.hotbar[i]))) sprite(layout.item(i), *uv);
+        }
+        sprite(layout.selection(std::clamp(hud.selected_slot, 0, 8)), mc::hud::kUV_HOTBAR_SELECTION);
+        for (int i = 0; i < 10; ++i) {
+            sprite(layout.heart(i), mc::hud::kUV_HEART_CONTAINER);
+            if (hp_halves >= 2 * (i + 1)) {
+                sprite(layout.heart(i), mc::hud::kUV_HEART_FULL);
+            } else if (hp_halves == 2 * i + 1) {
+                sprite(layout.heart(i), mc::hud::kUV_HEART_HALF);
+            }
+        }
+        text_x = layout.heart(0).x;
+        text_y = layout.heart(0).y - 18.f * scale;
+    }
     // hotbar
-    for (int i = 0; i < 9; ++i) {
+    for (int i = 0; i < 9 && !g_atlas_ready; ++i) {
         const float x = x0 + static_cast<float>(i) * slot;
         dl->AddRectFilled({x, y_bar}, {x + slot, y_bar + slot}, IM_COL32(0, 0, 0, 120));
         const bool sel = i == hud.selected_slot;
@@ -298,7 +432,7 @@ void DrawHud(const HudState& hud, float w, float h) {
     const float ratio = hud.max_hp > 0 ? std::clamp(static_cast<float>(hud.hp) / static_cast<float>(hud.max_hp), 0.f, 1.f) : 0.f;
     const int halves = static_cast<int>(std::ceil(ratio * 20.f));
     const float y_hearts = y_bar - cell - 6.f * scale;
-    for (int i = 0; i < 10; ++i) {
+    for (int i = 0; i < 10 && !g_atlas_ready; ++i) {
         const float x = x0 + static_cast<float>(i) * (cell + gap);
         dl->AddRectFilled({x, y_hearts}, {x + cell, y_hearts + cell}, IM_COL32(40, 0, 0, 200));
         const int fill = std::clamp(halves - i * 2, 0, 2);
@@ -345,7 +479,7 @@ void DrawHud(const HudState& hud, float w, float h) {
     }
     char buf[64];
     snprintf(buf, sizeof(buf), "MC %d/%d", hud.hp, hud.max_hp);
-    dl->AddText({x0, y_hearts - 18.f * scale}, IM_COL32(255, 255, 255, 220), buf);
+    dl->AddText({text_x, text_y}, IM_COL32(255, 255, 255, 220), buf);
 }
 
 void RenderFrame(IDXGISwapChain* sc) {
@@ -379,6 +513,7 @@ void RenderFrame(IDXGISwapChain* sc) {
 
     f.alloc->Reset();
     g_s.list->Reset(f.alloc, nullptr);
+    RecordAtlasUpload(g_s.list);
     D3D12_RESOURCE_BARRIER b{};
     b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     b.Transition.pResource = f.back;
@@ -578,6 +713,12 @@ bool ResolveTargets(void*& present, void*& resize, void*& execute, void*& create
 } // namespace
 
 void SetSteveConfig(const SteveConfig& cfg) { g_steve_cfg = cfg; }
+
+void SetHudAtlas(const uint8_t* rgba, unsigned width, unsigned height) {
+    g_atlas_rgba.assign(rgba, rgba + static_cast<size_t>(width) * height * 4);
+    g_atlas_w = width;
+    g_atlas_h = height;
+}
 
 void SetSteveSkin(const uint8_t* rgba, unsigned width, unsigned height) {
     g_skin_rgba.assign(rgba, rgba + static_cast<size_t>(width) * height * 4);

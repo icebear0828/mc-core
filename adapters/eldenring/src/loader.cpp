@@ -1026,6 +1026,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
         out.selected_slot = g_melee.selectedSlot();
+        for (int i = 0; i < MeleeController::kSlots; ++i) out.hotbar[i] = static_cast<uint16_t>(g_melee.itemAt(i));
         steve.swing = g_melee.swingProgress();
         out.hit = g_feedback.hit();
         out.hit_crit = g_feedback.crit();
@@ -1113,6 +1114,17 @@ void SetupOverlay() {
             }
         }
         erov::SetSteveConfig(cfg);
+        {
+            std::vector<uint8_t> atlas;
+            unsigned aw = 0, ah = 0;
+            const std::string atlas_path = g_game_dir + "mods\\mc_adapter\\mc_hud_atlas.png";
+            if (erov::DecodePngFile(atlas_path, atlas, aw, ah) && aw == 256 && ah == 256) {
+                erov::SetHudAtlas(atlas.data(), aw, ah);
+                Log("hud atlas: external file %s (%ux%u)", atlas_path.c_str(), aw, ah);
+            } else {
+                Log("hud atlas: %s missing or not 256x256, the HUD stays plain rectangles", atlas_path.c_str());
+            }
+        }
         {
             std::vector<uint8_t> skin;
             unsigned sw = 0, sh = 0;

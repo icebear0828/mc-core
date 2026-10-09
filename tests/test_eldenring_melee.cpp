@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "eldenring_hudtex.hpp"
 #include "eldenring_melee.hpp"
 
 #include "mc/contracts/combat_adapter.hpp"
@@ -187,4 +188,30 @@ TEST(EldenRingFeedback, KillMarkerIsSeparateAndLonger) {
     EXPECT_GT(f.kill(), 0.4f); // still showing after the hit marker is gone
     f.tick(HitFeedback::kKillSec);
     EXPECT_FLOAT_EQ(f.kill(), 0.f);
+}
+
+TEST(EldenRingHudTex, EveryDefaultHotbarItemHasAnIconInTheOrderOfTheAtlas) {
+    MeleeController m;
+    for (int slot = 0; slot < MeleeController::kSlots; ++slot) {
+        const mc::hud::HudUV* uv = eldenring::render::uvForItem(m.itemAt(slot));
+        ASSERT_NE(uv, nullptr) << "slot " << slot;
+        EXPECT_FLOAT_EQ(uv->u0, mc::hud::kUV_ITEMS[slot].u0) << "slot " << slot;
+        EXPECT_FLOAT_EQ(uv->v0, mc::hud::kUV_ITEMS[slot].v0) << "slot " << slot;
+    }
+    EXPECT_EQ(eldenring::render::uvForItem(mc::ItemId::Arrow), nullptr);
+    EXPECT_EQ(eldenring::render::uvForItem(mc::ItemId::None), nullptr);
+}
+
+TEST(EldenRingHudTex, UpscaleNearestReplicatesEveryPixel) {
+    const uint8_t src[2 * 2 * 4] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+    const auto out = eldenring::render::upscaleNearest(src, 2, 2, 3);
+    ASSERT_EQ(out.size(), 6u * 6u * 4u);
+    auto px = [&](unsigned x, unsigned y, unsigned c) { return out[(static_cast<size_t>(y) * 6 + x) * 4 + c]; };
+    EXPECT_EQ(px(0, 0, 0), 1);
+    EXPECT_EQ(px(2, 2, 3), 4);   // still inside the first source pixel
+    EXPECT_EQ(px(3, 0, 0), 5);   // the second source pixel starts at x = 3
+    EXPECT_EQ(px(0, 3, 0), 9);   // the third at y = 3
+    EXPECT_EQ(px(5, 5, 2), 15);
+    EXPECT_TRUE(eldenring::render::upscaleNearest(nullptr, 2, 2, 3).empty());
+    EXPECT_TRUE(eldenring::render::upscaleNearest(src, 2, 2, 0).empty());
 }
