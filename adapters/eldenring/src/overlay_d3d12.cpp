@@ -589,17 +589,7 @@ void DrawInventory(const HudState& hud, float w, float h) {
 
 eldenring::live::HeartAnimator g_hearts;
 
-void DrawNoFocusNotice(const HudState& hud, float h) {
-    if (!hud.no_focus) return;
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
-    const float fs = std::max(16.f, h / 1080.f * 28.f);
-    const char* text = "NO KEYBOARD FOCUS - click the game window";
-    dl->AddText(ImGui::GetFont(), fs, {21.f, 21.f}, IM_COL32(0, 0, 0, 255), text);
-    dl->AddText(ImGui::GetFont(), fs, {20.f, 20.f}, IM_COL32(255, 70, 70, 255), text);
-}
-
 void DrawHud(const HudState& hud, float w, float h) {
-    DrawNoFocusNotice(hud, h);
     if (hud.inv_open) {
         DrawInventory(hud, w, h);
         return;

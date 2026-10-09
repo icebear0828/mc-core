@@ -221,32 +221,6 @@ DWORD FindGameWindowThread() {
     return ctx.tid;
 }
 
-std::atomic<bool> g_refocus{false}; // mc_er_steve.txt: refocus=1 gives the focus back when explorer's ForegroundStaging window keeps it
-
-// The game's main window: a visible top-level window of this process with a title.
-HWND FindGameWindow() {
-    struct Ctx {
-        DWORD pid;
-        HWND found;
-    } ctx{GetCurrentProcessId(), nullptr};
-    EnumWindows(
-        [](HWND h, LPARAM l) -> BOOL {
-            auto* c = reinterpret_cast<Ctx*>(l);
-            DWORD pid = 0;
-            GetWindowThreadProcessId(h, &pid);
-            if (pid == c->pid && IsWindowVisible(h) && GetWindow(h, GW_OWNER) == nullptr) {
-                char title[64] = {};
-                GetWindowTextA(h, title, sizeof(title) - 1);
-                if (title[0] != '\0') {
-                    c->found = h;
-                    return FALSE;
-                }
-            }
-            return TRUE;
-        },
-        reinterpret_cast<LPARAM>(&ctx));
-    return ctx.found;
-}
 
 bool GameInForeground() {
     DWORD pid = 0;
@@ -1432,27 +1406,17 @@ float FallTimer(uintptr_t chr) {
     if (const uintptr_t fall = FallModuleOf(chr)) SafeCopy(fall + 0x18, &t, sizeof(t));
     return t;
 }
-// PhysicsModule+0x1B8 is the game's own vertical fall speed (the fall check compares it with a threshold; +0x124 is only a read-out). In
-// the air state we fake the speed keeps growing while the position is held up, and from a great height the game stops moving the player
-// with the keys, so it is zeroed together with the timer.
-float FallSpeed(uintptr_t module) {
-    float v = 0.f;
-    if (module != 0) SafeCopy(module + 0x1B8, &v, sizeof(v));
-    return v;
-}
-std::atomic<float> g_pre_fall_t{0.f}, g_pre_fall_v{0.f}; // the values the game had just before the last reset (what it would have used)
-std::atomic<bool> g_fall_reset{false}; // mc_er_steve.txt: fall_reset=1 writes 0 into the fall module +0x18 and the physics +0x1B8 each frame (experiment, off)
+// Our jump (and standing on a block) tells the game the player is in the air, and the landing never makes the game reset its air timer
+// (the fall module's +0x18). The timer adds up over repeated jumps (1.0, 2.2, 3.1, 3.7 s in the log) and past about 3 s the game stops moving
+// the player from the keys. So the timer is kept at 0 while the movement layer is active. (+0x1B8 stays at 0.02 and is not touched.)
+std::atomic<bool> g_fall_reset{true}; // mc_er_steve.txt: fall_reset=0 turns the timer reset off
+std::atomic<float> g_pre_fall_t{0.f}, g_pre_fall_v{0.f}; // g_pre_fall_t: the timer as it was just before the last reset
 void ResetFallTimer(uintptr_t chr) {
-    if (!g_fall_reset.load(std::memory_order_relaxed)) return; // writing into the game's fall state was added on the reverser's word and is off by default
+    if (!g_fall_reset.load(std::memory_order_relaxed)) return;
     if (const uintptr_t fall = FallModuleOf(chr)) {
         const float zero = 0.f;
         g_pre_fall_t.store(FallTimer(chr));
         WriteBytesSafe(fall + 0x18, &zero, sizeof(zero));
-    }
-    if (const uintptr_t module = detail::readPhysicsModule(g_reader, g_img.base, chr)) {
-        const float zero = 0.f;
-        g_pre_fall_v.store(FallSpeed(module));
-        WriteBytesSafe(module + 0x1B8, &zero, sizeof(zero));
     }
 }
 
@@ -1837,41 +1801,7 @@ DWORD WINAPI KeyThread(LPVOID) {
                 Log("focus: the game is %s the foreground window (foreground: hwnd=%p pid=%lu class='%s' title='%s')", fg ? "now" : "no longer", reinterpret_cast<void*>(top),
                     static_cast<unsigned long>(pid), cls, title);
             }
-            // While the game is not in front: once a second, who has the front; and with refocus=1, take the focus back when the
-            // Windows foreground-staging window (explorer.exe, shown while another program asks for the foreground) has held it for 1.2 s.
-            static uint64_t away_since = 0, last_away_log = 0;
-            static int away_logs = 0;
-            const uint64_t tnow = GetTickCount64();
-            if (fg) {
-                away_since = 0;
-                away_logs = 0;
-            } else {
-                if (away_since == 0) away_since = tnow;
-                HWND top = GetForegroundWindow();
-                char cls[80] = {};
-                if (top != nullptr) GetClassNameA(top, cls, sizeof(cls) - 1);
-                if (away_logs < 12 && tnow - last_away_log >= 1000) {
-                    last_away_log = tnow;
-                    ++away_logs;
-                    char title[80] = {};
-                    DWORD pid = 0;
-                    if (top != nullptr) {
-                        GetWindowTextA(top, title, sizeof(title) - 1);
-                        GetWindowThreadProcessId(top, &pid);
-                    }
-                    Log("focus: away for %.1f s; the foreground is pid=%lu class='%s' title='%s'", static_cast<double>(tnow - away_since) / 1000.0, static_cast<unsigned long>(pid), cls, title);
-                }
-                if (g_refocus.load() && tnow - away_since >= 1200 && std::strcmp(cls, "ForegroundStaging") == 0) {
-                    if (HWND game = FindGameWindow()) {
-                        // a console-less trick that works without being the foreground process: a synthetic Alt press lets SetForegroundWindow through
-                        keybd_event(VK_MENU, 0, 0, 0);
-                        keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0);
-                        const BOOL ok = SetForegroundWindow(game);
-                        Log("focus: gave the focus back to the game (%s)", ok ? "ok" : "refused");
-                    }
-                    away_since = tnow; // wait another 1.2 s before trying again
-                }
-            }
+            // (the focus notice and the refocus option were removed: switching away is normal)
             long hr = 0;
             const unsigned failed = erin::TakeKeyboardFailures(hr);
             const uint64_t t = GetTickCount64();
@@ -2349,7 +2279,6 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
             out.inv_item[i] = static_cast<uint16_t>(inv.slot(i).item);
             out.inv_count[i] = static_cast<uint8_t>(std::min(255u, inv.slot(i).count));
         }
-        out.no_focus = !GameInForeground();
         out.food = g_hunger.food();
         out.food_shaking = g_hunger.shaking();
         out.regen = g_survival.regenerating();
@@ -2452,7 +2381,6 @@ void SetupOverlay() {
                 else if (key == "no_player_hit_vfx") g_no_player_hit_vfx.store(value != 0.f);
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "eye_height") g_eye_height.store(value);
-                else if (key == "refocus") g_refocus.store(value != 0.f);
                 else if (key == "fall_reset") g_fall_reset.store(value != 0.f);
                 else if (key == "fall_protect") g_fall_protect.store(value != 0.f);
                 else if (key == "mc_jump") g_mc_jump.store(value != 0.f);
