@@ -12,7 +12,7 @@
 namespace erov {
 
 struct SteveParams {
-    bool occlusion{true};
+    float mode{1.f}; // 0: no depth test, 1: hide behind the scene, 2: calibration colours
     float depth_const{0.0501f}; // depth * view z = near plane for a reverse-Z projection with an infinite far plane
     float rel_bias{0.08f};
     float abs_bias{0.05f};

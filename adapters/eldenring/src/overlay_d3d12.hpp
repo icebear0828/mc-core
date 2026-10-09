@@ -30,6 +30,7 @@ struct SteveState {
 // Tuning read from mc_er_steve.txt (key=value lines).
 struct SteveConfig {
     bool occlusion{true};
+    int debug{0}; // 1: colour the figure by how the scene depth compares with it (calibration)
     float depth_const{0.0501f};
     float rel_bias{0.08f};
     float abs_bias{0.05f};

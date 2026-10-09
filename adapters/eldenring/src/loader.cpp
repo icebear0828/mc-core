@@ -521,6 +521,7 @@ void SetupOverlay() {
                 const std::string key = line.substr(0, eq);
                 const float value = static_cast<float>(atof(line.c_str() + eq + 1));
                 if (key == "occlusion") cfg.occlusion = value != 0.f;
+                else if (key == "debug") cfg.debug = static_cast<int>(value);
                 else if (key == "depth_const") cfg.depth_const = value;
                 else if (key == "rel_bias") cfg.rel_bias = value;
                 else if (key == "abs_bias") cfg.abs_bias = value;

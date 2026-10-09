@@ -16,7 +16,7 @@ constexpr char kShader[] = R"hlsl(
 cbuffer Root : register(b0) {
     row_major float4x4 view_proj;
     row_major float4x4 world;
-    float4 scene; // x: depth * view z constant, y: relative bias, z: absolute bias (metres), w: occlusion enabled
+    float4 scene; // x: depth * view z constant, y: relative bias, z: absolute bias (metres), w: mode (0 off, 1 occlude, 2 debug colours)
     float4 dims;  // x, y: depth texture size, z, w: back buffer size
 };
 Texture2D<float2> scene_depth : register(t0);
@@ -39,6 +39,16 @@ float4 PSMain(VSOut i) : SV_Target {
         int2 texel = int2(i.pos.xy / dims.zw * dims.xy);
         float gd = scene_depth.Load(int3(texel, 0)).r;
         float steve_z = rcp(i.pos.w);
+        if (scene.w > 1.5) {
+            // Calibration view: the scene's distance at this pixel (scene.x / depth) over the figure's own distance.
+            if (gd <= 0.0) return float4(1.0, 0.0, 1.0, 1.0);                 // magenta: no depth here (far plane or bad read)
+            float r = (scene.x / gd) / steve_z;
+            if (r < 0.5) return float4(1.0, 0.0, 0.0, 1.0);                   // red: the scene is much nearer
+            if (r < 0.92) return float4(1.0, 0.55, 0.0, 1.0);                 // orange: the scene is somewhat nearer
+            if (r < 1.08) return float4(1.0, 1.0, 0.0, 1.0);                  // yellow: same distance (the constant is right)
+            if (r < 2.0) return float4(0.0, 0.8, 0.2, 1.0);                   // green: the scene is farther
+            return float4(0.0, 0.4, 1.0, 1.0);                                // blue: far behind
+        }
         if (gd > 0.0 && scene.x / gd < steve_z * (1.0 - scene.y) - scene.z) discard;
     }
     // Minecraft's fixed face shading (top 1.0, north/south 0.8, east/west 0.6), from the face normal.
@@ -228,7 +238,7 @@ void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* 
     const float extra[8] = {params.depth_const,
                             params.rel_bias,
                             params.abs_bias,
-                            params.occlusion ? 1.f : 0.f,
+                            params.mode,
                             params.depth_w,
                             params.depth_h,
                             static_cast<float>(width),

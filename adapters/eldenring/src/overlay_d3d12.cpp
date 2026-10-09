@@ -329,7 +329,7 @@ void RenderFrame(IDXGISwapChain* sc) {
         const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
         const auto parts = eldenring::render::restPoseMatrices({steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw);
         SteveParams sp;
-        sp.occlusion = g_steve_cfg.occlusion && g_depth_res != nullptr;
+        sp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.debug != 0 ? 2.f : (g_steve_cfg.occlusion ? 1.f : 0.f));
         sp.depth_const = g_steve_cfg.depth_const;
         sp.rel_bias = g_steve_cfg.rel_bias;
         sp.abs_bias = g_steve_cfg.abs_bias;
