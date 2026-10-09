@@ -335,13 +335,25 @@ void RenderFrame(IDXGISwapChain* sc) {
         const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
         const auto parts = eldenring::render::restPoseMatrices({steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw);
         SteveParams sp;
-        sp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.debug != 0 ? 2.f : (g_steve_cfg.occlusion ? 1.f : 0.f));
+        sp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.debug == 2 ? 3.f : (g_steve_cfg.debug != 0 ? 2.f : (g_steve_cfg.occlusion ? 1.f : 0.f)));
         sp.depth_const = g_steve_cfg.depth_const;
         sp.rel_bias = g_steve_cfg.rel_bias;
         sp.abs_bias = g_steve_cfg.abs_bias;
         sp.depth_w = static_cast<float>(g_depth_w);
         sp.depth_h = static_cast<float>(g_depth_h);
         g_steve.draw(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, parts, sp);
+        if (sp.mode > 2.5f) {
+            static auto last_log = std::chrono::steady_clock::now();
+            const auto t = std::chrono::steady_clock::now();
+            uint32_t st[4];
+            if (t - last_log > std::chrono::seconds(1) && g_steve.readStats(st)) {
+                last_log = t;
+                if (g_log && st[1] > 0) {
+                    g_log("steve: depth * view z over %u pixels: mean %.5f  min %.5f  max %.5f  (the assumed constant is %.5f)", st[1],
+                          static_cast<double>(st[0]) / st[1] / 1e6, st[3] / 1e6, st[2] / 1e6, g_steve_cfg.depth_const);
+                }
+            }
+        }
     }
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_s.list);
     b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;

@@ -20,6 +20,7 @@ cbuffer Root : register(b0) {
     float4 dims;  // x, y: depth texture size, z, w: back buffer size
 };
 Texture2D<float2> scene_depth : register(t0);
+RWByteAddressBuffer stats : register(u0); // [0] sum of K * 1e6, [4] pixel count, [8] max, [12] min (K = depth * view z)
 
 struct VSIn  { float3 pos : POSITION; float2 uv : TEXCOORD0; };
 struct VSOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; float3 wpos : TEXCOORD1; };
@@ -58,6 +59,19 @@ float4 PSMain(VSOut i) : SV_Target {
         int2 texel = int2(i.pos.xy / dims.zw * dims.xy);
         float gd = scene_depth.Load(int3(texel, 0)).r;
         float steve_z = rcp(i.pos.w);
+        if (scene.w > 2.5) {
+            // Measurement: the constant K = depth * view z over the figure's pixels (the native character is drawn
+            // in the same place, so the scene depth here is its own distance).
+            if (gd > 0.0) {
+                uint q = (uint)(gd * steve_z * 1000000.0);
+                uint old;
+                stats.InterlockedAdd(0, q, old);
+                stats.InterlockedAdd(4, 1, old);
+                stats.InterlockedMax(8, q, old);
+                stats.InterlockedMin(12, q, old);
+            }
+            return float4(1.0, 1.0, 0.0, 1.0);
+        }
         if (scene.w > 1.5) {
             // Calibration view: the scene's distance at this pixel (scene.x / depth) over the figure's own distance.
             if (gd <= 0.0) return float4(1.0, 0.0, 1.0, 1.0);                 // magenta: no depth here (far plane or bad read)
@@ -153,12 +167,35 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
             static_cast<UINT>(sizeof(mc::rig::RigVertex))};
     ibv_ = {indices_->GetGPUVirtualAddress(), static_cast<UINT>(indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
 
+    // Statistics buffer for the calibration mode: default heap (UAV), an upload buffer with the initial values, readback.
+    {
+        const uint32_t init_values[4] = {0, 0, 0, 0xFFFFFFFFu};
+        stats_init_ = UploadBuffer(device, init_values, sizeof(init_values));
+        D3D12_HEAP_PROPERTIES hd{};
+        hd.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_HEAP_PROPERTIES hr_{};
+        hr_.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_RESOURCE_DESC rd{};
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        rd.Width = 256;
+        rd.Height = 1;
+        rd.DepthOrArraySize = 1;
+        rd.MipLevels = 1;
+        rd.SampleDesc.Count = 1;
+        rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        D3D12_RESOURCE_DESC ud = rd;
+        ud.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        device->CreateCommittedResource(&hd, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&stats_));
+        device->CreateCommittedResource(&hr_, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                        IID_PPV_ARGS(&stats_readback_));
+    }
+
     // Root signature: 40 root constants (view_proj, world, scene, dims) + a table with the depth SRV.
     D3D12_DESCRIPTOR_RANGE range{};
     range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     range.NumDescriptors = 1;
     range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-    D3D12_ROOT_PARAMETER params[2]{};
+    D3D12_ROOT_PARAMETER params[3]{};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.Num32BitValues = 40;
     params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -166,8 +203,11 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
     params[1].DescriptorTable.NumDescriptorRanges = 1;
     params[1].DescriptorTable.pDescriptorRanges = &range;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    params[2].Descriptor.ShaderRegister = 0;
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     D3D12_ROOT_SIGNATURE_DESC rsd{};
-    rsd.NumParameters = 2;
+    rsd.NumParameters = 3;
     rsd.pParameters = params;
     rsd.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
     ID3DBlob* rs_blob = nullptr;
@@ -241,11 +281,25 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
 }
 
 void SteveRenderer::release() {
+    Rel(stats_);
+    Rel(stats_init_);
+    Rel(stats_readback_);
     Rel(pso_);
     Rel(pso_depthview_);
     Rel(root_);
     Rel(vertices_);
     Rel(indices_);
+}
+
+bool SteveRenderer::readStats(uint32_t out[4]) {
+    if (!stats_readback_) return false;
+    void* mapped = nullptr;
+    D3D12_RANGE range{0, 16};
+    if (FAILED(stats_readback_->Map(0, &range, &mapped))) return false;
+    std::memcpy(out, mapped, 16);
+    D3D12_RANGE none{0, 0};
+    stats_readback_->Unmap(0, &none);
+    return true;
 }
 
 void SteveRenderer::setDepthView(ID3D12Device* device, ID3D12Resource* depth, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
@@ -292,6 +346,21 @@ void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* 
     list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     list->IASetVertexBuffers(0, 1, &vbv_);
     list->IASetIndexBuffer(&ibv_);
+    const bool measure = params.mode > 2.5f && stats_ && stats_init_ && stats_readback_;
+    if (measure) {
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = stats_;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        list->ResourceBarrier(1, &b);
+        list->CopyBufferRegion(stats_, 0, stats_init_, 0, 16);
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        list->ResourceBarrier(1, &b);
+        list->SetGraphicsRootUnorderedAccessView(2, stats_->GetGPUVirtualAddress());
+    }
     list->SetGraphicsRoot32BitConstants(0, 16, view_proj.m.data(), 0);
     const float extra[8] = {params.depth_const,
                             params.rel_bias,
@@ -305,6 +374,19 @@ void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* 
     for (size_t p = 0; p < static_cast<size_t>(mc::StevePart::Count); ++p) {
         list->SetGraphicsRoot32BitConstants(0, 16, parts[p].m.data(), 16);
         list->DrawIndexedInstanced(index_count_[p], 1, first_index_[p], base_vertex_[p], 0);
+    }
+    if (measure) {
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = stats_;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        list->ResourceBarrier(1, &b);
+        list->CopyBufferRegion(stats_readback_, 0, stats_, 0, 16);
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+        list->ResourceBarrier(1, &b);
     }
 }
 

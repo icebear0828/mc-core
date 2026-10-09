@@ -6,6 +6,8 @@
 
 #include <d3d12.h>
 
+#include <cstdint>
+
 #include "eldenring_steve.hpp"
 #include "mc/rig.hpp"
 
@@ -30,6 +32,9 @@ public:
     // (Re)creates the depth SRV at `slot`; a null resource writes a null descriptor (occlusion must then be off).
     void setDepthView(ID3D12Device* device, ID3D12Resource* depth, D3D12_CPU_DESCRIPTOR_HANDLE slot);
 
+    // Calibration (mode 3): {sum of depth*z*1e6, pixel count, max, min} of the last frame the GPU finished.
+    bool readStats(uint32_t out[4]);
+
     // Debug: the scene depth as a grey full-screen overlay (see PSDepthView).
     void drawDepthView(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table,
                        unsigned width, unsigned height, float gain, float depth_w, float depth_h);
@@ -43,6 +48,9 @@ private:
     ID3D12RootSignature* root_{nullptr};
     ID3D12PipelineState* pso_{nullptr};
     ID3D12PipelineState* pso_depthview_{nullptr};
+    ID3D12Resource* stats_{nullptr};
+    ID3D12Resource* stats_init_{nullptr};
+    ID3D12Resource* stats_readback_{nullptr};
     ID3D12Resource* vertices_{nullptr};
     ID3D12Resource* indices_{nullptr};
     D3D12_VERTEX_BUFFER_VIEW vbv_{};
