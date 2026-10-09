@@ -221,6 +221,33 @@ DWORD FindGameWindowThread() {
     return ctx.tid;
 }
 
+std::atomic<bool> g_refocus{false}; // mc_er_steve.txt: refocus=1 gives the focus back when explorer's ForegroundStaging window keeps it
+
+// The game's main window: a visible top-level window of this process with a title.
+HWND FindGameWindow() {
+    struct Ctx {
+        DWORD pid;
+        HWND found;
+    } ctx{GetCurrentProcessId(), nullptr};
+    EnumWindows(
+        [](HWND h, LPARAM l) -> BOOL {
+            auto* c = reinterpret_cast<Ctx*>(l);
+            DWORD pid = 0;
+            GetWindowThreadProcessId(h, &pid);
+            if (pid == c->pid && IsWindowVisible(h) && GetWindow(h, GW_OWNER) == nullptr) {
+                char title[64] = {};
+                GetWindowTextA(h, title, sizeof(title) - 1);
+                if (title[0] != '\0') {
+                    c->found = h;
+                    return FALSE;
+                }
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&ctx));
+    return ctx.found;
+}
+
 bool GameInForeground() {
     DWORD pid = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &pid);
@@ -1809,6 +1836,41 @@ DWORD WINAPI KeyThread(LPVOID) {
                 Log("focus: the game is %s the foreground window (foreground: hwnd=%p pid=%lu class='%s' title='%s')", fg ? "now" : "no longer", reinterpret_cast<void*>(top),
                     static_cast<unsigned long>(pid), cls, title);
             }
+            // While the game is not in front: once a second, who has the front; and with refocus=1, take the focus back when the
+            // Windows foreground-staging window (explorer.exe, shown while another program asks for the foreground) has held it for 1.2 s.
+            static uint64_t away_since = 0, last_away_log = 0;
+            static int away_logs = 0;
+            const uint64_t tnow = GetTickCount64();
+            if (fg) {
+                away_since = 0;
+                away_logs = 0;
+            } else {
+                if (away_since == 0) away_since = tnow;
+                HWND top = GetForegroundWindow();
+                char cls[80] = {};
+                if (top != nullptr) GetClassNameA(top, cls, sizeof(cls) - 1);
+                if (away_logs < 12 && tnow - last_away_log >= 1000) {
+                    last_away_log = tnow;
+                    ++away_logs;
+                    char title[80] = {};
+                    DWORD pid = 0;
+                    if (top != nullptr) {
+                        GetWindowTextA(top, title, sizeof(title) - 1);
+                        GetWindowThreadProcessId(top, &pid);
+                    }
+                    Log("focus: away for %.1f s; the foreground is pid=%lu class='%s' title='%s'", static_cast<double>(tnow - away_since) / 1000.0, static_cast<unsigned long>(pid), cls, title);
+                }
+                if (g_refocus.load() && tnow - away_since >= 1200 && std::strcmp(cls, "ForegroundStaging") == 0) {
+                    if (HWND game = FindGameWindow()) {
+                        // a console-less trick that works without being the foreground process: a synthetic Alt press lets SetForegroundWindow through
+                        keybd_event(VK_MENU, 0, 0, 0);
+                        keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0);
+                        const BOOL ok = SetForegroundWindow(game);
+                        Log("focus: gave the focus back to the game (%s)", ok ? "ok" : "refused");
+                    }
+                    away_since = tnow; // wait another 1.2 s before trying again
+                }
+            }
             long hr = 0;
             const unsigned failed = erin::TakeKeyboardFailures(hr);
             const uint64_t t = GetTickCount64();
@@ -2388,6 +2450,7 @@ void SetupOverlay() {
                 else if (key == "no_player_hit_vfx") g_no_player_hit_vfx.store(value != 0.f);
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "eye_height") g_eye_height.store(value);
+                else if (key == "refocus") g_refocus.store(value != 0.f);
                 else if (key == "fall_protect") g_fall_protect.store(value != 0.f);
                 else if (key == "mc_jump") g_mc_jump.store(value != 0.f);
                 else if (key == "mc_jump_key") g_mc_jump_vk.store(static_cast<int>(value));
