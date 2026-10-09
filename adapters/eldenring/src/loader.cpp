@@ -236,6 +236,7 @@ std::atomic<bool> g_slots_changed{false};
 std::atomic<int> g_slot_probe{-1}; // F9 probe: -1 = off (all slots), 0..26 = only that part slot is hidden
 std::atomic<uint32_t> g_hide_mask1{0x100A1}; // bits cleared in disp_flags1 (+0x20): visible + shadow (verified live, not bisected)
 std::atomic<bool> g_no_player_hit_vfx{false}; // mc_er_steve.txt: no_player_hit_vfx=1 (also implied by first person): no blood when the player is hit
+std::atomic<bool> g_fp_persist{true};      // mc_er_steve.txt: fp_persist=0 turns the persistent eye camera off
 std::atomic<bool> g_first_person{false};  // mc_er_steve.txt: first_person=1 (experiment), F10 toggles
 std::atomic<float> g_eye_height{1.65f};
 std::atomic<float> g_kb_force{-1.f}; // mc_er_steve.txt: kb_force (>= 0 overrides HitContext+0xFC of our own hits; experiment)
@@ -369,6 +370,84 @@ void __fastcall RenderCamCopyDetour(void* self) {
         } __except (EXCEPTION_EXECUTE_HANDLER) {
         }
     }
+}
+
+// ---- persistent eye camera ----------------------------------------------------------------------------------------------
+// ChrCam is read by more than the render copy: the effects and sound systems read its position through other functions, so a
+// change that only lasts for the render copy leaves hit effects at the third-person position. Here the eye position is written
+// right after the camera task has computed the frame's camera and stays there until the next camera task starts; the engine's
+// own value is put back first so its camera logic never sees ours. Game thread only (the camera task runs there).
+uintptr_t PlayerChrPtr(); // defined below
+
+using CameraStepFn = uint64_t(__fastcall*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+CameraStepFn g_camstep_orig = nullptr;
+struct CamKeep {
+    uintptr_t pos_addr{0};
+    float third_person[3]{};
+    bool valid{false};
+};
+CamKeep g_cam_keep;
+std::atomic<unsigned> g_camstep_calls{0}, g_camstep_changed{0};
+
+bool WriteBytesSafe(uintptr_t address, const void* src, size_t n) {
+    if (address < 0x10000) return false;
+    __try {
+        std::memcpy(reinterpret_cast<void*>(address), src, n);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool ChrCamPosAddress(uintptr_t& addr) {
+    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    uint64_t cam = 0;
+    if (world == 0 || !SafeCopy(world + layout::kChrCamInWorldChrMan, &cam, sizeof(cam)) || cam == 0) return false;
+    addr = static_cast<uintptr_t>(cam) + layout::kCamMatrix + 0x30;
+    return true;
+}
+
+void RestoreCamKeep() {
+    if (!g_cam_keep.valid) return;
+    WriteBytesSafe(g_cam_keep.pos_addr, g_cam_keep.third_person, sizeof(g_cam_keep.third_person));
+    g_cam_keep.valid = false;
+}
+
+void AfterCameraStep(bool have_before, uintptr_t addr, const float before[3]) {
+    const unsigned call = ++g_camstep_calls;
+    float now[3];
+    if (!have_before || !SafeCopy(addr, now, sizeof(now))) return;
+    const bool changed = std::fabs(now[0] - before[0]) + std::fabs(now[1] - before[1]) + std::fabs(now[2] - before[2]) > 1e-5f;
+    if (changed) ++g_camstep_changed;
+    float eye[3] = {};
+    bool wrote = false;
+    if (g_first_person.load(std::memory_order_relaxed) && g_fp_persist.load(std::memory_order_relaxed)) {
+        const uintptr_t player = PlayerChrPtr();
+        float feet[3];
+        if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) {
+            firstPersonEye(feet, g_eye_height.load(), eye);
+            if (WriteBytesSafe(addr, eye, sizeof(eye))) {
+                g_cam_keep.pos_addr = addr;
+                std::memcpy(g_cam_keep.third_person, now, sizeof(now));
+                g_cam_keep.valid = true;
+                wrote = true;
+            }
+        }
+    }
+    if (call <= 8 || call % 1200 == 0) {
+        Log("camstep: call %u changed=%d (changed so far %u) engine pos=(%.2f %.2f %.2f)%s", call, changed ? 1 : 0, g_camstep_changed.load(), now[0], now[1], now[2],
+            wrote ? " -> eye written" : "");
+    }
+}
+
+uint64_t __fastcall CameraStepDetour(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8) {
+    RestoreCamKeep();
+    uintptr_t addr = 0;
+    float before[3] = {};
+    const bool have = ChrCamPosAddress(addr) && SafeCopy(addr, before, sizeof(before));
+    const uint64_t r = g_camstep_orig(a1, a2, a3, a4, a5, a6, a7, a8);
+    AfterCameraStep(have, addr, before);
+    return r;
 }
 
 // ---- player hit effect (blood) -----------------------------------------------------------------------------------------
@@ -1166,6 +1245,19 @@ void SetupDamage() {
                 reinterpret_cast<void*>(vfx), static_cast<unsigned long long>(vfx - g_img.base));
         }
     }
+    {
+        uintptr_t step = 0;
+        if (!LocateByPrefix(g_img, sigs::kCameraStepExecute, step)) {
+            Log("camstep: camera task signature not unique, hit effects stay at the third-person position in first person");
+        } else if (MH_CreateHook(reinterpret_cast<void*>(step), reinterpret_cast<void*>(&CameraStepDetour), reinterpret_cast<void**>(&g_camstep_orig)) !=
+                       MH_OK ||
+                   MH_EnableHook(reinterpret_cast<void*>(step)) != MH_OK) {
+            Log("camstep: hooking %p failed", reinterpret_cast<void*>(step));
+        } else {
+            Log("camstep: camera task hooked at %p (RVA 0x%llX): first person keeps the eye position for the whole frame (fp_persist=0 turns it off)",
+                reinterpret_cast<void*>(step), static_cast<unsigned long long>(step - g_img.base));
+        }
+    }
     if (FileExists(g_game_dir + "mc_er_nolos.txt")) {
         Log("los: disabled by mc_er_nolos.txt");
     } else {
@@ -1367,6 +1459,7 @@ void SetupOverlay() {
                 else if (key == "scene_height") cfg.scene_height = value;
                 else if (key == "yaw_offset_deg") g_steve_yaw_offset = value * 3.14159265f / 180.f;
                 else if (key == "hide_native") g_hide_native.store(value != 0.f);
+                else if (key == "fp_persist") g_fp_persist.store(value != 0.f);
                 else if (key == "sound_volume") g_sound_volume.store(value);
                 else if (key == "no_player_hit_vfx") g_no_player_hit_vfx.store(value != 0.f);
                 else if (key == "first_person") g_first_person.store(value != 0.f);
