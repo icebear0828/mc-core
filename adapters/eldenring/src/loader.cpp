@@ -665,6 +665,8 @@ const char* OutcomeName(DamageOutcome o) {
     return "?";
 }
 
+bool PlayerDead();
+
 int32_t HpOf(uintptr_t chr) {
     Vitals v;
     return readVitals(g_reader, g_img.base, chr, v) ? v.hp : -1;
@@ -721,6 +723,12 @@ uintptr_t PlayerChrPtr() {
     return world != 0 && SafeCopy(world + layout::kPlayerInsInWorldChrMan, &p, sizeof(p)) ? static_cast<uintptr_t>(p) : 0;
 }
 
+bool PlayerDead() {
+    const uintptr_t player = PlayerChrPtr();
+    Vitals v;
+    return player != 0 && readVitals(g_reader, g_img.base, player, v) && v.max_hp > 0 && v.hp <= 0;
+}
+
 uintptr_t DataModuleOfChr(uintptr_t chr) {
     uint64_t container = 0, data = 0;
     if (chr == 0 || !SafeCopy(chr + layout::kModuleContainerInChrIns, &container, sizeof(container)) || container == 0 ||
@@ -762,9 +770,9 @@ bool PlayerHitSurvival(void* module, void* attacker, uint8_t* ctx, uint8_t block
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
         out = g_survival.absorb(dmg, v.max_hp);
-        const TotemOutcome t = totemClamp(out, v.hp, g_melee.has(mc::ItemId::TotemOfUndying));
+        const TotemOutcome t = totemClamp(out, v.hp, g_melee.holds(mc::ItemId::TotemOfUndying));
         out = t.damage;
-        if (t.popped && g_melee.consumeFirst(mc::ItemId::TotemOfUndying)) {
+        if (t.popped && g_melee.consumeHeld(mc::ItemId::TotemOfUndying)) {
             popped = true;
             // Minecraft: Regeneration II for 45 s and Absorption II for 5 s, and the player is left on one heart (2 HP).
             g_survival.apply({mc::ActiveEffect{mc::EffectType::Regeneration, 2, 45.f}, mc::ActiveEffect{mc::EffectType::Absorption, 2, 5.f}});
@@ -1122,7 +1130,7 @@ void CycleHiddenSlot(int& cursor) {
 void InventoryTick(bool fg) {
     static bool prev_key = false, prev_esc = false;
     static bool prev_digit[mc::Inventory::kHotbar] = {};
-    const bool want = fg && WantSuppress() && g_mc_mode.load();
+    const bool want = fg && WantSuppress() && g_mc_mode.load() && !PlayerDead();
     bool open = g_inv_open.load();
     const bool key = fg && (GetAsyncKeyState(g_inv_vk.load()) & 0x8000) != 0;
     const bool esc = fg && (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
@@ -1290,7 +1298,7 @@ DWORD WINAPI KeyThread(LPVOID) {
         }
         InventoryTick(fg);
         const bool inv_open = g_inv_open.load();
-        if (!inv_open && g_input_enabled.load() && erin::TakeRightClick() && fg && WantSuppress()) {
+        if (!inv_open && g_input_enabled.load() && erin::TakeRightClick() && fg && WantSuppress() && !PlayerDead()) {
             std::lock_guard<std::mutex> g(g_melee_mutex);
             const mc::ItemId item = g_melee.heldItem();
             if (!g_eating.isEating() && g_melee.countAt(g_melee.selectedSlot()) > 0 && g_eating.startEating(item)) {
@@ -1319,7 +1327,9 @@ DWORD WINAPI KeyThread(LPVOID) {
         if (space && !prev_space && g_mc_mode.load()) Log("key: space down");
         g_jump.update(dt, space && !prev_space, g_mc_mode.load() && PlayerAirborne());
         prev_space = space;
-        const bool click_edge = !inv_open && g_input_enabled.load() && erin::TakeLeftClick();
+        // A dead player cannot swing, eat or hit anything (the click edges are still taken so they do not pile up).
+        const bool alive = !PlayerDead();
+        const bool click_edge = !inv_open && g_input_enabled.load() && erin::TakeLeftClick() && alive;
         const bool want_suppress = click_edge ? WantSuppress() : false;
         if (click_edge && !(fg && g_click_attack.load() && want_suppress) && g_mc_mode.load()) {
             Log("click dropped: fg=%d click_attack=%d suppress=%d", fg ? 1 : 0, g_click_attack.load() ? 1 : 0, want_suppress ? 1 : 0);
@@ -1610,6 +1620,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     }
     out.hp = v.hp;
     out.max_hp = v.max_hp;
+    const bool steve_dead_now = v.max_hp > 0 && v.hp <= 0;
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
         out.selected_slot = g_melee.selectedSlot();
@@ -1621,9 +1632,9 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         out.eating = g_eating.getProgress();
         steve.held_item = static_cast<uint16_t>(g_melee.heldItem());
         steve.cooldown = g_melee.cooldown();
-        steve.eating = g_eating.getProgress();
+        steve.eating = steve_dead_now ? 0.f : g_eating.getProgress();
         out.totem = g_feedback.totem();
-        steve.swing = g_melee.swingProgress();
+        steve.swing = steve_dead_now ? 0.f : g_melee.swingProgress();
         out.hit = g_feedback.hit();
         out.hit_crit = g_feedback.crit();
         out.kill = g_feedback.kill();

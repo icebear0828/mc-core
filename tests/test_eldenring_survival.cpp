@@ -77,11 +77,16 @@ TEST(EldenRingSurvival, HotbarCountsAndTheTotemSlot) {
     EXPECT_EQ(m.countAt(0), 1u);
     EXPECT_EQ(m.countAt(2), 64u);
     EXPECT_EQ(m.countAt(5), 8u);
-    EXPECT_TRUE(m.has(mc::ItemId::TotemOfUndying));
-    EXPECT_TRUE(m.consumeFirst(mc::ItemId::TotemOfUndying));
-    EXPECT_FALSE(m.has(mc::ItemId::TotemOfUndying));
+    // Minecraft: a totem only works in the main hand (or off hand): carrying it elsewhere does nothing.
+    EXPECT_FALSE(m.holds(mc::ItemId::TotemOfUndying)); // slot 0 (the sword) is selected, the totem sits in slot 8
+    EXPECT_FALSE(m.consumeHeld(mc::ItemId::TotemOfUndying));
+    EXPECT_EQ(m.itemAt(8), mc::ItemId::TotemOfUndying);
+    m.select(8);
+    EXPECT_TRUE(m.holds(mc::ItemId::TotemOfUndying));
+    EXPECT_TRUE(m.consumeHeld(mc::ItemId::TotemOfUndying));
+    EXPECT_FALSE(m.holds(mc::ItemId::TotemOfUndying));
     EXPECT_EQ(m.itemAt(8), mc::ItemId::None); // the emptied slot is empty
-    EXPECT_FALSE(m.consumeFirst(mc::ItemId::TotemOfUndying));
+    EXPECT_FALSE(m.consumeHeld(mc::ItemId::TotemOfUndying));
     m.select(5);
     EXPECT_TRUE(m.consumeAt(5));
     EXPECT_EQ(m.countAt(5), 7u);

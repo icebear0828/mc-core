@@ -30,6 +30,9 @@ public:
     // Takes one of `item` from the first slot that has it, hotbar first, then the main inventory (the totem works from anywhere).
     bool consumeFirst(mc::ItemId item) { return inv_.consumeFirst(item); }
     [[nodiscard]] bool has(mc::ItemId item) const { return inv_.has(item); }
+    // In the selected (main hand) slot. The totem of undying only counts there, as in Minecraft.
+    [[nodiscard]] bool holds(mc::ItemId item) const { return heldItem() == item && countAt(slot_) > 0; }
+    bool consumeHeld(mc::ItemId item) { return holds(item) && inv_.consume(slot_); }
     [[nodiscard]] mc::ItemId itemAt(int slot) const { return inv_.slot(std::clamp(slot, 0, kSlots - 1)).item; }
     [[nodiscard]] mc::Inventory& inventory() { return inv_; }
     [[nodiscard]] const mc::Inventory& inventory() const { return inv_; }
