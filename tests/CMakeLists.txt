@@ -29,6 +29,9 @@ add_executable(mc_tests
     test_sekiro_steve.cpp
     test_sekiro_model.cpp
     test_eldenring_live.cpp
+    test_eldenring_world.cpp
+    test_eldenring_state.cpp
+    test_eldenring_damage.cpp
 )
 
 target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source")
