@@ -2015,12 +2015,45 @@ DWORD WINAPI KeyThread(LPVOID) {
             Log("F6: MC mode %s", g_mc_mode.load() ? "on" : "off");
             ResetSlotProbe(slot_cursor);
         }
+        static struct {
+            std::vector<uintptr_t> baseline;
+            uint64_t t0_ms{0};
+            int reports_left{0};
+        } summon_watch;
+        if (summon_watch.reports_left > 0) {
+            const uint64_t waited = GetTickCount64() - summon_watch.t0_ms;
+            if (waited >= (summon_watch.reports_left == 2 ? 1500u : 5000u)) {
+                --summon_watch.reports_left;
+                std::vector<EnemyInfo> now_list;
+                if (enumerateEnemies(g_reader, g_img.base, now_list, 4000)) {
+                    std::vector<uintptr_t> ptrs;
+                    for (const EnemyInfo& e : now_list) ptrs.push_back(e.chr);
+                    const auto fresh = eldenring::buddy::newEntities(summon_watch.baseline, ptrs);
+                    Log("summon: %.1f s after F2, %zu new entities (of %zu)", static_cast<double>(waited) / 1000.0, fresh.size(), now_list.size());
+                    for (size_t i : fresh) {
+                        const EnemyInfo& e = now_list[i];
+                        Log("summon:   new chr=%p npc=%d team=%u hp=%d/%d hostile=%d rel=(%.1f %.1f %.1f) dist=%.1f m", reinterpret_cast<void*>(e.chr),
+                            e.npc_id, static_cast<unsigned>(e.team), e.hp, e.max_hp, e.hostile ? 1 : 0, e.rel_x, e.rel_y, e.rel_z,
+                            std::sqrt(e.rel_x * e.rel_x + e.rel_y * e.rel_y + e.rel_z * e.rel_z));
+                    }
+                } else {
+                    Log("summon: entity enumeration failed");
+                }
+            }
+        }
         static bool prev_f2 = false;
         const bool d2 = fg && (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
         if (d2 && !prev_f2) {
             if (FileExists(g_game_dir + "mc_er_summon.txt")) {
+                summon_watch.baseline.clear();
+                std::vector<EnemyInfo> before;
+                if (enumerateEnemies(g_reader, g_img.base, before, 4000)) {
+                    for (const EnemyInfo& e : before) summon_watch.baseline.push_back(e.chr);
+                }
+                summon_watch.t0_ms = GetTickCount64();
+                summon_watch.reports_left = 2;
                 g_summon_pending.store(true);
-                Log("F2: summon experiment queued for the game thread");
+                Log("F2: summon experiment queued for the game thread (%zu entities in the baseline)", summon_watch.baseline.size());
             } else {
                 Log("F2: ignored (no mc_er_summon.txt in the game directory)");
             }

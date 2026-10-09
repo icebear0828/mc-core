@@ -17,7 +17,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <optional>
+#include <algorithm>
 #include <string>
+#include <vector>
 
 namespace eldenring::buddy {
 
@@ -134,5 +136,14 @@ inline std::optional<SummonPlan> planSummon(const Snapshot& s, int32_t request, 
     return SummonPlan{s.buddy_man + layout::kTabletId, s.buddy_man + layout::kRequestId, tablet, request};
 }
 
+
+// Indices into `after` of the entities that were not in `before` (what appeared after a summon).
+inline std::vector<size_t> newEntities(const std::vector<uintptr_t>& before, const std::vector<uintptr_t>& after) {
+    std::vector<size_t> out;
+    for (size_t i = 0; i < after.size(); ++i) {
+        if (std::find(before.begin(), before.end(), after[i]) == before.end()) out.push_back(i);
+    }
+    return out;
+}
 
 } // namespace eldenring::buddy

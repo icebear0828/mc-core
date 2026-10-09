@@ -201,3 +201,14 @@ TEST(BuddySummon, RefusesNonsenseIds) {
     EXPECT_FALSE(buddy::planSummon(snap, 0, 1042360100).has_value());
     EXPECT_FALSE(buddy::planSummon(snap, 232000, 0).has_value());
 }
+
+TEST(BuddySummon, NewEntitiesAreTheOnesMissingFromTheBaseline) {
+    const std::vector<uintptr_t> before{0x10, 0x20, 0x30};
+    const std::vector<uintptr_t> after{0x10, 0x40, 0x30, 0x50, 0x20};
+    const auto fresh = buddy::newEntities(before, after);
+    ASSERT_EQ(fresh.size(), 2u);
+    EXPECT_EQ(fresh[0], 1u); // indices into `after`
+    EXPECT_EQ(fresh[1], 3u);
+    EXPECT_TRUE(buddy::newEntities(after, after).empty());
+    EXPECT_EQ(buddy::newEntities({}, after).size(), after.size());
+}
