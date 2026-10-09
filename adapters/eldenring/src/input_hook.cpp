@@ -38,6 +38,7 @@ std::atomic<int> g_wheel{0};
 std::atomic<int> g_dx{0}, g_dy{0};
 std::atomic<bool> g_suppress_motion{false};
 std::atomic<bool> g_suppress_keys{false};
+std::atomic<int> g_masked_dik{0}; // one key (a DIK scan code) the game must not see, 0 = none
 std::atomic<unsigned> g_keys_zeroed{0}, g_motion_zeroed{0};
 std::atomic<unsigned> g_mouse_state{0}, g_mouse_data{0}, g_keyboard_state{0}, g_keyboard_data{0}, g_other{0}, g_cleared{0};
 
@@ -72,6 +73,9 @@ HRESULT STDMETHODCALLTYPE GetStateDetour(void* self, DWORD cb, LPVOID data) {
         if (k == Kind::Keyboard && g_suppress_keys.load(std::memory_order_relaxed) && data != nullptr) {
             memset(data, 0, cb); // the game sees a keyboard with nothing pressed (our own hotkeys read the OS state)
             ++g_keys_zeroed;
+        } else if (k == Kind::Keyboard && data != nullptr) {
+            const int dik = g_masked_dik.load(std::memory_order_relaxed);
+            if (dik > 0 && dik < 256 && cb > static_cast<DWORD>(dik)) static_cast<BYTE*>(data)[dik] = 0; // one key hidden from the game
         }
         if (k == Kind::Mouse && data != nullptr && cb >= kMouseButtonsOffset + 2) {
             const bool down = (static_cast<BYTE*>(data)[kMouseButtonsOffset] & 0x80) != 0;
@@ -114,6 +118,12 @@ HRESULT STDMETHODCALLTYPE GetDataDetour(void* self, DWORD cb, LPDIDEVICEOBJECTDA
         if (k == Kind::Keyboard && g_suppress_keys.load(std::memory_order_relaxed) && count != nullptr) {
             *count = 0; // buffered keyboard events are dropped
             ++g_keys_zeroed;
+        } else if (k == Kind::Keyboard && data != nullptr && count != nullptr && cb >= sizeof(DIDEVICEOBJECTDATA)) {
+            const int dik = g_masked_dik.load(std::memory_order_relaxed);
+            for (DWORD i = 0; dik > 0 && i < *count; ++i) {
+                auto* e = reinterpret_cast<DIDEVICEOBJECTDATA*>(reinterpret_cast<BYTE*>(data) + static_cast<size_t>(i) * cb);
+                if (e->dwOfs == static_cast<DWORD>(dik)) e->dwData = 0; // the key is always "up" for the game
+            }
         }
         if (k == Kind::Mouse && data != nullptr && count != nullptr && cb >= sizeof(DIDEVICEOBJECTDATA)) {
             for (DWORD i = 0; i < *count; ++i) {
@@ -220,6 +230,8 @@ void TakeMouseDelta(int& dx, int& dy) {
 }
 
 void SetSuppressMouseMotion(bool on) { g_suppress_motion.store(on, std::memory_order_relaxed); }
+
+void SetMaskedKey(int dik) { g_masked_dik.store(dik, std::memory_order_relaxed); }
 
 void SetSuppressKeyboard(bool on) { g_suppress_keys.store(on, std::memory_order_relaxed); }
 

@@ -37,6 +37,9 @@ void TakeMouseDelta(int& dx, int& dy);
 void SetSuppressMouseMotion(bool on);
 // While on, the game's keyboard reads show nothing pressed (the inventory is open: no walking, rolling, Esc menu...).
 void SetSuppressKeyboard(bool on);
+// Hides one key (a DirectInput scan code, e.g. 0x39 = Space) from the game while everything else passes; 0 = none. Used by the jump
+// experiment so the game's own jump (with its wind-up) never starts.
+void SetMaskedKey(int dik);
 // How many keyboard polls / mouse polls were blanked since the last call (diagnostics).
 void TakeSuppressStats(unsigned& keys_zeroed, unsigned& motion_zeroed);
 

@@ -41,6 +41,7 @@
 #include "eldenring_survival.hpp"
 #include "eldenring_xp.hpp"
 #include "eldenring_hunger.hpp"
+#include "eldenring_jump.hpp"
 #include "mc/consumables.hpp"
 #include "mc/inventory_layout.hpp"
 #include "mc/hud_atlas.hpp"
@@ -473,6 +474,7 @@ struct CamKeep {
 CamKeep g_cam_keep;
 std::atomic<bool> g_camstep_installed{false}; // the camera update hook (game thread, every frame) is in place
 void BlocksCollisionStep(); // defined with the placed blocks below
+void McJumpStep();          // defined after them
 std::atomic<unsigned> g_camstep_calls{0}, g_camstep_changed{0};
 
 bool WriteBytesSafe(uintptr_t address, const void* src, size_t n) {
@@ -528,6 +530,7 @@ void AfterCameraStep(bool have_before, uintptr_t addr, const float before[3]) {
 
 uint64_t __fastcall CameraStepDetour(uint64_t self, float dt, uint64_t chr, uint64_t flag) {
     BlocksCollisionStep();
+    McJumpStep();
     RestoreCamKeep();
     uintptr_t addr = 0;
     float before[3] = {};
@@ -1484,6 +1487,62 @@ void BlocksTick() {
     if (!g_camstep_installed.load()) BlocksCollisionStep(); // without the camera hook the collision runs here (less smooth)
 }
 
+// ---- MC jump experiment (mc_jump=1) ----------------------------------------------------------------------------------------
+// The game's jump has a 0.7-0.8 s wind-up and is low. With the experiment on the jump key is hidden from the game (DirectInput) and, on
+// the key press while on the ground, the upward speed is written into the physics module with the "on the ground" flag cleared; the
+// arc that follows is recorded so the game's own gravity and the peak height can be read from the log. Game thread (camera update).
+std::atomic<bool> g_mc_jump{false};
+std::atomic<int> g_mc_jump_vk{VK_SPACE};
+std::atomic<float> g_mc_jump_speed{8.95f}; // m/s: with plain 32 m/s^2 gravity this peaks at the 1.25 m of Minecraft's jump
+void McJumpStep() {
+    static bool prev = false;
+    static JumpTrace trace;
+    static int frames_left = 0;
+    static uint64_t start_ms = 0;
+    if (!g_mc_jump.load(std::memory_order_relaxed) || !g_mc_mode.load(std::memory_order_relaxed) || g_inv_open.load(std::memory_order_relaxed) || !GameInForeground()) {
+        prev = false;
+        return;
+    }
+    const uintptr_t player = PlayerChrPtr();
+    if (player == 0) return;
+    const uintptr_t module = detail::readPhysicsModule(g_reader, g_img.base, player);
+    float feet[3];
+    if (module == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) return;
+    const bool down = (GetAsyncKeyState(g_mc_jump_vk.load()) & 0x8000) != 0;
+    const bool edge = down && !prev;
+    prev = down;
+    uint8_t ground = 0;
+    SafeCopy(module + 0x92, &ground, 1);
+    if (edge && ground == 1) {
+        const float v = g_mc_jump_speed.load();
+        const uint8_t zero = 0, one = 1;
+        WriteBytesSafe(module + 0x120 + 4, &v, sizeof(v));
+        WriteBytesSafe(module + 0x92, &zero, 1);
+        WriteBytesSafe(module + 0x1D0, &one, 1);
+        trace.start(feet[1]);
+        frames_left = 240;
+        start_ms = GetTickCount64();
+        Log("mcjump: start at y=%.3f, vy written %.2f m/s", feet[1], v);
+        return;
+    }
+    if (frames_left > 0) {
+        static uint64_t last_ms = 0;
+        const uint64_t now = GetTickCount64();
+        const float dt = last_ms != 0 ? static_cast<float>(now - last_ms) / 1000.f : 0.f;
+        last_ms = now;
+        float vel[3] = {};
+        SafeCopy(module + 0x120, vel, sizeof(vel));
+        if (dt > 0.001f) trace.sample(feet[1], dt, vel[1]);
+        if (frames_left % 12 == 0) Log("mcjump: t=%.2f y=%.3f vy=%.2f ground=%u", static_cast<float>(now - start_ms) / 1000.f, feet[1], vel[1], ground);
+        --frames_left;
+        if (frames_left == 0 || (ground == 1 && now - start_ms > 300)) {
+            Log("mcjump: peak %.2f m, %.2f s, engine gravity ~%.1f m/s^2", trace.peak(), trace.seconds(), trace.estimatedGravity());
+            frames_left = 0;
+            last_ms = 0;
+        }
+    }
+}
+
 // Opens / closes the inventory and drives its virtual pointer. Runs on the key thread before the normal MC input, and takes the
 // click edges while the screen is open so nothing else (attack, eating) reacts to them.
 void InventoryTick(bool fg) {
@@ -1665,6 +1724,9 @@ DWORD WINAPI KeyThread(LPVOID) {
         }
         InventoryTick(fg);
         BlocksTick();
+        erin::SetMaskedKey(g_mc_jump.load() && g_mc_mode.load() && fg && !g_inv_open.load()
+                               ? static_cast<int>(MapVirtualKeyW(static_cast<UINT>(g_mc_jump_vk.load()), MAPVK_VK_TO_VSC))
+                               : 0);
         const bool inv_open = g_inv_open.load();
         const bool right_edge = !inv_open && g_input_enabled.load() && erin::TakeRightClick();
         if (right_edge && fg && WantSuppress() && !PlayerDead() && TryPlaceBlock()) {
@@ -2139,6 +2201,9 @@ void SetupOverlay() {
                 else if (key == "no_player_hit_vfx") g_no_player_hit_vfx.store(value != 0.f);
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "eye_height") g_eye_height.store(value);
+                else if (key == "mc_jump") g_mc_jump.store(value != 0.f);
+                else if (key == "mc_jump_key") g_mc_jump_vk.store(static_cast<int>(value));
+                else if (key == "mc_jump_speed") g_mc_jump_speed.store(std::clamp(value, 1.f, 20.f));
                 else if (key == "blocks") g_blocks_enabled.store(value != 0.f);
                 else if (key == "block_drive") g_block_drive.store(value != 0.f);
                 else if (key == "block_speed") g_block_walk_speed.store(std::clamp(value, 0.5f, 12.f));
