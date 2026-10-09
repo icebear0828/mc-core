@@ -259,7 +259,9 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                 pixels = &flat;
                 Logf("overlay: Steve skin: none given, flat colour");
             } else {
-                Logf("overlay: Steve skin: %ux%u from file", sw, sh);
+                char skin_msg[96];
+                snprintf(skin_msg, sizeof(skin_msg), "overlay: Steve skin: %ux%u from file", sw, sh);
+                Logf(skin_msg);
             }
             if (!g_steve.setSkin(g_s.device, pixels->data(), sw, sh, skin_cpu)) Logf("overlay: Steve skin upload failed");
         }
