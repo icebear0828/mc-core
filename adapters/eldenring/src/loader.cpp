@@ -8,6 +8,7 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <intrin.h>
 #include <psapi.h>
 #include <tlhelp32.h>
 #include <unknwn.h>
@@ -424,6 +425,29 @@ void __fastcall HitReactHeavyDetour(void* self, void* a, void* b, void* out, uin
         return;
     }
     g_hitreact_heavy_orig(self, a, b, out, five, six);
+}
+
+// ---- fall protection (fall_protect=1) ---------------------------------------------------------------------------------------
+// Standing on a placed block or in our own jump tells the game the player landed from a height it measures against the real ground,
+// which can be several metres below: the game then kills the player through its "kill character" function (hit points set to 0, no hit
+// context, so the damage pipeline never sees it). While blocks exist or a jump of ours is recent, that kill is skipped for the player.
+using KillChrFn = void(__fastcall*)(void* chr);
+KillChrFn g_kill_orig = nullptr;
+std::atomic<bool> g_fall_protect{true};
+std::atomic<uint64_t> g_movement_layer_ms{0}; // last time one of our movement features moved the player (tick count)
+std::atomic<unsigned> g_kills_skipped{0};
+uintptr_t PlayerChrPtr(); // defined below
+bool BlocksPresent();     // defined with the placed blocks
+
+void __fastcall KillChrDetour(void* chr) {
+    if (reinterpret_cast<uintptr_t>(chr) == PlayerChrPtr() && PlayerChrPtr() != 0) {
+        const bool recent = GetTickCount64() - g_movement_layer_ms.load(std::memory_order_relaxed) < 3000;
+        const bool protect = g_fall_protect.load(std::memory_order_relaxed) && g_mc_mode.load(std::memory_order_relaxed) && (BlocksPresent() || recent);
+        const unsigned n = ++g_kills_skipped;
+        if (n <= 20) Log("kill: the game kills the player (caller %p, RVA 0x%llX): %s", _ReturnAddress(), static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base), protect ? "SKIPPED (fall protection)" : "allowed");
+        if (protect) return;
+    }
+    g_kill_orig(chr);
 }
 
 // ---- inventory screen ----------------------------------------------------------------------------------------------------
@@ -1209,6 +1233,11 @@ std::atomic<bool> g_block_collision{true};     // block_collision=0: the player 
 std::atomic<float> g_reach{4.5f};              // reach, metres (Minecraft survival)
 unsigned g_blocks_sent_version = ~0u;
 
+bool BlocksPresent() {
+    std::lock_guard<std::mutex> g(g_blocks_mutex);
+    return g_blocks.count() != 0;
+}
+
 void SendBlockMesh() {
     std::lock_guard<std::mutex> g(g_blocks_mutex);
     if (g_blocks_sent_version == g_blocks.version()) return;
@@ -1435,6 +1464,7 @@ void BlocksCollisionStep() {
         WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, final_feet, sizeof(final_feet));
     }
     if (module != 0 && supported && g_block_drive.load(std::memory_order_relaxed)) DriveVelocityFromKeys(module, pinned);
+    if (supported) g_movement_layer_ms.store(GetTickCount64(), std::memory_order_relaxed);
     if (module != 0 && supported) {
         // The game has no ground under a block, so it thinks the player is falling (no jump, restricted movement). While the player
         // rests on a block the "on the ground" flags the game itself shows after landing are set (ground: 92=1 93=1 1D0=0 1D1=1) and
@@ -1544,6 +1574,7 @@ void McJumpStep() {
         }
     }
 
+    g_movement_layer_ms.store(GetTickCount64(), std::memory_order_relaxed);
     // integrate (semi-implicit Euler)
     vy -= g_mc_gravity.load() * dt;
     float ny = y + vy * dt;
@@ -2042,6 +2073,18 @@ void SetupDamage() {
                 static_cast<unsigned long long>(heavy - g_img.base));
         }
     }
+    {
+        uintptr_t kill = 0;
+        if (!LocateByPrefix(g_img, sigs::kKillChr, kill)) {
+            Log("kill: signature not unique, fall protection is unavailable");
+        } else if (MH_CreateHook(reinterpret_cast<void*>(kill), reinterpret_cast<void*>(&KillChrDetour), reinterpret_cast<void**>(&g_kill_orig)) != MH_OK ||
+                   MH_EnableHook(reinterpret_cast<void*>(kill)) != MH_OK) {
+            Log("kill: hooking %p failed", reinterpret_cast<void*>(kill));
+        } else {
+            Log("kill: the kill-character function is hooked at %p (RVA 0x%llX); while blocks exist or our jump is recent the player's kill is skipped", reinterpret_cast<void*>(kill),
+                static_cast<unsigned long long>(kill - g_img.base));
+        }
+    }
     if (FileExists(g_game_dir + "mc_er_nolos.txt")) {
         Log("los: disabled by mc_er_nolos.txt");
     } else {
@@ -2264,6 +2307,7 @@ void SetupOverlay() {
                 else if (key == "no_player_hit_vfx") g_no_player_hit_vfx.store(value != 0.f);
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "eye_height") g_eye_height.store(value);
+                else if (key == "fall_protect") g_fall_protect.store(value != 0.f);
                 else if (key == "mc_jump") g_mc_jump.store(value != 0.f);
                 else if (key == "mc_jump_key") g_mc_jump_vk.store(static_cast<int>(value));
                 else if (key == "mc_gravity") g_mc_gravity.store(std::clamp(value, 5.f, 80.f));

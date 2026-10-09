@@ -132,6 +132,10 @@ inline constexpr const char* kHitReactDefault =
     "48 89 5C 24 10 48 89 6C 24 18 56 57 41 54 41 56 41 57 48 83 EC 20 48 8B 01 4C 8B E2 8B 5C 24 70 4D 8B F1 8B D3 4D 8B F8 48 8B F9 FF 50 10 8B D3";
 inline constexpr const char* kHitReactHeavy =
     "4C 89 4C 24 20 4C 89 44 24 18 48 89 54 24 10 48 89 4C 24 08 55 53 56 57 41 54 41 55 41 56 41 57 48 8B EC 48 83 EC 78 48 8B 01 49 8B F1 44 8B 75";
+// ChrIns kill (0x1403FCD90): sets the character's hit points to 0 through ApplyHpChange and starts the death. It is what ends a fall from
+// a great height (no hit context, so the damage pipeline never sees it). Four callers. 56 bytes, one match.
+inline constexpr const char* kKillChr =
+    "40 53 48 83 EC 40 C7 44 24 50 00 00 00 00 48 8B D9 48 8B 89 90 01 00 00 0F 57 DB F3 0F 10 05 ?? ?? ?? ?? 45 33 C0 C6 44 24 28 01 33 D2 F3 0F 11 44 24 20 48 8B 09 E8";
 inline constexpr const char* kGetEffectiveTeamType = "48 89 5C 24 10 57 48 83 EC 20 0F B6 41 6C 48 8B F9 88 02";
 } // namespace sigs
 
