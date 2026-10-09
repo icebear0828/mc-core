@@ -23,6 +23,7 @@
 #include "eldenring_hudtex.hpp"
 #include "eldenring_particles.hpp"
 #include "mc/hud_layout.hpp"
+#include "mc/inventory_layout.hpp"
 #include "overlay_d3d12.hpp"
 #include "steve_renderer_d3d12.hpp"
 
@@ -307,13 +308,11 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
         {
             // The first-person arm and the sprites of the default hotbar items.
             std::vector<SteveRenderer::FpItemCell> cells;
-            const mc::ItemId items[] = {mc::ItemId::DiamondSword, mc::ItemId::DiamondPickaxe, mc::ItemId::BlockDirt, mc::ItemId::BlockStone,
-                                         mc::ItemId::BlockTnt,     mc::ItemId::GoldenApple,    mc::ItemId::Bow,       mc::ItemId::Elytra,
-                                         mc::ItemId::TotemOfUndying};
-            for (mc::ItemId id : items) {
+            const float aw = static_cast<float>(g_atlas_w), ah = static_cast<float>(g_atlas_h);
+            for (mc::ItemId id : mc::paletteItems()) {
                 if (const mc::hud::HudUV* uv = eldenring::render::uvForItem(id)) {
-                    cells.push_back({static_cast<uint16_t>(id), static_cast<int>(std::lround(uv->u0 * 256.f)), static_cast<int>(std::lround(uv->v0 * 256.f)),
-                                     static_cast<int>(std::lround((uv->u1 - uv->u0) * 256.f)), static_cast<int>(std::lround((uv->v1 - uv->v0) * 256.f))});
+                    cells.push_back({static_cast<uint16_t>(id), static_cast<int>(std::lround(uv->u0 * aw)), static_cast<int>(std::lround(uv->v0 * ah)),
+                                     static_cast<int>(std::lround((uv->u1 - uv->u0) * aw)), static_cast<int>(std::lround((uv->v1 - uv->v0) * ah))});
                 }
             }
             g_fp_built = g_steve.initFirstPerson(g_s.device, g_atlas_rgba.empty() ? nullptr : g_atlas_rgba.data(), g_atlas_w, g_atlas_h, cells);

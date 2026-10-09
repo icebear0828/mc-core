@@ -11,7 +11,7 @@
 
 namespace eldenring::render {
 
-// The atlas cell of an item's icon, or nullptr when the atlas has none (arrows, bread, ...).
+// The atlas cell of an item's icon, or nullptr when the atlas has none (only None).
 inline const mc::hud::HudUV* uvForItem(mc::ItemId item) {
     using mc::ItemId;
     switch (item) {
@@ -24,6 +24,14 @@ inline const mc::hud::HudUV* uvForItem(mc::ItemId item) {
         case ItemId::Bow: return &mc::hud::kUV_ITEM_BOW;
         case ItemId::Elytra: return &mc::hud::kUV_ITEM_ELYTRA;
         case ItemId::TotemOfUndying: return &mc::hud::kUV_ITEM_TOTEM_OF_UNDYING;
+        case ItemId::Arrow: return &mc::hud::kUV_ITEM_ARROW;
+        case ItemId::Trident: return &mc::hud::kUV_ITEM_TRIDENT;
+        case ItemId::FlintAndSteel: return &mc::hud::kUV_ITEM_FLINT_AND_STEEL;
+        case ItemId::EnderPearl: return &mc::hud::kUV_ITEM_ENDER_PEARL;
+        case ItemId::EnchantedGoldenApple: return &mc::hud::kUV_ITEM_ENCHANTED_GOLDEN_APPLE;
+        case ItemId::Bread: return &mc::hud::kUV_ITEM_BREAD;
+        case ItemId::CookedBeef: return &mc::hud::kUV_ITEM_COOKED_BEEF;
+        case ItemId::FireworkRocket: return &mc::hud::kUV_ITEM_FIREWORK_ROCKET;
         default: return nullptr;
     }
 }

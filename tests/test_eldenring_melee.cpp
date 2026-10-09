@@ -2,6 +2,7 @@
 
 #include "eldenring_hudtex.hpp"
 #include "eldenring_melee.hpp"
+#include "mc/inventory_layout.hpp"
 
 #include "mc/contracts/combat_adapter.hpp"
 
@@ -198,8 +199,19 @@ TEST(EldenRingHudTex, EveryDefaultHotbarItemHasAnIconInTheOrderOfTheAtlas) {
         EXPECT_FLOAT_EQ(uv->u0, mc::hud::kUV_ITEMS[slot].u0) << "slot " << slot;
         EXPECT_FLOAT_EQ(uv->v0, mc::hud::kUV_ITEMS[slot].v0) << "slot " << slot;
     }
-    EXPECT_EQ(eldenring::render::uvForItem(mc::ItemId::Arrow), nullptr);
     EXPECT_EQ(eldenring::render::uvForItem(mc::ItemId::None), nullptr);
+}
+
+TEST(EldenRingHudTex, EveryPaletteItemHasADistinctIcon) {
+    for (mc::ItemId id : mc::paletteItems()) {
+        const mc::hud::HudUV* uv = eldenring::render::uvForItem(id);
+        ASSERT_NE(uv, nullptr) << static_cast<int>(id);
+        for (mc::ItemId other : mc::paletteItems()) {
+            if (other == id) continue;
+            const mc::hud::HudUV* ov = eldenring::render::uvForItem(other);
+            EXPECT_TRUE(ov->u0 != uv->u0 || ov->v0 != uv->v0);
+        }
+    }
 }
 
 TEST(EldenRingHudTex, UpscaleNearestReplicatesEveryPixel) {

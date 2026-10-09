@@ -160,6 +160,13 @@ def build_cube_block(texture: Image.Image, size_cm: float = 100.0) -> dict:
     }
 
 
+_PLACEHOLDER_ITEM_COLORS = {
+    "item_arrow": (200, 200, 200), "item_trident": (40, 150, 150), "item_flint_and_steel": (90, 90, 90),
+    "item_ender_pearl": (20, 90, 80), "item_enchanted_golden_apple": (200, 120, 230), "item_bread": (200, 150, 70),
+    "item_cooked_beef": (120, 60, 30), "item_firework_rocket": (200, 40, 40),
+}
+
+
 def create_canonical_sprite(name: str) -> Image.Image:
     """Generate canonical pixel sprite when extracting without an official client.jar."""
     if name == "crosshair":
@@ -258,6 +265,19 @@ def create_canonical_sprite(name: str) -> Image.Image:
                     img.putpixel((x, y), (255, 255, 255, 255 - idx * 20))
         return img
 
+    if name in ("container_top", "container_bottom"):
+        h = 71 if name == "container_top" else 96
+        img = Image.new("RGBA", (176, h), (198, 198, 198, 255))
+        rows = [(8 + 0, 18 + 18 * r) for r in range(3)] if name == "container_top" else [(8, 14 + 18 * r) for r in range(3)] + [(8, 72)]
+        for sx, sy in rows:
+            for c in range(9):
+                for dx in range(-1, 17):
+                    for dy in range(-1, 17):
+                        x, y = sx + 18 * c + dx, sy + dy
+                        if 0 <= x < 176 and 0 <= y < h:
+                            img.putpixel((x, y), (139, 139, 139, 255))
+        return img
+
     if name == "hotbar":
         img = Image.new("RGBA", (182, 22), (40, 40, 40, 200))
         for x in range(182):
@@ -336,6 +356,12 @@ def create_canonical_sprite(name: str) -> Image.Image:
             for x in range(5, 11):
                 img.putpixel((x, y), c_gld)
         img.putpixel((6, 5), c_emr); img.putpixel((9, 5), c_emr)
+    elif name in _PLACEHOLDER_ITEM_COLORS:  # a plain coloured disc; the real icon replaces it when a client.jar is given
+        col = _PLACEHOLDER_ITEM_COLORS[name] + (255,)
+        for y in range(16):
+            for x in range(16):
+                if (x - 7.5) ** 2 + (y - 7.5) ** 2 <= 36:
+                    img.putpixel((x, y), col)
 
     return img
 
@@ -375,6 +401,17 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("particle_sweep_5", (32, 32)),
     ("particle_sweep_6", (32, 32)),
     ("particle_sweep_7", (32, 32)),
+    # the inventory screen: the rest of the 16x16 item icons, and the two halves of the 3-row container background
+    ("item_arrow", (16, 16)),
+    ("item_trident", (16, 16)),
+    ("item_flint_and_steel", (16, 16)),
+    ("item_ender_pearl", (16, 16)),
+    ("item_enchanted_golden_apple", (16, 16)),
+    ("item_bread", (16, 16)),
+    ("item_cooked_beef", (16, 16)),
+    ("item_firework_rocket", (16, 16)),
+    ("container_top", (176, 71)),
+    ("container_bottom", (176, 96)),
 ]
 
 _JAR_HUD_SPRITES = {
@@ -398,7 +435,20 @@ _JAR_HUD_SPRITES = {
     "particle_crit": "particle/critical_hit.png",
     "particle_damage": "particle/damage.png",
     **{f"particle_sweep_{i}": f"particle/sweep_{i}.png" for i in range(8)},
+    "item_arrow": "item/arrow.png",
+    "item_trident": "item/trident.png",
+    "item_flint_and_steel": "item/flint_and_steel.png",
+    "item_ender_pearl": "item/ender_pearl.png",
+    "item_bread": "item/bread.png",
+    "item_cooked_beef": "item/cooked_beef.png",
+    "item_firework_rocket": "item/firework_rocket.png",
 }
+
+# The 3-row container background (gui/container/generic_54.png): its top part is 17 + 3 * 18 rows, its bottom part (the
+# player's inventory) starts at row 126, as in Minecraft's ContainerScreen.
+_CONTAINER_TEXTURE = "gui/container/generic_54.png"
+_CONTAINER_PARTS = {"container_top": (0, 0, 176, 71), "container_bottom": (0, 126, 176, 222)}
+_GLINT = (130, 60, 220)  # the enchantment glint, flattened into a tint for the enchanted golden apple
 
 # Block items are drawn by Minecraft as isometric cubes: (top, left/right sides)
 _JAR_BLOCK_ITEMS = {
@@ -427,6 +477,17 @@ def _shade(img: Image.Image, factor: float) -> Image.Image:
         for x in range(out.width):
             r, g, b, a = px[x, y]
             px[x, y] = (int(r * factor), int(g * factor), int(b * factor), a)
+    return out
+
+
+def _tint(img: Image.Image, color: tuple[int, int, int], amount: float) -> Image.Image:
+    out = img.copy()
+    px = out.load()
+    for y in range(out.height):
+        for x in range(out.width):
+            r, g, b, a = px[x, y]
+            if a:
+                px[x, y] = tuple(int(c * (1 - amount) + t * amount) for c, t in zip((r, g, b), color)) + (a,)
     return out
 
 
@@ -477,6 +538,12 @@ def _read_real_hud_sprite(jar_zip: zipfile.ZipFile, name: str, size: tuple[int, 
         if top is None or side is None:
             return None
         return isometric_block_icon(top, side, size[0])
+    if name in _CONTAINER_PARTS:
+        src = _open_jar_png(jar_zip, _CONTAINER_TEXTURE)
+        return None if src is None else src.crop(_CONTAINER_PARTS[name])
+    if name == "item_enchanted_golden_apple":
+        apple = _open_jar_png(jar_zip, "item/golden_apple.png")
+        return None if apple is None else _tint(_fit_exact(apple, size), _GLINT, 0.35)
     relative = _JAR_HUD_SPRITES.get(name)
     if relative is None:
         return None
@@ -485,9 +552,9 @@ def _read_real_hud_sprite(jar_zip: zipfile.ZipFile, name: str, size: tuple[int, 
 
 
 def build_hud_atlas(client_jar: Path | None = None) -> tuple[Image.Image, dict[str, tuple[float, float, float, float]]]:
-    """Build the 256x256 RGBA HUD atlas and return (image, uv_mapping). The layout never depends on
+    """Build the 512x512 RGBA HUD atlas and return (image, uv_mapping). The layout never depends on
     whether a client.jar was given, so generated UV constants stay valid for either atlas."""
-    atlas_size = 256
+    atlas_size = 512
     pad = 1  # transparent gap between sprites so nearest-neighbour sampling never reads a neighbour
     atlas = Image.new("RGBA", (atlas_size, atlas_size), (0, 0, 0, 0))
     uv_map: dict[str, tuple[float, float, float, float]] = {}

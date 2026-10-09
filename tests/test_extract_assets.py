@@ -157,6 +157,8 @@ HUD_KEYS = [
     "item_golden_apple", "item_bow", "item_elytra", "item_totem_of_undying",
     "heart_absorb_full", "heart_absorb_half", "particle_crit", "particle_damage",
     *[f"particle_sweep_{i}" for i in range(8)],
+    "item_arrow", "item_trident", "item_flint_and_steel", "item_ender_pearl", "item_enchanted_golden_apple",
+    "item_bread", "item_cooked_beef", "item_firework_rocket", "container_top", "container_bottom",
 ]
 HUD_SIZES = {
     "heart_absorb_full": (9, 9), "heart_absorb_half": (9, 9), "particle_crit": (8, 8), "particle_damage": (8, 8),
@@ -164,6 +166,7 @@ HUD_SIZES = {
     "crosshair": (15, 15), "hotbar": (182, 22), "hotbar_selection": (24, 23),
     "heart_container": (9, 9), "heart_full": (9, 9), "heart_half": (9, 9),
     "hunger_container": (9, 9), "hunger_full": (9, 9), "hunger_half": (9, 9),
+    "container_top": (176, 71), "container_bottom": (176, 96),
 }
 
 
@@ -187,6 +190,13 @@ def _sprite_colors():
         "item/bow.png": _solid((16, 16), (19, 20, 21, 255)),
         "item/elytra.png": _solid((16, 16), (22, 23, 24, 255)),
         "item/totem_of_undying.png": _solid((16, 16), (25, 26, 27, 255)),
+        "item/arrow.png": _solid((16, 16), (31, 32, 33, 255)),
+        "item/trident.png": _solid((16, 16), (34, 35, 36, 255)),
+        "item/flint_and_steel.png": _solid((16, 16), (37, 38, 39, 255)),
+        "item/ender_pearl.png": _solid((16, 16), (40, 41, 42, 255)),
+        "item/bread.png": _solid((16, 16), (43, 44, 45, 255)),
+        "item/cooked_beef.png": _solid((16, 16), (46, 47, 48, 255)),
+        "item/firework_rocket.png": _solid((16, 16), (49, 50, 51, 255)),
     }
 
 
@@ -199,6 +209,11 @@ def _hud_jar(path: Path) -> Path:
             hotbar.putpixel((x, y), (x % 256, y * 10, 77, 255))
     files = _sprite_colors()
     files["gui/sprites/hud/hotbar.png"] = hotbar
+    container = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
+    for x in range(256):
+        for y in range(256):
+            container.putpixel((x, y), (x, y, 9, 255))
+    files["gui/container/generic_54.png"] = container
     with zipfile.ZipFile(path, "w") as z:
         for name, img in files.items():
             z.writestr("assets/minecraft/textures/" + name, _png(img))
@@ -286,6 +301,30 @@ def test_non_block_items_stay_flat(tmp_path):
     atlas, uv = build_hud_atlas(_hud_jar(tmp_path / "client.jar"))
     sword = _hud_region(atlas, uv["item_diamond_sword"])
     assert sword.getpixel((0, 0)) == (1, 2, 3, 255) and sword.getpixel((15, 15)) == (1, 2, 3, 255)
+
+
+def test_container_halves_are_the_right_rows_of_generic_54(tmp_path):
+    from extract_mc_assets import build_hud_atlas
+
+    atlas, uv = build_hud_atlas(_hud_jar(tmp_path / "client.jar"))
+    top = _hud_region(atlas, uv["container_top"])
+    bottom = _hud_region(atlas, uv["container_bottom"])
+    assert top.size == (176, 71) and bottom.size == (176, 96)
+    assert top.getpixel((0, 0)) == (0, 0, 9, 255) and top.getpixel((175, 70)) == (175, 70, 9, 255)
+    assert bottom.getpixel((0, 0)) == (0, 126, 9, 255) and bottom.getpixel((175, 95)) == (175, 221, 9, 255)
+
+
+def test_new_item_icons_are_copied_and_the_enchanted_apple_is_a_tinted_golden_apple(tmp_path):
+    from extract_mc_assets import build_hud_atlas
+
+    atlas, uv = build_hud_atlas(_hud_jar(tmp_path / "client.jar"))
+    for key, color in {"item_arrow": (31, 32, 33, 255), "item_cooked_beef": (46, 47, 48, 255), "item_firework_rocket": (49, 50, 51, 255)}.items():
+        region = _hud_region(atlas, uv[key])
+        assert {region.getpixel((x, y)) for x in range(16) for y in range(16)} == {color}, key
+    plain = _hud_region(atlas, uv["item_golden_apple"]).getpixel((8, 8))
+    glint = _hud_region(atlas, uv["item_enchanted_golden_apple"]).getpixel((8, 8))
+    assert glint != plain and glint[3] == 255
+    assert glint[2] > plain[2]  # shifted towards the purple glint
 
 
 def test_committed_generated_headers_match_the_tool_output(tmp_path):
