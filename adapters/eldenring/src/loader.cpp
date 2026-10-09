@@ -1405,11 +1405,26 @@ float FallTimer(uintptr_t chr) {
     if (const uintptr_t fall = FallModuleOf(chr)) SafeCopy(fall + 0x18, &t, sizeof(t));
     return t;
 }
+// PhysicsModule+0x1B8 is the game's own vertical fall speed (the fall check compares it with a threshold; +0x124 is only a read-out). In
+// the air state we fake the speed keeps growing while the position is held up, and from a great height the game stops moving the player
+// with the keys, so it is zeroed together with the timer.
+float FallSpeed(uintptr_t module) {
+    float v = 0.f;
+    if (module != 0) SafeCopy(module + 0x1B8, &v, sizeof(v));
+    return v;
+}
+std::atomic<float> g_pre_fall_t{0.f}, g_pre_fall_v{0.f}; // the values the game had just before the last reset (what it would have used)
 void ResetFallTimer(uintptr_t chr) {
     if (!g_fall_protect.load(std::memory_order_relaxed)) return;
     if (const uintptr_t fall = FallModuleOf(chr)) {
         const float zero = 0.f;
+        g_pre_fall_t.store(FallTimer(chr));
         WriteBytesSafe(fall + 0x18, &zero, sizeof(zero));
+    }
+    if (const uintptr_t module = detail::readPhysicsModule(g_reader, g_img.base, chr)) {
+        const float zero = 0.f;
+        g_pre_fall_v.store(FallSpeed(module));
+        WriteBytesSafe(module + 0x1B8, &zero, sizeof(zero));
     }
 }
 
@@ -1524,9 +1539,9 @@ void BlocksCollisionStep() {
         }
         float vel[3] = {};
         if (module != 0) SafeCopy(module + 0x120, vel, sizeof(vel));
-        Log("blocks: standing diag: feet=(%.2f %.2f %.2f) cam=(%.2f %.2f %.2f) first_person=%d 92=%u 93=%u vel=(%.2f %.2f %.2f) pinned=%d fall_t=%.2f", final_feet[0], final_feet[1],
+        Log("blocks: standing diag: feet=(%.2f %.2f %.2f) cam=(%.2f %.2f %.2f) first_person=%d 92=%u 93=%u vel=(%.2f %.2f %.2f) pinned=%d fall_t_before_reset=%.2f v1b8_before_reset=%.2f", final_feet[0], final_feet[1],
             final_feet[2], have_cam ? cam.position[0] : 0.f, have_cam ? cam.position[1] : 0.f, have_cam ? cam.position[2] : 0.f, g_first_person.load() ? 1 : 0, flags[0],
-            flags[1], vel[0], vel[1], vel[2], pinned ? 1 : 0, FallTimer(player));
+            flags[1], vel[0], vel[1], vel[2], pinned ? 1 : 0, g_pre_fall_t.load(), g_pre_fall_v.load());
     }
 }
 
