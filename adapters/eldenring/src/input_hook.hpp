@@ -27,6 +27,8 @@ Counters TakeCounters(); // returns the counts since the last call and resets th
 // True once per left-button press seen at the DirectInput layer (read before any clearing). GetAsyncKeyState cannot be
 // used for this: with exclusive DirectInput the system no longer reports the mouse buttons.
 bool TakeLeftClick();
+// Same for the right button (read before it is cleared); used to eat food.
+bool TakeRightClick();
 // Wheel notches (+ = away from the user) since the last call, read from the DirectInput mouse state.
 int TakeWheelNotches();
 

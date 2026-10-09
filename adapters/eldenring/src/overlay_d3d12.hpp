@@ -20,6 +20,10 @@ struct HudState {
     bool hit_crit{false}; // that marker is for a critical hit
     float kill{0.f};      // kill marker 0..1
     uint16_t hotbar[9]{}; // mc::ItemId of each hotbar slot
+    uint8_t hotbar_count[9]{}; // stack sizes (shown when above 1)
+    float absorption_mc{0.f}; // golden hearts, in Minecraft hit points (2 per heart)
+    float eating{0.f};    // 0..1 progress of the meal being eaten (0 = not eating)
+    float totem{0.f};     // 0..1 totem-of-undying pop animation (1 = just popped)
     int slot_probe{-1};   // >= 0: the F9 part-slot probe is on, this is the only hidden part slot
 };
 

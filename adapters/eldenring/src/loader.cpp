@@ -33,6 +33,8 @@
 #include "eldenring_camera.hpp"
 #include "eldenring_damage.hpp"
 #include "eldenring_los.hpp"
+#include "eldenring_survival.hpp"
+#include "mc/consumables.hpp"
 #include "eldenring_melee.hpp"
 #include "eldenring_model.hpp"
 #include "eldenring_pick.hpp"
@@ -252,6 +254,11 @@ mc::CombatEngine g_combat_engine{g_no_combat_port};
 std::mutex g_melee_mutex; // KeyThread writes, the Present thread reads
 MeleeController g_melee;
 JumpTracker g_jump; // KeyThread only
+SurvivalState g_survival;          // regeneration / absorption, guarded by g_melee_mutex
+mc::ConsumableSystem g_eating;     // right click on food, guarded by g_melee_mutex
+std::atomic<int> g_heal_pending{0}; // Elden Ring hit points waiting to be given back on the game thread
+using ApplyHpFn = void*(__fastcall*)(void* data_module, int32_t hp, uint8_t flag);
+ApplyHpFn g_apply_hp = nullptr;
 HitFeedback g_feedback; // guarded by g_melee_mutex
 thread_local int32_t t_hp_after = -1; // victim hp right after our vfunc[7] call (game thread)
 std::optional<HitTemplate> g_template;
@@ -453,12 +460,90 @@ void LogPlayerHit(void* module, void* attacker, const uint8_t* ctx, uint8_t bloc
         b[0x114], b[0x115], u32(0x54), u32(0x21C), u32(0x230), static_cast<unsigned>(blocked_flag), attacker, npc, static_cast<unsigned>(team));
 }
 
+uintptr_t PlayerChrPtr() {
+    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    uint64_t p = 0;
+    return world != 0 && SafeCopy(world + layout::kPlayerInsInWorldChrMan, &p, sizeof(p)) ? static_cast<uintptr_t>(p) : 0;
+}
+
+uintptr_t DataModuleOfChr(uintptr_t chr) {
+    uint64_t container = 0, data = 0;
+    if (chr == 0 || !SafeCopy(chr + layout::kModuleContainerInChrIns, &container, sizeof(container)) || container == 0 ||
+        !SafeCopy(static_cast<uintptr_t>(container) + layout::kChrDataModuleSlot * sizeof(uint64_t), &data, sizeof(data))) {
+        return 0;
+    }
+    return static_cast<uintptr_t>(data);
+}
+
+// Gives hit points back through the game's own SetHP (bars and HUD follow). Game thread only.
+bool GiveHp(uintptr_t data_module, int amount) {
+    if (!g_apply_hp || data_module == 0 || amount <= 0) return false;
+    int32_t hp = 0, max_hp = 0;
+    if (!SafeCopy(data_module + layout::kDataHp, &hp, sizeof(hp)) || !SafeCopy(data_module + layout::kDataMaxHp, &max_hp, sizeof(max_hp)) || hp <= 0 ||
+        max_hp <= 0) {
+        return false;
+    }
+    __try {
+        g_apply_hp(reinterpret_cast<void*>(data_module), std::min(max_hp, hp + amount), 1);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_apply_hp = nullptr; // never call it again after a fault
+        return false;
+    }
+}
+
+// Natural hits on the player: absorption soaks damage up, then a totem keeps a killing hit at 1 HP. Returns true when a totem was used.
+bool PlayerHitSurvival(void* module, uint8_t* ctx, uint8_t blocked, uint32_t& popped_heal_target) {
+    if (blocked != 0) return false; // a blocked hit deducts nothing
+    uint64_t owner = 0;
+    const uintptr_t player = PlayerChrPtr();
+    if (player == 0 || !SafeCopy(reinterpret_cast<uintptr_t>(module) + layout::kOwnerInDataModule, &owner, sizeof(owner)) || owner != player) return false;
+    Vitals v;
+    if (!readVitals(g_reader, g_img.base, player, v) || v.hp <= 0 || v.max_hp <= 0) return false;
+    int32_t dmg = 0;
+    if (!SafeCopy(reinterpret_cast<uintptr_t>(ctx) + layout::kHitDamage, &dmg, sizeof(dmg)) || dmg <= 0) return false;
+    bool popped = false;
+    int32_t out = dmg;
+    {
+        std::lock_guard<std::mutex> g(g_melee_mutex);
+        out = g_survival.absorb(dmg, v.max_hp);
+        const TotemOutcome t = totemClamp(out, v.hp, g_melee.has(mc::ItemId::TotemOfUndying));
+        out = t.damage;
+        if (t.popped && g_melee.consumeFirst(mc::ItemId::TotemOfUndying)) {
+            popped = true;
+            // Minecraft: Regeneration II for 45 s and Absorption II for 5 s, and the player is left on one heart (2 HP).
+            g_survival.apply({mc::ActiveEffect{mc::EffectType::Regeneration, 2, 45.f}, mc::ActiveEffect{mc::EffectType::Absorption, 2, 5.f}});
+            g_feedback.onTotem();
+            popped_heal_target = static_cast<uint32_t>(std::max(1, scaleToEr(2.f, v.max_hp)));
+        } else if (t.popped) {
+            out = dmg; // the totem vanished meanwhile: the hit stands
+        }
+    }
+    if (out != dmg) SafeWrite32(reinterpret_cast<uintptr_t>(ctx) + layout::kHitDamage, static_cast<uint32_t>(out));
+    if (out != dmg || popped) {
+        Log("SURVIVAL: hit %d -> %d (hp %d/%d)%s", dmg, out, v.hp, v.max_hp, popped ? " TOTEM" : "");
+    }
+    return popped;
+}
+
 uint64_t ProcessDamageDetour(void* module, void* attacker, uint8_t* ctx, uint32_t a4, uint8_t a5) {
+    uint32_t heal_to = 0;
+    bool popped = false;
+    if (!t_forced.armed) popped = PlayerHitSurvival(module, ctx, a5, heal_to);
     if (!t_forced.armed && g_log_player_hits.load(std::memory_order_relaxed)) LogPlayerHit(module, attacker, ctx, a5);
     if (t_forced.armed && !t_forced.applied) {
         t_forced.applied = overrideFinalDamage(ctx, t_forced.attacker, t_forced.victim, t_forced.value, &t_forced.engine_value);
     }
-    return g_pdc_orig(module, attacker, ctx, a4, a5);
+    const uint64_t r = g_pdc_orig(module, attacker, ctx, a4, a5);
+    if (popped) {
+        // Left on 1 HP by the clamp; the totem restores one heart. Still on the game thread, right after the engine finished the hit.
+        const uintptr_t data = DataModuleOfChr(PlayerChrPtr());
+        int32_t hp = 0;
+        if (data != 0 && SafeCopy(data + layout::kDataHp, &hp, sizeof(hp)) && static_cast<int32_t>(heal_to) > hp) {
+            GiveHp(data, static_cast<int>(heal_to) - hp);
+        }
+    }
+    return r;
 }
 
 void DrainOnce(uintptr_t updating_data_module) {
@@ -537,6 +622,14 @@ void* __fastcall ClampDetour(void* module, int32_t value) {
     if (g_damage_enabled.load(std::memory_order_relaxed) && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
         g_queue.pending() > 0) {
         DrainOnce(reinterpret_cast<uintptr_t>(module));
+    }
+    if (g_heal_pending.load(std::memory_order_relaxed) > 0 && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed)) {
+        uint64_t owner = 0;
+        if (SafeCopy(reinterpret_cast<uintptr_t>(module) + layout::kOwnerInDataModule, &owner, sizeof(owner)) && owner != 0 &&
+            owner == PlayerChrPtr()) {
+            const int h = g_heal_pending.exchange(0);
+            if (h > 0) GiveHp(reinterpret_cast<uintptr_t>(module), h);
+        }
     }
     return r;
 }
@@ -762,6 +855,38 @@ DWORD WINAPI KeyThread(LPVOID) {
         }
         if (g_mc_mode.load()) LogGroundBytesOnChange();
         if (g_mc_mode.load() && FileExists(g_game_dir + "mc_er_physlog.txt")) LogPhysicsVectors();
+        {
+            // Regeneration, absorption and the meal being eaten. The healing itself is queued for the game thread.
+            const uintptr_t player = PlayerChrPtr();
+            Vitals v;
+            if (player != 0 && readVitals(g_reader, g_img.base, player, v) && v.max_hp > 0) {
+                int heal = 0;
+                {
+                    std::lock_guard<std::mutex> g(g_melee_mutex);
+                    if (v.hp > 0) {
+                        heal += g_survival.tick(dt, v.max_hp);
+                        if (g_eating.isEating() && g_melee.heldItem() != g_eating.getCurrentItem()) g_eating.cancel(); // switched away
+                        const mc::EatingEvent e = g_eating.update(dt);
+                        if (e.completed) {
+                            g_survival.apply(e.effects);
+                            heal += mealHeal(e, v.max_hp);
+                            g_melee.consumeAt(g_melee.selectedSlot());
+                            Log("SURVIVAL: finished eating (+%d now, regen/absorption from the item)", mealHeal(e, v.max_hp));
+                        }
+                    } else {
+                        g_eating.cancel();
+                    }
+                }
+                if (heal > 0) g_heal_pending.fetch_add(heal);
+            }
+        }
+        if (g_input_enabled.load() && erin::TakeRightClick() && fg && WantSuppress()) {
+            std::lock_guard<std::mutex> g(g_melee_mutex);
+            const mc::ItemId item = g_melee.heldItem();
+            if (!g_eating.isEating() && g_melee.countAt(g_melee.selectedSlot()) > 0 && g_eating.startEating(item)) {
+                Log("SURVIVAL: started eating item %d", static_cast<int>(item));
+            }
+        }
         if (g_input_enabled.load()) {
             const int notches = erin::TakeWheelNotches();
             if (notches != 0 && fg && WantSuppress()) {
@@ -917,6 +1042,16 @@ void SetupDamage() {
                 static_cast<unsigned long long>(rcc - g_img.base));
         }
     }
+    {
+        uintptr_t hp_fn = 0;
+        if (LocateByPrefix(g_img, sigs::kApplyHpChange, hp_fn)) {
+            g_apply_hp = reinterpret_cast<ApplyHpFn>(hp_fn);
+            Log("survival: ApplyHPChange at %p (RVA 0x%llX): food, regeneration and the totem heal through it", reinterpret_cast<void*>(hp_fn),
+                static_cast<unsigned long long>(hp_fn - g_img.base));
+        } else {
+            Log("survival: ApplyHPChange signature not unique, no healing (the totem still clamps lethal damage)");
+        }
+    }
     g_log_player_hits.store(FileExists(g_game_dir + "mc_er_hitlog.txt"));
     if (g_log_player_hits.load()) Log("hitlog: logging the HitContext of every hit the player takes");
     {
@@ -1033,7 +1168,13 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
         out.selected_slot = g_melee.selectedSlot();
-        for (int i = 0; i < MeleeController::kSlots; ++i) out.hotbar[i] = static_cast<uint16_t>(g_melee.itemAt(i));
+        for (int i = 0; i < MeleeController::kSlots; ++i) {
+            out.hotbar[i] = static_cast<uint16_t>(g_melee.itemAt(i));
+            out.hotbar_count[i] = static_cast<uint8_t>(std::min(255u, g_melee.countAt(i)));
+        }
+        out.absorption_mc = g_survival.absorptionMc();
+        out.eating = g_eating.getProgress();
+        out.totem = g_feedback.totem();
         steve.swing = g_melee.swingProgress();
         out.hit = g_feedback.hit();
         out.hit_crit = g_feedback.crit();

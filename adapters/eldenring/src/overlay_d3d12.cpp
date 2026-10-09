@@ -418,8 +418,31 @@ void DrawHud(const HudState& hud, float w, float h) {
                 sprite(layout.heart(i), mc::hud::kUV_HEART_HALF);
             }
         }
+        // stack sizes (Minecraft: bottom right of the icon, white with a dark shadow, only above 1)
+        for (int i = 0; i < 9; ++i) {
+            if (hud.hotbar_count[i] <= 1 || hud.hotbar[i] == 0) continue;
+            char cnt[8];
+            snprintf(cnt, sizeof(cnt), "%u", static_cast<unsigned>(hud.hotbar_count[i]));
+            const float gs = static_cast<float>(layout.scale());
+            const float fs = layout.textSize();
+            const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, 1e9f, 0.f, cnt);
+            const mc::HudRect r = layout.item(i);
+            const ImVec2 pos{r.x + 17.f * gs - sz.x, r.y + 9.f * gs};
+            dl->AddText(ImGui::GetFont(), fs, {pos.x + gs, pos.y + gs}, IM_COL32(40, 40, 40, 255), cnt);
+            dl->AddText(ImGui::GetFont(), fs, pos, IM_COL32(255, 255, 255, 255), cnt);
+        }
+        // absorption (golden apple, totem): golden hearts in a row above the health, 2 Minecraft HP per heart
+        {
+            const int golden = std::min(10, static_cast<int>(std::ceil(hud.absorption_mc / 2.f)));
+            for (int i = 0; i < golden; ++i) {
+                mc::HudRect r = layout.heart(i);
+                r.y -= 10.f * static_cast<float>(layout.scale());
+                dl->AddImage(atlas, {r.x, r.y}, {r.x + r.w, r.y + r.h}, {mc::hud::kUV_HEART_FULL.u0, mc::hud::kUV_HEART_FULL.v0},
+                             {mc::hud::kUV_HEART_FULL.u1, mc::hud::kUV_HEART_FULL.v1}, IM_COL32(255, 205, 40, 255));
+            }
+        }
         text_x = layout.heart(0).x;
-        text_y = layout.heart(0).y - 18.f * scale;
+        text_y = layout.heart(0).y - 28.f * scale;
     }
     // hotbar
     for (int i = 0; i < 9 && !g_atlas_ready; ++i) {
@@ -472,6 +495,21 @@ void DrawHud(const HudState& hud, float w, float h) {
                             3.5f * scale);
             }
         }
+    }
+    // eating: a thin bar under the crosshair that fills in 1.6 s
+    if (hud.eating > 0.f) {
+        const float bw = 60.f * scale, bh = 5.f * scale, bx = cx - bw * 0.5f, by = cy + 22.f * scale;
+        dl->AddRectFilled({bx, by}, {bx + bw, by + bh}, IM_COL32(0, 0, 0, 160));
+        dl->AddRectFilled({bx, by}, {bx + bw * std::clamp(hud.eating, 0.f, 1.f), by + bh}, IM_COL32(240, 240, 240, 230));
+    }
+    // totem of undying: the icon swells in the middle of the screen and fades out
+    if (hud.totem > 0.f && g_atlas_ready) {
+        const float t = std::clamp(hud.totem, 0.f, 1.f);
+        const float size = (150.f + 150.f * (1.f - t)) * scale;
+        const float a = std::min(1.f, t * 1.6f);
+        const mc::hud::HudUV& uv = mc::hud::kUV_ITEM_TOTEM_OF_UNDYING;
+        dl->AddImage(atlas, {cx - size * 0.5f, cy - size * 0.5f}, {cx + size * 0.5f, cy + size * 0.5f}, {uv.u0, uv.v0}, {uv.u1, uv.v1},
+                     IM_COL32(255, 255, 255, static_cast<int>(255 * a)));
     }
     if (hud.slot_probe >= 0) {
         char pb[48];

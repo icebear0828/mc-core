@@ -27,6 +27,26 @@ public:
 
     [[nodiscard]] int selectedSlot() const { return slot_; }
     [[nodiscard]] mc::ItemId heldItem() const { return items_[static_cast<size_t>(slot_)]; }
+    // Stack sizes as in Session::loadDefaultHotbar. An emptied stack leaves the slot empty.
+    [[nodiscard]] unsigned countAt(int slot) const { return counts_[static_cast<size_t>(std::clamp(slot, 0, kSlots - 1))]; }
+    bool consumeAt(int slot) {
+        if (slot < 0 || slot >= kSlots || counts_[static_cast<size_t>(slot)] == 0) return false;
+        if (--counts_[static_cast<size_t>(slot)] == 0) items_[static_cast<size_t>(slot)] = mc::ItemId::None;
+        return true;
+    }
+    // Takes one of `item` from the first slot that has it (the totem works from anywhere in the hotbar).
+    bool consumeFirst(mc::ItemId item) {
+        for (int i = 0; i < kSlots; ++i) {
+            if (items_[static_cast<size_t>(i)] == item && counts_[static_cast<size_t>(i)] > 0) return consumeAt(i);
+        }
+        return false;
+    }
+    [[nodiscard]] bool has(mc::ItemId item) const {
+        for (int i = 0; i < kSlots; ++i) {
+            if (items_[static_cast<size_t>(i)] == item && counts_[static_cast<size_t>(i)] > 0) return true;
+        }
+        return false;
+    }
     [[nodiscard]] mc::ItemId itemAt(int slot) const { return items_[static_cast<size_t>(std::clamp(slot, 0, kSlots - 1))]; }
     void select(int slot) {
         if (slot >= 0 && slot < kSlots) slot_ = slot;
@@ -60,6 +80,7 @@ public:
 
 private:
     std::array<mc::ItemId, kSlots> items_{};
+    std::array<unsigned, kSlots> counts_{1, 1, 64, 64, 16, 8, 1, 1, 1};
     int slot_{0};
     float cooldown_{1.f};
     float swing_{-1.f}; // seconds into the swing, < 0 = idle
@@ -98,24 +119,29 @@ class HitFeedback {
 public:
     static constexpr float kHitSec = 0.25f;
     static constexpr float kKillSec = 0.6f;
+    static constexpr float kTotemSec = 1.2f;
 
     void onHit(bool critical) {
         hit_ = 1.f;
         crit_ = critical;
     }
     void onKill() { kill_ = 1.f; }
+    void onTotem() { totem_ = 1.f; }
     void tick(float dt) {
         hit_ = std::max(0.f, hit_ - dt / kHitSec);
         kill_ = std::max(0.f, kill_ - dt / kKillSec);
+        totem_ = std::max(0.f, totem_ - dt / kTotemSec);
         if (hit_ <= 0.f) crit_ = false;
     }
     [[nodiscard]] float hit() const { return hit_; }
     [[nodiscard]] bool crit() const { return crit_ && hit_ > 0.f; }
     [[nodiscard]] float kill() const { return kill_; }
+    [[nodiscard]] float totem() const { return totem_; }
 
 private:
     float hit_{0.f};
     float kill_{0.f};
+    float totem_{0.f};
     bool crit_{false};
 };
 

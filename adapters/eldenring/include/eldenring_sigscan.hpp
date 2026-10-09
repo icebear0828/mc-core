@@ -110,6 +110,10 @@ inline constexpr const char* kRenderCameraCopy =
 // The hit VFX spawner (0x140450120): (damageModule, attackerChr, hitContext*, flags) -> bool. Its first gate is
 // IsMainPlayer(victim), so it only ever makes the effect for hits the player takes. Unique in 2.7.1.0.
 inline constexpr const char* kHitVfxSpawn = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 49 8B F9 49 8B D8 48 8B EA 48 8B F1";
+// CSChrDataModule::SetHP(module, hp, flag) = ApplyHPChange (0x140437450): writes [module+0x138], redraws the bars, clamps to the
+// maximum. 48 bytes, no relative operands, unique in 2.7.1.0. Must be called on the game thread.
+inline constexpr const char* kApplyHpChange =
+    "48 89 5C 24 18 48 89 6C 24 20 89 54 24 10 56 57 41 56 48 83 EC 30 8B A9 38 01 00 00 48 8D B9 3C 01 00 00 45 33 F6 0F 29 74 24 20 44 89 74 24 50";
 inline constexpr const char* kGetEffectiveTeamType = "48 89 5C 24 10 57 48 83 EC 20 0F B6 41 6C 48 8B F9 88 02";
 } // namespace sigs
 

@@ -32,6 +32,8 @@ std::set<void*> g_hooked_functions;
 std::atomic<bool> g_suppress{false};
 std::atomic<bool> g_left_edge{false};
 std::atomic<bool> g_left_prev{false};
+std::atomic<bool> g_right_edge{false};
+std::atomic<bool> g_right_prev{false};
 std::atomic<int> g_wheel{0};
 std::atomic<unsigned> g_mouse_state{0}, g_mouse_data{0}, g_keyboard_state{0}, g_keyboard_data{0}, g_other{0}, g_cleared{0};
 
@@ -67,6 +69,9 @@ HRESULT STDMETHODCALLTYPE GetStateDetour(void* self, DWORD cb, LPVOID data) {
             const bool down = (static_cast<BYTE*>(data)[kMouseButtonsOffset] & 0x80) != 0;
             if (down && !g_left_prev.load()) g_left_edge.store(true);
             g_left_prev.store(down);
+            const bool right_down = (static_cast<BYTE*>(data)[kMouseButtonsOffset + 1] & 0x80) != 0;
+            if (right_down && !g_right_prev.load()) g_right_edge.store(true);
+            g_right_prev.store(right_down);
         }
         if (k == Kind::Mouse && data != nullptr && cb >= kMouseWheelOffset + sizeof(LONG)) {
             LONG z = 0;
@@ -174,6 +179,8 @@ void OnDirectInputCreated(REFIID riid, void* iface) {
 }
 
 bool TakeLeftClick() { return g_left_edge.exchange(false); }
+
+bool TakeRightClick() { return g_right_edge.exchange(false); }
 
 int TakeWheelNotches() { return g_wheel.exchange(0) / 120; }
 
