@@ -249,6 +249,21 @@ inline bool playerOverlapsBlocks(const BlockGrid& grid, const float feet[3]) {
     return false;
 }
 
+// True when the feet rest on the top of a block: a block top within 6 cm below to 1 mm above the feet, under the footprint. (The
+// player sunk into a block is not "standing": resolvePlayer lifts it first.)
+inline bool supportedByBlock(const BlockGrid& grid, const float feet[3]) {
+    const int x0 = static_cast<int>(std::floor(feet[0] - kPlayerHalfWidth + kOverlapEps)), x1 = static_cast<int>(std::floor(feet[0] + kPlayerHalfWidth - kOverlapEps));
+    const int z0 = static_cast<int>(std::floor(feet[2] - kPlayerHalfWidth + kOverlapEps)), z1 = static_cast<int>(std::floor(feet[2] + kPlayerHalfWidth - kOverlapEps));
+    const int y = static_cast<int>(std::floor(feet[1] - 0.06f)); // the cell whose top is just under the feet
+    for (int x = x0; x <= x1; ++x)
+        for (int z = z0; z <= z1; ++z) {
+            if (grid.get({x, y, z}) == mc::BlockId::Air) continue;
+            const float top = static_cast<float>(y + 1);
+            if (feet[1] >= top - 1e-3f && feet[1] <= top + 0.06f) return true;
+        }
+    return false;
+}
+
 // Like resolvePlayer, but a fall that crossed the top of a block between two frames is caught: the player ends up standing on the
 // highest block top it passed through (a frame hitch or a high falling speed would otherwise take it through a thin block).
 inline Resolve resolvePlayerSwept(const BlockGrid& grid, const float prev[3], const float cur[3], float max_push = 1.0f) {

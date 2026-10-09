@@ -1184,6 +1184,7 @@ void CycleHiddenSlot(int& cursor) {
 blocks::BlockGrid g_blocks;
 std::mutex g_blocks_mutex;
 std::atomic<bool> g_blocks_enabled{true};      // mc_er_steve.txt: blocks=0 turns placing and breaking off
+std::atomic<bool> g_block_ground{true};        // block_ground=0: do not fake "on the ground" while standing on a block
 std::atomic<bool> g_block_collision{true};     // block_collision=0: the player walks through the blocks
 std::atomic<float> g_reach{4.5f};              // reach, metres (Minecraft survival)
 unsigned g_blocks_sent_version = ~0u;
@@ -1346,25 +1347,50 @@ void BlocksCollisionStep() {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         r = have_prev && !jumped ? blocks::resolvePlayerSwept(g_blocks, prev, feet) : blocks::resolvePlayer(g_blocks, feet);
     }
-    if (!r.moved) {
-        std::memcpy(prev, feet, sizeof(prev));
-        have_prev = true;
-        return;
+    const float* final_feet = r.moved ? r.feet : feet;
+    bool supported;
+    {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        supported = blocks::supportedByBlock(g_blocks, final_feet);
     }
     const uintptr_t module = detail::readPhysicsModule(g_reader, g_img.base, player);
-    if (module == 0) return;
-    // +0x70 is the position, +0x80 the previous frame's: both move, so the push is not seen as speed
-    WriteBytesSafe(module + layout::kPhysicsPosition, r.feet, sizeof(r.feet));
-    WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, r.feet, sizeof(r.feet));
-    if (r.standing) {
-        const float zero = 0.f; // the fall speed the game kept adding up is cancelled, so the next frame starts from rest
+    if (module != 0 && r.moved) {
+        // +0x70 is the position, +0x80 the previous frame's: both move, so the push is not seen as speed
+        WriteBytesSafe(module + layout::kPhysicsPosition, r.feet, sizeof(r.feet));
+        WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, r.feet, sizeof(r.feet));
+    }
+    if (module != 0 && supported) {
+        // The game has no ground under a block, so it thinks the player is falling (no jump, restricted movement). While the player
+        // rests on a block the "on the ground" flags the game itself shows after landing are set (ground: 92=1 93=1 1D0=0 1D1=1) and
+        // the fall speed it kept adding up is cancelled.
+        if (g_block_ground.load(std::memory_order_relaxed)) {
+            const uint8_t one = 1;
+            WriteBytesSafe(module + 0x92, &one, sizeof(one));
+            WriteBytesSafe(module + 0x1D1, &one, sizeof(one));
+        }
+        const float zero = 0.f;
         WriteBytesSafe(module + 0x120 + 4, &zero, sizeof(zero));
     }
-    std::memcpy(prev, r.feet, sizeof(prev));
+    std::memcpy(prev, final_feet, sizeof(prev));
     have_prev = true;
-    if (++pushes <= 20 || pushes % 500 == 0) {
+    if (r.moved && (++pushes <= 20 || pushes % 500 == 0)) {
         Log("blocks: pushed the player out (%.2f %.2f %.2f) -> (%.2f %.2f %.2f)%s, %u so far", feet[0], feet[1], feet[2], r.feet[0], r.feet[1], r.feet[2],
             r.standing ? " standing" : "", pushes);
+    }
+    static uint64_t last_diag_ms = 0;
+    const uint64_t now = GetTickCount64();
+    if (supported && now - last_diag_ms >= 1000) {
+        last_diag_ms = now;
+        const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+        CameraPose cam;
+        const bool have_cam = world != 0 && readCamera(g_reader, g_img.base, world, cam);
+        uint8_t flags[2] = {};
+        if (module != 0) {
+            SafeCopy(module + 0x92, &flags[0], 1);
+            SafeCopy(module + 0x93, &flags[1], 1);
+        }
+        Log("blocks: standing diag: feet=(%.2f %.2f %.2f) cam=(%.2f %.2f %.2f) first_person=%d 92=%u 93=%u", final_feet[0], final_feet[1], final_feet[2],
+            have_cam ? cam.position[0] : 0.f, have_cam ? cam.position[1] : 0.f, have_cam ? cam.position[2] : 0.f, g_first_person.load() ? 1 : 0, flags[0], flags[1]);
     }
 }
 
@@ -2024,6 +2050,7 @@ void SetupOverlay() {
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "eye_height") g_eye_height.store(value);
                 else if (key == "blocks") g_blocks_enabled.store(value != 0.f);
+                else if (key == "block_ground") g_block_ground.store(value != 0.f);
                 else if (key == "block_collision") g_block_collision.store(value != 0.f);
                 else if (key == "reach") g_reach.store(std::clamp(value, 1.f, 8.f));
                 else if (key == "no_stagger") g_no_stagger.store(value != 0.f);

@@ -223,3 +223,18 @@ TEST(Blocks, ACeilingRightAboveTheBlockTopDoesNotTrapThePlayer) {
     const Resolve r = resolvePlayerSwept(g, prev, cur);
     EXPECT_FALSE(r.standing && std::fabs(r.feet[1] - 1.0f) < 1e-3f); // not placed into the pocket
 }
+
+TEST(Blocks, StandingOnABlockTopCountsAsSupported) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::Stone); // top at y = 1
+    const float on[3] = {0.5f, 1.0f, 0.5f};
+    const float just_above[3] = {0.5f, 1.03f, 0.5f};
+    const float jumping[3] = {0.5f, 1.4f, 0.5f};
+    const float beside[3] = {2.5f, 1.0f, 0.5f};
+    const float inside[3] = {0.5f, 0.7f, 0.5f};
+    EXPECT_TRUE(supportedByBlock(g, on));
+    EXPECT_TRUE(supportedByBlock(g, just_above));
+    EXPECT_FALSE(supportedByBlock(g, jumping));
+    EXPECT_FALSE(supportedByBlock(g, beside));
+    EXPECT_FALSE(supportedByBlock(g, inside)); // sunk: the push handles this, it is not "standing"
+}

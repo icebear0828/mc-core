@@ -22,6 +22,7 @@
 #include "eldenring_fp.hpp"
 #include "eldenring_hudtex.hpp"
 #include "eldenring_particles.hpp"
+#include "eldenring_blockicon.hpp"
 #include "eldenring_blocks.hpp"
 #include "mc/hud_layout.hpp"
 #include "mc/inventory_layout.hpp"
@@ -488,6 +489,24 @@ void DrawFx(ImDrawList* dl, ImTextureID atlas, float w, float h) {
     }
 }
 
+// An item's icon in a slot: blocks are drawn as the cube Minecraft shows (three textured faces, see eldenring_blockicon.hpp), everything
+// else as its flat sprite.
+void DrawItemIcon(ImDrawList* dl, ImTextureID atlas, const mc::HudRect& r, mc::ItemId item) {
+    const mc::BlockId block = eldenring::blocks::blockForItem(item);
+    if (block != mc::BlockId::Air) {
+        const eldenring::blocks::IconCube icon = eldenring::blocks::blockIcon(block);
+        for (int i = 0; i < icon.count; ++i) {
+            const eldenring::blocks::IconFace& f = icon.faces[i];
+            const ImVec2 q[4] = {{r.x + f.p[0][0] * r.w, r.y + f.p[0][1] * r.h}, {r.x + f.p[1][0] * r.w, r.y + f.p[1][1] * r.h},
+                                 {r.x + f.p[2][0] * r.w, r.y + f.p[2][1] * r.h}, {r.x + f.p[3][0] * r.w, r.y + f.p[3][1] * r.h}};
+            const int c = static_cast<int>(255.f * f.shade);
+            dl->AddImageQuad(atlas, q[0], q[1], q[2], q[3], {f.uv.u0, f.uv.v0}, {f.uv.u1, f.uv.v0}, {f.uv.u1, f.uv.v1}, {f.uv.u0, f.uv.v1}, IM_COL32(c, c, c, 255));
+        }
+        return;
+    }
+    if (const mc::hud::HudUV* uv = eldenring::render::uvForItem(item)) dl->AddImage(atlas, {r.x, r.y}, {r.x + r.w, r.y + r.h}, {uv->u0, uv->v0}, {uv->u1, uv->v1});
+}
+
 // The inventory screen: Minecraft's 3-row container (item palette on top, the player's slots below), the stack on the cursor,
 // a tooltip and our own mouse pointer.
 void DrawInventory(const HudState& hud, float w, float h) {
@@ -520,9 +539,7 @@ void DrawInventory(const HudState& hud, float w, float h) {
         dl->AddText(ImGui::GetFont(), fs, {pos.x + gs, pos.y + gs}, IM_COL32(40, 40, 40, 255), cnt);
         dl->AddText(ImGui::GetFont(), fs, pos, IM_COL32(255, 255, 255, 255), cnt);
     };
-    auto icon = [&](const mc::HudRect& r, mc::ItemId item) {
-        if (const mc::hud::HudUV* uv = eldenring::render::uvForItem(item)) image(r.x, r.y, r.w, r.h, *uv);
-    };
+    auto icon = [&](const mc::HudRect& r, mc::ItemId item) { DrawItemIcon(dl, atlas, r, item); };
     const auto& palette = mc::paletteItems();
     for (size_t i = 0; i < palette.size() && i < mc::InventoryLayout::kPaletteSlots; ++i) icon(lay.paletteSlot(static_cast<int>(i)), palette[i]);
     for (int i = 0; i < 36; ++i) {
@@ -589,9 +606,7 @@ void DrawHud(const HudState& hud, float w, float h) {
     if (g_atlas_ready) {
         // Real Minecraft sprites at vanilla positions (mc::HudLayout), the Minecraft GUI scale of this resolution.
         sprite(layout.hotbar(), mc::hud::kUV_HOTBAR);
-        for (int i = 0; i < 9; ++i) {
-            if (const mc::hud::HudUV* uv = eldenring::render::uvForItem(static_cast<mc::ItemId>(hud.hotbar[i]))) sprite(layout.item(i), *uv);
-        }
+        for (int i = 0; i < 9; ++i) DrawItemIcon(dl, atlas, layout.item(i), static_cast<mc::ItemId>(hud.hotbar[i]));
         sprite(layout.selection(std::clamp(hud.selected_slot, 0, 8)), mc::hud::kUV_HOTBAR_SELECTION);
         for (int i = 0; i < 10; ++i) {
             sprite(layout.heart(i), mc::hud::kUV_HEART_CONTAINER);
