@@ -1407,16 +1407,17 @@ float FallTimer(uintptr_t chr) {
     return t;
 }
 // Our jump (and standing on a block) tells the game the player is in the air, and the landing never makes the game reset its air timer
-// (the fall module's +0x18). The timer adds up over repeated jumps (1.0, 2.2, 3.1, 3.7 s in the log) and past about 3 s the game stops moving
-// the player from the keys. So the timer is kept at 0 while the movement layer is active. (+0x1B8 stays at 0.02 and is not touched.)
-std::atomic<bool> g_fall_reset{true}; // mc_er_steve.txt: fall_reset=0 turns the timer reset off
-std::atomic<float> g_pre_fall_t{0.f}, g_pre_fall_v{0.f}; // g_pre_fall_t: the timer as it was just before the last reset
+// (the fall module's +0x18). Measured: left alone it adds up over repeated jumps (1.0, 2.2, 3.1, 3.7 s) and past about 3 s the game stops
+// moving the player from the keys; forced to 0 the player crawls (real speed 0.07-0.5 of the commanded one). So it is held at a middle value.
+std::atomic<bool> g_fall_reset{true};   // mc_er_steve.txt: fall_reset=0 leaves the timer alone
+std::atomic<float> g_fall_hold{1.0f};   // fall_hold=<seconds>: the value the timer is held at
+std::atomic<float> g_pre_fall_t{0.f};   // the timer as it was just before the last write
 void ResetFallTimer(uintptr_t chr) {
     if (!g_fall_reset.load(std::memory_order_relaxed)) return;
     if (const uintptr_t fall = FallModuleOf(chr)) {
-        const float zero = 0.f;
+        const float hold = g_fall_hold.load(std::memory_order_relaxed);
         g_pre_fall_t.store(FallTimer(chr));
-        WriteBytesSafe(fall + 0x18, &zero, sizeof(zero));
+        WriteBytesSafe(fall + 0x18, &hold, sizeof(hold));
     }
 }
 
@@ -1531,9 +1532,9 @@ void BlocksCollisionStep() {
         }
         float vel[3] = {};
         if (module != 0) SafeCopy(module + 0x120, vel, sizeof(vel));
-        Log("blocks: standing diag: feet=(%.2f %.2f %.2f) cam=(%.2f %.2f %.2f) first_person=%d 92=%u 93=%u vel=(%.2f %.2f %.2f) pinned=%d fall_t_before_reset=%.2f v1b8_before_reset=%.2f", final_feet[0], final_feet[1],
+        Log("blocks: standing diag: feet=(%.2f %.2f %.2f) cam=(%.2f %.2f %.2f) first_person=%d 92=%u 93=%u vel=(%.2f %.2f %.2f) pinned=%d fall_t_before=%.2f fall_t_now=%.2f", final_feet[0], final_feet[1],
             final_feet[2], have_cam ? cam.position[0] : 0.f, have_cam ? cam.position[1] : 0.f, have_cam ? cam.position[2] : 0.f, g_first_person.load() ? 1 : 0, flags[0],
-            flags[1], vel[0], vel[1], vel[2], pinned ? 1 : 0, g_pre_fall_t.load(), g_pre_fall_v.load());
+            flags[1], vel[0], vel[1], vel[2], pinned ? 1 : 0, g_pre_fall_t.load(), FallTimer(player));
     }
 }
 
@@ -2382,6 +2383,7 @@ void SetupOverlay() {
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "eye_height") g_eye_height.store(value);
                 else if (key == "fall_reset") g_fall_reset.store(value != 0.f);
+                else if (key == "fall_hold") g_fall_hold.store(std::clamp(value, 0.f, 2.8f));
                 else if (key == "fall_protect") g_fall_protect.store(value != 0.f);
                 else if (key == "mc_jump") g_mc_jump.store(value != 0.f);
                 else if (key == "mc_jump_key") g_mc_jump_vk.store(static_cast<int>(value));
