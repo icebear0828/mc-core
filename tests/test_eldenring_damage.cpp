@@ -467,3 +467,14 @@ TEST(EldenRingDamage, ClearLineOfSightStillHits) {
     EXPECT_EQ(res[0].outcome, DamageOutcome::Applied);
     EXPECT_EQ(calls.size(), 1u);
 }
+
+TEST(EldenRingDamage, KnockbackStrengthIsSetAndTheOldValueReturned) {
+    using namespace eldenring::live;
+    uint8_t ctx[layout::kHitContextSize] = {};
+    const float original = 30.f;
+    std::memcpy(ctx + layout::kHitKnockbackIn, &original, 4);
+    EXPECT_FLOAT_EQ(setKnockbackStrength(ctx, 120.f), 30.f);
+    float now = 0.f;
+    std::memcpy(&now, ctx + layout::kHitKnockbackIn, 4);
+    EXPECT_FLOAT_EQ(now, 120.f);
+}

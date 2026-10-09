@@ -226,6 +226,7 @@ std::unordered_map<uintptr_t, HiddenWord> g_hidden_flags; // flag word addresses
 std::atomic<bool> g_slots_changed{false};
 std::atomic<int> g_slot_probe{-1}; // F9 probe: -1 = off (all slots), 0..26 = only that part slot is hidden
 std::atomic<uint32_t> g_hide_mask1{0x100A1}; // bits cleared in disp_flags1 (+0x20): visible + shadow (verified live, not bisected)
+std::atomic<float> g_kb_force{-1.f}; // mc_er_steve.txt: kb_force (>= 0 overrides HitContext+0xFC of our own hits; experiment)
 std::atomic<uint32_t> g_hide_slots{0xFFFFFFFFu}; // bit n = part slot n of the native model (mc_er_steve.txt: hide_slots)
 std::atomic<uint32_t> g_hide_mask2{1};         // bits cleared in disp_flags2 (+0x24)
 float g_steve_yaw_offset = 3.14159265f; // the orientation quaternion at PhysicsModule+0x50 faces opposite to the model forward (user verified live, 180 deg)
@@ -380,7 +381,20 @@ void DrainOnce(uintptr_t updating_data_module) {
             t_forced.victim = owner;
             t_forced.value = wanted;
         }
+        float kb_before = 0.f;
+        const float kb_force = g_kb_force.load();
+        if (kb_force >= 0.f) {
+            kb_before = setKnockbackStrength(static_cast<uint8_t*>(ctx), kb_force);
+            Log("KNOCKBACK: ctx+0xFC %.2f -> %.2f", kb_before, kb_force);
+        }
         const bool ok = CallVfunc7(dmg, attacker, ctx);
+        if (kb_force >= 0.f) {
+            float kb_after = 0.f;
+            int32_t out = 0;
+            std::memcpy(&kb_after, static_cast<uint8_t*>(ctx) + layout::kHitKnockbackIn, sizeof(kb_after));
+            std::memcpy(&out, static_cast<uint8_t*>(ctx) + layout::kHitKnockbackOut, sizeof(out));
+            Log("KNOCKBACK: after the call ctx+0xFC=%.2f ctx+0x230=%d", kb_after, out);
+        }
         const ForcedDamage forced = t_forced;
         t_forced = ForcedDamage{};
         const int32_t after = HpOf(static_cast<uintptr_t>(owner));
@@ -519,6 +533,26 @@ bool PlayerAirborne() {
            detail::readAirborne(g_reader, g_img.base, static_cast<uintptr_t>(p));
 }
 
+// Diagnostic: +0x70 (position), +0x80 and +0x120 of the player's physics module, twice a second while moving. Answers whether
+// +0x80 is the previous position (fromsoftware-rs: last_update_position) or a velocity (reverser 2026-10-09).
+void LogPhysicsVectors() {
+    static uint64_t last_ms = 0;
+    const uint64_t now = GetTickCount64();
+    if (now - last_ms < 500) return;
+    last_ms = now;
+    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    uint64_t player = 0;
+    float p70[3], p80[3], p120[3];
+    if (world == 0 || !SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) || player == 0) return;
+    const auto chr = static_cast<uintptr_t>(player);
+    if (!detail::readPhysicsVec3(g_reader, g_img.base, chr, 0x70, p70) || !detail::readPhysicsVec3(g_reader, g_img.base, chr, 0x80, p80) ||
+        !detail::readPhysicsVec3(g_reader, g_img.base, chr, 0x120, p120)) {
+        return;
+    }
+    Log("phys: +70=(%.3f %.3f %.3f) +80=(%.3f %.3f %.3f) +120=(%.3f %.3f %.3f)", p70[0], p70[1], p70[2], p80[0], p80[1], p80[2], p120[0],
+        p120[1], p120[2]);
+}
+
 // Diagnostic: the player's ground-contact bytes, one log line each time they change (jump / fall / roll / swim).
 void LogGroundBytesOnChange() {
     static uint8_t last[4] = {0xFF, 0xFF, 0xFF, 0xFF};
@@ -578,6 +612,7 @@ DWORD WINAPI KeyThread(LPVOID) {
             g_feedback.tick(dt);
         }
         if (g_mc_mode.load()) LogGroundBytesOnChange();
+        if (g_mc_mode.load() && FileExists(g_game_dir + "mc_er_physlog.txt")) LogPhysicsVectors();
         if (g_input_enabled.load()) {
             const int notches = erin::TakeWheelNotches();
             if (notches != 0 && fg && WantSuppress()) {
@@ -845,6 +880,7 @@ void SetupOverlay() {
                 else if (key == "scene_height") cfg.scene_height = value;
                 else if (key == "yaw_offset_deg") g_steve_yaw_offset = value * 3.14159265f / 180.f;
                 else if (key == "hide_native") g_hide_native.store(value != 0.f);
+                else if (key == "kb_force") g_kb_force.store(value);
                 else if (key == "hide_slots") g_hide_slots.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));
                 else if (key == "hide_mask1") g_hide_mask1.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));
                 else if (key == "hide_mask2") g_hide_mask2.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));

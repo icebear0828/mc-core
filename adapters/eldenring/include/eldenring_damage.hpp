@@ -38,6 +38,8 @@ inline constexpr size_t kHitHostileFlag = 0x11C;     // u8 (no effect on ordinar
 inline constexpr size_t kHitPosition = 0x198;        // 3 x float, world (Havok) space
 inline constexpr size_t kHitAttacker = 0x1D8;        // ChrIns* of the attacker
 inline constexpr size_t kHitVictim = 0x1E0;          // ChrIns* of the victim == [victimDamageModule + 8]
+inline constexpr size_t kHitKnockbackIn = 0x0FC;     // float: knockback strength the engine converts with cvttss2si (0x140444BEA, unverified meaning)
+inline constexpr size_t kHitKnockbackOut = 0x230;    // int32: what the engine derived from it (0x140444BF2)
 inline constexpr size_t kHitDamage = 0x228;          // u32; the engine overwrites it with the computed damage
 inline constexpr size_t kHitEnableReaction = 0x264;  // u8; 0 -> only HP drops: no flinch, no aggro
 
@@ -100,6 +102,14 @@ inline bool overrideFinalDamage(uint8_t* ctx, uint64_t attacker, uint64_t victim
     if (engine_value != nullptr) *engine_value = old;
     std::memcpy(ctx + layout::kHitDamage, &forced, sizeof(forced));
     return true;
+}
+
+// Experiment: sets the knockback strength field of a HitContext we built ourselves. Returns the previous value.
+inline float setKnockbackStrength(uint8_t* ctx, float value) {
+    float old = 0.f;
+    std::memcpy(&old, ctx + layout::kHitKnockbackIn, sizeof(old));
+    std::memcpy(ctx + layout::kHitKnockbackIn, &value, sizeof(value));
+    return old;
 }
 
 enum class DamageOutcome {

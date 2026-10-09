@@ -118,6 +118,16 @@ inline bool readPhysicsPosition(const IMemoryReader& reader, uintptr_t image_bas
     return true;
 }
 
+// Three floats at PhysicsModule+offset, for diagnostics (is +0x80 a velocity or the previous position? is +0x120 a velocity?).
+inline bool readPhysicsVec3(const IMemoryReader& reader, uintptr_t image_base, uintptr_t chr, uintptr_t offset, float out[3]) {
+    const uintptr_t m = readPhysicsModule(reader, image_base, chr);
+    if (m == 0) return false;
+    float v[3];
+    if (!reader.read(m + offset, v, sizeof(v))) return false;
+    std::memcpy(out, v, sizeof(v));
+    return true;
+}
+
 // True while the character is off the ground (takeoff, mid-air, free fall): PhysicsModule+0x92 is 0. False when the
 // module cannot be read, so an unreadable state never counts as airborne.
 inline bool readAirborne(const IMemoryReader& reader, uintptr_t image_base, uintptr_t chr) {

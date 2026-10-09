@@ -524,3 +524,17 @@ TEST(EldenRingModel, GroundBytesAreReadInOrder) {
     EXPECT_EQ(b[3], 4);
     EXPECT_FALSE(detail::readGroundBytes(m, kBase, 0, b));
 }
+
+TEST(EldenRingModel, PhysicsVec3ReadsAnyOffset) {
+    FakeMemory m = makeWorld();
+    const uintptr_t phys = kPlayer + 0x3000;
+    m.put<float>(phys + 0x120, 1.5f);
+    m.put<float>(phys + 0x124, -2.f);
+    m.put<float>(phys + 0x128, 0.25f);
+    float v[3] = {};
+    ASSERT_TRUE(detail::readPhysicsVec3(m, kBase, kPlayer, 0x120, v));
+    EXPECT_FLOAT_EQ(v[0], 1.5f);
+    EXPECT_FLOAT_EQ(v[1], -2.f);
+    EXPECT_FLOAT_EQ(v[2], 0.25f);
+    EXPECT_FALSE(detail::readPhysicsVec3(m, kBase, 0, 0x120, v));
+}
