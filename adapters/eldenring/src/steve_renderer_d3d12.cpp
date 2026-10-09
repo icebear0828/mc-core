@@ -20,7 +20,7 @@ cbuffer Root : register(b0) {
     float4 dims;  // x, y: depth texture size, z, w: back buffer size
 };
 Texture2D<float2> scene_depth : register(t0);
-RWByteAddressBuffer stats : register(u0); // [0] sum of K * 1e6, [4] pixel count, [8] max, [12] min (K = depth * view z)
+RWByteAddressBuffer stats : register(u1); // u0 would collide with the pixel shader output // [0] sum of K * 1e6, [4] pixel count, [8] max, [12] min (K = depth * view z)
 
 struct VSIn  { float3 pos : POSITION; float2 uv : TEXCOORD0; };
 struct VSOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; float3 wpos : TEXCOORD1; };
@@ -204,7 +204,7 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
     params[1].DescriptorTable.pDescriptorRanges = &range;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    params[2].Descriptor.ShaderRegister = 0;
+    params[2].Descriptor.ShaderRegister = 1;
     params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     D3D12_ROOT_SIGNATURE_DESC rsd{};
     rsd.NumParameters = 3;
