@@ -32,6 +32,8 @@
 #include "png_wic.hpp"
 #include "eldenring_camera.hpp"
 #include "eldenring_damage.hpp"
+#include "audio_xaudio2.hpp"
+#include "eldenring_audio_data.hpp"
 #include "eldenring_los.hpp"
 #include "eldenring_survival.hpp"
 #include "mc/consumables.hpp"
@@ -256,6 +258,7 @@ MeleeController g_melee;
 JumpTracker g_jump; // KeyThread only
 SurvivalState g_survival;          // regeneration / absorption, guarded by g_melee_mutex
 mc::ConsumableSystem g_eating;     // right click on food, guarded by g_melee_mutex
+std::atomic<float> g_sound_volume{0.8f}; // mc_er_steve.txt: sound_volume
 std::atomic<int> g_heal_pending{0}; // Elden Ring hit points waiting to be given back on the game thread
 using ApplyHpFn = void*(__fastcall*)(void* data_module, int32_t hp, uint8_t flag);
 ApplyHpFn g_apply_hp = nullptr;
@@ -519,6 +522,7 @@ bool PlayerHitSurvival(void* module, uint8_t* ctx, uint8_t blocked, uint32_t& po
             out = dmg; // the totem vanished meanwhile: the hit stands
         }
     }
+    eraudio::Play(popped ? "item.totem.use" : "entity.player.hurt");
     if (out != dmg) SafeWrite32(reinterpret_cast<uintptr_t>(ctx) + layout::kHitDamage, static_cast<uint32_t>(out));
     if (out != dmg || popped) {
         Log("SURVIVAL: hit %d -> %d (hp %d/%d)%s", dmg, out, v.hp, v.max_hp, popped ? " TOTEM" : "");
@@ -608,6 +612,11 @@ void DrainOnce(uintptr_t updating_data_module) {
         if (r.outcome == DamageOutcome::Applied) {
             std::lock_guard<std::mutex> g(g_melee_mutex);
             g_feedback.onHit((r.request.tag & 1u) != 0);
+            // Minecraft's melee sounds: crit, sweep, otherwise strong (charged) or weak. A swing that hits nothing is silent.
+            eraudio::Play((r.request.tag & 1u) ? "entity.player.attack.crit"
+                          : (r.request.tag & 2u) ? "entity.player.attack.sweep"
+                          : (r.request.tag & 4u) ? "entity.player.attack.strong"
+                                                 : "entity.player.attack.weak");
             if (t_hp_after == 0) g_feedback.onKill(); // HP is clamped to [0, max]; -1 means unreadable, not a kill
         }
         if (r.outcome == DamageOutcome::NoLineOfSight) ++g_los_blocked;
@@ -706,7 +715,7 @@ void ClickAttack(float charged) {
                                     {}, {cam.forward[0], cam.forward[1], cam.forward[2]});
     }
     const int dmg = erDamage(intent, e.max_hp);
-    const bool ok = dmg > 0 && g_queue.enqueue(e.chr, dmg, NowTick(), intent.is_critical ? 1u : 0u);
+    const bool ok = dmg > 0 && g_queue.enqueue(e.chr, dmg, NowTick(), (intent.is_critical ? 1u : 0u) | (intent.is_sweeping ? 2u : 0u) | (charged > 0.848f ? 4u : 0u));
     Log("click: item=%d charged=%.2f falling=%d crit=%d sweep=%d mc_dmg=%.2f -> %d on chr=%p npc=%d hp=%d/%d (%s)", static_cast<int>(held),
         charged, falling ? 1 : 0, intent.is_critical ? 1 : 0, intent.is_sweeping ? 1 : 0, intent.damage, dmg,
         reinterpret_cast<void*>(e.chr), e.npc_id, e.hp, e.max_hp, ok ? "ok" : "not queued");
@@ -855,6 +864,26 @@ DWORD WINAPI KeyThread(LPVOID) {
         }
         if (g_mc_mode.load()) LogGroundBytesOnChange();
         if (g_mc_mode.load() && FileExists(g_game_dir + "mc_er_physlog.txt")) LogPhysicsVectors();
+        if (g_mc_mode.load() && fg) {
+            // Footsteps: Minecraft plays one every ~1.6 m walked on the ground. The ground material is not known yet: grass.
+            static float prev_pos[3] = {};
+            static bool have_prev = false;
+            static eldenring::audio::StepClock steps;
+            const uintptr_t player = PlayerChrPtr();
+            float pos[3];
+            if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, pos)) {
+                if (have_prev && dt > 0.f) {
+                    const float dx = pos[0] - prev_pos[0], dz = pos[2] - prev_pos[2];
+                    const float step_len = std::sqrt(dx * dx + dz * dz);
+                    if (step_len < 1.5f && steps.update(step_len / dt, dt, !PlayerAirborne()) && WantSuppress()) eraudio::Play("block.grass.step", 0.9f);
+                    if (step_len >= 1.5f) steps = eldenring::audio::StepClock{}; // teleport / origin shift: not walking
+                }
+                std::memcpy(prev_pos, pos, sizeof(pos));
+                have_prev = true;
+            } else {
+                have_prev = false;
+            }
+        }
         {
             // Regeneration, absorption and the meal being eaten. The healing itself is queued for the game thread.
             const uintptr_t player = PlayerChrPtr();
@@ -867,7 +896,9 @@ DWORD WINAPI KeyThread(LPVOID) {
                         heal += g_survival.tick(dt, v.max_hp);
                         if (g_eating.isEating() && g_melee.heldItem() != g_eating.getCurrentItem()) g_eating.cancel(); // switched away
                         const mc::EatingEvent e = g_eating.update(dt);
+                        if (e.chew_sound) eraudio::Play("entity.generic.eat", 0.8f);
                         if (e.completed) {
+                            if (e.play_burp_sound) eraudio::Play("entity.player.burp");
                             g_survival.apply(e.effects);
                             heal += mealHeal(e, v.max_hp);
                             g_melee.consumeAt(g_melee.selectedSlot());
@@ -1215,6 +1246,11 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) + g_steve_yaw_offset;
     }
     steve.dead = v.max_hp > 0 && v.hp <= 0;
+    {
+        static bool was_dead = false;
+        if (steve.dead && !was_dead) eraudio::Play("entity.player.death");
+        was_dead = steve.dead;
+    }
     if (g_slot_probe.load() >= 0 || g_first_person.load()) steve.draw = false; // slot probing: show only the native model, with the one slot missing
     return true;
 }
@@ -1252,6 +1288,7 @@ void SetupOverlay() {
                 else if (key == "scene_height") cfg.scene_height = value;
                 else if (key == "yaw_offset_deg") g_steve_yaw_offset = value * 3.14159265f / 180.f;
                 else if (key == "hide_native") g_hide_native.store(value != 0.f);
+                else if (key == "sound_volume") g_sound_volume.store(value);
                 else if (key == "no_player_hit_vfx") g_no_player_hit_vfx.store(value != 0.f);
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "eye_height") g_eye_height.store(value);
@@ -1262,6 +1299,7 @@ void SetupOverlay() {
             }
         }
         erov::SetSteveConfig(cfg);
+        eraudio::Init((g_game_dir + "mods\\mc_adapter\\sounds\\").c_str(), g_sound_volume.load(), &Log);
         {
             std::vector<uint8_t> atlas;
             unsigned aw = 0, ah = 0;
