@@ -216,8 +216,8 @@ std::atomic<int> g_selected_slot{0};
 std::atomic<bool> g_steve_enabled{false};
 std::atomic<bool> g_hide_native{false};
 std::unordered_map<uintptr_t, uint32_t> g_hidden_flags; // flag word addresses we cleared -> their original value
-std::atomic<uint32_t> g_hide_mask1{layout::kDispVisibleBit}; // bits cleared in disp_flags1 (+0x20)
-std::atomic<uint32_t> g_hide_mask2{0};                       // bits cleared in disp_flags2 (+0x24)
+std::atomic<uint32_t> g_hide_mask1{0x100A1}; // bits cleared in disp_flags1 (+0x20): visible + shadow (verified live, not bisected)
+std::atomic<uint32_t> g_hide_mask2{1};         // bits cleared in disp_flags2 (+0x24)
 float g_steve_yaw_offset = 0.f;
 std::atomic<bool> g_require_victim_updating{true};
 DamageQueue g_queue;
