@@ -475,6 +475,7 @@ CamKeep g_cam_keep;
 std::atomic<bool> g_camstep_installed{false}; // the camera update hook (game thread, every frame) is in place
 void BlocksCollisionStep(); // defined with the placed blocks below
 void McJumpStep();          // defined after them
+void DriveVelocityFromKeys(uintptr_t module, bool force_zero);
 std::atomic<unsigned> g_camstep_calls{0}, g_camstep_changed{0};
 
 bool WriteBytesSafe(uintptr_t address, const void* src, size_t n) {
@@ -1331,6 +1332,34 @@ bool TryBreakBlock() {
     return true;
 }
 
+// The game keeps the horizontal velocity it had in the air (+0x120, constant for seconds in the log) and moves the player with it whatever
+// key is down. While the player is held in the air state by us (standing on a block, or in our own jump) the velocity is written here: from
+// WASD and the camera, or zero.
+void DriveVelocityFromKeys(uintptr_t module, bool force_zero) {
+    float vx = 0.f, vz = 0.f;
+    if (!force_zero && GameInForeground()) {
+        const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
+        const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
+        const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+        CameraPose cam;
+        if ((fwd_key != 0.f || right_key != 0.f) && world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
+            float fx = cam.forward[0], fz = cam.forward[2], rx = cam.right[0], rz = cam.right[2];
+            const float fl = std::sqrt(fx * fx + fz * fz), rl = std::sqrt(rx * rx + rz * rz);
+            if (fl > 1e-3f && rl > 1e-3f) {
+                fx /= fl; fz /= fl; rx /= rl; rz /= rl;
+                const float wx = fwd_key * fx + right_key * rx, wz = fwd_key * fz + right_key * rz;
+                const float wl = std::sqrt(wx * wx + wz * wz);
+                if (wl > 1e-3f) {
+                    vx = wx / wl * g_block_walk_speed.load();
+                    vz = wz / wl * g_block_walk_speed.load();
+                }
+            }
+        }
+    }
+    WriteBytesSafe(module + 0x120, &vx, sizeof(vx));
+    WriteBytesSafe(module + 0x120 + 8, &vz, sizeof(vz));
+}
+
 // Keeps the player out of the blocks. Runs on the game thread, at the start of every camera update (the game's own per-frame hook), so
 // the physics position is never written while the game is using it and the camera sees the corrected position.
 void BlocksCollisionStep() {
@@ -1405,32 +1434,7 @@ void BlocksCollisionStep() {
         WriteBytesSafe(module + layout::kPhysicsPosition, final_feet, sizeof(final_feet));
         WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, final_feet, sizeof(final_feet));
     }
-    // On a block the game keeps the horizontal velocity it had in the air (+0x120, constant for seconds in the log) and moves the player with
-    // it whatever key is down; a jump resets it. So the velocity is written here: from the keys and the camera, or zero.
-    if (module != 0 && supported && g_block_drive.load(std::memory_order_relaxed)) {
-        float vx = 0.f, vz = 0.f;
-        if (!pinned && GameInForeground()) {
-            const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
-            const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
-            const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
-            CameraPose cam;
-            if ((fwd_key != 0.f || right_key != 0.f) && world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
-                float fx = cam.forward[0], fz = cam.forward[2], rx = cam.right[0], rz = cam.right[2];
-                const float fl = std::sqrt(fx * fx + fz * fz), rl = std::sqrt(rx * rx + rz * rz);
-                if (fl > 1e-3f && rl > 1e-3f) {
-                    fx /= fl; fz /= fl; rx /= rl; rz /= rl;
-                    const float wx = fwd_key * fx + right_key * rx, wz = fwd_key * fz + right_key * rz;
-                    const float wl = std::sqrt(wx * wx + wz * wz);
-                    if (wl > 1e-3f) {
-                        vx = wx / wl * g_block_walk_speed.load();
-                        vz = wz / wl * g_block_walk_speed.load();
-                    }
-                }
-            }
-        }
-        WriteBytesSafe(module + 0x120, &vx, sizeof(vx));
-        WriteBytesSafe(module + 0x120 + 8, &vz, sizeof(vz));
-    }
+    if (module != 0 && supported && g_block_drive.load(std::memory_order_relaxed)) DriveVelocityFromKeys(module, pinned);
     if (module != 0 && supported) {
         // The game has no ground under a block, so it thinks the player is falling (no jump, restricted movement). While the player
         // rests on a block the "on the ground" flags the game itself shows after landing are set (ground: 92=1 93=1 1D0=0 1D1=1) and
@@ -1487,20 +1491,32 @@ void BlocksTick() {
     if (!g_camstep_installed.load()) BlocksCollisionStep(); // without the camera hook the collision runs here (less smooth)
 }
 
-// ---- MC jump experiment (mc_jump=1) ----------------------------------------------------------------------------------------
-// The game's jump has a 0.7-0.8 s wind-up and is low. With the experiment on the jump key is hidden from the game (DirectInput) and, on
-// the key press while on the ground, the upward speed is written into the physics module with the "on the ground" flag cleared; the
-// arc that follows is recorded so the game's own gravity and the peak height can be read from the log. Game thread (camera update).
+// ---- MC jump (mc_jump=1) ------------------------------------------------------------------------------------------------------
+// The game's jump has a 0.7-0.8 s wind-up and is low, and its vertical speed cannot be written (the first experiment wrote 8.95 m/s and
+// read 0.84 back: +0x124 is only a read-out). So the whole arc is ours: the jump key is hidden from the game (DirectInput), on the press
+// (on the ground or on a block) the height is integrated here with Minecraft's numbers and written into the physics position every frame,
+// the "on the ground" flag is kept cleared so the game does not snap the player back, and the keys drive the horizontal speed. The landing
+// is the game's ground (a static ray down) or the top of a placed block. Game thread (camera update).
 std::atomic<bool> g_mc_jump{false};
 std::atomic<int> g_mc_jump_vk{VK_SPACE};
-std::atomic<float> g_mc_jump_speed{8.95f}; // m/s: with plain 32 m/s^2 gravity this peaks at the 1.25 m of Minecraft's jump
+std::atomic<float> g_mc_jump_speed{8.944f};  // m/s: with 32 m/s^2 gravity the peak is 1.25 m, Minecraft's jump
+std::atomic<float> g_mc_gravity{32.f};
+
 void McJumpStep() {
-    static bool prev = false;
-    static JumpTrace trace;
-    static int frames_left = 0;
+    static bool prev_key = false;
+    static bool active = false;
+    static float y = 0.f, vy = 0.f, start_y = 0.f, peak = 0.f;
+    static LARGE_INTEGER last_qpc{};
     static uint64_t start_ms = 0;
+    LARGE_INTEGER now_qpc, freq;
+    QueryPerformanceCounter(&now_qpc);
+    QueryPerformanceFrequency(&freq);
+    float dt = last_qpc.QuadPart != 0 ? static_cast<float>(now_qpc.QuadPart - last_qpc.QuadPart) / static_cast<float>(freq.QuadPart) : 0.f;
+    last_qpc = now_qpc;
+    dt = std::clamp(dt, 0.f, 0.05f);
     if (!g_mc_jump.load(std::memory_order_relaxed) || !g_mc_mode.load(std::memory_order_relaxed) || g_inv_open.load(std::memory_order_relaxed) || !GameInForeground()) {
-        prev = false;
+        prev_key = false;
+        active = false;
         return;
     }
     const uintptr_t player = PlayerChrPtr();
@@ -1509,37 +1525,84 @@ void McJumpStep() {
     float feet[3];
     if (module == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) return;
     const bool down = (GetAsyncKeyState(g_mc_jump_vk.load()) & 0x8000) != 0;
-    const bool edge = down && !prev;
-    prev = down;
+    const bool edge = down && !prev_key;
+    prev_key = down;
     uint8_t ground = 0;
     SafeCopy(module + 0x92, &ground, 1);
-    if (edge && ground == 1) {
-        const float v = g_mc_jump_speed.load();
-        const uint8_t zero = 0, one = 1;
-        WriteBytesSafe(module + 0x120 + 4, &v, sizeof(v));
-        WriteBytesSafe(module + 0x92, &zero, 1);
-        WriteBytesSafe(module + 0x1D0, &one, 1);
-        trace.start(feet[1]);
-        frames_left = 240;
-        start_ms = GetTickCount64();
-        Log("mcjump: start at y=%.3f, vy written %.2f m/s", feet[1], v);
-        return;
-    }
-    if (frames_left > 0) {
-        static uint64_t last_ms = 0;
-        const uint64_t now = GetTickCount64();
-        const float dt = last_ms != 0 ? static_cast<float>(now - last_ms) / 1000.f : 0.f;
-        last_ms = now;
-        float vel[3] = {};
-        SafeCopy(module + 0x120, vel, sizeof(vel));
-        if (dt > 0.001f) trace.sample(feet[1], dt, vel[1]);
-        if (frames_left % 12 == 0) Log("mcjump: t=%.2f y=%.3f vy=%.2f ground=%u", static_cast<float>(now - start_ms) / 1000.f, feet[1], vel[1], ground);
-        --frames_left;
-        if (frames_left == 0 || (ground == 1 && now - start_ms > 300)) {
-            Log("mcjump: peak %.2f m, %.2f s, engine gravity ~%.1f m/s^2", trace.peak(), trace.seconds(), trace.estimatedGravity());
-            frames_left = 0;
-            last_ms = 0;
+    const uint8_t zero = 0, one = 1;
+
+    if (!active) {
+        if (edge && ground == 1 && !PlayerDead()) {
+            active = true;
+            y = start_y = feet[1];
+            vy = g_mc_jump_speed.load();
+            peak = 0.f;
+            start_ms = GetTickCount64();
+            Log("mcjump: start at y=%.3f, v=%.2f m/s, g=%.1f", y, vy, g_mc_gravity.load());
+        } else {
+            return;
         }
+    }
+
+    // integrate (semi-implicit Euler)
+    vy -= g_mc_gravity.load() * dt;
+    float ny = y + vy * dt;
+    float pos[3] = {feet[0], ny, feet[2]};
+    bool landed = false;
+    {   // a block above: the head stops the rise
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        if (g_blocks.count() != 0) {
+            const blocks::Resolve r = blocks::resolvePlayer(g_blocks, pos);
+            if (r.moved && r.feet[1] < ny - 1e-4f) { // pushed down by a ceiling
+                pos[1] = r.feet[1];
+                ny = r.feet[1];
+                if (vy > 0.f) vy = 0.f;
+            } else if (vy <= 0.f && blocks::supportedByBlock(g_blocks, pos)) {
+                landed = true;
+            } else if (vy <= 0.f) {
+                const float prev_pos[3] = {feet[0], y, feet[2]};
+                const blocks::Resolve sw = blocks::resolvePlayerSwept(g_blocks, prev_pos, pos);
+                if (sw.moved && sw.standing) {
+                    pos[1] = sw.feet[1];
+                    ny = sw.feet[1];
+                    landed = true;
+                }
+            }
+        }
+    }
+    if (!landed && vy <= 0.f && g_los_enabled.load()) { // the game's ground: a ray down from just above the feet
+        const float from[3] = {feet[0], ny + 0.5f, feet[2]};
+        const float drop = std::max(2.0f, (y - start_y) + 2.5f);
+        const float disp[3] = {0.f, -drop, 0.f};
+        const RayResult r = CastStaticRay(from, disp);
+        if (r.ok && r.hit) {
+            const float ground_y = from[1] - r.fraction * drop;
+            if (ny <= ground_y + 0.02f) {
+                pos[1] = ground_y;
+                ny = ground_y;
+                landed = true;
+            }
+        } else if (ny < start_y - 3.0f) { // no ground within reach (a cliff): hand the fall back to the game
+            Log("mcjump: no ground under the arc, the game takes over");
+            active = false;
+            WriteBytesSafe(module + 0x92, &zero, 1);
+            return;
+        }
+    }
+    peak = std::max(peak, ny - start_y);
+    y = ny;
+    WriteBytesSafe(module + layout::kPhysicsPosition, pos, sizeof(pos));
+    WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, pos, sizeof(pos)); // the previous position follows: no speed from the jump itself
+    DriveVelocityFromKeys(module, false);
+    if (landed) {
+        WriteBytesSafe(module + 0x92, &one, 1);
+        WriteBytesSafe(module + 0x1D1, &one, 1);
+        WriteBytesSafe(module + 0x1D0, &zero, 1);
+        active = false;
+        Log("mcjump: landed, peak %.2f m, %.2f s in the air", peak, static_cast<float>(GetTickCount64() - start_ms) / 1000.f);
+    } else {
+        WriteBytesSafe(module + 0x92, &zero, 1); // stay in the air state: the game must not snap the player to the ground
+        WriteBytesSafe(module + 0x1D0, &one, 1);
     }
 }
 
@@ -2203,6 +2266,7 @@ void SetupOverlay() {
                 else if (key == "eye_height") g_eye_height.store(value);
                 else if (key == "mc_jump") g_mc_jump.store(value != 0.f);
                 else if (key == "mc_jump_key") g_mc_jump_vk.store(static_cast<int>(value));
+                else if (key == "mc_gravity") g_mc_gravity.store(std::clamp(value, 5.f, 80.f));
                 else if (key == "mc_jump_speed") g_mc_jump_speed.store(std::clamp(value, 1.f, 20.f));
                 else if (key == "blocks") g_blocks_enabled.store(value != 0.f);
                 else if (key == "block_drive") g_block_drive.store(value != 0.f);
