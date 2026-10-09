@@ -34,4 +34,9 @@ enum class HeldItemStyle {
 // centre of each source pixel, so point sampling returns the sprite's colours.
 RigMesh buildHeldItemMesh(const ItemSprite& sprite, HeldItemStyle style, const HostBasis& basis);
 
+// The sprite as a flat, one pixel thick extrusion centred on the origin, for the first-person view: x right, y up, z towards the
+// viewer, 1 unit = 1 block (16 sprite pixels), so the mesh spans -0.5..0.5 and is 1/16 thick. UVs address the atlas at the centre
+// of each source pixel. Empty for an unusable sprite.
+RigMesh buildFlatItemMesh(const ItemSprite& sprite);
+
 } // namespace mc::rig

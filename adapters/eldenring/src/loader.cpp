@@ -260,6 +260,8 @@ JumpTracker g_jump; // KeyThread only
 SurvivalState g_survival;          // regeneration / absorption, guarded by g_melee_mutex
 mc::ConsumableSystem g_eating;     // right click on food, guarded by g_melee_mutex
 std::atomic<float> g_sound_volume{0.8f}; // mc_er_steve.txt: sound_volume
+std::atomic<float> g_walk_speed{0.f}; // horizontal speed of the player (m/s), measured by the key thread
+std::atomic<bool> g_on_ground{true};
 std::atomic<int> g_heal_pending{0}; // Elden Ring hit points waiting to be given back on the game thread
 using ApplyHpFn = void*(__fastcall*)(void* data_module, int32_t hp, uint8_t flag);
 ApplyHpFn g_apply_hp = nullptr;
@@ -937,7 +939,10 @@ DWORD WINAPI KeyThread(LPVOID) {
                 if (have_prev && dt > 0.f) {
                     const float dx = pos[0] - prev_pos[0], dz = pos[2] - prev_pos[2];
                     const float step_len = std::sqrt(dx * dx + dz * dz);
-                    if (step_len < 1.5f && steps.update(step_len / dt, dt, !PlayerAirborne()) && WantSuppress()) eraudio::Play("block.grass.step", 0.9f);
+                    const bool grounded = !PlayerAirborne();
+                    g_walk_speed.store(step_len < 1.5f ? step_len / dt : 0.f);
+                    g_on_ground.store(grounded);
+                    if (step_len < 1.5f && steps.update(step_len / dt, dt, grounded) && WantSuppress()) eraudio::Play("block.grass.step", 0.9f);
                     if (step_len >= 1.5f) steps = eldenring::audio::StepClock{}; // teleport / origin shift: not walking
                 }
                 std::memcpy(prev_pos, pos, sizeof(pos));
@@ -1267,6 +1272,9 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         }
         out.absorption_mc = g_survival.absorptionMc();
         out.eating = g_eating.getProgress();
+        steve.held_item = static_cast<uint16_t>(g_melee.heldItem());
+        steve.cooldown = g_melee.cooldown();
+        steve.eating = g_eating.getProgress();
         out.totem = g_feedback.totem();
         steve.swing = g_melee.swingProgress();
         out.hit = g_feedback.hit();
@@ -1319,6 +1327,9 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         if (steve.dead && !was_dead) eraudio::Play("entity.player.death");
         was_dead = steve.dead;
     }
+    steve.first_person = g_first_person.load() && g_slot_probe.load() < 0;
+    steve.speed_mps = g_walk_speed.load();
+    steve.on_ground = g_on_ground.load();
     if (g_slot_probe.load() >= 0 || g_first_person.load()) steve.draw = false; // slot probing: show only the native model, with the one slot missing
     return true;
 }

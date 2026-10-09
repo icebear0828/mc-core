@@ -177,3 +177,29 @@ TEST(ItemModelTest, BadSpritesNeverCrash) {
     EXPECT_TRUE(buildHeldItemMesh(a.sprite(10, 10, 16, 16), HeldItemStyle::Generated, kCanonical).vertices.empty()); // outside the atlas
     EXPECT_TRUE(buildHeldItemMesh(a.sprite(-1, 0, 8, 8), HeldItemStyle::Generated, kCanonical).vertices.empty());
 }
+
+TEST(ItemModel, FlatMeshIsCentredOneSixteenthThickAndAddressesTheSpritePixels) {
+    // a 4x4 sprite cell at (2, 3) of an 8x8 atlas, with only the pixel (1, 2) of the cell opaque
+    uint8_t atlas[8 * 8 * 4] = {};
+    const int cell_x = 2, cell_y = 3, w = 4, h = 4;
+    atlas[((cell_y + 2) * 8 + (cell_x + 1)) * 4 + 3] = 255;
+    mc::rig::ItemSprite sprite{atlas, 8, 8, cell_x, cell_y, w, h};
+    const mc::rig::RigMesh mesh = mc::rig::buildFlatItemMesh(sprite);
+    ASSERT_FALSE(mesh.vertices.empty());
+    EXPECT_EQ(mesh.vertices.size(), 6u * 4u); // front, back and four walls
+    float min_z = 1e9f, max_z = -1e9f, min_x = 1e9f, max_x = -1e9f;
+    for (const auto& v : mesh.vertices) {
+        min_z = std::min(min_z, v.z);
+        max_z = std::max(max_z, v.z);
+        min_x = std::min(min_x, v.x);
+        max_x = std::max(max_x, v.x);
+        EXPECT_NEAR(v.u, (cell_x + 1 + 0.5f) / 8.f, 1e-6f); // the centre of that pixel
+        EXPECT_NEAR(v.v, (cell_y + 2 + 0.5f) / 8.f, 1e-6f);
+    }
+    EXPECT_NEAR(max_z - min_z, 1.f / 16.f, 1e-6f);
+    EXPECT_NEAR(max_x - min_x, 1.f / 4.f, 1e-6f); // one pixel of a 4 pixel wide sprite = a quarter block
+    EXPECT_NEAR((min_x + max_x) * 0.5f, (1.5f - 2.f) * 0.25f, 1e-6f); // pixel column 1 of 4, relative to the centre
+    mc::rig::ItemSprite empty{atlas, 8, 8, 0, 0, 2, 2};
+    EXPECT_TRUE(mc::rig::buildFlatItemMesh(empty).vertices.empty());
+    EXPECT_TRUE(mc::rig::buildFlatItemMesh({nullptr, 8, 8, 0, 0, 2, 2}).vertices.empty());
+}

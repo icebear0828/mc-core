@@ -38,6 +38,7 @@ add_executable(mc_tests
     test_eldenring_survival.cpp
     test_eldenring_audio.cpp
     test_eldenring_particles.cpp
+    test_eldenring_fp.cpp
 )
 
 target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source")

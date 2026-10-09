@@ -19,6 +19,7 @@
 #include <mutex>
 #include <vector>
 
+#include "eldenring_fp.hpp"
 #include "eldenring_hudtex.hpp"
 #include "eldenring_particles.hpp"
 #include "mc/hud_layout.hpp"
@@ -71,6 +72,11 @@ eldenring::fx::Rng g_fx_rng{20251009u};
 mc::rig::Mat4 g_fx_vp{};
 float g_fx_fov = 0.8378f;
 bool g_fx_valid = false;
+eldenring::fp::HandAnimator g_hand;
+eldenring::fp::SwayFilter g_sway;
+float g_walk_dist = 0.f, g_walk_bob = 0.f;
+D3D12_GPU_DESCRIPTOR_HANDLE g_item_table_gpu{}; // slots 4 and 5
+bool g_fp_built = false;
 std::atomic<int> g_trace_left{0}; // F12: frames of per-frame figure/camera positions still to write to the log
 std::vector<uint8_t> g_skin_rgba; // decoded by the loader; applied when the renderer is created
 unsigned g_skin_w = 0, g_skin_h = 0;
@@ -215,7 +221,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
     rtv_desc.NumDescriptors = g_s.buffers;
     D3D12_DESCRIPTOR_HEAP_DESC srv_desc{};
     srv_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    srv_desc.NumDescriptors = 4; // 0: ImGui font, 1: scene depth, 2: Steve skin (1 and 2 form one table), 3: HUD atlas
+    srv_desc.NumDescriptors = 6; // 0: ImGui font, 1: scene depth, 2: Steve skin (1 and 2 form one table), 3: HUD atlas, 4: (unused depth), 5: atlas again (4 and 5 form the table for held items)
     srv_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(g_s.device->CreateDescriptorHeap(&rtv_desc, IID_PPV_ARGS(&g_s.rtv_heap))) ||
         FAILED(g_s.device->CreateDescriptorHeap(&srv_desc, IID_PPV_ARGS(&g_s.srv_heap)))) {
@@ -298,6 +304,21 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
         }
         g_depth_dirty.store(true); // bind the depth captured so far
         CreateAtlasTexture(srv_inc);
+        {
+            // The first-person arm and the sprites of the default hotbar items.
+            std::vector<SteveRenderer::FpItemCell> cells;
+            const mc::ItemId items[] = {mc::ItemId::DiamondSword, mc::ItemId::DiamondPickaxe, mc::ItemId::BlockDirt, mc::ItemId::BlockStone,
+                                         mc::ItemId::BlockTnt,     mc::ItemId::GoldenApple,    mc::ItemId::Bow,       mc::ItemId::Elytra,
+                                         mc::ItemId::TotemOfUndying};
+            for (mc::ItemId id : items) {
+                if (const mc::hud::HudUV* uv = eldenring::render::uvForItem(id)) {
+                    cells.push_back({static_cast<uint16_t>(id), static_cast<int>(std::lround(uv->u0 * 256.f)), static_cast<int>(std::lround(uv->v0 * 256.f)),
+                                     static_cast<int>(std::lround((uv->u1 - uv->u0) * 256.f)), static_cast<int>(std::lround((uv->v1 - uv->v0) * 256.f))});
+                }
+            }
+            g_fp_built = g_steve.initFirstPerson(g_s.device, g_atlas_rgba.empty() ? nullptr : g_atlas_rgba.data(), g_atlas_w, g_atlas_h, cells);
+            Logf(g_fp_built ? "overlay: first-person view model ready" : "overlay: first-person view model failed");
+        }
     }
     g_s.last_frame = std::chrono::steady_clock::now();
     g_s.ready = true;
@@ -371,6 +392,17 @@ void CreateAtlasTexture(UINT srv_inc) {
     sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     sd.Texture2D.MipLevels = 1;
     g_s.device->CreateShaderResourceView(g_atlas_tex, &sd, cpu);
+    // Held items sample the atlas through their own table: slot 4 (unused depth) + slot 5 (the atlas again).
+    {
+        D3D12_CPU_DESCRIPTOR_HANDLE c4 = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
+        c4.ptr += static_cast<SIZE_T>(srv_inc) * 4;
+        D3D12_CPU_DESCRIPTOR_HANDLE c5 = c4;
+        c5.ptr += srv_inc;
+        g_steve.setDepthView(g_s.device, nullptr, c4);
+        g_s.device->CreateShaderResourceView(g_atlas_tex, &sd, c5);
+        g_item_table_gpu = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
+        g_item_table_gpu.ptr += static_cast<UINT64>(srv_inc) * 4;
+    }
     g_atlas_pending = true;
     g_atlas_ready = true;
     char msg[96];
@@ -699,6 +731,31 @@ void RenderFrame(IDXGISwapChain* sc) {
                 }
             }
         }
+    }
+    if (steve.first_person && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
+        g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
+        namespace fp = eldenring::fp;
+        // The hand: lowered/raised by the hotbar and the attack cooldown, swaying behind the view, bobbing with the steps.
+        const mc::ItemId wanted = static_cast<mc::ItemId>(steve.held_item);
+        g_hand.tick(dt, wanted, std::clamp(steve.cooldown, 0.f, 1.f));
+        const float pitch_deg = -std::asin(std::clamp(steve.cam.forward.y, -1.f, 1.f)) * 180.f / fp::kPi; // positive = looking down
+        const float yaw_deg = std::atan2(steve.cam.forward.x, steve.cam.forward.z) * 180.f / fp::kPi;
+        float d_pitch = 0.f, d_yaw = 0.f;
+        g_sway.update(dt, pitch_deg, yaw_deg, d_pitch, d_yaw);
+        g_walk_dist += steve.speed_mps * dt * 0.6f;
+        const float bob_target = steve.on_ground ? std::min(0.1f, steve.speed_mps / 20.f) : 0.f;
+        g_walk_bob += (bob_target - g_walk_bob) * (1.f - std::pow(0.6f, dt * 20.f));
+        const fp::M4 base = fp::mul(fp::walkBob(g_walk_dist, g_walk_bob), fp::handSway(d_pitch, d_yaw));
+        const float equipped = g_hand.equipped();
+        const fp::M4 item_pose = steve.eating > 0.f ? fp::eatPose(steve.eating, equipped) : fp::itemPose(steve.swing, equipped);
+        const fp::M4 item_world = fp::mul(fp::mul(base, item_pose), fp::itemDisplay());
+        const fp::M4 arm_world = fp::mul(base, fp::bareArmPose(steve.swing, equipped));
+        const mc::ItemId shown = g_hand.shownItem();
+        const mc::rig::Mat4 proj = mc::rig::perspectiveLH(70.f * fp::kDeg, static_cast<float>(g_s.width) / static_cast<float>(g_s.height), 0.05f, 20.f);
+        D3D12_GPU_DESCRIPTOR_HANDLE skin_table = g_depth_gpu; // slots 1 and 2: depth, skin
+        g_steve.drawFirstPerson(g_s.list, g_s.srv_heap, skin_table, g_item_table_gpu, g_s.width, g_s.height, proj, fp::toHost(arm_world),
+                                fp::toHost(item_world), static_cast<uint16_t>(shown), f.rtv);
+        g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr); // ImGui draws without a depth view
     }
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_s.list);
     b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;

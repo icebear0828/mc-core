@@ -167,4 +167,39 @@ RigMesh buildHeldItemMesh(const ItemSprite& s, HeldItemStyle style, const HostBa
     return mesh;
 }
 
+RigMesh buildFlatItemMesh(const ItemSprite& s) {
+    RigMesh mesh;
+    if (!s.rgba || s.w <= 0 || s.h <= 0 || s.x < 0 || s.y < 0 || s.x + s.w > s.atlas_w || s.y + s.h > s.atlas_h) return mesh;
+    auto opaque = [&](int i, int j) {
+        if (i < 0 || j < 0 || i >= s.w || j >= s.h) return false;
+        return s.rgba[(static_cast<size_t>(s.y + j) * s.atlas_w + (s.x + i)) * 4 + 3] >= kOpaque;
+    };
+    const float inv_w = 1.0f / static_cast<float>(s.atlas_w), inv_h = 1.0f / static_cast<float>(s.atlas_h);
+    const float px = 1.0f / static_cast<float>(s.w); // one sprite pixel in blocks
+    const float half_t = 0.5f / 16.0f;               // half the thickness: one 16th of a block deep in total
+    auto corner = [&](float cx, float cy, float z) { return Vec3{(cx - static_cast<float>(s.w) * 0.5f) * px, (static_cast<float>(s.h) * 0.5f - cy) * px, z}; };
+    auto emit = [&](const Vec3 (&c)[4], float u, float v) {
+        const uint16_t base = static_cast<uint16_t>(mesh.vertices.size());
+        for (const Vec3& p : c) mesh.vertices.push_back({p.x, p.y, p.z, u, v});
+        for (uint16_t idx : {0, 1, 2, 0, 2, 3}) mesh.indices.push_back(static_cast<uint16_t>(base + idx));
+    };
+    for (int j = 0; j < s.h; ++j) {
+        for (int i = 0; i < s.w; ++i) {
+            if (!opaque(i, j)) continue;
+            if (mesh.vertices.size() + 24 > 65535) return mesh;
+            const float u = (static_cast<float>(s.x + i) + 0.5f) * inv_w;
+            const float v = (static_cast<float>(s.y + j) + 0.5f) * inv_h;
+            const float x0 = static_cast<float>(i), x1 = x0 + 1.0f, y0 = static_cast<float>(j), y1 = y0 + 1.0f;
+            const float zf = half_t, zb = -half_t;
+            { const Vec3 q[4] = {corner(x0, y1, zf), corner(x1, y1, zf), corner(x1, y0, zf), corner(x0, y0, zf)}; emit(q, u, v); }
+            { const Vec3 q[4] = {corner(x1, y1, zb), corner(x0, y1, zb), corner(x0, y0, zb), corner(x1, y0, zb)}; emit(q, u, v); }
+            if (!opaque(i - 1, j)) { const Vec3 q[4] = {corner(x0, y1, zb), corner(x0, y1, zf), corner(x0, y0, zf), corner(x0, y0, zb)}; emit(q, u, v); }
+            if (!opaque(i + 1, j)) { const Vec3 q[4] = {corner(x1, y1, zf), corner(x1, y1, zb), corner(x1, y0, zb), corner(x1, y0, zf)}; emit(q, u, v); }
+            if (!opaque(i, j - 1)) { const Vec3 q[4] = {corner(x0, y0, zf), corner(x1, y0, zf), corner(x1, y0, zb), corner(x0, y0, zb)}; emit(q, u, v); }
+            if (!opaque(i, j + 1)) { const Vec3 q[4] = {corner(x0, y1, zb), corner(x1, y1, zb), corner(x1, y1, zf), corner(x0, y1, zf)}; emit(q, u, v); }
+        }
+    }
+    return mesh;
+}
+
 } // namespace mc::rig

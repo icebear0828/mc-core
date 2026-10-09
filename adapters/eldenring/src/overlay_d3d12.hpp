@@ -37,6 +37,12 @@ struct SteveState {
     float swing{0.f}; // arm swing progress 0..1 (0 = idle)
     bool dead{false}; // the player's HP is 0: the figure falls over (Minecraft death flip)
     float hurt{0.f};  // 1 just hurt .. 0: the figure flashes red
+    bool first_person{false};   // draw the view model (bare arm or held item) instead of the figure
+    uint16_t held_item{0};      // mc::ItemId the hotbar wants in the hand (0 = bare hand)
+    float cooldown{1.f};        // attack strength 0..1
+    float eating{0.f};          // 0..1 progress of the meal in the hand (0 = not eating)
+    float speed_mps{0.f};       // horizontal speed, for the walking bob
+    bool on_ground{true};
     bool cam_valid{false}; // cam/fov_y are a real camera this frame (also set while the figure itself is not drawn)
 };
 

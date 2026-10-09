@@ -7,6 +7,8 @@
 #include <d3d12.h>
 
 #include <cstdint>
+#include <map>
+#include <vector>
 
 #include "eldenring_steve.hpp"
 #include "mc/rig.hpp"
@@ -48,6 +50,19 @@ public:
                        unsigned width, unsigned height, float gain, float depth_w, float depth_h);
 
     // Records the draw calls. `srv_heap` must be the heap that holds the depth SRV at `depth_table` (GPU handle).
+    // First person: the bare right arm (with its sleeve) and the held item as a flat extruded sprite, drawn in front of the camera
+    // in Minecraft's view-model space. `cells` are the atlas cells of the items, in atlas pixels.
+    struct FpItemCell {
+        uint16_t item;
+        int x, y, w, h;
+    };
+    bool initFirstPerson(ID3D12Device* device, const uint8_t* atlas_rgba, unsigned atlas_w, unsigned atlas_h, const std::vector<FpItemCell>& cells);
+    // `skin_table`: descriptor table (depth, skin); `atlas_table`: (any, atlas). `item` 0 draws the bare arm, otherwise that item.
+    void drawFirstPerson(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE skin_table,
+                         D3D12_GPU_DESCRIPTOR_HANDLE atlas_table, unsigned width, unsigned height, const mc::rig::Mat4& projection,
+                         const mc::rig::Mat4& arm_world, const mc::rig::Mat4& item_world, uint16_t item, D3D12_CPU_DESCRIPTOR_HANDLE rtv);
+    [[nodiscard]] bool firstPersonReady() const { return fp_vertices_ != nullptr; }
+
     // `rtv` is the back buffer view: the figure is drawn with its own depth buffer (so the faces of the boxes and the parts
     // sort correctly), then the caller must bind its render target again without a depth view.
     void draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table,
@@ -61,6 +76,16 @@ private:
     ID3D12Resource* stats_{nullptr};
     ID3D12Resource* stats_init_{nullptr};
     ID3D12Resource* stats_readback_{nullptr};
+    struct FpDraw {
+        unsigned index_count{0}, first_index{0};
+        int base_vertex{0};
+    };
+    ID3D12Resource* fp_vertices_{nullptr};
+    ID3D12Resource* fp_indices_{nullptr};
+    D3D12_VERTEX_BUFFER_VIEW fp_vbv_{};
+    D3D12_INDEX_BUFFER_VIEW fp_ibv_{};
+    FpDraw fp_arm_[2]{};
+    std::map<uint16_t, FpDraw> fp_items_;
     ID3D12Resource* own_depth_{nullptr};
     ID3D12DescriptorHeap* dsv_heap_{nullptr};
     unsigned own_depth_w_{0}, own_depth_h_{0};

@@ -7,6 +7,7 @@
 #include <cstring>
 #include <vector>
 
+#include "mc/item_model.hpp"
 #include "steve_renderer_d3d12.hpp"
 
 namespace erov {
@@ -298,6 +299,9 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
 }
 
 void SteveRenderer::release() {
+    Rel(fp_vertices_);
+    Rel(fp_indices_);
+    fp_items_.clear();
     Rel(own_depth_);
     Rel(dsv_heap_);
     own_depth_w_ = own_depth_h_ = 0;
@@ -323,6 +327,92 @@ bool SteveRenderer::readStats(uint32_t out[64]) {
     D3D12_RANGE none{0, 0};
     stats_readback_->Unmap(0, &none);
     return true;
+}
+
+bool SteveRenderer::initFirstPerson(ID3D12Device* device, const uint8_t* atlas_rgba, unsigned atlas_w, unsigned atlas_h,
+                                    const std::vector<FpItemCell>& cells) {
+    Rel(fp_vertices_);
+    Rel(fp_indices_);
+    fp_items_.clear();
+    std::vector<mc::rig::RigVertex> vertices;
+    std::vector<uint16_t> indices;
+    auto add = [&](const mc::rig::RigMesh& mesh) {
+        FpDraw d;
+        d.base_vertex = static_cast<int>(vertices.size());
+        d.first_index = static_cast<unsigned>(indices.size());
+        d.index_count = static_cast<unsigned>(mesh.indices.size());
+        vertices.insert(vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
+        indices.insert(indices.end(), mesh.indices.begin(), mesh.indices.end());
+        return d;
+    };
+    // The arm in Minecraft's model space (blocks, y down, relative to the shoulder), then moved to the shoulder (-5, 2, 0) / 16 as
+    // ModelPart.render does before the cube.
+    const mc::rig::HostBasis model_basis{{0.f, 0.f, -1.f}, {1.f, 0.f, 0.f}, {0.f, -1.f, 0.f}, 1.0f / (mc::rig::kCmPerModelPixel * 16.0f)};
+    const mc::StevePart parts[2] = {mc::StevePart::RightArm, mc::StevePart::RightSleeve};
+    for (int i = 0; i < 2; ++i) {
+        mc::rig::RigMesh mesh = mc::rig::buildPartMesh(parts[i], model_basis);
+        const mc::Vec3 pivot = mc::rig::partPivot(parts[i], model_basis);
+        for (mc::rig::RigVertex& v : mesh.vertices) {
+            v.x = v.x - pivot.x + (-5.0f / 16.0f);
+            v.y = v.y - pivot.y + (2.0f / 16.0f);
+            v.z = v.z - pivot.z;
+        }
+        fp_arm_[i] = add(mesh);
+    }
+    if (atlas_rgba) {
+        for (const FpItemCell& cell : cells) {
+            const mc::rig::ItemSprite sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
+            const mc::rig::RigMesh mesh = mc::rig::buildFlatItemMesh(sprite);
+            if (!mesh.vertices.empty()) fp_items_[cell.item] = add(mesh);
+        }
+    }
+    fp_vertices_ = UploadBuffer(device, vertices.data(), vertices.size() * sizeof(mc::rig::RigVertex));
+    fp_indices_ = UploadBuffer(device, indices.data(), indices.size() * sizeof(uint16_t));
+    if (!fp_vertices_ || !fp_indices_) {
+        Rel(fp_vertices_);
+        Rel(fp_indices_);
+        return false;
+    }
+    fp_vbv_ = {fp_vertices_->GetGPUVirtualAddress(), static_cast<UINT>(vertices.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
+    fp_ibv_ = {fp_indices_->GetGPUVirtualAddress(), static_cast<UINT>(indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
+    return true;
+}
+
+void SteveRenderer::drawFirstPerson(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE skin_table,
+                                    D3D12_GPU_DESCRIPTOR_HANDLE atlas_table, unsigned width, unsigned height, const mc::rig::Mat4& projection,
+                                    const mc::rig::Mat4& arm_world, const mc::rig::Mat4& item_world, uint16_t item, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
+    if (!ready() || !fp_vertices_ || !own_depth_ || !dsv_heap_) return;
+    const auto it = fp_items_.find(item);
+    if (item != 0 && it == fp_items_.end()) return; // an item without a sprite: nothing is shown
+    D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
+    D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+    list->RSSetViewports(1, &vp);
+    list->RSSetScissorRects(1, &sc);
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
+    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+    list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr); // the view model is drawn over everything
+    list->SetPipelineState(pso_);
+    list->SetGraphicsRootSignature(root_);
+    ID3D12DescriptorHeap* heaps[] = {srv_heap};
+    list->SetDescriptorHeaps(1, heaps);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->IASetVertexBuffers(0, 1, &fp_vbv_);
+    list->IASetIndexBuffer(&fp_ibv_);
+    list->SetGraphicsRoot32BitConstants(0, 16, projection.m.data(), 0);
+    const float extra[8] = {1.f, 0.f, 0.f, 0.f /* mode 0: no scene occlusion */, 1.f, 1.f, static_cast<float>(width), static_cast<float>(height)};
+    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
+    const float no_tint[4] = {0.f, 0.f, 0.f, 0.f};
+    list->SetGraphicsRoot32BitConstants(0, 4, no_tint, 40);
+    if (item == 0) {
+        list->SetGraphicsRootDescriptorTable(1, skin_table); // the arm is skinned
+        list->SetGraphicsRoot32BitConstants(0, 16, arm_world.m.data(), 16);
+        for (const FpDraw& d : fp_arm_) list->DrawIndexedInstanced(d.index_count, 1, d.first_index, d.base_vertex, 0);
+    } else {
+        list->SetGraphicsRootDescriptorTable(1, atlas_table); // the item is a cell of the atlas
+        list->SetGraphicsRoot32BitConstants(0, 16, item_world.m.data(), 16);
+        const FpDraw& d = it->second;
+        list->DrawIndexedInstanced(d.index_count, 1, d.first_index, d.base_vertex, 0);
+    }
 }
 
 bool SteveRenderer::ensureDepth(ID3D12Device* device, unsigned width, unsigned height) {
