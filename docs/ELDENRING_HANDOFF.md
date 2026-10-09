@@ -98,7 +98,7 @@
 
 ### 5.3 `mc_er_steve.txt` 配置键（`key=value`，一行一个）
 
-`occlusion`（1=被场景遮挡）、`depth_const`（**0.00456**，深度×视距常数，实测）、`rel_bias`、`abs_bias`、`debug`/`depthview_gain`/`scene_height`（标定用，保持默认）、`yaw_offset_deg`（**180**，玩家物理四元数朝向与模型相反）、`hide_native`（1=隐藏原模型）、`hide_mask1`（`0x100A1`）、`hide_mask2`（`1`）、`hide_slots`（部件槽位掩码，默认全部）、`sound_volume`（0.8）、`first_person`（1=启动即第一人称）、`eye_height`（1.65）、`fp_persist`（1，持久眼睛相机）、`inv_key`（背包键的虚拟键码，默认 73=`I`）、`inv_sens`（背包指针灵敏度，默认 1）、`no_stagger`（0，实验，见钩子表）、`kb_force`（击退实验，**无效果，别用**）、`no_player_hit_vfx`（配合 `mc_er_hitvfx.txt`）。
+`occlusion`（1=被场景遮挡）、`depth_const`（**0.00456**，深度×视距常数，实测）、`rel_bias`、`abs_bias`、`debug`/`depthview_gain`/`scene_height`（标定用，保持默认）、`yaw_offset_deg`（**180**，玩家物理四元数朝向与模型相反）、`hide_native`（1=隐藏原模型）、`hide_mask1`（`0x100A1`）、`hide_mask2`（`1`）、`hide_slots`（部件槽位掩码，默认全部）、`sound_volume`（0.8）、`first_person`（1=启动即第一人称）、`eye_height`（1.65）、`fp_persist`（1，持久眼睛相机）、`inv_key`（背包键的虚拟键码，默认 73=`I`）、`inv_sens`（背包指针灵敏度，默认 1）、`no_stagger`（0，实验，见钩子表）、`blocks`（1，放置/破坏）、`block_collision`（1，软碰撞）、`reach`（4.5 m）、`kb_force`（击退实验，**无效果，别用**）、`no_player_hit_vfx`（配合 `mc_er_hitvfx.txt`）。
 
 ### 5.4 热键（游戏窗口在前台时）
 
@@ -161,7 +161,8 @@
 5. 手持方块的 3D 模型（现在是等距图标，扁平）；给 Steve 和 view model 加环境光；伤害数字（原版没有，没做）。
 6. 玩家被毒/腐败/坠落致死时图腾救不了（它们不走 `ProcessDamageContext`）；脚步材质固定草地。
 
-**不做**：方块放置碰撞（逆向方自己降级为高风险）、敌人受击变红、手柄支持。
+**方块（阶段 A 已做，待实测）**：`eldenring_blocks.hpp`（网格、射线、放置落点、软碰撞）、`eldenring_blockmesh.hpp`、渲染在 `SteveRenderer::drawBlocks`；真实 Havok 碰撞（阶段 B）见 REVERSE 22。
+**不做**：Havok 方块碰撞（阶段 B，逆向方自己降级为高风险）、敌人受击变红、手柄支持。
 
 ---
 
