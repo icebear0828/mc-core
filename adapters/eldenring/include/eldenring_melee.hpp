@@ -5,6 +5,7 @@
 // points. Pure logic, unit-tested without the game.
 
 #include "mc/combat.hpp"
+#include "mc/inventory.hpp"
 #include "mc/session.hpp"
 #include "mc/types.hpp"
 
@@ -18,36 +19,20 @@ class MeleeController {
 public:
     static constexpr int kSlots = 9;
 
-    // Same hotbar as mc::Session::loadDefaultHotbar.
-    MeleeController() {
-        items_ = {mc::ItemId::DiamondSword, mc::ItemId::DiamondPickaxe, mc::ItemId::BlockDirt, mc::ItemId::BlockStone,
-                  mc::ItemId::BlockTnt,     mc::ItemId::GoldenApple,    mc::ItemId::Bow,       mc::ItemId::Elytra,
-                  mc::ItemId::TotemOfUndying};
-    }
+    // The hotbar is slots 0..8 of the 36-slot inventory (the same start items as mc::Session::loadDefaultHotbar).
+    MeleeController() : inv_(mc::Inventory::withDefaultHotbar()) {}
 
     [[nodiscard]] int selectedSlot() const { return slot_; }
-    [[nodiscard]] mc::ItemId heldItem() const { return items_[static_cast<size_t>(slot_)]; }
-    // Stack sizes as in Session::loadDefaultHotbar. An emptied stack leaves the slot empty.
-    [[nodiscard]] unsigned countAt(int slot) const { return counts_[static_cast<size_t>(std::clamp(slot, 0, kSlots - 1))]; }
-    bool consumeAt(int slot) {
-        if (slot < 0 || slot >= kSlots || counts_[static_cast<size_t>(slot)] == 0) return false;
-        if (--counts_[static_cast<size_t>(slot)] == 0) items_[static_cast<size_t>(slot)] = mc::ItemId::None;
-        return true;
-    }
-    // Takes one of `item` from the first slot that has it (the totem works from anywhere in the hotbar).
-    bool consumeFirst(mc::ItemId item) {
-        for (int i = 0; i < kSlots; ++i) {
-            if (items_[static_cast<size_t>(i)] == item && counts_[static_cast<size_t>(i)] > 0) return consumeAt(i);
-        }
-        return false;
-    }
-    [[nodiscard]] bool has(mc::ItemId item) const {
-        for (int i = 0; i < kSlots; ++i) {
-            if (items_[static_cast<size_t>(i)] == item && counts_[static_cast<size_t>(i)] > 0) return true;
-        }
-        return false;
-    }
-    [[nodiscard]] mc::ItemId itemAt(int slot) const { return items_[static_cast<size_t>(std::clamp(slot, 0, kSlots - 1))]; }
+    [[nodiscard]] mc::ItemId heldItem() const { return inv_.slot(slot_).item; }
+    // An emptied stack leaves the slot empty.
+    [[nodiscard]] unsigned countAt(int slot) const { return inv_.slot(std::clamp(slot, 0, kSlots - 1)).count; }
+    bool consumeAt(int slot) { return slot >= 0 && slot < kSlots && inv_.consume(slot); }
+    // Takes one of `item` from the first slot that has it, hotbar first, then the main inventory (the totem works from anywhere).
+    bool consumeFirst(mc::ItemId item) { return inv_.consumeFirst(item); }
+    [[nodiscard]] bool has(mc::ItemId item) const { return inv_.has(item); }
+    [[nodiscard]] mc::ItemId itemAt(int slot) const { return inv_.slot(std::clamp(slot, 0, kSlots - 1)).item; }
+    [[nodiscard]] mc::Inventory& inventory() { return inv_; }
+    [[nodiscard]] const mc::Inventory& inventory() const { return inv_; }
     void select(int slot) {
         if (slot >= 0 && slot < kSlots) slot_ = slot;
     }
@@ -79,8 +64,7 @@ public:
     }
 
 private:
-    std::array<mc::ItemId, kSlots> items_{};
-    std::array<unsigned, kSlots> counts_{1, 1, 64, 64, 16, 8, 1, 1, 1};
+    mc::Inventory inv_;
     int slot_{0};
     float cooldown_{1.f};
     float swing_{-1.f}; // seconds into the swing, < 0 = idle
