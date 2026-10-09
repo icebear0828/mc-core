@@ -325,3 +325,8 @@
 - 现象：y=30 的柱顶按住方向键时 `vel` 有值但位置不动；y=7 的方块上正常。第一人称方块消失与坠落致死已修好（用户确认）。
 - 判断：物理模块 `+0x1B8`（引擎自己的垂直下落速度，`0x14044E340` 里与阈值比较）在我们伪造的空中状态里持续增长，高到一定程度引擎不再按输入移动。现在站在方块上和我们的跳跃期间每帧把 `+0x1B8` 与坠落计时器一并清零，并在 `standing diag` 里记清零之前的值（`fall_t_before_reset`、`v1b8_before_reset`）。
 - 要看的：高处能不能走；`v1b8_before_reset` 是不是随高度变得很负（证实判断）。
+
+## F32 追加（提交 `e8da30d`）：高处不能动的真正线索
+- 清零前的值：`fall_t_before_reset=0.02`、`v1b8_before_reset=0.02`（都很小）——"引擎下落速度累积"的猜测**被推翻**。
+- 新线索：游戏每秒读键盘的次数（日志 `kbd state=`）平时 60，会出现整段为 0（61~78 s、113 s 之后），同时每秒一条 `input: CreateDevice keyboard`（游戏反复重建键盘设备却读不到）；鼠标一直正常。两次都出现在一次 `mcjump: landed` 之后约 1.5 s。键盘被切断时我们自己的 `GetAsyncKeyState` 也读不到 WASD（`pinned=1`），说明更像是游戏窗口丢了系统焦点。
+- 新诊断：`focus: the game is now/no longer the foreground window (foreground: hwnd pid class title)` 记录谁抢了前台；`input: N keyboard reads failed in the last second, last error 0x…` 记录键盘读取失败码。请复现后把这两类日志发来。
