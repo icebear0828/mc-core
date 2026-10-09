@@ -286,6 +286,19 @@ TEST(EldenRingEnumerate, SkipsNonFinitePosition) {
     EXPECT_TRUE(out.empty());
 }
 
+TEST(EldenRingEnumerate, ReadsTheOrientationQuaternionAndRejectsNonUnitOnes) {
+    FakeMemory m = makeWorld();
+    const uintptr_t phys = kPlayer + 0x3000;
+    const float q[4] = {0.f, 0.9530834f, 0.f, 0.3027079f};
+    for (int i = 0; i < 4; ++i) m.put<float>(phys + layout::kPhysicsOrientation + 4 * i, q[i]);
+    float out[4] = {};
+    ASSERT_TRUE(detail::readPhysicsOrientation(m, kBase, kPlayer, out));
+    EXPECT_FLOAT_EQ(out[1], 0.9530834f);
+    m.put<float>(phys + layout::kPhysicsOrientation + 4, 3.f); // no longer unit length
+    EXPECT_FALSE(detail::readPhysicsOrientation(m, kBase, kPlayer, out));
+    EXPECT_FALSE(detail::readPhysicsOrientation(m, kBase, 0, out));
+}
+
 TEST(EldenRingEnumerate, FailsOutsideAWorld) {
     FakeMemory m = makeWorld();
     std::vector<EnemyInfo> out;

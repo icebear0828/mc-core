@@ -32,6 +32,7 @@ add_executable(mc_tests
     test_eldenring_world.cpp
     test_eldenring_state.cpp
     test_eldenring_damage.cpp
+    test_eldenring_steve.cpp
 )
 
 target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source")

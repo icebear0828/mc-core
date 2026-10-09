@@ -29,6 +29,7 @@
 #include "eldenring_camera.hpp"
 #include "eldenring_damage.hpp"
 #include "eldenring_pick.hpp"
+#include "eldenring_steve.hpp"
 #include "eldenring_singletons.hpp"
 #include "eldenring_state.hpp"
 #include "eldenring_world.hpp"
@@ -200,6 +201,8 @@ std::atomic<bool> g_mc_mode{false};
 std::atomic<bool> g_input_enabled{false};
 std::atomic<bool> g_click_attack{false};
 std::atomic<int> g_selected_slot{0};
+std::atomic<bool> g_steve_enabled{false};
+float g_steve_yaw_offset = 0.f;
 std::atomic<bool> g_require_victim_updating{true};
 DamageQueue g_queue;
 std::optional<HitTemplate> g_template;
@@ -452,7 +455,7 @@ void SetupDamage() {
 // ---- overlay -------------------------------------------------------------------------------------------------
 
 // Runs on the Present thread. The HUD is hidden whenever the game shows its own full-screen UI.
-bool HudProvider(erov::HudState& out) {
+bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
     if (world == 0) return false;
     uint64_t player = 0;
@@ -472,6 +475,24 @@ bool HudProvider(erov::HudState& out) {
     out.max_hp = v.max_hp;
     out.selected_slot = g_selected_slot.load();
     out.show = have_state && !ms.menu_focused && !ms.popup_open && !ls.screen_loading && fade < 0.02f;
+
+    steve.draw = false;
+    CameraPose cam;
+    float feet[3], q[4];
+    if (g_steve_enabled.load() && readCamera(g_reader, g_img.base, world, cam) &&
+        detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(player), feet) &&
+        detail::readPhysicsOrientation(g_reader, g_img.base, static_cast<uintptr_t>(player), q)) {
+        steve.draw = true;
+        steve.cam.right = {cam.right[0], cam.right[1], cam.right[2]};
+        steve.cam.up = {cam.up[0], cam.up[1], cam.up[2]};
+        steve.cam.forward = {cam.forward[0], cam.forward[1], cam.forward[2]};
+        steve.cam.position = {cam.position[0], cam.position[1], cam.position[2]};
+        steve.fov_y = cam.fov_y;
+        steve.feet[0] = feet[0];
+        steve.feet[1] = feet[1];
+        steve.feet[2] = feet[2];
+        steve.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) + g_steve_yaw_offset;
+    }
     return true;
 }
 
@@ -483,6 +504,34 @@ void SetupOverlay() {
     if (!EnsureMinHook()) {
         Log("overlay: MH_Initialize failed");
         return;
+    }
+    if (FileExists(g_game_dir + "mc_er_steve.txt")) {
+        erov::SteveConfig cfg;
+        std::vector<uint8_t> bytes;
+        if (ReadFileAll(g_game_dir + "mc_er_steve.txt", bytes)) {
+            const std::string text(bytes.begin(), bytes.end());
+            size_t pos = 0;
+            while (pos < text.size()) {
+                size_t end = text.find('\n', pos);
+                if (end == std::string::npos) end = text.size();
+                const std::string line = text.substr(pos, end - pos);
+                pos = end + 1;
+                const size_t eq = line.find('=');
+                if (eq == std::string::npos) continue;
+                const std::string key = line.substr(0, eq);
+                const float value = static_cast<float>(atof(line.c_str() + eq + 1));
+                if (key == "occlusion") cfg.occlusion = value != 0.f;
+                else if (key == "depth_const") cfg.depth_const = value;
+                else if (key == "rel_bias") cfg.rel_bias = value;
+                else if (key == "abs_bias") cfg.abs_bias = value;
+                else if (key == "scene_height") cfg.scene_height = value;
+                else if (key == "yaw_offset_deg") g_steve_yaw_offset = value * 3.14159265f / 180.f;
+            }
+        }
+        erov::SetSteveConfig(cfg);
+        g_steve_enabled.store(true);
+        Log("steve: enabled (occlusion=%d depth_const=%.4f rel_bias=%.3f abs_bias=%.3f scene_height=%.0f yaw_offset=%.1f deg)",
+            cfg.occlusion ? 1 : 0, cfg.depth_const, cfg.rel_bias, cfg.abs_bias, cfg.scene_height, g_steve_yaw_offset * 180.f / 3.14159265f);
     }
     erov::Install(&HudProvider, [](const char* fmt, ...) {
         char msg[512];

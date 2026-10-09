@@ -15,7 +15,10 @@
 #include <cstdint>
 #include <cstring>
 
+#include <mutex>
+
 #include "overlay_d3d12.hpp"
+#include "steve_renderer_d3d12.hpp"
 
 namespace erov {
 namespace {
@@ -24,6 +27,7 @@ constexpr UINT kMaxFrames = 8;
 constexpr UINT kVtblPresent = 8;
 constexpr UINT kVtblResizeBuffers = 13;
 constexpr UINT kVtblExecuteCommandLists = 10;
+constexpr UINT kVtblDeviceCreateDsv = 21;
 
 HudProvider g_provider = nullptr;
 LogFn g_log = nullptr;
@@ -34,6 +38,17 @@ using ExecuteFn = void(STDMETHODCALLTYPE*)(ID3D12CommandQueue*, UINT, ID3D12Comm
 PresentFn g_present_orig = nullptr;
 ResizeFn g_resize_orig = nullptr;
 ExecuteFn g_execute_orig = nullptr;
+using CreateDsvFn = void(STDMETHODCALLTYPE*)(ID3D12Device*, ID3D12Resource*, const D3D12_DEPTH_STENCIL_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
+CreateDsvFn g_create_dsv_orig = nullptr;
+
+SteveConfig g_steve_cfg;
+SteveRenderer g_steve;
+std::mutex g_depth_mutex;
+ID3D12Resource* g_depth_res = nullptr; // AddRef'd main scene depth (R32G8X24_TYPELESS), guarded by g_depth_mutex
+UINT g_depth_w = 0, g_depth_h = 0;
+std::atomic<bool> g_depth_dirty{false};
+D3D12_CPU_DESCRIPTOR_HANDLE g_depth_cpu{};
+D3D12_GPU_DESCRIPTOR_HANDLE g_depth_gpu{};
 
 // The DIRECT queue the game submits on. Written by any thread inside ExecuteCommandLists.
 std::atomic<ID3D12CommandQueue*> g_queue{nullptr};
@@ -89,6 +104,7 @@ void WaitForGpu() {
 
 void Teardown() {
     if (g_s.ready) WaitForGpu();
+    g_steve.release();
     if (g_s.imgui_ready) {
         ImGui_ImplDX12_Shutdown();
         ImGui::DestroyContext();
@@ -160,7 +176,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
     rtv_desc.NumDescriptors = g_s.buffers;
     D3D12_DESCRIPTOR_HEAP_DESC srv_desc{};
     srv_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    srv_desc.NumDescriptors = 1;
+    srv_desc.NumDescriptors = 2; // 0: ImGui font, 1: scene depth
     srv_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(g_s.device->CreateDescriptorHeap(&rtv_desc, IID_PPV_ARGS(&g_s.rtv_heap))) ||
         FAILED(g_s.device->CreateDescriptorHeap(&srv_desc, IID_PPV_ARGS(&g_s.srv_heap)))) {
@@ -207,6 +223,16 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
         return false;
     }
     g_s.imgui_ready = true;
+    {
+        const UINT inc = g_s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        g_depth_cpu = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
+        g_depth_cpu.ptr += inc;
+        g_depth_gpu = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
+        g_depth_gpu.ptr += inc;
+        g_steve.setDepthView(g_s.device, nullptr, g_depth_cpu);
+        if (!g_steve.init(g_s.device, g_s.format, g_log)) Logf("overlay: Steve renderer unavailable");
+        g_depth_dirty.store(true); // bind the depth captured so far
+    }
     g_s.last_frame = std::chrono::steady_clock::now();
     g_s.ready = true;
     char msg[256];
@@ -259,7 +285,13 @@ void DrawHud(const HudState& hud, float w, float h) {
 
 void RenderFrame(IDXGISwapChain* sc) {
     HudState hud;
-    if (!g_provider || !g_provider(hud) || !hud.show || !hud.mc_mode) return;
+    SteveState steve;
+    if (!g_provider || !g_provider(hud, steve) || !hud.show || !hud.mc_mode) return;
+
+    if (g_depth_dirty.exchange(false)) {
+        std::lock_guard<std::mutex> g(g_depth_mutex);
+        g_steve.setDepthView(g_s.device, g_depth_res, g_depth_cpu);
+    }
 
     const UINT idx = g_s.swap->GetCurrentBackBufferIndex();
     if (idx >= g_s.buffers) return;
@@ -292,6 +324,19 @@ void RenderFrame(IDXGISwapChain* sc) {
     g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
     ID3D12DescriptorHeap* heaps[] = {g_s.srv_heap};
     g_s.list->SetDescriptorHeaps(1, heaps);
+    if (steve.draw && g_steve.ready()) {
+        const float scene_h = g_steve_cfg.scene_height > 0.f ? g_steve_cfg.scene_height : static_cast<float>(g_s.height);
+        const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
+        const auto parts = eldenring::render::restPoseMatrices({steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw);
+        SteveParams sp;
+        sp.occlusion = g_steve_cfg.occlusion && g_depth_res != nullptr;
+        sp.depth_const = g_steve_cfg.depth_const;
+        sp.rel_bias = g_steve_cfg.rel_bias;
+        sp.abs_bias = g_steve_cfg.abs_bias;
+        sp.depth_w = static_cast<float>(g_depth_w);
+        sp.depth_h = static_cast<float>(g_depth_h);
+        g_steve.draw(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, parts, sp);
+    }
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_s.list);
     b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
@@ -302,6 +347,33 @@ void RenderFrame(IDXGISwapChain* sc) {
     f.fence_value = ++g_s.fence_counter;
     g_s.queue->Signal(g_s.fence, f.fence_value);
     (void)sc;
+}
+
+void STDMETHODCALLTYPE CreateDsvDetour(ID3D12Device* d, ID3D12Resource* res, const D3D12_DEPTH_STENCIL_VIEW_DESC* desc,
+                                       D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+    g_create_dsv_orig(d, res, desc, handle);
+    if (res == nullptr) return;
+    const D3D12_RESOURCE_DESC rd = res->GetDesc();
+    if (rd.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || rd.Format != DXGI_FORMAT_R32G8X24_TYPELESS || rd.Width < 1024 ||
+        rd.DepthOrArraySize != 1) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> g(g_depth_mutex);
+        if (g_depth_res == res) return;
+        res->AddRef();
+        if (g_depth_res) g_depth_res->Release();
+        g_depth_res = res;
+        g_depth_w = static_cast<UINT>(rd.Width);
+        g_depth_h = rd.Height;
+    }
+    g_depth_dirty.store(true);
+    static int logged = 0;
+    if (logged++ < 20 && g_log) {
+        g_log("overlay: scene depth captured: %p %llux%u format=%d samples=%u flags=0x%X dsv_format=%d", static_cast<void*>(res),
+              static_cast<unsigned long long>(rd.Width), rd.Height, static_cast<int>(rd.Format), rd.SampleDesc.Count,
+              static_cast<unsigned>(rd.Flags), desc ? static_cast<int>(desc->Format) : -1);
+    }
 }
 
 void STDMETHODCALLTYPE ExecuteDetour(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* lists) {
@@ -347,7 +419,7 @@ HRESULT STDMETHODCALLTYPE ResizeDetour(IDXGISwapChain* sc, UINT count, UINT w, U
 }
 
 // Throw-away device, queue and swap chain, only to read the vtable function addresses.
-bool ResolveTargets(void*& present, void*& resize, void*& execute) {
+bool ResolveTargets(void*& present, void*& resize, void*& execute, void*& create_dsv) {
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = DefWindowProcW;
@@ -378,6 +450,7 @@ bool ResolveTargets(void*& present, void*& resize, void*& execute) {
                 present = sv[kVtblPresent];
                 resize = sv[kVtblResizeBuffers];
                 execute = qv[kVtblExecuteCommandLists];
+                create_dsv = (*reinterpret_cast<void***>(dev))[kVtblDeviceCreateDsv];
                 ok = true;
             }
         }
@@ -393,26 +466,31 @@ bool ResolveTargets(void*& present, void*& resize, void*& execute) {
 
 } // namespace
 
+void SetSteveConfig(const SteveConfig& cfg) { g_steve_cfg = cfg; }
+
 bool Install(HudProvider provider, LogFn log) {
     g_provider = provider;
     g_log = log;
-    void *present = nullptr, *resize = nullptr, *execute = nullptr;
-    if (!ResolveTargets(present, resize, execute)) {
+    void *present = nullptr, *resize = nullptr, *execute = nullptr, *create_dsv = nullptr;
+    if (!ResolveTargets(present, resize, execute, create_dsv)) {
         Logf("overlay: could not resolve the D3D12/DXGI vtable functions");
         return false;
     }
     if (MH_CreateHook(execute, reinterpret_cast<void*>(&ExecuteDetour), reinterpret_cast<void**>(&g_execute_orig)) != MH_OK ||
         MH_CreateHook(present, reinterpret_cast<void*>(&PresentDetour), reinterpret_cast<void**>(&g_present_orig)) != MH_OK ||
-        MH_CreateHook(resize, reinterpret_cast<void*>(&ResizeDetour), reinterpret_cast<void**>(&g_resize_orig)) != MH_OK) {
+        MH_CreateHook(resize, reinterpret_cast<void*>(&ResizeDetour), reinterpret_cast<void**>(&g_resize_orig)) != MH_OK ||
+        MH_CreateHook(create_dsv, reinterpret_cast<void*>(&CreateDsvDetour), reinterpret_cast<void**>(&g_create_dsv_orig)) != MH_OK) {
         Logf("overlay: MH_CreateHook failed");
         return false;
     }
-    if (MH_EnableHook(execute) != MH_OK || MH_EnableHook(present) != MH_OK || MH_EnableHook(resize) != MH_OK) {
+    if (MH_EnableHook(execute) != MH_OK || MH_EnableHook(present) != MH_OK || MH_EnableHook(resize) != MH_OK ||
+        MH_EnableHook(create_dsv) != MH_OK) {
         Logf("overlay: MH_EnableHook failed");
         return false;
     }
     char msg[200];
-    snprintf(msg, sizeof(msg), "overlay: hooks installed (Present=%p ResizeBuffers=%p ExecuteCommandLists=%p)", present, resize, execute);
+    snprintf(msg, sizeof(msg), "overlay: hooks installed (Present=%p ResizeBuffers=%p ExecuteCommandLists=%p CreateDepthStencilView=%p)", present,
+             resize, execute, create_dsv);
     Logf(msg);
     return true;
 }

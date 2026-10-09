@@ -1,0 +1,50 @@
+#pragma once
+
+// Draws the 12-part Steve rig into the game's back buffer with D3D12 (milestone 2). Flat shaded for now (no skin).
+// The game's depth buffer is read in the pixel shader to hide the figure behind the scene (reverse-Z, same rule as
+// the Sekiro D3D11 renderer: mc::rig::sceneOccludes).
+
+#include <d3d12.h>
+
+#include "eldenring_steve.hpp"
+#include "mc/rig.hpp"
+
+namespace erov {
+
+struct SteveParams {
+    bool occlusion{true};
+    float depth_const{0.0501f}; // depth * view z = near plane for a reverse-Z projection with an infinite far plane
+    float rel_bias{0.08f};
+    float abs_bias{0.05f};
+    float depth_w{0.f}, depth_h{0.f}; // size of the depth texture, to map back buffer pixels onto it
+};
+
+class SteveRenderer {
+public:
+    using LogFn = void (*)(const char* fmt, ...);
+
+    bool init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log);
+    void release();
+    [[nodiscard]] bool ready() const { return pso_ != nullptr; }
+
+    // (Re)creates the depth SRV at `slot`; a null resource writes a null descriptor (occlusion must then be off).
+    void setDepthView(ID3D12Device* device, ID3D12Resource* depth, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+
+    // Records the draw calls. `srv_heap` must be the heap that holds the depth SRV at `depth_table` (GPU handle).
+    void draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table,
+              unsigned width, unsigned height, const mc::rig::Mat4& view_proj, const eldenring::render::PartMatrices& parts,
+              const SteveParams& params);
+
+private:
+    ID3D12RootSignature* root_{nullptr};
+    ID3D12PipelineState* pso_{nullptr};
+    ID3D12Resource* vertices_{nullptr};
+    ID3D12Resource* indices_{nullptr};
+    D3D12_VERTEX_BUFFER_VIEW vbv_{};
+    D3D12_INDEX_BUFFER_VIEW ibv_{};
+    unsigned index_count_[static_cast<size_t>(mc::StevePart::Count)]{};
+    unsigned first_index_[static_cast<size_t>(mc::StevePart::Count)]{};
+    int base_vertex_[static_cast<size_t>(mc::StevePart::Count)]{};
+};
+
+} // namespace erov

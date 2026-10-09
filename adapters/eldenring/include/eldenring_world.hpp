@@ -30,6 +30,7 @@ inline constexpr uint32_t kPlayerInsVtableRva = 0x2A7FBB0; // A: humanoid NPCs s
 
 inline constexpr uintptr_t kPhysicsModuleSlot = 0x0D;     // A
 inline constexpr uint32_t kPhysicsModuleVtableRva = 0x2A3C890; // A
+inline constexpr uintptr_t kPhysicsOrientation = 0x50;   // A: float x,y,z,w, unit length
 inline constexpr uintptr_t kPhysicsPosition = 0x70;       // A: float x,y,z; the only basis for relative positions
 
 // c1000 map anchors (sites of grace and the like). Filter by npc_id, never by "team 0".
@@ -92,20 +93,42 @@ struct EnemyInfo {
 
 namespace detail {
 
-inline bool readPhysicsPosition(const IMemoryReader& reader, uintptr_t image_base, uintptr_t chr, float out[3]) {
+// The character's CSChrPhysicsModule (class and owner checked), or 0.
+inline uintptr_t readPhysicsModule(const IMemoryReader& reader, uintptr_t image_base, uintptr_t chr) {
     uint64_t container = 0, module = 0, owner = 0;
-    if (!reader.read(chr + layout::kModuleContainerInChrIns, &container, sizeof(container)) || container == 0) return false;
+    if (!reader.read(chr + layout::kModuleContainerInChrIns, &container, sizeof(container)) || container == 0) return 0;
     if (!reader.read(static_cast<uintptr_t>(container) + layout::kPhysicsModuleSlot * sizeof(uint64_t), &module, sizeof(module)) ||
         module == 0) {
-        return false;
+        return 0;
     }
     const auto m = static_cast<uintptr_t>(module);
-    if (!objectIsClass(reader, image_base, m, layout::kPhysicsModuleVtableRva, ".?AVCSChrPhysicsModule@CS@@")) return false;
-    if (!reader.read(m + layout::kOwnerInDataModule, &owner, sizeof(owner)) || owner != chr) return false;
+    if (!objectIsClass(reader, image_base, m, layout::kPhysicsModuleVtableRva, ".?AVCSChrPhysicsModule@CS@@")) return 0;
+    if (!reader.read(m + layout::kOwnerInDataModule, &owner, sizeof(owner)) || owner != chr) return 0;
+    return m;
+}
+
+inline bool readPhysicsPosition(const IMemoryReader& reader, uintptr_t image_base, uintptr_t chr, float out[3]) {
+    const uintptr_t m = readPhysicsModule(reader, image_base, chr);
+    if (m == 0) return false;
     float p[3];
     if (!reader.read(m + layout::kPhysicsPosition, p, sizeof(p))) return false;
     if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2])) return false;
     std::memcpy(out, p, sizeof(p));
+    return true;
+}
+
+// Orientation quaternion (x, y, z, w) at PhysicsModule+0x50 (A: unit length, yaw agrees with BlockPosition.yaw).
+inline bool readPhysicsOrientation(const IMemoryReader& reader, uintptr_t image_base, uintptr_t chr, float out[4]) {
+    const uintptr_t m = readPhysicsModule(reader, image_base, chr);
+    if (m == 0) return false;
+    float q[4];
+    if (!reader.read(m + layout::kPhysicsOrientation, q, sizeof(q))) return false;
+    for (float v : q) {
+        if (!std::isfinite(v)) return false;
+    }
+    const float len = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+    if (!(len > 0.9f && len < 1.1f)) return false;
+    std::memcpy(out, q, sizeof(q));
     return true;
 }
 
