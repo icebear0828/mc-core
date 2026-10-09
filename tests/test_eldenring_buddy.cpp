@@ -151,3 +151,13 @@ TEST(Buddy, SamplingOnlyReads) {
     (void)buddy::sample(m, kBase);
     EXPECT_EQ(m.regions, before);
 }
+
+TEST(Buddy, TracksTheCountAtPlus80ThatWasObservedToGoFromZeroToOneWhileSummoned) {
+    auto m = world();
+    buddy::Monitor mon;
+    (void)mon.update(buddy::sample(m, kBase));
+    m.put<int32_t>(kMan + buddy::layout::kSummonedFlag, 1);
+    const auto s = buddy::sample(m, kBase);
+    EXPECT_EQ(s.summoned, 1);
+    EXPECT_NE(mon.update(s).find("summoned=1"), std::string::npos);
+}

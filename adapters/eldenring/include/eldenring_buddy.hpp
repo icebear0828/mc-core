@@ -6,7 +6,8 @@
 // CSBuddyMan (stored at 0x14050BFE5). +0x20 is the pending-request slot (-1 = none; tested at 0x1404B8952 and reset to -1 at
 // 0x1404B89CF), +0x24 the active one (copied from +0x20 at 0x1404B89CB), +0x3C the tablet id (read at 0x1404BBE29, looked
 // up by 0x140D28630), +0x88 a busy count (spawn is skipped while it is positive, 0x1404B89B5). What each value is while
-// playing is NOT yet observed: this monitor exists to log it.
+// playing was observed live: idle = request -1, active -1, tablet 0, +0x80 = 0, +0x88 = -1; after using an ash active =
+// 232000 (not the 21200000 an external list claimed), tablet = a ten digit map entity id (1042360100), +0x80 = 1.
 
 #include "eldenring_live.hpp"
 
@@ -22,7 +23,8 @@ inline constexpr uintptr_t kBuddyManInWorldChrMan = 0x1E538; // A
 inline constexpr uintptr_t kRequestId = 0x20;                // A (int32)
 inline constexpr uintptr_t kActiveId = 0x24;                 // A (int32)
 inline constexpr uintptr_t kTabletId = 0x3C;                 // A (int32)
-inline constexpr uintptr_t kBusyCount = 0x88;                // A (int32)
+inline constexpr uintptr_t kSummonedFlag = 0x80;             // B (int32): observed 0 idle, 1 while a ash is summoned
+inline constexpr uintptr_t kBusyCount = 0x88;                // A (int32): observed -1 in both states
 inline constexpr size_t kRawBytes = 0x98;                    // dumped on every change, to find the neighbours' meaning
 } // namespace layout
 
@@ -34,10 +36,12 @@ struct Snapshot {
     int32_t active{-1};
     int32_t tablet{-1};
     int32_t busy{0};
+    int32_t summoned{0};
     std::array<uint32_t, layout::kRawBytes / 4> raw{};
 
     [[nodiscard]] bool sameFields(const Snapshot& o) const {
-        return valid == o.valid && request == o.request && active == o.active && tablet == o.tablet && busy == o.busy;
+        return valid == o.valid && request == o.request && active == o.active && tablet == o.tablet && busy == o.busy &&
+               summoned == o.summoned;
     }
 };
 
@@ -55,6 +59,7 @@ inline Snapshot sample(const live::IMemoryReader& reader, uintptr_t image_base) 
     s.active = field(layout::kActiveId);
     s.tablet = field(layout::kTabletId);
     s.busy = field(layout::kBusyCount);
+    s.summoned = field(layout::kSummonedFlag);
     const uint64_t vt = (static_cast<uint64_t>(s.raw[1]) << 32) | s.raw[0];
     if (vt > image_base && vt - image_base < 0x10000000ull) s.vtable_rva = static_cast<uint32_t>(vt - image_base);
     s.valid = true;
@@ -79,8 +84,8 @@ private:
         char buf[160];
         std::string out;
         if (!s.valid) return prev == nullptr ? "buddy: not available (no world or unreadable)" : "buddy: became unavailable";
-        std::snprintf(buf, sizeof(buf), "buddy: man=%llx vtbl=+%X request=%d active=%d tablet=%d busy=%d%s",
-                      static_cast<unsigned long long>(s.buddy_man), s.vtable_rva, s.request, s.active, s.tablet, s.busy,
+        std::snprintf(buf, sizeof(buf), "buddy: man=%llx vtbl=+%X request=%d active=%d tablet=%d busy=%d summoned=%d%s",
+                      static_cast<unsigned long long>(s.buddy_man), s.vtable_rva, s.request, s.active, s.tablet, s.busy, s.summoned,
                       prev == nullptr ? " (first)" : "");
         out = buf;
         out += "\nbuddy: raw";
