@@ -17,6 +17,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdarg>
+#include <share.h>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -397,7 +398,8 @@ DWORD WINAPI LoaderThread(LPVOID) {
     g_game_dir = exe;
     g_game_dir.resize(g_game_dir.find_last_of("\\/") + 1);
     g_start_ms = GetTickCount64();
-    fopen_s(&g_log, (g_game_dir + "mc_er.log").c_str(), "a");
+    // _fsopen with _SH_DENYNO: other processes (the probes, `type`) can read the log while the game runs.
+    g_log = _fsopen((g_game_dir + "mc_er.log").c_str(), "a", _SH_DENYNO);
     Log("==== eldenring adapter loaded (pid %lu, exe %s) ====", GetCurrentProcessId(), exe);
 
     // Environment self-check: never touch a game that runs EasyAntiCheat.
