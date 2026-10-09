@@ -126,6 +126,19 @@ inline bool readAirborne(const IMemoryReader& reader, uintptr_t image_base, uint
     return m != 0 && reader.read(m + layout::kStandingOnGroundInPhysics, &v, sizeof(v)) && v == 0;
 }
 
+// Raw ground-contact bytes {+0x92, +0x93, +0x1D0, +0x1D1} for diagnostics. False when the module cannot be read.
+inline bool readGroundBytes(const IMemoryReader& reader, uintptr_t image_base, uintptr_t chr, uint8_t out[4]) {
+    const uintptr_t m = readPhysicsModule(reader, image_base, chr);
+    if (m == 0) return false;
+    const uintptr_t offs[4] = {0x92, 0x93, 0x1D0, 0x1D1};
+    uint8_t v[4];
+    for (int i = 0; i < 4; ++i) {
+        if (!reader.read(m + offs[i], &v[i], 1)) return false;
+    }
+    std::memcpy(out, v, 4);
+    return true;
+}
+
 // Orientation quaternion (x, y, z, w) at PhysicsModule+0x50 (A: unit length, yaw agrees with BlockPosition.yaw).
 inline bool readPhysicsOrientation(const IMemoryReader& reader, uintptr_t image_base, uintptr_t chr, float out[4]) {
     const uintptr_t m = readPhysicsModule(reader, image_base, chr);

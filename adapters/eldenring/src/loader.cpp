@@ -444,6 +444,21 @@ bool WantSuppress() {
     return !ms.menu_focused && !ms.popup_open && !ls.screen_loading;
 }
 
+// Diagnostic: the player's ground-contact bytes, one log line each time they change (jump / fall / roll / swim).
+void LogGroundBytesOnChange() {
+    static uint8_t last[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    uint64_t player = 0;
+    uint8_t b[4];
+    if (world == 0 || !SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) || player == 0 ||
+        !detail::readGroundBytes(g_reader, g_img.base, static_cast<uintptr_t>(player), b)) {
+        return;
+    }
+    if (std::memcmp(b, last, 4) == 0) return;
+    std::memcpy(last, b, 4);
+    Log("ground: 92=%u 93=%u 1D0=%u 1D1=%u", b[0], b[1], b[2], b[3]);
+}
+
 DWORD WINAPI KeyThread(LPVOID) {
     bool prev8 = false, prev6 = false, prev7 = false;
     bool prev_digit[MeleeController::kSlots] = {};
@@ -458,6 +473,7 @@ DWORD WINAPI KeyThread(LPVOID) {
             std::lock_guard<std::mutex> g(g_melee_mutex);
             g_melee.tick(dt);
         }
+        if (g_mc_mode.load()) LogGroundBytesOnChange();
         if (g_input_enabled.load()) {
             const int notches = erin::TakeWheelNotches();
             if (notches != 0 && fg && WantSuppress()) {

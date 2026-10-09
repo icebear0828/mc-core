@@ -482,3 +482,19 @@ TEST(EldenRingModel, AirborneIsStandingOnGroundZero) {
     EXPECT_FALSE(detail::readAirborne(m, kBase, kPlayer));
     EXPECT_FALSE(detail::readAirborne(m, kBase, 0)); // unreadable chr: never airborne
 }
+
+TEST(EldenRingModel, GroundBytesAreReadInOrder) {
+    FakeMemory m = makeWorld();
+    const uintptr_t phys = kPlayer + 0x3000;
+    m.put<uint8_t>(phys + 0x92, 1);
+    m.put<uint8_t>(phys + 0x93, 2);
+    m.put<uint8_t>(phys + 0x1D0, 3);
+    m.put<uint8_t>(phys + 0x1D1, 4);
+    uint8_t b[4] = {};
+    ASSERT_TRUE(detail::readGroundBytes(m, kBase, kPlayer, b));
+    EXPECT_EQ(b[0], 1);
+    EXPECT_EQ(b[1], 2);
+    EXPECT_EQ(b[2], 3);
+    EXPECT_EQ(b[3], 4);
+    EXPECT_FALSE(detail::readGroundBytes(m, kBase, 0, b));
+}
