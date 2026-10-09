@@ -981,3 +981,9 @@ Table 1                     Table 2
 - `0x1404547C0` 尾部 `call [rax+0x40]` 是触发动画：与我的反汇编一致，采信（`no_stagger` 实验正是基于此）。
 - `SoloParamRepositoryImp`：构造函数 `0x140D4DB2D lea rax,[rip+0x1e6a994]` → `0x142BB84C8` 为其虚表（我已核对该指令与算术，A）；全局单例地址仍未确定。
 - BulletParam 字符串在 exe 里不存在（回复称 ASCII 匹配 0，我未独立复算）；请求体里哪个字段是 BulletParam ID 仍无证据。
+
+## 22. 方块碰撞方案评估（逆向方方案 vs 字节，2026-10-09）
+- 已核实（A）：`CSHavokManImp` 全局 `0x143D7A0D0`（636 处 rip 引用）；虚表 `0x142B934E8`、`CSPhysWorld` 虚表 `0x142B96978`、`hknpWorld` 虚表 `0x142EF0DD8` 各有 2 处引用（构造函数一带）；`CSPhysWorld` 构造里 `0xB70` 字节分配。`HavokMan+0x98 = CSPhysWorld` 我们的射线（`0xC71D70` → `0xC71AA0`）已在游戏里用了，是实测过的路径。
+- 未核实：`CSPhysWorld+0x08 = hknpWorld`；hknp 里有没有 `hknpBoxShape`（Havok hknp 的盒体通常是 `hknpConvexShape` 的一种创建方式，名字要按 RTTI 确认）；所有 createBody 的调用者、碰撞过滤值、同步点。
+- 风险排序：(1) 碰撞过滤值——玩家角色控制器和敌人到底和哪个层碰撞，不对就穿过；(2) Havok 写锁/同步点——要找到物理步进的任务并在它之外加删刚体；(3) 方块的渲染（我们自己画）与 VoxelWorld 数据同步，不属于逆向。
+- 分阶段建议：A 阶段不逆向：我们自己的 `VoxelWorld` + 射线定位放置面 + 渲染方块 + "软碰撞"（每帧检测玩家与方块 AABB 相交，写玩家物理位置推出/站上方块顶）；只对玩家有效，箭和敌人不受影响，ER 自己的落地探测可能抖动。B 阶段才逆向 Havok 真实刚体。
