@@ -533,6 +533,8 @@ bool PlayerAirborne() {
            detail::readAirborne(g_reader, g_img.base, static_cast<uintptr_t>(p));
 }
 
+bool FileExists(const std::string& path); // defined below
+
 // Diagnostic: +0x70 (position), +0x80 and +0x120 of the player's physics module, twice a second while moving. Answers whether
 // +0x80 is the previous position (fromsoftware-rs: last_update_position) or a velocity (reverser 2026-10-09).
 void LogPhysicsVectors() {
