@@ -32,6 +32,13 @@ inline constexpr uint64_t kFallLogIntervalMs = 250;
 // A null owner (no world yet) must never count as the player.
 inline bool isPlayer(uintptr_t chr, uintptr_t player) { return chr != 0 && chr == player; }
 
+// Fall protection (blocks or our own jump make the game measure a fall against the real ground) skips the game's KillChr for the
+// player. It must not do so once the hit points are already gone: the damage path killed the player, KillChr is what starts the death,
+// and skipping it leaves a player at 0 hp that never dies and never respawns.
+inline bool shouldSkipPlayerKill(bool fall_protect, bool mc_mode, bool blocks_or_recent_jump, int hp) {
+    return fall_protect && mc_mode && blocks_or_recent_jump && hp > 0;
+}
+
 inline bool shouldLogSpEffect(int sp_effect, uintptr_t caller_rva, bool owner_is_player) {
     return owner_is_player && sp_effect == kLandingSkipSpEffect && caller_rva == kLandingSpEffectReturnRva;
 }

@@ -443,11 +443,14 @@ std::atomic<uint64_t> g_movement_layer_ms{0}; // last time one of our movement f
 std::atomic<unsigned> g_kills_skipped{0};
 uintptr_t PlayerChrPtr(); // defined below
 bool BlocksPresent();     // defined with the placed blocks
+bool PlayerDead();        // defined below
 
 void __fastcall KillChrDetour(void* chr) {
     if (reinterpret_cast<uintptr_t>(chr) == PlayerChrPtr() && PlayerChrPtr() != 0) {
         const bool recent = GetTickCount64() - g_movement_layer_ms.load(std::memory_order_relaxed) < 3000;
-        const bool protect = g_fall_protect.load(std::memory_order_relaxed) && g_mc_mode.load(std::memory_order_relaxed) && (BlocksPresent() || recent);
+        // hp 0 already means the damage path killed the player: skipping KillChr then leaves a player at 0 hp who never dies or respawns.
+        const bool protect = creative::shouldSkipPlayerKill(g_fall_protect.load(std::memory_order_relaxed), g_mc_mode.load(std::memory_order_relaxed),
+                                                            BlocksPresent() || recent, PlayerDead() ? 0 : 1);
         const unsigned n = ++g_kills_skipped;
         if (n <= 20) Log("kill: the game kills the player (caller %p, RVA 0x%llX): %s", _ReturnAddress(), static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base), protect ? "SKIPPED (fall protection)" : "allowed");
         if (protect) return;

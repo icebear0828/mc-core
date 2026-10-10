@@ -66,3 +66,14 @@ TEST(EldenRingCreative, ProbeSignaturesParseToTheDocumentedLengths) {
     EXPECT_EQ(Signature::parse(live::sigs::kFallHeight)->size(), 38u);
     EXPECT_EQ(Signature::parse(live::sigs::kHasSpEffect)->size(), 70u);
 }
+
+TEST(EldenRingCreative, FallProtectionNeverSkipsTheKillOfAPlayerWhoAlreadyHasNoHitPoints) {
+    // 2026-10-09 log: a 25.7 m fall zeroed the hit points through the damage path, then both kill wrapper calls had their KillChr skipped
+    // by fall protection, so the player sat at hp=0/576 without ever dying and could not respawn.
+    EXPECT_TRUE(shouldSkipPlayerKill(true, true, true, 316));
+    EXPECT_FALSE(shouldSkipPlayerKill(true, true, true, 0));
+    EXPECT_FALSE(shouldSkipPlayerKill(true, true, true, -5));
+    EXPECT_FALSE(shouldSkipPlayerKill(false, true, true, 316)); // fall_protect=0
+    EXPECT_FALSE(shouldSkipPlayerKill(true, false, true, 316)); // MC mode off
+    EXPECT_FALSE(shouldSkipPlayerKill(true, true, false, 316)); // no blocks and no recent jump of ours
+}
