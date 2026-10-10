@@ -1,32 +1,32 @@
 # 艾尔登法环 Minecraft 适配器：交接文档
 
-给**新开的 Claude Code 对话**（或接手的人）。先读完这一份，先看紧接着的"0. 当前状态"，再按"第 11 节"的顺序动手。最后更新：2026-10-10 深夜，分支见第 0 节。
+给**新开的 Claude Code 对话**（或接手的人）。先读完这一份，先看紧接着的"0. 当前状态"，再按"第 11 节"的顺序动手。最后更新：2026-10-10 深夜（阴影、弩箭、命中伤害已合入 main），分支见第 0 节。
 需要查证据时，权威文档是 `docs/ELDENRING_REVERSE.md`（逆向事实与审计）和 `docs/ELDENRING_VERIFY_CHECKLIST.md`（逐项验证状态，F1~F22 是近战/生存/视觉/音效）。
 
 ---
 
-## 0. 当前状态（2026-10-10 深夜，最新，先读这里）
+## 0. 当前状态（2026-10-10 深夜，阴影 + 弩箭 + 僵尸召唤已合入 main，最新，先读这里）
 
 **分支与部署**
-- `origin/main` = `c94911c`：含**创造模式**（PR #4）和**生存模式站方块 12 s 假死修复**（PR #5），以及更早的召唤探针、打包框架、CI。
-- **`feat/summon`（已推送，未合入 main）= `80435b4`**：僵尸召唤全套（见下"召唤物"）。win 仓库 `D:\game\mc\mc-core` 停在这个提交，游戏目录 `dinput8.dll` SHA256 `a45b1668f940b0278ca17ffcf4e620d756b213a4a59451a0b23d444d5dde252a`（两边一致）。合并走 PR：`gh pr create --base main --head feat/summon`，`gh pr merge N --merge`（GitHub 的 TLS 常断，循环重试并核对 `git rev-parse` 两边一致）。
-- `feat/mc-jump`（远端，未合并，**搁置**，见下）。
-- **项目有 PreToolUse 钩子禁止直接 `git push` 到 main/master，必须走分支 + PR。**
-- 测试：mac `./build/bin/mc_tests` **682 个全过**；Python `uv run --with pillow --with pytest python -m pytest tests -q` **73 个全过**。win 编译 `/W4 /WX` 无 error 无 warning。
-- **win 构建环境变了**：Visual Studio 2022 Community 被卸载后重装，Windows SDK 22621 残缺，`build-win` 已删缓存重新配置为 **SDK 10.0.19041.0**、MSVC 19.44（命令不变，见第 2 节）。想用回 22621，在 VS Installer 里加 "Windows 11 SDK (10.0.22621)" 即可。
+- **`origin/main`** 现在含：创造模式（PR #4）、生存站方块假死修复（PR #5），以及本次一个 PR 合入的 `feat/bullet-log`（它是从 `feat/summon` 和 `feat/shadow` 一路叠上来的）：**僵尸召唤**、**脚下阴影**、**弩箭发射与命中伤害**。三者都经用户实机确认。合并走 PR：`gh pr create --base main --head <分支>`，`gh pr merge N --merge`（GitHub 的 TLS 常断，循环重试并核对 `git rev-parse` 两边一致）。**项目有 PreToolUse 钩子禁止直接 `git push` 到 main/master，必须走分支 + PR。**
+- `feat/mc-jump`（远端，未合并，**搁置**）。逆向方在 win 上的 `feat/lighting-root-cbv-probe`（他们的光照探针，**别合并**，见第 8 节）。
+- 测试：mac `./build/bin/mc_tests` **715 个全过**；Python `uv run --with pillow --with pytest python -m pytest tests -q` **74 个全过**。win 编译 `/W4 /WX` 无 error 无 warning。
+- **win 上有两份工作树，别弄混**：①`D:\game\mc\mc-core` 被逆向方切到 `feat/lighting-root-cbv-probe`（他们的探针，**不要动、不要往里 pull**）；②**我方构建用独立 worktree `D:\game\mc\mc-core-bullet`**（`git worktree add`，detached，`git checkout --detach origin/<分支>` 后构建）。它的 `build-win` 是单独配置的，依赖源码复用主工作树的缓存、离线：`cmake -S . -B build-win -G "Visual Studio 17 2022" -A x64 -DCMAKE_SYSTEM_VERSION=10.0.19041.0 -DFETCHCONTENT_SOURCE_DIR_MINHOOK=D:/game/mc/mc-core/build-win/_deps/minhook-src -DFETCHCONTENT_SOURCE_DIR_IMGUI=D:/game/mc/mc-core/build-win/_deps/imgui-src -DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=D:/game/mc/mc-core/build-win/_deps/googletest-src -DFETCHCONTENT_FULLY_DISCONNECTED=ON`。
+- **游戏目录里的 `dinput8.dll` 是谁的？** 逆向方会把它换成他们的探针构建。我方构建产物是 `D:\game\mc\mc-core-bullet\build-win\bin\eldenring\dinput8.dll`，上一次部署的哈希 `b788b5c1163060597211c5bbb360c724a6a7a6986d0a33151b89a74d5988fd62`。备份：`dinput8.dll.bak_pre_lightcap`（我方、只含阴影，`3c5e812d…`）、`dinput8.dll.bak_reverser_probe`（逆向方，`f4dae1d6…`）。**部署前先 `certutil` 看当前是谁的；用 `cmd` 的 `copy` 部署**；shell 里 `echo "x =$(...)"` 在 zsh 会把 `=word` 展开，打印哈希时标签后面别紧跟 `=`。
+- **win 构建环境**：Visual Studio 2022 Community 重装过，Windows SDK **10.0.19041.0**、MSVC 19.44（命令不变，见第 2 节）。
 - **玩 mod 前先退出 RTSS（RivaTuner）**：它和我们的 `Present` 钩子冲突，带我们的 dll 时主菜单随机崩溃（`exe+0x3055359`、`d3d11.dll+0xad36e`，退出 RTSS 就好；见记忆 `er-rtss-crash`）。
 - 仓库里有用户的未跟踪/未提交文件 `docs/123/`（逆向方回复），**不是我们写的，别动，提交时别 `git add -A`**。
 
-**游戏目录里的开关文件**（`C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game`）：`mc_er_overlay.txt`、`mc_er_damage.txt`、`mc_er_input.txt`、`mc_er_hit.bin`（必备）、`mc_er_steve.txt`（配置，**保持 `mc_jump=0`、`fall_reset=0`**；原文件备份 `mc_er_steve.txt.bak_before_mcjump`）、`mc_er_summon.txt`（**F2 和僵尸刷怪蛋都要它**）、`mc_er_summonhide.txt`（隐藏召唤物原模型并画 MC 僵尸）、`mc_er_creativelog.txt`（只读探针，日志多，稳定后可删）。`mc_er_chrscan.txt`（召唤物结构扫描）和 `mc_er_buddylog.txt`（占满一个 CPU 核）不用时删掉。
+**游戏目录里的开关文件**（`C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game`）：`mc_er_overlay.txt`、`mc_er_damage.txt`、`mc_er_input.txt`、`mc_er_hit.bin`（必备）、`mc_er_steve.txt`（配置，**保持 `mc_jump=0`、`fall_reset=0`**；原文件备份 `mc_er_steve.txt.bak_before_mcjump`）、`mc_er_summon.txt`（**F2 和僵尸刷怪蛋都要它**）、`mc_er_summonhide.txt`（隐藏召唤物原模型并画 MC 僵尸）、`mc_er_creativelog.txt`（只读探针，日志多，稳定后可删）。`mc_er_chrscan.txt`（召唤物结构扫描）和 `mc_er_buddylog.txt`（占满一个 CPU 核）不用时删掉。**弩箭相关**：`mc_er_bulletlog.txt`（只读记录 `spawn_bullet` 请求体，前 40 次，并开启 `PROJ-HIT`/`PDC-STATS` 命中日志）、`mc_er_bulletfire.txt`（F3 发射一支弩箭）、`mc_er_arrowdmg.txt`（我们的弩箭命中伤害换成 MC 伤害）、`mc_er_bullet.bin`（请求体模板，272 字节，第一次真射击自动生成，**不是开关文件，别删**，删了要重新真射一发）。`mc_er_lightcap.txt` 是逆向方探针的开关，我们的 dll 不读它。
 
 **已完成并经用户实机确认**
 1. **创造 / 生存模式（F5，MC 模式内，默认生存）**：创造 = 背包物品选取区 + 摔落伤害清零 + 物品不消耗 + 无血/饥饿/经验条；左上角显示模式名。逻辑集中在 `eldenring_creative.hpp`。
 2. **创造飞行（双击空格）**：`eldenring_flight.hpp`。自己积分位置，只写 `PhysicsModule +0x70/+0x80` 和同步请求字节 `+0x91`（游戏自己的"设置位置"也写它，`0x14045C910` 消费并清零，用户同意）；游戏每隔一段把物理坐标整体平移 8 m 的整数倍（浮动原点），`followRebase` 跟随；飞行时 W/A/S/D/空格/Shift 对游戏隐藏（DirectInput）；Steve 朝向取相机朝向。**飞行没有地形碰撞（能穿地面和墙）。**
 3. **创造模式不会死**（HP>0 时）：`0x14044E240` 摔落高度对玩家返回 0；击杀包装 `0x1403EDA70` 整个跳过；`0x14044E3A0`"滞空是否超限"返回否（**真正的原因**：连续滞空 `FallModule+0x18` 到 12.00 s 会排队一个"处死"事件，与高度无关）。生存模式同样在"站在放置的方块上/我们的移动逻辑 3 s 内"时回答否。HP=0 时一律放行，真死亡可复活。证据见 `ELDENRING_REVERSE.md` §31、§32。
    - **已知限制（用户 2026-10-10 实机发现，暂不处理）：创造模式不是无敌的。** 上面三个钩子只挡"摔落/滞空处死"，不挡战斗伤害：创造模式下被打仍会掉血、HP 到 0 仍会死（HP=0 时钩子一律放行）。MC 创造模式应当无敌，所以这是与 MC 行为的差距，不是回归。要做的话：在 `ProcessDamageContext`（`0x448910`）的玩家受害者分支里，创造模式下把最终伤害 `ctx+0x228` 置 0（沿用 `overrideFinalDamage`），不要往血量字段写值；虚空/`/kill` 类的真死亡仍应放行。
-4. **召唤物（僵尸）**——`feat/summon`，流程见下。
+4. **召唤物（僵尸）**——已合入 main（原 `feat/summon`），流程见下。
 
-**召唤物管线（`feat/summon`）**
+**召唤物管线（已合入 main）**
 - 触发：F2，或**创造模式选取区里的"僵尸刷怪蛋"拿在手里右键**（生存模式用掉一个；3 s 冷却）。都走 `QueueSummon` → 游戏线程写 `CSBuddyMan`（出生点 `+0xA0`、朝向 `+0xB0`、石碑 `+0x3C`、请求 `+0x20`=232000，群狼 `npc 4070 team 47 hp 500`，**一次三只**）。
 - 识别：每帧 `enumerateEnemies(..., include_dead=true)` 取 `team 47`。**必须包含已死的**：不包含时被一击打死的召唤物直接从列表消失，永远读不到 `hp=0`（这是死亡动画一度不触发的原因）。
 - 隐藏原模型：狼的结构是 `chr+0x50 → CSChrModelIns → +0x18/+0x188 → CSModelDispEntity`，和玩家部件是同一个类，`+0x20` 是显示标志（狼 `0xA7`，玩家 `0x100A1`，最低位=正在绘制）。每帧渲染前清最低位（用户同意只清这一位）；MC 模式关掉时还原；按 RTTI 类名动态收集，不写死偏移。
@@ -40,11 +40,20 @@
 3. 骷髅（人形，`skeleton.geo.json` 已在，可直接用同一管线）和苦力怕（四条腿，需要新的走路动画）；召唤物的行为（现在是狼的 AI）。
 4. **站在放置的方块上走不动**（老问题，与起跳无关）：日志按着方向键 `feet` 的 x/z 几乎不动。怀疑游戏的角色控制器在 Havok 代理处移动，而我们每帧把 `+0x70` 推回方块顶；可以试在方块逻辑里也用 `+0x91` 同步代理（**写新字段前先问用户**）。
 5. **MC 起跳搁置**（用户决定不做）：试过 v2（空格对游戏隐藏、只写位置、按 MC 逐 tick 数值，`peak 1.25 m / 0.55 s`，起跳本身没问题），方案在 `feat/mc-jump`。
-6. 飞行地形碰撞、体感/光照（`feat/feel`，见下）、30 分钟稳定性长跑（第 9 节 P0）。
+6. 飞行地形碰撞、体感/光照（见下）、30 分钟稳定性长跑（第 9 节 P0）。
+7. **创造模式不是无敌的**（用户 2026-10-10 实机发现，暂不处理）：现有三个钩子只挡摔落/滞空处死，不挡战斗伤害，HP 到 0 仍会死。要做的话在 `ProcessDamageContext` 的玩家受害者分支里，创造模式下把 `ctx+0x228` 置 0，不写血量字段。
+8. **盾牌 / 副手 / MC 双持 / 盔甲**（用户 2026-10-10 提出，下一批）：盾牌判定可以不靠逆向——`ProcessDamageContext` 钩子里已经在改玩家受到的伤害（吸收、图腾夹伤），按攻击者位置和玩家朝向判正面 100°，挡住就 `ctx+0x228=0` 并放 MC 盾牌音；缺的是①被挡时不要受击硬直和击退（硬直决策点逆向方至今没给出能用的，§21.4）、②盾牌外观（从 client jar 提取模型和贴图，只放游戏目录）、③副手格和右键举盾（右键现在是吃东西，要和副手栏一起设计）。盔甲：隐藏原生盔甲槽（槽 2/3/5），在 Steve 上画 MC 盔甲层，素材同样本地提取。建议这几项放在一起设计。
 
-**脚下接触阴影（`feat/shadow`，用户 2026-10-10 实机确认有影子，未合入 main）**：`eldenring_shadow.hpp`（地面高度=向下射线与方块顶面取高、按离地高度衰减、单位圆盘）；`SteveRenderer::drawShadows` 画玩家和召唤物脚下的黑色柔边圆片（`PSShadow`，被场景深度和方块遮挡）；射线在游戏线程 `ShadowGroundStep`，配置 `shadow=0` 关闭。坑：管线描述复制自 `pd` 时 `pd.VS` 指向已释放的 blob，创建失败，必须自己再编译一份 VS。
+**脚下接触阴影（已合入 main，用户实机确认）**：`eldenring_shadow.hpp`（地面高度=向下射线与方块顶面取高、按离地高度衰减、单位圆盘）；`SteveRenderer::drawShadows` 画玩家和召唤物脚下的黑色柔边圆片（`PSShadow`，被场景深度和方块遮挡）；射线在游戏线程 `ShadowGroundStep`，配置 `shadow=0` 关闭。坑：管线描述复制自 `pd` 时 `pd.VS` 指向已释放的 blob，创建失败，必须自己再编译一份 VS。
 
-**体感/光照（阴影之后的下一步：屏幕采样环境光，逆向方的真实光照参数 L1 另行等待）**：现在 `PSMain` 只有 MC 固定面明暗，颜色直接写进显示空间的后缓冲（交换链格式 24 = R10G10B10A2）。可用：半球环境光、距离雾。**不可照搬**：ACES + 伽马和写死的太阳/天空/雾数值。两条路：①屏幕采样；②逆向方给出游戏的太阳/环境光/雾参数（需要 A 级运行时地址）。
+**弩箭：发射 + 命中伤害（已合入 main，用户实机确认）**。F3 发射一支真实的游戏弩箭，命中后伤害换成 MC 的。证据与反汇编见 `ELDENRING_REVERSE.md` §35~§35.6，**逆向方的弩箭表（`20007000` 等、`+0x0C` 是 ID、`+0x08` 是发射者/目标句柄）全部不对，别用**。要点：
+- `spawn_bullet`（`0x1403A2CB0`，`sigs::kSpawnBullet`）：`(CSBulletManager* [0x143D667A8], uint32_t* out_handle, request*, r9)`。**`r9` 只是游戏写状态码（0=成功）的指针，零缓冲就行。**请求体 0x110 字节：`+0x00` 发射者句柄（玩家 `ChrIns+0x08`）、**`+0x08` 是参数表的行 ID（不是目标句柄，-1/0/玩家句柄会被拒绝）**、`+0x1C` 子弹 ID、`+0x44` 标志（位 3 必须置位）、`+0x50` 行优先矩阵（right/up/forward/position）、`+0xB0` 置 0 安全。弩 + 普通弩箭：行 ID `0x06455A50`、子弹 ID **56**（跨会话不变）。
+- 模板：第一次真射一发时，`SpawnBulletDetour` 把请求体存成游戏目录的 `mc_er_bullet.bin`，之后每次启动读取，F3 就不需要先射一发、也不需要手持弩。换弹药（行 ID 或子弹 ID 变）才会重写。纯逻辑在 `eldenring_bullet.hpp`（`buildFireRequest`、`templateUsable`、`boltDamageEr` 等），有测试。
+- 发射在游戏线程（`ClampDetour`）里调用，带 SEH（`SpawnBulletSafe`）。F3 → `QueueBulletFire` → `g_bullet_fire_pending` → `RunBulletFire`。
+- 命中：弩箭击中敌人时 `ProcessDamageContext` 看到 **`u8[DA]==2`、`attacker` 参数是玩家、`ctx+0x1D8` 是子弹对象**（`6` 只是玩家被箭射时的值）。`HandleProjectileHit` 在 `mc_er_arrowdmg.txt` 存在、最近一次 `spawn_bullet` 是弩箭（ID 56）且在 4 s 内时，把 `ctx+0x228` 换成 `boltDamageEr`（MC 弩箭 9 点，按敌人最大生命值的 5% × 9/7 折算，与近战同口径）。实测 `max_hp=219` 的敌人每发 14，F3 与真射一致（引擎原来算 13~25 / 74）。
+- **没做**：把游戏的弩箭模型换成 MC 箭（要读子弹位置，`CSBulletIns` 虚表 `0x142A28EC0`、RTTI 已核，但位置偏移没有证据，需要自己做只读探针）；MC 右键拉弓输入与蓄力；击退、命中音效/标记；其他弹药和弓（每种要真射一发学它的行 ID 和子弹 ID，用户没有弓）。
+
+**体感/光照（阴影之后的下一步；未开始写渲染侧）**：现在 `PSMain` 只有 MC 固定面明暗，颜色直接写进显示空间的后缓冲（交换链格式 24 = R10G10B10A2）。可用：半球环境光、距离雾。**不可照搬**：ACES + 伽马和写死的太阳/天空/雾数值。两条路：①屏幕采样（不依赖逆向，要在画角色前拷一份后缓冲）；②读游戏真实光照。**②的现状（`ELDENRING_REVERSE.md` §34）**：逆向方的同进程昼夜差分显示，`SetGraphicsRootConstantBufferView` root 1（调用点返回地址 `0xECBCF0`，绑定函数 `0xECBCC1` 起，分配器 `0xECC2B0`）里堆内偏移 `+0xC00` 的 256 字节缓冲随昼夜剧变（A 级，我核对过日志）。**但字段含义是推测**（白天 `(-0.4175, 0.7063, 0.5645)` 长度 0.996，更像太阳方向；夜晚同偏移含义变了），只有两个时间点，且同一调用点每帧调用 11 次，"第几次"跨帧是否稳定没验证。他们在 win 上的探针每次调用都加互斥锁，**不能原样合入**。
 
 **待逆向清单：`docs/REVERSE_REQUESTS.md`**；逆向方回复一律**先核对字节再采信**（第 8 节）。已被推翻的结论汇总在 `ELDENRING_REVERSE.md` §29~§32（例：`0x14044E090` 不是"落地复位"；`create.md` 的飞行 Mode 3、`FallModule+0x1D` 免死、BulletParam 数值表不可信；`spawn.md` 第二版的字节大多对得上，但 ID 体系仍以我们实测为准）。
 
@@ -101,6 +110,9 @@
 | `eldenring_flight.hpp` | 创造飞行：双击空格、方向、单帧积分、`followRebase`（跟随游戏 8 m 坐标重基）、`bodyYaw` |
 | `eldenring_chrscan.hpp` | 角色结构只读扫描（RTTI 类名）、`collectChrDispFlagAddresses`（召唤物模型的显示标志地址）、隐藏/还原绘制位 |
 | `eldenring_mobs.hpp` | `MobRegistry`：每只召唤物的走路动画、受击红闪、死亡倒地；有模型文件时输出每骨骼矩阵 |
+| `eldenring_shadow.hpp` | 脚下阴影：`groundBelow`（射线 + 方块顶面取高）、`shadowAt`（随高度衰减）、`shadowMatrix`、`buildShadowDisc`、`falloff` |
+| `eldenring_bullet.hpp` | 弩箭：请求体解码/十六进制转储、`buildFireRequest`（用真实模板构造请求）、`templateUsable/templateChanged`、`boltDamageEr`、`isPlayersBoltHit`、`muzzle`、`LogBudget` |
+| `eldenring_handlescan.hpp` | 只读搜索一个 32 位值出现在哪些结构里（含一层指针），当时用来找 `+0x08`；留作通用工具 |
 | `eldenring_jump.hpp` | MC 起跳的数值与 `McJumpArc`（起跳实验已搁置，代码保留） |
 | `eldenring_fp.hpp` | 第一人称矩阵链（`itemPose`/`eatPose`/`bareArmPose`/`itemDisplay`/`walkBob`/`handSway`）、`HandAnimator`、`SwayFilter`、`toHost`（MC 右手系 → 渲染左手系） |
 | `eldenring_particles.hpp` | 粒子系统、受击镜头倾斜曲线 |
@@ -134,6 +146,7 @@
 | `ApplyHPChange`（调用，非钩子） | `0x437450` | `sigs::kApplyHpChange` | 回血，**游戏线程** |
 | 射线包装（调用） | `0xC71D70` | `sigs::kRaycastWrapper` | 墙体遮挡，过滤器 `0x5D`，在 `DamageQueue` 里（游戏线程）调用 |
 | 敌人伤害入口（虚表调用） | `vfunc[7]`=`0x4455C0` | — | 我们造成伤害：单次调用，引擎自己算硬直/音效/仇恨/死亡 |
+| 弩箭发射 `spawn_bullet` | `0x3A2CB0` | `sigs::kSpawnBullet` | 只读记录请求体、存模板；F3 也调用它（游戏线程，SEH）。`r9` 是状态码指针 |
 | D3D12 | Present / ResizeBuffers / ExecuteCommandLists / CreateDepthStencilView | — | 覆盖层、命令队列捕获、深度缓冲识别 |
 | DirectInput | `CreateDevice`、设备 `GetDeviceState/GetDeviceData` | — | 吞鼠标键、取左/右键边沿和滚轮 |
 
@@ -145,7 +158,7 @@
 
 ### 5.1 开关文件（空文件即可，存在就启用）
 
-`mc_er_overlay.txt`（覆盖层）、`mc_er_damage.txt`（伤害功能）、`mc_er_input.txt`（输入拦截）、`mc_er_hit.bin`（**必须**，见 5.2）、`mc_er_steve.txt`（配置，见下）、`mc_er_physlog.txt`（物理向量日志）、`mc_er_hitlog.txt`（`HIT-IN` 受击日志）、`mc_er_hitvfx.txt`（装受击特效钩子）、`mc_er_buddylog.txt`（召唤管理器只读探针，**会占满一个 CPU 核**）、`mc_er_summon.txt`（让 F2 触发一次群狼召唤）、`mc_er_summonhide.txt`（隐藏召唤物原模型、画 MC 僵尸）、`mc_er_chrscan.txt`（F2 后扫描召唤物结构，只读）、`mc_er_creativelog.txt`（创造模式只读探针：事件分发器、击杀包装等）、`mc_er_nolos.txt`（**应急**：关闭墙体遮挡）、`mc_er_anyvictim.txt`（不等受害者被更新，有小概率与 worker 线程竞争）。
+`mc_er_overlay.txt`（覆盖层）、`mc_er_damage.txt`（伤害功能）、`mc_er_input.txt`（输入拦截）、`mc_er_hit.bin`（**必须**，见 5.2）、`mc_er_steve.txt`（配置，见下）、`mc_er_physlog.txt`（物理向量日志）、`mc_er_hitlog.txt`（`HIT-IN` 受击日志）、`mc_er_hitvfx.txt`（装受击特效钩子）、`mc_er_buddylog.txt`（召唤管理器只读探针，**会占满一个 CPU 核**）、`mc_er_summon.txt`（让 F2 触发一次群狼召唤）、`mc_er_summonhide.txt`（隐藏召唤物原模型、画 MC 僵尸）、`mc_er_chrscan.txt`（F2 后扫描召唤物结构，只读）、`mc_er_creativelog.txt`（创造模式只读探针：事件分发器、击杀包装等）、`mc_er_bulletlog.txt` / `mc_er_bulletfire.txt` / `mc_er_arrowdmg.txt`（弩箭，见第 0 节）、`mc_er_nolos.txt`（**应急**：关闭墙体遮挡）、`mc_er_anyvictim.txt`（不等受害者被更新，有小概率与 worker 线程竞争）。
 
 ### 5.2 `mc_er_hit.bin`（576 字节，必备）
 
@@ -157,7 +170,7 @@
 
 ### 5.4 热键（游戏窗口在前台时）
 
-`F2` 召唤（需 `mc_er_summon.txt`；僵尸刷怪蛋右键走同一条流程）· `F4` 截图（**别占用**）· `F5` 生存/创造（MC 模式内）· 双击空格 创造飞行 · `F6` MC 模式开关 · `F7` 切换深度候选（标定） · `F8` 打最近的敌人 · `F9` 逐槽隐藏部件（屏幕黄字显示槽号，`F6`/`F10` 会复位）· `F10` 第一人称 · `F11` 打印部件槽快照 · `F12` 记录 240 帧位置轨迹 · `I` 背包（Esc/再按 `I` 关；打开后：左键拿/放/合并/交换，右键拿一半/放一个，Shift+左键在热键栏和主背包间移动，数字键把悬停格与热键栏对换，物品栏面板上方是 17 种物品的创造选取区）· 滚轮/数字 `1~9` 切热键栏 · 右键 吃东西 · 左键 攻击 · 空格（写死）起跳判定。
+`F2` 召唤（需 `mc_er_summon.txt`；僵尸刷怪蛋右键走同一条流程）· `F3` 发射一支弩箭（需 `mc_er_bulletfire.txt` 和 `mc_er_bullet.bin`；400 ms 冷却）· `F4` 截图（**别占用**）· `F5` 生存/创造（MC 模式内）· 双击空格 创造飞行 · `F6` MC 模式开关 · `F7` 切换深度候选（标定） · `F8` 打最近的敌人 · `F9` 逐槽隐藏部件（屏幕黄字显示槽号，`F6`/`F10` 会复位）· `F10` 第一人称 · `F11` 打印部件槽快照 · `F12` 记录 240 帧位置轨迹 · `I` 背包（Esc/再按 `I` 关；打开后：左键拿/放/合并/交换，右键拿一半/放一个，Shift+左键在热键栏和主背包间移动，数字键把悬停格与热键栏对换，物品栏面板上方是 17 种物品的创造选取区）· 滚轮/数字 `1~9` 切热键栏 · 右键 吃东西 · 左键 攻击 · 空格（写死）起跳判定。
 
 ---
 
@@ -201,6 +214,8 @@
 - 相机任务 `0x1403BC070` 是 ChrCam 的写入者（实测 changed=0；真正写入者是 `0x1403B11D0`）。
 - `0x1404547C0/0x1404548A0` 是未格挡受击硬直的派发（只在**已格挡**分支）；`0x437A80` 是防御姿态（返回 `module0+0x138<=0`）；`0x448627` 写受击者生命值（写 `ctx+0x228` 最终伤害）；`BulletRequest` 大小 0xC0（≥0x101）。详见 REVERSE §20。
 - `ELDENRING_VERIFIED_EVIDENCE.md`（引用过它，但不在本仓库）。
+- **弩箭（§34~§35）**：`BulletParam` ID `20007000/20007800/…`（外部资料，实测是 56）；请求体 `+0x08` 发射者、`+0x0C` ID、`+0x20` 目标（实际 `+0x00` 发射者、`+0x08` 参数行 ID、`+0x1C` 子弹 ID）；"`+0x08` 是目标/锁定句柄"；`r9` "无语义"（我们也错过一次：它是状态码指针）；"`+0xB0` 必须为 0"（真实请求里非 0，置 0 实测安全）；"`0x140480EF0` 是阵营判定、玩家与 team 47 互不伤害"（无字节证据）；"`CSBulletIns+0x50` 是矩阵、`VF[6]` 是矩阵读取"（无证据）；命中 `u8[DA]==6`（那是玩家被箭射；打敌人是 2）。
+- **光照（§34）**：`d3d12_lighting_capture_hook.hpp` 第一版（钩子从未安装，"真实输出"是单测假数据）；白天 `0x30F5F0400` 对夜晚 `0x351150400`（配对错了：后者是打包数据，且是两个进程）；`+0xC00` 各字段的"太阳强度/仰角/天空漫反射"标签（A 级的是数值，含义是推测）。
 
 ---
 
@@ -249,6 +264,6 @@
 
 1. 读：本文件 → `docs/ELDENRING_VERIFY_CHECKLIST.md`（尤其 F 节）→ 需要时查 `docs/ELDENRING_REVERSE.md` 对应章节（目录：§1 已确认、§3 受击管线、§8~§18 近期审计与任务单）。
 2. 检查状态：`git status -sb && git log --oneline -5`；`ssh win 'cd /d D:\game\mc\mc-core && git rev-parse --short HEAD'`；`ssh win 'tasklist | findstr /I "eldenring start_protected"'`；`ssh win 'certutil -hashfile "<游戏目录>\dinput8.dll" SHA256'` 与 win 构建产物对比。
-3. 跑基线：`cmake --build build -j8 && ./build/bin/mc_tests`（`feat/summon` 682 个应全过）和 Python（`uv run --with pillow --with pytest python -m pytest tests -q`，73 个）。
-4. 问用户这次想做什么。第 0 节"未解决 / 待办"里有当前最想做的：召唤/死亡粒子、人形体型的单体骨灰（碰撞体积）、骷髅/苦力怕、站方块走不动；**P0 的 30 分钟稳定性长跑仍没跑过**。
+3. 跑基线：`cmake --build build -j8 && ./build/bin/mc_tests`（715 个应全过）和 Python（`uv run --with pillow --with pytest python -m pytest tests -q`，74 个）。
+4. 问用户这次想做什么。第 0 节"未解决 / 待办"里有当前最想做的：弩箭外观与 MC 拉弓输入、盾牌/副手/双持/盔甲、光照（屏幕采样环境光）、召唤/死亡粒子、人形体型的单体骨灰（碰撞体积）、骷髅/苦力怕、站方块走不动；**P0 的 30 分钟稳定性长跑仍没跑过**。
 5. 每个功能结束时：更新清单（F 节新增条目）、项目记忆（`~/.claude/projects/-Users-c-mc-core/memory/`）、如果有新逆向结论写进 `ELDENRING_REVERSE.md` 并分级。
