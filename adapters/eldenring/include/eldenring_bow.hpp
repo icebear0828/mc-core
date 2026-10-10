@@ -177,4 +177,19 @@ inline AimError aimError(const float aim[3], const float flight[3]) {
     return {dy, fp - ap};
 }
 
+
+// The game turns the flight of a bolt we spawn from a replayed request by this much about the vertical axis (6 shots measured: +32.0, +30.6, +28.9 isolated,
+// +32.9, +30.5, +29.7 overlapping; REVERSE 35.9). We give the aim turned by the opposite angle. mc_er_steve.txt: bolt_yaw_offset_deg.
+inline constexpr float kBoltYawOffsetDeg = 31.f;
+
+// Turns `v` about the vertical (+y) axis so that its yaw (atan2(x, z)) grows by `deg`; the height and the length do not change.
+inline void rotateYaw(const float v[3], float deg, float out[3]) {
+    const float r = deg * 3.14159265f / 180.f;
+    const float c = std::cos(r), s = std::sin(r);
+    const float x = v[0], y = v[1], z = v[2];
+    out[0] = x * c + z * s;
+    out[1] = y;
+    out[2] = z * c - x * s;
+}
+
 } // namespace eldenring::bow

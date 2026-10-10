@@ -1173,6 +1173,7 @@ std::atomic<float> g_last_shot_damage{eldenring::bullet::kCrossbowDamage}; // th
 std::atomic<float> g_pending_shot_damage{eldenring::bullet::kCrossbowDamage}; // of the shot queued for the game thread
 std::atomic<float> g_bow_power{0.f};             // 0..1 while the bow is drawn (third-person arms), written by the key thread
 std::atomic<float> g_bow_ticks{0.f};             // ticks drawn (first-person pose)
+std::atomic<float> g_bolt_yaw_offset{eldenring::bow::kBoltYawOffsetDeg}; // mc_er_steve.txt: bolt_yaw_offset_deg (0 = no compensation)
 std::atomic<uint64_t> g_last_bullet_tick_ms{0}; // the last spawn_bullet call (the player's real shot or ours): hits within 3 s after it are logged whatever they look like
 
 void HandleProjectileHit(void* module, void* attacker, uint8_t* ctx) {
@@ -2889,6 +2890,8 @@ struct PosProbe {
     int samples{0};
     bool isolated{true};              // no other shot in the 4 s before this one: [mgr+0x0] can only be this bullet
     bool have2{false};
+    bool have_cam{false};
+    float cam_forward[3]{};          // the camera's forward at the shot: for a real shot, how far the game's own request is from it
     float pos2[3]{}, q2[4]{};         // the bullet object at sample 2 (500 ms)
     std::vector<ProbeBlock> baseline; // the first snapshot (slot, manager and what their pointers lead to): later ones are compared with it
 };
@@ -2913,6 +2916,14 @@ void PosProbeStart(uint64_t manager, uint32_t handle, const float p0[3], const f
     g_pos_probe.isolated = g_pos_probe.t0_ms - s_prev_start_ms > 4000;
     s_prev_start_ms = g_pos_probe.t0_ms;
     g_pos_probe.active = true;
+    {
+        CameraPose cam;
+        const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+        if (world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
+            std::memcpy(g_pos_probe.cam_forward, cam.forward, sizeof(g_pos_probe.cam_forward));
+            g_pos_probe.have_cam = true;
+        }
+    }
     uint32_t first = 0;
     SafeCopy(g_pos_probe.entry, &first, sizeof(first));
     Log("bullet pos: handle 0x%08X -> slot %zu at %p (first dword 0x%08X) muzzle=(%.2f %.2f %.2f) aim=(%.3f %.3f %.3f)", handle, slot, reinterpret_cast<void*>(g_pos_probe.entry),
@@ -3111,6 +3122,10 @@ void PosProbeTick() {
                 eldenring::bow::quatForward(q4, qf);
                 const eldenring::bow::AimError by_motion = eldenring::bow::aimError(g_pos_probe.aim, flight);
                 const eldenring::bow::AimError by_quat = eldenring::bow::aimError(g_pos_probe.aim, qf);
+                if (g_pos_probe.have_cam) {
+                    const eldenring::bow::AimError req_vs_cam = eldenring::bow::aimError(g_pos_probe.cam_forward, g_pos_probe.aim);
+                    Log("AIMCAL: the request's aim is yaw %+.1f pitch %+.1f deg from the camera's forward at the shot (a real shot shows what the game's own request does)", req_vs_cam.yaw_deg, req_vs_cam.pitch_deg);
+                }
                 Log("AIMCAL: %s aim=(%.3f %.3f %.3f); moved %.1f m in 0.5 s; flight by motion: yaw %+.1f pitch %+.1f deg off the aim; by quaternion: yaw %+.1f pitch %+.1f deg",
                     g_pos_probe.isolated ? "ISOLATED" : "overlapping (do not trust)", g_pos_probe.aim[0], g_pos_probe.aim[1], g_pos_probe.aim[2], moved, by_motion.yaw_deg, by_motion.pitch_deg,
                     by_quat.yaw_deg, by_quat.pitch_deg);
@@ -3154,9 +3169,12 @@ void RunBulletFire() {
     fp.owner = handle;
     std::memcpy(&fp.row_id, real + 8, sizeof(fp.row_id));
     fp.flags = 0x08;
-    std::memcpy(fp.right, cam.right, sizeof(fp.right));
-    std::memcpy(fp.up, cam.up, sizeof(fp.up));
-    std::memcpy(fp.forward, cam.forward, sizeof(fp.forward));
+    // The game turns the flight of a replayed bolt by about +31 degrees about the vertical axis (REVERSE 35.9): the matrix is given turned by the opposite angle, so the
+    // bolt flies along the camera's forward, through the crosshair. The muzzle stays on the camera ray.
+    const float yaw_comp = -g_bolt_yaw_offset.load();
+    eldenring::bow::rotateYaw(cam.right, yaw_comp, fp.right);
+    eldenring::bow::rotateYaw(cam.up, yaw_comp, fp.up);
+    eldenring::bow::rotateYaw(cam.forward, yaw_comp, fp.forward);
     eldenring::bullet::muzzle(cam.position, cam.forward, 0.8f, fp.position);
     const std::vector<uint8_t> built = eldenring::bullet::buildFireRequest(real, sizeof(real), fp);
     if (built.size() != eldenring::bullet::kFullRequestBytes) {
@@ -3174,10 +3192,10 @@ void RunBulletFire() {
     const bool ok = SpawnBulletSafe(reinterpret_cast<void*>(manager), &out, req, status);
     uint32_t code = 0;
     std::memcpy(&code, status, sizeof(code));
-    Log("bullet fire: MC damage %.1f param row 0x%08X id=%u flags=0x%X from (%.2f %.2f %.2f) along (%.3f %.3f %.3f) tid=%lu -> %s handle 0x%08X status %u -> %s", shot_damage, *reinterpret_cast<uint32_t*>(req + 8),
+    Log("bullet fire: MC damage %.1f param row 0x%08X id=%u flags=0x%X from (%.2f %.2f %.2f) given (turned by the compensation) (%.3f %.3f %.3f) tid=%lu -> %s handle 0x%08X status %u -> %s", shot_damage, *reinterpret_cast<uint32_t*>(req + 8),
         *reinterpret_cast<uint32_t*>(req + 0x1C), fp.flags, fp.position[0], fp.position[1], fp.position[2], fp.forward[0], fp.forward[1], fp.forward[2],
         static_cast<unsigned long>(GetCurrentThreadId()), ok ? "returned" : "FAULTED", out, code, !ok ? "FAULT" : (eldenring::bullet::spawnFailed(out) ? "REFUSED" : "spawned"));
-    if (ok && !eldenring::bullet::spawnFailed(out)) PosProbeStart(manager, out, fp.position, fp.forward);
+    if (ok && !eldenring::bullet::spawnFailed(out)) PosProbeStart(manager, out, fp.position, cam.forward); // the intended aim: AIMCAL shows what is left of the error
 }
 
 bool QueueBulletFire(float mc_damage) {
@@ -3630,6 +3648,7 @@ void SetupOverlay() {
                 else if (key == "no_player_hit_vfx") g_no_player_hit_vfx.store(value != 0.f);
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "shadow") g_shadow_enabled.store(value != 0.f);
+                else if (key == "bolt_yaw_offset_deg") g_bolt_yaw_offset.store(std::clamp(value, -90.f, 90.f));
                 else if (key == "eye_height") g_eye_height.store(value);
                 else if (key == "fall_reset") g_fall_reset.store(value != 0.f);
                 else if (key == "fall_hold") g_fall_hold.store(std::clamp(value, 0.f, 2.8f));

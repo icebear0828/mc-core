@@ -223,3 +223,30 @@ TEST(EldenRingBowAim, TheYawErrorWrapsAroundTheBackOfTheCircle) {
     const float flight[3] = {0.05f, 0.f, -1.f};
     EXPECT_LT(std::fabs(aimError(aim, flight).yaw_deg), 10.f);
 }
+
+TEST(EldenRingBowAim, RotatingAboutTheVerticalAxisChangesTheYawAndKeepsPitchAndLength) {
+    const float v[3] = {0.f, 0.f, 1.f};
+    float r[3];
+    rotateYaw(v, 90.f, r);
+    EXPECT_NEAR(r[0], 1.f, 1e-5f);     // yaw = atan2(x, z): +90 turns +z into +x
+    EXPECT_NEAR(r[1], 0.f, 1e-5f);
+    EXPECT_NEAR(r[2], 0.f, 1e-5f);
+    const float tilted[3] = {0.554f, 0.2f, 0.831f};
+    rotateYaw(tilted, -31.f, r);
+    EXPECT_NEAR(r[1], 0.2f, 1e-6f);   // the height does not change
+    EXPECT_NEAR(std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]), std::sqrt(0.554f * 0.554f + 0.04f + 0.831f * 0.831f), 1e-5f);
+    const AimError e = aimError(tilted, r);
+    EXPECT_NEAR(e.yaw_deg, -31.f, 1e-3f);
+    EXPECT_NEAR(e.pitch_deg, 0.f, 1e-3f);
+}
+
+TEST(EldenRingBowAim, TheMeasuredOffsetOfTheGameCancelsOut) {
+    // The game turns the flight by +31 degrees (REVERSE 35.9). We give the aim turned by -31: the bolt flies where we meant.
+    const float aim[3] = {0.554f, 0.043f, 0.831f};
+    float given[3], flown[3];
+    rotateYaw(aim, -kBoltYawOffsetDeg, given);
+    rotateYaw(given, kBoltYawOffsetDeg, flown);   // what the game does to it
+    const AimError e = aimError(aim, flown);
+    EXPECT_NEAR(e.yaw_deg, 0.f, 1e-3f);
+    EXPECT_NEAR(e.pitch_deg, 0.f, 1e-3f);
+}
