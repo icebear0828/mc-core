@@ -1643,6 +1643,53 @@ const char* BlockSound(mc::BlockId id) {
     }
 }
 
+// ---- summoning (F2, or a right click with the zombie spawn egg) ---------------------------------------------------------------------
+// One summon request for the game thread (ClampDetour -> RunSummonExperiment). The entities seen before are remembered so that the ones that
+// appear afterwards can be reported (and scanned, mc_er_chrscan.txt).
+struct SummonWatch {
+    std::vector<uintptr_t> baseline;
+    uint64_t t0_ms{0};
+    int reports_left{0};
+};
+SummonWatch g_summon_watch;
+std::atomic<uint64_t> g_last_summon_ms{0};
+constexpr uint64_t kSummonCooldownMs = 3000; // one request at a time: the manager consumes it on the next frame and spawns for a few seconds
+
+// Returns false when the feature is off (no mc_er_summon.txt) or a request is still in flight.
+bool QueueSummon(const char* source) {
+    if (!FileExists(g_game_dir + "mc_er_summon.txt")) {
+        Log("%s: ignored (no mc_er_summon.txt in the game directory)", source);
+        return false;
+    }
+    const uint64_t now = GetTickCount64();
+    if (now - g_last_summon_ms.load(std::memory_order_relaxed) < kSummonCooldownMs) return false;
+    g_last_summon_ms.store(now);
+    g_summon_watch.baseline.clear();
+    std::vector<EnemyInfo> before;
+    if (enumerateEnemies(g_reader, g_img.base, before, 4000)) {
+        for (const EnemyInfo& e : before) g_summon_watch.baseline.push_back(e.chr);
+    }
+    g_summon_watch.t0_ms = now;
+    g_summon_watch.reports_left = 2;
+    g_chrscan_count = 0;
+    g_summon_pending.store(true);
+    Log("%s: summon queued for the game thread (%zu entities in the baseline)", source, g_summon_watch.baseline.size());
+    return true;
+}
+
+// Right click with the zombie spawn egg in hand: one summon; in survival the egg is used up. True when the click was the egg's.
+bool TryUseSpawnEgg() {
+    {
+        std::lock_guard<std::mutex> g(g_melee_mutex);
+        if (g_melee.heldItem() != mc::ItemId::ZombieSpawnEgg || g_melee.countAt(g_melee.selectedSlot()) == 0) return false;
+    }
+    if (!QueueSummon("spawn egg")) return true; // refused (feature off or too soon): the click is still the egg's
+    std::lock_guard<std::mutex> g(g_melee_mutex);
+    if (creative::consumesItems(CurrentGameMode())) g_melee.consumeAt(g_melee.selectedSlot());
+    g_melee.startSwing();
+    return true;
+}
+
 // Right click with a block in hand. Returns true when the click was used (placed, or refused for a reason the player can see).
 bool TryPlaceBlock() {
     if (!g_blocks_enabled.load()) return false;
@@ -2333,6 +2380,8 @@ DWORD WINAPI KeyThread(LPVOID) {
         const bool right_edge = !inv_open && g_input_enabled.load() && erin::TakeRightClick();
         if (right_edge && fg && WantSuppress() && !PlayerDead() && TryPlaceBlock()) {
             // a block was placed (or the click was refused): not a meal
+        } else if (right_edge && fg && WantSuppress() && !PlayerDead() && g_mc_mode.load() && TryUseSpawnEgg()) {
+            // the zombie spawn egg: a summon request (or a refusal): not a meal
         } else if (right_edge && fg && WantSuppress() && !PlayerDead()) {
             std::lock_guard<std::mutex> g(g_melee_mutex);
             const mc::ItemId item = g_melee.heldItem();
@@ -2401,11 +2450,7 @@ DWORD WINAPI KeyThread(LPVOID) {
             Log("F6: MC mode %s", g_mc_mode.load() ? "on" : "off");
             ResetSlotProbe(slot_cursor);
         }
-        static struct {
-            std::vector<uintptr_t> baseline;
-            uint64_t t0_ms{0};
-            int reports_left{0};
-        } summon_watch;
+        SummonWatch& summon_watch = g_summon_watch;
         if (summon_watch.reports_left > 0) {
             const uint64_t waited = GetTickCount64() - summon_watch.t0_ms;
             if (waited >= (summon_watch.reports_left == 2 ? 1500u : 5000u)) {
@@ -2431,20 +2476,7 @@ DWORD WINAPI KeyThread(LPVOID) {
         static bool prev_f2 = false;
         const bool d2 = fg && (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
         if (d2 && !prev_f2) {
-            if (FileExists(g_game_dir + "mc_er_summon.txt")) {
-                summon_watch.baseline.clear();
-                std::vector<EnemyInfo> before;
-                if (enumerateEnemies(g_reader, g_img.base, before, 4000)) {
-                    for (const EnemyInfo& e : before) summon_watch.baseline.push_back(e.chr);
-                }
-                summon_watch.t0_ms = GetTickCount64();
-                summon_watch.reports_left = 2;
-                g_chrscan_count = 0;
-                g_summon_pending.store(true);
-                Log("F2: summon experiment queued for the game thread (%zu entities in the baseline)", summon_watch.baseline.size());
-            } else {
-                Log("F2: ignored (no mc_er_summon.txt in the game directory)");
-            }
+            QueueSummon("F2");
         }
         prev_f2 = d2;
         const bool d9 = fg && (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
