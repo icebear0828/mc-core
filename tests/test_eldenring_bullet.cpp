@@ -233,3 +233,22 @@ TEST(EldenRingBulletFeedback, OnlyAFullPowerShotIsCritical) {
     EXPECT_FALSE(isCriticalShot(5.8f));    // power 0.96
     EXPECT_FALSE(isCriticalShot(1.4f));
 }
+
+TEST(EldenRingBulletFire, TheAttachPointFieldAt1CIsTakenFromTheTemplateUnlessAskedOtherwise) {
+    const auto t = realTemplate();
+    FireParams p = params();
+    uint32_t v = 7;
+    const auto kept = buildFireRequest(t.data(), t.size(), p);
+    std::memcpy(&v, kept.data() + 0x1C, 4);
+    EXPECT_EQ(v, 56u);                       // the template's own value
+    p.attach_poly = -1;                      // negative: the game then keeps our matrix instead of taking the shooter's bone (REVERSE 35.12)
+    const auto none = buildFireRequest(t.data(), t.size(), p);
+    std::memcpy(&v, none.data() + 0x1C, 4);
+    EXPECT_EQ(v, 0xFFFFFFFFu);
+    EXPECT_EQ(none[0x18], 0xCD);             // the neighbours are not touched
+    EXPECT_EQ(none[0x20], 0xCD);
+    p.attach_poly = 56;
+    const auto same = buildFireRequest(t.data(), t.size(), p);
+    std::memcpy(&v, same.data() + 0x1C, 4);
+    EXPECT_EQ(v, 56u);
+}
