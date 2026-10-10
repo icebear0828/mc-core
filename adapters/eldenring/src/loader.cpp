@@ -1730,6 +1730,18 @@ void BlocksCollisionStep() {
         const float zero = 0.f;
         WriteBytesSafe(module + 0x120 + 4, &zero, sizeof(zero));
     }
+    {   // Diagnostic (read only): while a movement key is held on a block, how far did the game move the player this frame, and what did we do to it?
+        static unsigned traced = 0;
+        const bool keys = GameInForeground() && ((GetAsyncKeyState('W') | GetAsyncKeyState('A') | GetAsyncKeyState('S') | GetAsyncKeyState('D')) & 0x8000) != 0;
+        if (supported && keys && have_prev && !jumped && traced < 90 && (++traced <= 30 || traced % 3 == 0)) {
+            uint8_t g92 = 0;
+            if (module != 0) SafeCopy(module + 0x92, &g92, 1);
+            float vel[3] = {};
+            if (module != 0) SafeCopy(module + 0x120, vel, sizeof(vel));
+            Log("blocks: walk trace game_moved=(%.3f %.3f) of ~%.3f expected, pushed=%d pinned=%d 92=%u vel_now=(%.2f %.2f) fall_t=%.2f", dx, dz,
+                g_block_walk_speed.load() * 0.0167f, r.moved ? 1 : 0, pinned ? 1 : 0, static_cast<unsigned>(g92), vel[0], vel[2], FallTimer(player));
+        }
+    }
     std::memcpy(prev, final_feet, sizeof(prev));
     have_prev = true;
     if (r.moved && (++pushes <= 20 || pushes % 500 == 0)) {
@@ -2263,6 +2275,15 @@ DWORD WINAPI KeyThread(LPVOID) {
         const bool d8 = fg && (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
         const bool d6 = fg && (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
         if (d8 && !prev8 && g_damage_enabled.load()) EnqueueNearestHostile();
+        {   // F4: MC jump on/off in game (A/B test of the walking on blocks)
+            static bool prev4 = false;
+            const bool d4 = fg && (GetAsyncKeyState(VK_F4) & 0x8000) != 0;
+            if (d4 && !prev4) {
+                g_mc_jump.store(!g_mc_jump.load());
+                Log("F4: MC jump %s", g_mc_jump.load() ? "on" : "off");
+            }
+            prev4 = d4;
+        }
         const bool d5 = fg && (GetAsyncKeyState(VK_F5) & 0x8000) != 0;
         static bool prev5 = false;
         if (d5 && !prev5) {
