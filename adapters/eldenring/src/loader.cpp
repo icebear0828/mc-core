@@ -678,7 +678,7 @@ void HideSummonModels() {
     }
     std::vector<EnemyInfo> list;
     std::vector<eldenring::mobs::MobSnapshot> seen;
-    if (!enumerateEnemies(g_reader, g_img.base, list, 4000)) {
+    if (!enumerateEnemies(g_reader, g_img.base, list, 4000, /*include_dead=*/true)) { // the corpses too: the mob over a dead summon plays its death scene
         std::lock_guard<std::mutex> g(g_summon_mutex);
         g_summon_list.clear();
         return;
