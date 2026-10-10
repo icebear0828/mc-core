@@ -1173,7 +1173,7 @@ std::atomic<float> g_last_shot_damage{eldenring::bullet::kCrossbowDamage}; // th
 std::atomic<float> g_pending_shot_damage{eldenring::bullet::kCrossbowDamage}; // of the shot queued for the game thread
 std::atomic<float> g_bow_power{0.f};             // 0..1 while the bow is drawn (third-person arms), written by the key thread
 std::atomic<float> g_bow_ticks{0.f};             // ticks drawn (first-person pose)
-std::atomic<float> g_bolt_yaw_offset{eldenring::bow::kBoltYawOffsetDeg}; // mc_er_steve.txt: bolt_yaw_offset_deg (0 = no compensation)
+std::atomic<float> g_bolt_yaw_offset{0.f};        // mc_er_steve.txt: bolt_yaw_offset_deg (default 0: the turn was not a yaw offset of the matrix, REVERSE 35.9)
 std::atomic<uint64_t> g_last_bullet_tick_ms{0}; // the last spawn_bullet call (the player's real shot or ours): hits within 3 s after it are logged whatever they look like
 
 void HandleProjectileHit(void* module, void* attacker, uint8_t* ctx) {
@@ -3168,7 +3168,9 @@ void RunBulletFire() {
     eldenring::bullet::FireParams fp;
     fp.owner = handle;
     std::memcpy(&fp.row_id, real + 8, sizeof(fp.row_id));
-    fp.flags = 0x08;
+    std::memcpy(&fp.flags, real + 0x44, sizeof(fp.flags)); // a real shot has 0x09: bit 0 is kept (the replay with 0x08 flew along the body, not the matrix)
+    fp.flags |= 0x08u;     // bit 3 must be set or spawn_bullet returns early
+    fp.flags &= ~0x02u;    // bit 1 must be clear (the game would overwrite our matrix with a skeleton one)
     // The game turns the flight of a replayed bolt by about +31 degrees about the vertical axis (REVERSE 35.9): the matrix is given turned by the opposite angle, so the
     // bolt flies along the camera's forward, through the crosshair. The muzzle stays on the camera ray.
     const float yaw_comp = -g_bolt_yaw_offset.load();
