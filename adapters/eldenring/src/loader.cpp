@@ -1874,7 +1874,8 @@ void McJumpStep() {
 std::atomic<bool> g_flying{false};
 std::atomic<float> g_fly_h_speed{flight::kHorizontalSpeed};
 std::atomic<float> g_fly_v_speed{flight::kVerticalSpeed};
-bool g_fly_have_written = false; // game thread only: last_written below is valid
+bool g_fly_have_written = false; // game thread only: the flight's own position (and last_written) are valid
+std::atomic<float> g_fly_yaw{0.f};   // the figure's heading while flying (camera heading)
 std::atomic<bool> g_fly_sync{true}; // fly_sync=0: do not ask the engine to move the Havok proxies (diagnostic)
 
 void FlightStep() {
@@ -1904,19 +1905,25 @@ void FlightStep() {
     if (!g_flying.load(std::memory_order_relaxed)) return;
     const uintptr_t player = PlayerChrPtr();
     const uintptr_t module = player != 0 ? detail::readPhysicsModule(g_reader, g_img.base, player) : 0;
-    float pos[3];
-    if (module == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, pos)) return;
-    // Diagnostic (read only): did something else move the player since our last write? Logs what it was set to and the vectors around it.
+    float read_pos[3];
+    if (module == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, read_pos)) {
+        g_fly_have_written = false; // loading screen, no world: start again from the game's position
+        return;
+    }
+    // Flight keeps its own position. Reading the game's back every frame would take over what its gravity pulled down in between (hovering
+    // sank, climbing was eaten). The game's floating-origin re-bases (whole multiples of 8 m on an axis, the fraction kept) are followed.
+    static float own[3] = {};
     static float last_written[3] = {};
-    static unsigned overwrites = 0;
-    if (g_fly_have_written && flight::positionOverwritten(last_written, pos, 0.5f) && ++overwrites <= 40) {
-        float prev_pos[3] = {}, takeoff[4] = {}, tail[8] = {};
-        SafeCopy(module + layout::kPhysicsPosition + 0x10, prev_pos, sizeof(prev_pos));
-        SafeCopy(module + 0x150, takeoff, sizeof(takeoff));
-        SafeCopy(module + 0x120, tail, sizeof(tail)); // linear velocity and its neighbours
-        Log("flight: OVERWRITTEN wrote=(%.2f %.2f %.2f) now=(%.2f %.2f %.2f) delta=(%.2f %.2f %.2f) +0x80=(%.2f %.2f %.2f) +0x150=(%.2f %.2f %.2f %.2f) +0x120=(%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f)",
-            last_written[0], last_written[1], last_written[2], pos[0], pos[1], pos[2], pos[0] - last_written[0], pos[1] - last_written[1], pos[2] - last_written[2], prev_pos[0],
-            prev_pos[1], prev_pos[2], takeoff[0], takeoff[1], takeoff[2], takeoff[3], tail[0], tail[1], tail[2], tail[3], tail[4], tail[5], tail[6], tail[7]);
+    static unsigned rebases = 0;
+    if (!g_fly_have_written) {
+        std::memcpy(own, read_pos, sizeof(own));
+    } else if (flight::positionOverwritten(last_written, read_pos, 3.f)) {
+        const float before[3] = {own[0], own[1], own[2]};
+        flight::followRebase(own, last_written, read_pos);
+        if (++rebases <= 20) {
+            Log("flight: coordinates re-based by the game: wrote=(%.2f %.2f %.2f) read=(%.2f %.2f %.2f) own (%.2f %.2f %.2f) -> (%.2f %.2f %.2f)", last_written[0],
+                last_written[1], last_written[2], read_pos[0], read_pos[1], read_pos[2], before[0], before[1], before[2], own[0], own[1], own[2]);
+        }
     }
     flight::Keys keys;
     keys.forward = (GetAsyncKeyState('W') & 0x8000) != 0;
@@ -1928,14 +1935,14 @@ void FlightStep() {
     flight::Heading heading;
     const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
     CameraPose cam;
-    if (world == 0 || !readCamera(g_reader, g_img.base, world, cam) || !flight::headingFromCamera(cam.forward, cam.right, heading)) {
-        keys.forward = keys.back = keys.left = keys.right = false; // no heading this frame: vertical only
-    }
+    const bool have_heading = world != 0 && readCamera(g_reader, g_img.base, world, cam) && flight::headingFromCamera(cam.forward, cam.right, heading);
+    if (!have_heading) keys.forward = keys.back = keys.left = keys.right = false; // no heading this frame: vertical only
     g_movement_layer_ms.store(now_ms, std::memory_order_relaxed);
-    flight::step(pos, keys, heading, dt, g_fly_h_speed.load(std::memory_order_relaxed), g_fly_v_speed.load(std::memory_order_relaxed));
+    flight::step(own, keys, heading, dt, g_fly_h_speed.load(std::memory_order_relaxed), g_fly_v_speed.load(std::memory_order_relaxed));
+    if (have_heading) g_fly_yaw.store(flight::bodyYaw(heading), std::memory_order_relaxed);
     // Written every frame, also when standing still in the air: the game's gravity must not pull the player down between frames.
-    WriteBytesSafe(module + layout::kPhysicsPosition, pos, sizeof(pos));
-    WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, pos, sizeof(pos));
+    WriteBytesSafe(module + layout::kPhysicsPosition, own, sizeof(own));
+    WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, own, sizeof(own));
     // The Havok character proxies are what the game really moves; +0x91 asks the engine to copy this position into them (the game's own
     // set-position does the same) and the engine clears it again. Without it they pull the player back to where they were.
     uint8_t sync_before = 0;
@@ -1944,11 +1951,11 @@ void FlightStep() {
         const uint8_t one = 1;
         WriteBytesSafe(module + layout::kPhysicsProxySyncRequest, &one, 1);
     }
-    std::memcpy(last_written, pos, sizeof(last_written));
+    std::memcpy(last_written, own, sizeof(last_written));
     g_fly_have_written = true;
     if (now_ms - last_log_ms >= 1000) {
         last_log_ms = now_ms;
-        Log("flight: pos=(%.2f %.2f %.2f) sync91_before=%u keys[%d%d%d%d up=%d down=%d] dt=%.4f", pos[0], pos[1], pos[2], static_cast<unsigned>(sync_before), keys.forward ? 1 : 0, keys.back ? 1 : 0,
+        Log("flight: pos=(%.2f %.2f %.2f) read_back=(%.2f %.2f %.2f) sync91_before=%u keys[%d%d%d%d up=%d down=%d] dt=%.4f", own[0], own[1], own[2], read_pos[0], read_pos[1], read_pos[2], static_cast<unsigned>(sync_before), keys.forward ? 1 : 0, keys.back ? 1 : 0,
             keys.left ? 1 : 0, keys.right ? 1 : 0, keys.up ? 1 : 0, keys.down ? 1 : 0, dt);
     }
 }
@@ -2703,6 +2710,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.feet[1] = feet[1];
         steve.feet[2] = feet[2];
         steve.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) + g_steve_yaw_offset;
+        if (g_flying.load(std::memory_order_relaxed)) steve.yaw = g_fly_yaw.load(std::memory_order_relaxed); // the game does not turn a character that never sees a key
     }
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
