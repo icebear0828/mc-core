@@ -77,3 +77,17 @@ TEST(EldenRingCreative, FallProtectionNeverSkipsTheKillOfAPlayerWhoAlreadyHasNoH
     EXPECT_FALSE(shouldSkipPlayerKill(true, false, true, 316)); // MC mode off
     EXPECT_FALSE(shouldSkipPlayerKill(true, true, false, 316)); // no blocks and no recent jump of ours
 }
+
+TEST(EldenRingCreative, FallHeightIsZeroedOnlyForThePlayerInMcModeWhenEnabled) {
+    EXPECT_TRUE(shouldZeroFall(true, true, true));
+    EXPECT_FALSE(shouldZeroFall(false, true, true)); // creative_nofall off (the default)
+    EXPECT_FALSE(shouldZeroFall(true, false, true)); // MC mode off: vanilla falling
+    EXPECT_FALSE(shouldZeroFall(true, true, false)); // enemies and NPCs still take fall damage
+}
+
+TEST(EldenRingCreative, ZeroedFallLineSaysWhatWasReplaced) {
+    const std::string line = formatFallZeroed(0x411324, 25.72f);
+    EXPECT_NE(line.find("zeroed"), std::string::npos);
+    EXPECT_NE(line.find("25.72"), std::string::npos);
+    EXPECT_NE(line.find("0x411324"), std::string::npos);
+}

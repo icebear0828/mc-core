@@ -496,14 +496,22 @@ void __fastcall CreativeLandingDetour(void* fall_module) {
     g_cr_land_orig(fall_module);
 }
 
+std::atomic<bool> g_cr_log{false};    // mc_er_creativelog.txt: log-only probes
+std::atomic<bool> g_cr_nofall{false}; // mc_er_nofall.txt: the player's fall height is 0 while MC mode is on
+
 float __fastcall CreativeFallDetour(void* fall_module) {
     const float metres = g_cr_fall_orig(fall_module);
+    const bool interesting = !std::isfinite(metres) || metres >= creative::kFallLogMinMetres;
+    if (!interesting) return metres;
+    const bool zero_wanted = g_cr_nofall.load(std::memory_order_relaxed) && g_mc_mode.load(std::memory_order_relaxed);
+    if (!zero_wanted && !g_cr_log.load(std::memory_order_relaxed)) return metres;
+    if (!creative::isPlayer(ModuleOwner(fall_module), PlayerChrPtr())) return metres;
     const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base;
-    if ((!std::isfinite(metres) || metres >= creative::kFallLogMinMetres) && creative::isPlayer(ModuleOwner(fall_module), PlayerChrPtr()) &&
-        CreativeShouldLogFall(metres, caller)) {
-        Log("%s", creative::formatFall(caller, metres).c_str());
+    const bool zero = creative::shouldZeroFall(g_cr_nofall.load(std::memory_order_relaxed), g_mc_mode.load(std::memory_order_relaxed), true);
+    if (CreativeShouldLogFall(metres, caller)) {
+        Log("%s", (zero ? creative::formatFallZeroed(caller, metres) : creative::formatFall(caller, metres)).c_str());
     }
-    return metres;
+    return zero ? 0.f : metres;
 }
 
 bool __fastcall CreativeSpEffectDetour(void* container, int sp_effect) {
@@ -2242,7 +2250,9 @@ bool ReadFileAll(const std::string& path, std::vector<uint8_t>& out) {
 }
 
 void SetupCreativeProbes() {
-    if (!FileExists(g_game_dir + "mc_er_creativelog.txt")) return;
+    g_cr_log.store(FileExists(g_game_dir + "mc_er_creativelog.txt"));
+    g_cr_nofall.store(FileExists(g_game_dir + "mc_er_nofall.txt"));
+    if (!g_cr_log.load() && !g_cr_nofall.load()) return;
     struct Probe {
         const char* name;
         const char* sig;
@@ -2260,13 +2270,15 @@ void SetupCreativeProbes() {
         return;
     }
     for (const Probe& p : probes) {
+        if (!g_cr_log.load() && p.orig != reinterpret_cast<void**>(&g_cr_fall_orig)) continue; // mc_er_nofall.txt alone installs only the fall-height hook
         uintptr_t target = 0;
         if (!LocateByPrefix(g_img, p.sig, target)) {
             Log("creative: %s signature not unique, probe not installed", p.name);
         } else if (MH_CreateHook(reinterpret_cast<void*>(target), p.detour, p.orig) != MH_OK || MH_EnableHook(reinterpret_cast<void*>(target)) != MH_OK) {
             Log("creative: hooking %s at %p failed", p.name, reinterpret_cast<void*>(target));
         } else {
-            Log("creative: %s probe at %p (RVA 0x%llX), log-only", p.name, reinterpret_cast<void*>(target), static_cast<unsigned long long>(target - g_img.base));
+            Log("creative: %s probe at %p (RVA 0x%llX)%s", p.name, reinterpret_cast<void*>(target), static_cast<unsigned long long>(target - g_img.base),
+                g_cr_nofall.load() && p.orig == reinterpret_cast<void**>(&g_cr_fall_orig) ? ", fall height is 0 for the player in MC mode (mc_er_nofall.txt)" : g_cr_log.load() ? ", log-only" : "");
         }
     }
 }

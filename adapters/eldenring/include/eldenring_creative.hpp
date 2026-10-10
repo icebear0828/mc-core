@@ -39,6 +39,10 @@ inline bool shouldSkipPlayerKill(bool fall_protect, bool mc_mode, bool blocks_or
     return fall_protect && mc_mode && blocks_or_recent_jump && hp > 0;
 }
 
+// Creative mode, no fall damage: the game's fall-height function (0x14044E240) answers 0 for the player. Callers turn the height into
+// the fall damage (0x14041131F multiplies it by 100) and compare it with thresholds, so 0 means no damage and no lethal fall.
+inline bool shouldZeroFall(bool creative_nofall, bool mc_mode, bool owner_is_player) { return creative_nofall && mc_mode && owner_is_player; }
+
 inline bool shouldLogSpEffect(int sp_effect, uintptr_t caller_rva, bool owner_is_player) {
     return owner_is_player && sp_effect == kLandingSkipSpEffect && caller_rva == kLandingSpEffectReturnRva;
 }
@@ -84,6 +88,13 @@ inline std::string formatLanding(bool player) {
 inline std::string formatFall(uintptr_t caller_rva, float metres) {
     char buf[128];
     std::snprintf(buf, sizeof(buf), "creative: fall height %.2f m (caller RVA 0x%llX)", static_cast<double>(metres),
+                  static_cast<unsigned long long>(caller_rva));
+    return buf;
+}
+
+inline std::string formatFallZeroed(uintptr_t caller_rva, float original_metres) {
+    char buf[128];
+    std::snprintf(buf, sizeof(buf), "creative: fall height %.2f m zeroed for the player (caller RVA 0x%llX)", static_cast<double>(original_metres),
                   static_cast<unsigned long long>(caller_rva));
     return buf;
 }
