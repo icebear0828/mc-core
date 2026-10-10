@@ -911,6 +911,27 @@ def export_steve_skin(client_jar: Path, out_dir: Path) -> Path:
     return out
 
 
+# Humanoid mobs whose 64x64 skin has the player's UV layout, so the Steve rig can wear it. (name -> path inside the jar's textures/)
+_MOB_SKINS = {"zombie": "entity/zombie/zombie.png"}
+
+
+def export_mob_skin(client_jar: Path, out_dir: Path, mob: str) -> Path:
+    """Copy a humanoid mob's skin (64x64, the player's UV layout) out of a local client.jar as <mob>.png."""
+    if mob not in _MOB_SKINS:
+        raise ValueError(f"unknown mob {mob!r}; humanoid mobs with the player's UV layout: {sorted(_MOB_SKINS)}")
+    entry = _JAR_TEXTURES + _MOB_SKINS[mob]
+    with zipfile.ZipFile(client_jar, "r") as jar:
+        if entry not in jar.namelist():
+            raise FileNotFoundError(f"{entry} not found in {client_jar}")
+        skin = Image.open(io.BytesIO(jar.read(entry))).convert("RGBA")
+    if skin.size != (64, 64):
+        raise ValueError(f"expected a 64x64 skin, got {skin.size}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{mob}.png"
+    skin.save(out)
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description="Extract MC Java assets to standard OBJ/PNG models.")
     parser.add_argument("--client-jar", type=Path, help="Path to Minecraft Java client.jar")
@@ -920,6 +941,7 @@ def main():
     parser.add_argument("--export-adapter-header", type=Path, help="Export an adapter header forwarding the shared atlas names")
     parser.add_argument("--adapter-namespace", default="sekiro::hud", help="Namespace for --export-adapter-header")
     parser.add_argument("--export-steve-skin", action="store_true", help="Export the real Steve skin as steve.png (needs --client-jar)")
+    parser.add_argument("--export-mob-skin", action="append", choices=sorted(_MOB_SKINS), help="Export a humanoid mob's skin as <mob>.png (needs --client-jar; repeatable)")
     parser.add_argument("--geometry-json", type=Path, help="Path to a Bedrock/Blockbench geometry.json to extract OBJ models from")
     parser.add_argument("--geometry-texture", type=Path, help="Optional texture PNG for --geometry-json")
     args = parser.parse_args()
@@ -937,6 +959,10 @@ def main():
         if not args.client_jar:
             parser.error("--export-steve-skin requires --client-jar")
         print(f"Exported Steve skin to {export_steve_skin(args.client_jar, args.out_dir)}")
+    for mob in args.export_mob_skin or []:
+        if not args.client_jar:
+            parser.error("--export-mob-skin requires --client-jar")
+        print(f"Exported {mob} skin to {export_mob_skin(args.client_jar, args.out_dir, mob)}")
     if args.export_hud_atlas or args.export_header or args.export_adapter_header:
         atlas_img, uv_map = build_hud_atlas(args.client_jar)
         atlas_path = args.out_dir / "mc_hud_atlas.png"

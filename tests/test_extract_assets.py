@@ -146,6 +146,48 @@ def test_export_steve_skin_rejects_missing_or_wrong_size(tmp_path):
         export_steve_skin(legacy, tmp_path / "out")  # the rig's UV table assumes the 64x64 layout
 
 
+# --- Mob skins (zombie) from the local client.jar, never committed ---------------------------------
+
+def _jar_with_mob(path: Path, skin: Image.Image) -> Path:
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("assets/minecraft/textures/entity/zombie/zombie.png", _png(skin))
+        z.writestr("assets/minecraft/textures/entity/player/wide/steve.png", _png(_solid((64, 64), (9, 9, 9, 255))))
+    return path
+
+
+def test_export_mob_skin_writes_the_zombie_skin_unchanged(tmp_path):
+    from extract_mc_assets import export_mob_skin
+
+    skin = _solid((64, 64), (40, 120, 60, 255))
+    skin.putpixel((9, 9), (1, 2, 3, 255))
+    jar = _jar_with_mob(tmp_path / "client.jar", skin)
+    out = export_mob_skin(jar, tmp_path / "out", "zombie")
+    assert out == tmp_path / "out" / "zombie.png"
+    written = Image.open(out).convert("RGBA")
+    assert written.size == (64, 64)
+    assert written.getpixel((9, 9)) == (1, 2, 3, 255)
+    assert written.getpixel((0, 0)) == (40, 120, 60, 255)
+
+
+def test_export_mob_skin_rejects_unknown_mobs_missing_entries_and_wrong_sizes(tmp_path):
+    import zipfile
+    from extract_mc_assets import export_mob_skin
+
+    jar = _jar_with_mob(tmp_path / "client.jar", _solid((64, 64), (1, 1, 1, 255)))
+    with pytest.raises(ValueError):
+        export_mob_skin(jar, tmp_path / "out", "creeper")  # only the humanoid mobs share the player's UV layout
+    empty = tmp_path / "empty.jar"
+    with zipfile.ZipFile(empty, "w") as z:
+        z.writestr("readme.txt", "x")
+    with pytest.raises(FileNotFoundError):
+        export_mob_skin(empty, tmp_path / "out", "zombie")
+    legacy = _jar_with_mob(tmp_path / "legacy.jar", _solid((64, 32), (1, 2, 3, 255)))
+    with pytest.raises(ValueError):
+        export_mob_skin(legacy, tmp_path / "out", "zombie")
+
+
 # --- HUD atlas: original Minecraft sprites, native sizes, vanilla layout --------------------------
 
 HUD_KEYS = [

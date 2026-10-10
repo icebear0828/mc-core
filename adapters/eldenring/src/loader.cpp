@@ -2986,6 +2986,17 @@ void SetupOverlay() {
                 Log("skin: %s missing or not 64x64, the figure stays flat grey-brown (extract it with tools/extract_mc_assets.py --export-steve-skin)", skin_path.c_str());
             }
         }
+        {
+            std::vector<uint8_t> zombie;
+            unsigned zw = 0, zh = 0;
+            const std::string zombie_path = g_game_dir + "mods\\mc_adapter\\zombie.png";
+            if (erov::DecodePngFile(zombie_path, zombie, zw, zh) && zw == 64 && zh == 64) {
+                erov::SetMobSkin(zombie.data(), zw, zh);
+                Log("skin: external file %s (%ux%u)", zombie_path.c_str(), zw, zh);
+            } else {
+                Log("skin: %s missing or not 64x64, the mobs wear Steve's skin (extract it with tools/extract_mc_assets.py --export-mob-skin zombie)", zombie_path.c_str());
+            }
+        }
         g_steve_enabled.store(true);
         Log("steve: hide_native=%d mask1=0x%X mask2=0x%X slots=0x%X", g_hide_native.load() ? 1 : 0, g_hide_mask1.load(), g_hide_mask2.load(),
         g_hide_slots.load());

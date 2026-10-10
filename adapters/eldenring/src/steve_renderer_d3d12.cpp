@@ -365,9 +365,12 @@ void SteveRenderer::release() {
     Rel(own_depth_);
     Rel(dsv_heap_);
     own_depth_w_ = own_depth_h_ = 0;
-    Rel(skin_tex_);
-    Rel(skin_upload_);
-    skin_pending_ = false;
+    Rel(skin_.tex);
+    Rel(skin_.upload);
+    skin_.pending = false;
+    Rel(mob_skin_.tex);
+    Rel(mob_skin_.upload);
+    mob_skin_.pending = false;
     Rel(stats_);
     Rel(stats_init_);
     Rel(stats_readback_);
@@ -555,11 +558,13 @@ bool SteveRenderer::ensureDepth(ID3D12Device* device, unsigned width, unsigned h
     return true;
 }
 
-bool SteveRenderer::setSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+namespace {
+// (re)creates `s` as an RGBA8 texture of the given size with its SRV at `slot`; the pixels are copied by the first draw()
+bool CreateSkinTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot, SkinGpu& s) {
     if (!device || !rgba || width == 0 || height == 0) return false;
-    Rel(skin_tex_);
-    Rel(skin_upload_);
-    skin_pending_ = false;
+    Rel(s.tex);
+    Rel(s.upload);
+    s.pending = false;
     D3D12_HEAP_PROPERTIES hd{};
     hd.Type = D3D12_HEAP_TYPE_DEFAULT;
     D3D12_RESOURCE_DESC td{};
@@ -571,12 +576,12 @@ bool SteveRenderer::setSkin(ID3D12Device* device, const uint8_t* rgba, unsigned 
     td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     td.SampleDesc.Count = 1;
     td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    if (FAILED(device->CreateCommittedResource(&hd, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&skin_tex_)))) {
+    if (FAILED(device->CreateCommittedResource(&hd, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&s.tex)))) {
         return false;
     }
     UINT rows = 0;
     UINT64 row_bytes = 0, total = 0;
-    device->GetCopyableFootprints(&td, 0, 1, 0, &skin_footprint_, &rows, &row_bytes, &total);
+    device->GetCopyableFootprints(&td, 0, 1, 0, &s.footprint, &rows, &row_bytes, &total);
     D3D12_HEAP_PROPERTIES hu{};
     hu.Type = D3D12_HEAP_TYPE_UPLOAD;
     D3D12_RESOURCE_DESC ud{};
@@ -589,25 +594,55 @@ bool SteveRenderer::setSkin(ID3D12Device* device, const uint8_t* rgba, unsigned 
     ud.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     void* mapped = nullptr;
     D3D12_RANGE none{0, 0};
-    if (FAILED(device->CreateCommittedResource(&hu, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&skin_upload_))) ||
-        FAILED(skin_upload_->Map(0, &none, &mapped))) {
-        Rel(skin_tex_);
-        Rel(skin_upload_);
+    if (FAILED(device->CreateCommittedResource(&hu, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&s.upload))) ||
+        FAILED(s.upload->Map(0, &none, &mapped))) {
+        Rel(s.tex);
+        Rel(s.upload);
         return false;
     }
     for (UINT y = 0; y < rows; ++y) {
-        std::memcpy(static_cast<uint8_t*>(mapped) + skin_footprint_.Offset + static_cast<size_t>(y) * skin_footprint_.Footprint.RowPitch,
+        std::memcpy(static_cast<uint8_t*>(mapped) + s.footprint.Offset + static_cast<size_t>(y) * s.footprint.Footprint.RowPitch,
                     rgba + static_cast<size_t>(y) * width * 4, static_cast<size_t>(width) * 4);
     }
-    skin_upload_->Unmap(0, nullptr);
+    s.upload->Unmap(0, nullptr);
     D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
     sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     sd.Texture2D.MipLevels = 1;
-    device->CreateShaderResourceView(skin_tex_, &sd, slot);
-    skin_pending_ = true; // the copy is recorded into the first command list that draws the figure
-    return true;
+    device->CreateShaderResourceView(s.tex, &sd, slot);
+    s.pending = true; // the copy is recorded into the first command list that draws the figure
+    return true;}
+
+// Records the pending upload of `s` into `list` (once).
+void RecordSkinUpload(ID3D12GraphicsCommandList* list, SkinGpu& s) {
+    if (!s.pending || !s.tex || !s.upload) return;
+    D3D12_TEXTURE_COPY_LOCATION dst{};
+    dst.pResource = s.tex;
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dst.SubresourceIndex = 0;
+    D3D12_TEXTURE_COPY_LOCATION src{};
+    src.pResource = s.upload;
+    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    src.PlacedFootprint = s.footprint;
+    list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = s.tex;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    list->ResourceBarrier(1, &b);
+    s.pending = false;
+}
+} // namespace
+
+bool SteveRenderer::setSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    return CreateSkinTexture(device, rgba, width, height, slot, skin_);
+}
+
+bool SteveRenderer::setMobSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    return CreateSkinTexture(device, rgba, width, height, slot, mob_skin_);
 }
 
 void SteveRenderer::setDepthView(ID3D12Device* device, ID3D12Resource* depth, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
@@ -642,25 +677,8 @@ void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* 
                          unsigned width, unsigned height, const mc::rig::Mat4& view_proj,
                          const eldenring::render::PartMatrices& parts, const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
     if (!ready() || !own_depth_ || !dsv_heap_) return;
-    if (skin_pending_ && skin_tex_ && skin_upload_) {
-        D3D12_TEXTURE_COPY_LOCATION dst{};
-        dst.pResource = skin_tex_;
-        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        dst.SubresourceIndex = 0;
-        D3D12_TEXTURE_COPY_LOCATION src{};
-        src.pResource = skin_upload_;
-        src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-        src.PlacedFootprint = skin_footprint_;
-        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-        D3D12_RESOURCE_BARRIER b{};
-        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = skin_tex_;
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-        b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-        list->ResourceBarrier(1, &b);
-        skin_pending_ = false;
-    }
+    RecordSkinUpload(list, skin_);
+    RecordSkinUpload(list, mob_skin_);
     D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
     D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
     list->RSSetViewports(1, &vp);

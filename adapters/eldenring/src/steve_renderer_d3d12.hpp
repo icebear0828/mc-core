@@ -15,6 +15,14 @@
 
 namespace erov {
 
+// A skin texture, its upload buffer and whether the pixels still have to be copied to the GPU.
+struct SkinGpu {
+    ID3D12Resource* tex{nullptr};
+    ID3D12Resource* upload{nullptr};
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+    bool pending{false};
+};
+
 struct SteveParams {
     float mode{1.f}; // 0: no depth test, 1: hide behind the scene, 2: calibration colours
     float depth_const{0.0501f}; // depth * view z = near plane for a reverse-Z projection with an infinite far plane
@@ -38,6 +46,8 @@ public:
     // Creates the skin texture (RGBA8, usually 64x64) and its SRV at `slot`, which must directly follow the depth SRV in the
     // heap (the two share one descriptor table: t0 depth, t1 skin). The pixels are copied to the GPU by the first draw().
     bool setSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    // The same for the mobs' skin (zombie): its SRV at `slot` must directly follow a depth SRV copy, they form the table the mobs are drawn with.
+    bool setMobSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
 
     // The figure's own depth buffer (D32_FLOAT, standard 0..1 depth, cleared by draw()). Recreated when the size changes.
     bool ensureDepth(ID3D12Device* device, unsigned width, unsigned height);
@@ -120,10 +130,8 @@ private:
     ID3D12Resource* own_depth_{nullptr};
     ID3D12DescriptorHeap* dsv_heap_{nullptr};
     unsigned own_depth_w_{0}, own_depth_h_{0};
-    ID3D12Resource* skin_tex_{nullptr};
-    ID3D12Resource* skin_upload_{nullptr};
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT skin_footprint_{};
-    bool skin_pending_{false};
+    SkinGpu skin_;     // Steve
+    SkinGpu mob_skin_; // the mobs over the summons (zombie)
     ID3D12Resource* vertices_{nullptr};
     ID3D12Resource* indices_{nullptr};
     D3D12_VERTEX_BUFFER_VIEW vbv_{};

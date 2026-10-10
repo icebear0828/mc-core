@@ -83,6 +83,8 @@ void SetHudAtlas(const uint8_t* rgba, unsigned width, unsigned height);
 // Writes `frames` lines of per-frame figure and camera positions to the log (diagnosing jitter).
 void RequestFrameTrace(int frames);
 
+// The mobs' skin (RGBA8, 64x64, the zombie): call before the overlay is created. Without it the mobs wear the Steve skin.
+void SetMobSkin(const uint8_t* rgba, unsigned width, unsigned height);
 // The mobs drawn over the game's summons this frame (positions and headings in game metres/radians). Thread safe, replaces the last list.
 void SetMobs(const std::vector<eldenring::mobs::MobSnapshot>& mobs);
 
