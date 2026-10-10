@@ -16,6 +16,8 @@
 
 **2026-10-10 更新（`feat/creative`）**：已加 4 个只记录探针（击杀包装 `0x1403EDA70`、重着陆 `0x14044E090`、坠落高度 `0x14044E240`、SpEffect 查询 `0x1404FA370`，开关 `mc_er_creativelog.txt`）；修复“摔死后不能复活”（`fall_protect` 不再在 `hp<=0` 时跳过 `KillChr`，用户已实机确认）。**摔死走摔伤路径（`0x14044E240` → `0x411324` ×100），不走重着陆**，下一步免摔 = hook `0x14044E240` 对玩家返回 0，一步一测。**用 RTSS（RivaTuner）时带我们的 dll 会崩，玩 mod 时先退出 RTSS。** 核对结论见 `ELDENRING_REVERSE.md` §31。
 
+**2026-10-10 晚更新（`feat/creative`，创造模式基本完成，用户已实机确认）**：F5 切生存（默认）/创造；创造 = 物品选取区 + 免摔 + 物品不消耗 + 无血/饥饿/经验条；双击空格飞行（`eldenring_flight.hpp`：自己积分位置、只写 `+0x70/+0x80/+0x91`，跟随游戏 8 m 坐标重基，Steve 朝向取相机朝向）；创造模式下玩家不会被"滞空 12 秒"/击杀包装杀死（HP>0）。**机制与证据见 `ELDENRING_REVERSE.md` §32。** 还没做：飞行地形碰撞（v0 能穿地面和墙）、MC 起跳、`creative_*` 配置项、探针收尾（`mc_er_creativelog.txt` 目前仍开着，日志较多）。win 构建现用 Windows SDK 10.0.19041.0。**玩 mod 时先退出 RTSS。**
+
 **待逆向清单（已整理好，用户会丢给逆向 agent）：`docs/REVERSE_REQUESTS.md`**——创造模式 C1~C8、召唤 S1~S6、光照 L1~L2、战斗手感 H1~H4、弓箭、其它，含证据格式要求和已确认事实；回复回来后按第 8 节规则逐字节核对，结论写进 `ELDENRING_REVERSE.md` 新的一节。
 **光照捕获那份回复（`d3d12_lighting_capture_hook.hpp`）暂不采信**（文件不在仓库、无真实抓取数据），见 REVERSE §30。
 
