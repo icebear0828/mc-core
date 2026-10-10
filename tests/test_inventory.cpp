@@ -178,6 +178,15 @@ TEST(Inventory, DefaultHotbarMatchesTheOldController) {
     EXPECT_EQ(inv.slot(8).item, ItemId::TotemOfUndying);
 }
 
+TEST(Inventory, TheStartInventoryHasArrowsSoTheBowCanBeDrawnInSurvival) {
+    Inventory inv = Inventory::withDefaultHotbar();
+    EXPECT_EQ(inv.slot(9).item, ItemId::Arrow); // the first main slot, the hotbar is full
+    EXPECT_EQ(inv.slot(9).count, 64u);
+    EXPECT_TRUE(inv.has(ItemId::Arrow));
+    EXPECT_TRUE(inv.consumeFirst(ItemId::Arrow));
+    EXPECT_EQ(inv.slot(9).count, 63u);
+}
+
 TEST(Inventory, ReturnCursorPutsTheStackBackAndDropsWhatDoesNotFit) {
     Inventory inv;
     inv.setSlot(0, {ItemId::BlockDirt, 10});

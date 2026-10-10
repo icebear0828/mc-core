@@ -260,7 +260,7 @@ HUD_KEYS = [
     "item_bread", "item_cooked_beef", "item_firework_rocket", "container_top", "container_bottom",
     "block_dirt", "block_stone", "block_tnt_top", "block_tnt_side", "block_tnt_bottom",
     "heart_container_blinking", "heart_full_blinking", "heart_half_blinking", "xp_bar_background", "xp_bar_progress",
-    "item_zombie_spawn_egg",
+    "item_zombie_spawn_egg", "item_bow_pulling_0", "item_bow_pulling_1", "item_bow_pulling_2",
 ]
 HUD_SIZES = {
     "heart_absorb_full": (9, 9), "heart_absorb_half": (9, 9), "particle_crit": (8, 8), "particle_damage": (8, 8),
@@ -308,6 +308,9 @@ def _sprite_colors():
         "item/bread.png": _solid((16, 16), (43, 44, 45, 255)),
         "item/cooked_beef.png": _solid((16, 16), (46, 47, 48, 255)),
         "item/firework_rocket.png": _solid((16, 16), (49, 50, 51, 255)),
+        "item/bow_pulling_0.png": _solid((16, 16), (71, 72, 73, 255)),
+        "item/bow_pulling_1.png": _solid((16, 16), (74, 75, 76, 255)),
+        "item/bow_pulling_2.png": _solid((16, 16), (77, 78, 79, 255)),
         "item/spawn_egg.png": _solid((16, 16), (200, 200, 200, 255)),
         "item/spawn_egg_overlay.png": _egg_overlay(),
         "block/tnt_bottom.png": _solid((16, 16), (52, 53, 54, 255)),
@@ -467,6 +470,21 @@ def test_zombie_spawn_egg_prefers_the_mobs_own_texture_of_newer_jars(tmp_path):
     atlas, uv = build_hud_atlas(jar)
     region = _hud_region(atlas, uv["item_zombie_spawn_egg"])
     assert {region.getpixel((x, y)) for x in range(16) for y in range(16)} == {(12, 34, 56, 255)}
+
+
+def test_the_three_drawn_bow_sprites_are_copied_from_the_jar_and_have_placeholders_without_one(tmp_path):
+    from extract_mc_assets import build_hud_atlas
+
+    atlas, uv = build_hud_atlas(_hud_jar(tmp_path / "client.jar"))
+    for i, color in enumerate([(71, 72, 73, 255), (74, 75, 76, 255), (77, 78, 79, 255)]):
+        region = _hud_region(atlas, uv[f"item_bow_pulling_{i}"])
+        assert {region.getpixel((x, y)) for x in range(region.width) for y in range(region.height)} == {color}
+    # without a jar the placeholder is the plain bow with a nocked arrow, visibly different from the bow at rest, and each stage differs from the one before
+    plain, _ = build_hud_atlas()
+    plain_uv = build_hud_atlas()[1]
+    stages = [_hud_region(plain, plain_uv[f"item_bow_pulling_{i}"]).tobytes() for i in range(3)]
+    rest = _hud_region(plain, plain_uv["item_bow"]).tobytes()
+    assert len({rest, *stages}) == 4
 
 
 def test_block_face_sprites_are_the_flat_block_textures(tmp_path):

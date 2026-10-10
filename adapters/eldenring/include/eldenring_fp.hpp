@@ -110,6 +110,28 @@ inline M4 eatPose(float eaten, float equipped, float use_ticks = 32.f) {
     return mul(p, translate(0.56f, -0.52f + equipped * -0.6f, -0.72f));
 }
 
+// Drawing the bow (ItemInHandRenderer.renderArmWithItem, UseAnim.BOW, right hand): the arm transform, then the bow-specific turn and offset, then the pull
+// of the draw. `ticks` is how many ticks the bow has been drawn; the power curve is the same as the arrow's ((f*f + f*2) / 3, capped at 1).
+inline M4 bowPose(float ticks, float equipped) {
+    M4 p = translate(0.56f, -0.52f + equipped * -0.6f, -0.72f);
+    p = mul(p, translate(-0.2785682f, 0.18344387f, 0.15731531f));
+    p = mul(p, rotX(-13.935f));
+    p = mul(p, rotY(35.3f));
+    p = mul(p, rotZ(-9.785f));
+    float f12 = std::max(0.f, ticks) / 20.f;
+    f12 = std::min(1.f, (f12 * f12 + f12 * 2.f) / 3.f);
+    if (f12 > 0.1f) {
+        const float f15 = std::sin((ticks - 0.1f) * 1.3f);
+        const float f20 = f15 * (f12 - 0.1f);
+        p = mul(p, translate(f20 * 0.f, f20 * 0.004f, f20 * 0.f)); // the small shake once the draw has some power
+    }
+    p = mul(p, translate(f12 * 0.f, f12 * 0.f, f12 * 0.04f));
+    M4 stretch; // scale(1, 1, 1 + f12 * 0.2)
+    stretch.m[10] = 1.f + f12 * 0.2f;
+    p = mul(p, stretch);
+    return mul(p, rotY(-45.f));
+}
+
 // The bare right arm (ItemInHandRenderer.renderPlayerArm): the pose the arm model is drawn in.
 inline M4 bareArmPose(float swing, float equipped) {
     const float sq = std::sqrt(swing);

@@ -192,6 +192,13 @@ TEST(EldenRingBulletDamage, ABoltDoesMoreThanADiamondSwordHitAndScalesWithTheVic
     EXPECT_EQ(boltDamageEr(2000), 129);  // linear in the health
 }
 
+TEST(EldenRingBulletDamage, TheMcDamageOfTheShotScalesTheHit) {
+    EXPECT_EQ(boltDamageEr(1000, 9.f), boltDamageEr(1000));
+    EXPECT_EQ(boltDamageEr(1000, 4.5f), 32);           // half the damage, half the hit
+    EXPECT_GT(boltDamageEr(1000, 9.f), boltDamageEr(1000, 3.f));
+    EXPECT_EQ(boltDamageEr(1000, 0.f), 1);             // a landed hit is never zero
+}
+
 TEST(EldenRingBulletDamage, AnUnknownHealthGivesNoDamageAndAHitNeverRoundsToZero) {
     EXPECT_EQ(boltDamageEr(0), 0);
     EXPECT_EQ(boltDamageEr(-5), 0);
@@ -210,4 +217,19 @@ TEST(EldenRingBulletDamage, OnlyAHitByTheShootersBoltRightAfterAShotIsReplaced) 
     EXPECT_FALSE(isPlayersBoltHit(2, player, player, other, 1234u, 500));                 // the last bullet was a spell, not a bolt
     EXPECT_FALSE(isPlayersBoltHit(2, player, player, other, kBoltBulletId, 4000));        // too long ago to be this bolt
     EXPECT_TRUE(isPlayersBoltHit(2, player, player, other, kBoltBulletId, 3999));
+}
+
+TEST(EldenRingBulletFeedback, TheHitShowsHalfTheMcDamageInHeartsRoundedDown) {
+    EXPECT_EQ(hitHearts(9.f), 4);     // Minecraft: floor(damage / 2) hearts
+    EXPECT_EQ(hitHearts(6.f), 3);
+    EXPECT_EQ(hitHearts(1.4f), 0);
+    EXPECT_EQ(hitHearts(0.f), 0);
+    EXPECT_EQ(hitHearts(-3.f), 0);
+}
+
+TEST(EldenRingBulletFeedback, OnlyAFullPowerShotIsCritical) {
+    EXPECT_TRUE(isCriticalShot(9.f));      // a full draw (6 + the critical bonus) or a crossbow bolt
+    EXPECT_TRUE(isCriticalShot(12.f));
+    EXPECT_FALSE(isCriticalShot(5.8f));    // power 0.96
+    EXPECT_FALSE(isCriticalShot(1.4f));
 }

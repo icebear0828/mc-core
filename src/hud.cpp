@@ -104,6 +104,9 @@ const char* HudEngine::getItemDisplayName(ItemId item) {
         case ItemId::BlockStone: return "Stone";
         case ItemId::BlockTnt: return "TNT";
         case ItemId::ZombieSpawnEgg: return "Zombie Spawn Egg";
+        case ItemId::BowPulling0:
+        case ItemId::BowPulling1:
+        case ItemId::BowPulling2: return "Bow";
         case ItemId::None:
         default: return "";
     }

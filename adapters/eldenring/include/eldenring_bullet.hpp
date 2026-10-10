@@ -136,11 +136,12 @@ inline bool templateChanged(const uint8_t* old_body, const uint8_t* new_body) {
 
 
 // ---- the damage of a bolt the player shot --------------------------------------------------------------------------------------------------
-// MC: a fully charged crossbow bolt does 9. Converted like the melee hits (a 7-damage diamond sword hit is 5% of the victim's maximum health), so
-// the balance of the two weapons is the same.
-inline int boltDamageEr(int victim_max_hp) {
+// MC: a crossbow bolt does 9; a bow arrow 6 at full power plus a critical bonus (eldenring_bow.hpp). Converted like the melee hits (a 7-damage diamond sword
+// hit is 5% of the victim's maximum health), so the balance of the weapons is the same.
+inline constexpr float kCrossbowDamage = 9.f;
+inline int boltDamageEr(int victim_max_hp, float mc_damage = kCrossbowDamage) {
     mc::HitIntent intent;
-    intent.damage = 9.f;
+    intent.damage = mc_damage;
     intent.max_hp_percent = 0.05f;
     return live::erDamage(intent, victim_max_hp);
 }
@@ -153,6 +154,11 @@ inline constexpr uint32_t kBoltBulletId = 56; // request +0x1C of a crossbow sho
 inline bool isPlayersBoltHit(uint8_t hit_kind, uint64_t attacker_arg, uint64_t player, uint64_t victim, uint32_t last_bullet_id, uint64_t ms_since_shot) {
     return hit_kind == 2 && player != 0 && attacker_arg == player && victim != 0 && victim != player && last_bullet_id == kBoltBulletId && ms_since_shot < 4000;
 }
+
+// The feedback of a hit by the player's bolt, as for the melee hits: Minecraft shows floor(damage / 2) damage hearts at the victim, and a critical shot
+// (a full draw, or a crossbow bolt: both 9) also shows the critical stars and the critical hit marker.
+inline int hitHearts(float mc_damage) { return mc_damage > 0.f ? static_cast<int>(mc_damage * 0.5f) : 0; }
+inline bool isCriticalShot(float mc_damage) { return mc_damage >= kCrossbowDamage - 1e-3f; }
 
 inline bool spawnFailed(uint32_t handle) { return handle == 0xFFFFFFFFu; }
 

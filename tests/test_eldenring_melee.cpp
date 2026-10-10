@@ -227,3 +227,14 @@ TEST(EldenRingHudTex, UpscaleNearestReplicatesEveryPixel) {
     EXPECT_TRUE(eldenring::render::upscaleNearest(nullptr, 2, 2, 3).empty());
     EXPECT_TRUE(eldenring::render::upscaleNearest(src, 2, 2, 0).empty());
 }
+
+TEST(EldenRingHudTex, TheDrawnBowSpritesHaveTheirOwnAtlasCells) {
+    const auto* rest = eldenring::render::uvForItem(mc::ItemId::Bow);
+    const auto* a = eldenring::render::uvForItem(mc::ItemId::BowPulling0);
+    const auto* b = eldenring::render::uvForItem(mc::ItemId::BowPulling1);
+    const auto* c = eldenring::render::uvForItem(mc::ItemId::BowPulling2);
+    ASSERT_TRUE(rest && a && b && c);
+    EXPECT_NE(rest, a);
+    EXPECT_NE(a, b);
+    EXPECT_NE(b, c);
+}

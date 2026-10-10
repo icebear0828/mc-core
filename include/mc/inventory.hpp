@@ -46,6 +46,7 @@ public:
                                           {ItemId::BlockStone, 64},  {ItemId::BlockTnt, 16},       {ItemId::GoldenApple, 8},
                                           {ItemId::Bow, 1},          {ItemId::Elytra, 1},          {ItemId::TotemOfUndying, 1}};
         for (int i = 0; i < kHotbar; ++i) inv.slots_[static_cast<size_t>(i)] = start[i];
+        inv.slots_[kHotbar] = {ItemId::Arrow, 64}; // the hotbar is full: the arrows for the bow wait in the first main slot
         return inv;
     }
 
