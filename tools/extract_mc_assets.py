@@ -671,6 +671,7 @@ _JAR_HUD_SPRITES = {
     "item_bread": "item/bread.png",
     "item_cooked_beef": "item/cooked_beef.png",
     "item_firework_rocket": "item/firework_rocket.png",
+    "item_zombie_spawn_egg": "item/zombie_spawn_egg.png",
     "block_dirt": "block/dirt.png",
     "block_stone": "block/stone.png",
     "block_tnt_top": "block/tnt_top.png",
@@ -795,6 +796,10 @@ def _read_real_hud_sprite(jar_zip: zipfile.ZipFile, name: str, size: tuple[int, 
         src = _open_jar_png(jar_zip, _CONTAINER_TEXTURE)
         return None if src is None else src.crop(_CONTAINER_PARTS[name])
     if name in _SPAWN_EGG_COLOURS:
+        own = _JAR_HUD_SPRITES.get(name)
+        finished = _open_jar_png(jar_zip, own) if own else None
+        if finished is not None:  # newer jars: the finished texture of the mob's egg
+            return _fit_exact(finished, size)
         base, spots = _open_jar_png(jar_zip, "item/spawn_egg.png"), _open_jar_png(jar_zip, "item/spawn_egg_overlay.png")
         if base is None or spots is None:
             return None

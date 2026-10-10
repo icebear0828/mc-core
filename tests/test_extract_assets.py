@@ -457,6 +457,18 @@ def test_zombie_spawn_egg_is_the_egg_tinted_with_the_zombie_colours_and_its_spot
     assert egg.getpixel((8, 8)) == (0x79, 0x9C, 0x65, 255)
 
 
+def test_zombie_spawn_egg_prefers_the_mobs_own_texture_of_newer_jars(tmp_path):
+    import zipfile
+    from extract_mc_assets import build_hud_atlas
+
+    jar = _hud_jar(tmp_path / "client.jar")
+    with zipfile.ZipFile(jar, "a") as z:  # 1.21.4+ ships one finished texture per mob instead of a grey egg to tint
+        z.writestr("assets/minecraft/textures/item/zombie_spawn_egg.png", _png(_solid((16, 16), (12, 34, 56, 255))))
+    atlas, uv = build_hud_atlas(jar)
+    region = _hud_region(atlas, uv["item_zombie_spawn_egg"])
+    assert {region.getpixel((x, y)) for x in range(16) for y in range(16)} == {(12, 34, 56, 255)}
+
+
 def test_block_face_sprites_are_the_flat_block_textures(tmp_path):
     from extract_mc_assets import build_hud_atlas
 
