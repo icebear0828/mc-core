@@ -2872,13 +2872,20 @@ bool SpawnBulletSafe(void* manager, uint32_t* out_handle, void* request, void* c
 // 1000 ms after one of our shots the slot is searched for float triples ahead of the muzzle along the aim, and the classes behind its pointers are logged
 // once (the bullet's model, to hide it later). Game thread only.
 constexpr size_t kBulletSlotBytes = 0x9D0;
+struct ProbeBlock {
+    std::string path; // "slot", "mgr", "[slot+0x610]" ...
+    uintptr_t addr{0};
+    std::vector<uint8_t> bytes;
+};
 struct PosProbe {
     bool active{false};
     uintptr_t entry{0};
+    uintptr_t manager{0};
     uint32_t handle{0};
     float p0[3]{}, aim[3]{};
     uint64_t t0_ms{0};
     int samples{0};
+    std::vector<ProbeBlock> baseline; // the first snapshot (slot, manager and what their pointers lead to): later ones are compared with it
 };
 PosProbe g_pos_probe;
 
@@ -2892,6 +2899,7 @@ void PosProbeStart(uint64_t manager, uint32_t handle, const float p0[3], const f
     const size_t slot = handle & 0xFFu;
     g_pos_probe = PosProbe{};
     g_pos_probe.entry = static_cast<uintptr_t>(pool) + slot * kBulletSlotBytes;
+    g_pos_probe.manager = static_cast<uintptr_t>(manager);
     g_pos_probe.handle = handle;
     std::memcpy(g_pos_probe.p0, p0, sizeof(g_pos_probe.p0));
     std::memcpy(g_pos_probe.aim, dir, sizeof(g_pos_probe.aim));
@@ -2924,6 +2932,48 @@ void PosProbeTick() {
         const std::vector<ScanHit> classes = scanForClasses(g_reader, g_img.base, g_pos_probe.entry, 0, kBulletSlotBytes, 64);
         Log("bullet pos: %zu object(s) with a known class behind the pointers of the slot", classes.size());
         for (const ScanHit& h : classes) Log("bullet pos:   %s", formatScanHit(h, 0).c_str());
+        // The baseline: the slot, the manager and one pointer level below each (0x400 bytes), at fixed addresses so later snapshots line up.
+        struct Root {
+            const char* name;
+            uintptr_t addr;
+            size_t bytes;
+        };
+        const Root roots[] = {{"slot", g_pos_probe.entry, kBulletSlotBytes}, {"mgr", g_pos_probe.manager, 0x800}};
+        g_pos_probe.baseline.clear();
+        std::set<uintptr_t> seen;
+        for (const Root& root : roots) {
+            ProbeBlock top{root.name, root.addr, eldenring::handlescan::detail::readTolerant(g_reader, root.addr, root.bytes)};
+            size_t children = 0;
+            for (size_t at = 0; at + 8 <= top.bytes.size() && children < 48; at += 8) {
+                uint64_t ptr;
+                std::memcpy(&ptr, top.bytes.data() + at, sizeof(ptr));
+                uint8_t probe;
+                if (!eldenring::handlescan::detail::looksLikeUserPointer(ptr) || !seen.insert(static_cast<uintptr_t>(ptr)).second ||
+                    !SafeCopy(static_cast<uintptr_t>(ptr), &probe, 1)) {
+                    continue;
+                }
+                ++children;
+                char path[64];
+                snprintf(path, sizeof(path), "[%s+0x%zX]", root.name, at);
+                g_pos_probe.baseline.push_back({path, static_cast<uintptr_t>(ptr), eldenring::handlescan::detail::readTolerant(g_reader, static_cast<uintptr_t>(ptr), 0x400)});
+            }
+            g_pos_probe.baseline.push_back(std::move(top));
+        }
+        Log("bullet pos: baseline snapshot: %zu block(s)", g_pos_probe.baseline.size());
+    } else if (!g_pos_probe.baseline.empty()) {
+        // Differences against the baseline: triples that moved along the aim, in whatever coordinate frame they are stored.
+        const double dt = static_cast<double>(since) / 1000.0 - 0.25; // seconds since the baseline
+        int logged = 0;
+        for (const ProbeBlock& block : g_pos_probe.baseline) {
+            const std::vector<uint8_t> now = eldenring::handlescan::detail::readTolerant(g_reader, block.addr, block.bytes.size());
+            for (const eldenring::bow::Mover& m : eldenring::bow::findMovers(block.bytes.data(), now.data(), block.bytes.size(), g_pos_probe.aim, 0.5f, 150.f, 0.9f)) {
+                if (++logged > 24) break;
+                Log("bullet pos:   MOVER %s +0x%X (%.3f %.3f %.3f) -> (%.3f %.3f %.3f) moved %.2f m in %.2f s = %.1f m/s", block.path.c_str(), m.offset, m.v1[0], m.v1[1], m.v1[2],
+                    m.v2[0], m.v2[1], m.v2[2], m.moved, dt, dt > 0.0 ? m.moved / dt : 0.0);
+            }
+            if (logged > 24) break;
+        }
+        Log("bullet pos: sample %d: %d mover(s) logged", g_pos_probe.samples, std::min(logged, 24));
     }
     if (g_pos_probe.samples >= 4) g_pos_probe.active = false;
 }

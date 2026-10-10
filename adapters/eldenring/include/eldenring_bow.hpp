@@ -113,4 +113,36 @@ inline std::vector<int> findAlongAim(const uint8_t* data, size_t size, const flo
     return out;
 }
 
+
+// A float triple that moved between two snapshots of the same block of memory, along the aim: finds the position of a flying bullet whatever the
+// coordinate frame it is stored in (the snapshots are taken a few hundred milliseconds apart).
+struct Mover {
+    int offset{0};
+    float v1[3]{}, v2[3]{};
+    float moved{0.f};
+};
+
+inline std::vector<Mover> findMovers(const uint8_t* a, const uint8_t* b, size_t size, const float aim[3], float min_move, float max_move, float min_cos) {
+    std::vector<Mover> out;
+    const float an = std::sqrt(aim[0] * aim[0] + aim[1] * aim[1] + aim[2] * aim[2]);
+    if (!(an > 1e-6f)) return out;
+    for (size_t at = 0; at + 12 <= size; at += 4) {
+        float p[3], q[3];
+        std::memcpy(p, a + at, 12);
+        std::memcpy(q, b + at, 12);
+        if (!(std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]) && std::isfinite(q[0]) && std::isfinite(q[1]) && std::isfinite(q[2]))) continue;
+        const float d[3] = {q[0] - p[0], q[1] - p[1], q[2] - p[2]};
+        const float moved = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        if (moved < min_move || moved > max_move) continue;
+        if ((d[0] * aim[0] + d[1] * aim[1] + d[2] * aim[2]) / (moved * an) < min_cos) continue;
+        Mover m;
+        m.offset = static_cast<int>(at);
+        std::memcpy(m.v1, p, 12);
+        std::memcpy(m.v2, q, 12);
+        m.moved = moved;
+        out.push_back(m);
+    }
+    return out;
+}
+
 } // namespace eldenring::bow

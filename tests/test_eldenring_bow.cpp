@@ -137,3 +137,41 @@ TEST(EldenRingBowProbe, AlongAimToleratesTheDropOfAFallingBolt) {
     const float p0[3] = {10.f, 5.f, 0.f}, aim[3] = {0.f, 0.f, 1.f};
     EXPECT_EQ(findAlongAim(b.data(), b.size(), p0, aim, 0.3f, 80.f, 0.9f).size(), 1u);
 }
+
+TEST(EldenRingBowProbe, MoversAreTriplesWhoseChangeRunsAlongTheAimWhateverTheFrame) {
+    std::vector<uint8_t> a(0x100, 0), b(0x100, 0);
+    auto put = [](std::vector<uint8_t>& v, size_t off, float x, float y, float z) {
+        const float t[3] = {x, y, z};
+        std::memcpy(v.data() + off, t, 12);
+    };
+    const float aim[3] = {0.f, 0.f, 1.f};
+    put(a, 0x10, 100.f, 5.f, 40.f);  put(b, 0x10, 100.f, 5.f, 47.5f);  // moved 7.5 m along the aim, in some other coordinate frame
+    put(a, 0x40, 1.f, 2.f, 3.f);     put(b, 0x40, 1.f, 2.f, 3.f);      // did not move
+    put(a, 0x70, 0.f, 0.f, 0.f);     put(b, 0x70, 6.f, 0.f, 0.f);      // moved sideways
+    put(a, 0xA0, 0.f, 0.f, 10.f);    put(b, 0xA0, 0.f, 0.f, 9.f);      // moved backwards
+    const std::vector<Mover> m = findMovers(a.data(), b.data(), a.size(), aim, 0.5f, 100.f, 0.9f);
+    // A triple read 8 bytes early can borrow the x of a neighbour that moved sideways (here 0x68 for the one at 0x70): such overlaps are real noise in
+    // aligned scans, so the test only asks for the true mover to be there and the still / sideways / backward ones to be reported at their own offsets.
+    bool found = false;
+    for (const Mover& x : m) {
+        if (x.offset == 0x10) {
+            found = true;
+            EXPECT_NEAR(x.moved, 7.5f, 1e-4f);
+            EXPECT_FLOAT_EQ(x.v2[2], 47.5f);
+        }
+        EXPECT_NE(x.offset, 0x40); // did not move
+        EXPECT_NE(x.offset, 0x70); // moved sideways
+        EXPECT_NE(x.offset, 0xA0); // moved backwards
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(EldenRingBowProbe, MoversIgnoreNonFiniteAndHugeJumps) {
+    std::vector<uint8_t> a(0x40, 0), b(0x40, 0xFF);
+    const float aim[3] = {0.f, 0.f, 1.f};
+    EXPECT_TRUE(findMovers(a.data(), b.data(), a.size(), aim, 0.5f, 100.f, 0.9f).empty());
+    const float x[3] = {0.f, 0.f, 0.f}, y[3] = {0.f, 0.f, 5000.f};
+    std::memcpy(a.data(), x, 12);
+    std::memcpy(b.data(), y, 12);
+    EXPECT_TRUE(findMovers(a.data(), b.data(), 12, aim, 0.5f, 100.f, 0.9f).empty());
+}
