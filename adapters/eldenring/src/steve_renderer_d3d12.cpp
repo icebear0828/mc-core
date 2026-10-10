@@ -307,9 +307,11 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
         if (FAILED(device->CreateGraphicsPipelineState(&fd, IID_PPV_ARGS(&pso_depthview_))) && log) log("steve: depth view pipeline failed");
     }
     if (SUCCEEDED(hr)) {
+        ID3DBlob* vs_shadow = nullptr; // pd.VS points into `vs`, which was released above: the shadow pipeline needs its own copy
         ID3DBlob* ps_shadow = nullptr;
-        if (Compile("PSShadow", "ps_5_0", &ps_shadow, log)) {
+        if (Compile("VSMain", "vs_5_0", &vs_shadow, log) && Compile("PSShadow", "ps_5_0", &ps_shadow, log)) {
             D3D12_GRAPHICS_PIPELINE_STATE_DESC sd = pd;
+            sd.VS = {vs_shadow->GetBufferPointer(), vs_shadow->GetBufferSize()};
             sd.PS = {ps_shadow->GetBufferPointer(), ps_shadow->GetBufferSize()};
             sd.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO; // shadows test against the blocks but never hide each other
             sd.BlendState.RenderTarget[0].BlendEnable = TRUE;
@@ -319,11 +321,11 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
             sd.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
             sd.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
             sd.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
-            if (FAILED(device->CreateGraphicsPipelineState(&sd, IID_PPV_ARGS(&pso_shadow_)))) {
-                if (log) log("steve: shadow pipeline failed");
-            }
-            Rel(ps_shadow);
+            const HRESULT shr = device->CreateGraphicsPipelineState(&sd, IID_PPV_ARGS(&pso_shadow_));
+            if (FAILED(shr) && log) log("steve: shadow pipeline failed (0x%08X)", static_cast<unsigned>(shr));
         }
+        Rel(vs_shadow);
+        Rel(ps_shadow);
         const mc::rig::RigMesh disc = eldenring::shadow::buildShadowDisc(kShadowSegments);
         shadow_vertices_ = UploadBuffer(device, disc.vertices.data(), disc.vertices.size() * sizeof(mc::rig::RigVertex));
         shadow_indices_ = UploadBuffer(device, disc.indices.data(), disc.indices.size() * sizeof(uint16_t));
