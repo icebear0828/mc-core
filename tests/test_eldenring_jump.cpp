@@ -46,3 +46,55 @@ TEST(McJump, NoSamplesNoGravity) {
     t.start(1.f);
     EXPECT_FLOAT_EQ(t.estimatedGravity(), 0.f);
 }
+
+TEST(McJump, ArcStartsAtZeroAndRisesThroughMinecraftsFirstTick) {
+    McJumpArc a;
+    EXPECT_FALSE(a.active());
+    a.start();
+    EXPECT_TRUE(a.active());
+    EXPECT_FLOAT_EQ(a.advance(0.f), 0.f);
+    // after one full 50 ms tick the feet are 0.42 m up (vy 0.42 blocks per tick)
+    EXPECT_NEAR(a.advance(0.05f), 0.42f, 1e-4f);
+}
+
+TEST(McJump, ArcPeaksAtTheMinecraftHeightWhateverTheFrameRate) {
+    for (const float dt : {1.f / 30.f, 1.f / 60.f, 1.f / 144.f}) {
+        McJumpArc a;
+        a.start();
+        float peak = 0.f;
+        for (int i = 0; i < 400; ++i) {
+            peak = std::max(peak, a.advance(dt));
+            if (a.descending() && a.height() < 0.f) break;
+        }
+        EXPECT_NEAR(peak, mcJumpPeakHeight(), 0.04f) << dt;
+    }
+}
+
+TEST(McJump, ArcFallsBackBelowTheTakeoffAndReportsDescending) {
+    McJumpArc a;
+    a.start();
+    EXPECT_FALSE(a.descending());
+    float h = 0.f;
+    int frames = 0;
+    while (h > -0.5f && frames++ < 1000) h = a.advance(1.f / 60.f);
+    EXPECT_TRUE(a.descending());
+    EXPECT_LT(h, 0.f); // with no ground it keeps falling
+    EXPECT_LT(frames, 120); // about 0.6 s up and down plus the drop
+}
+
+TEST(McJump, ArcIgnoresAHitchLongerThanAFewTicks) {
+    McJumpArc a, b;
+    a.start();
+    b.start();
+    a.advance(5.f);                 // a 5 s hitch is clamped (loading screen, alt-tab)
+    for (int i = 0; i < 6; ++i) b.advance(1.f / 60.f); // 0.1 s
+    EXPECT_NEAR(a.height(), b.height(), 0.2f);
+}
+
+TEST(McJump, EndingTheJumpStopsTheArc) {
+    McJumpArc a;
+    a.start();
+    a.advance(0.1f);
+    a.end();
+    EXPECT_FALSE(a.active());
+}

@@ -33,10 +33,6 @@ inline bool zeroesFall(GameMode m) { return m == GameMode::Creative; }
 inline bool consumesItems(GameMode m) { return m == GameMode::Survival; }
 inline bool showsVitals(GameMode m) { return m == GameMode::Survival; }
 
-// The SpEffect the hard-landing function asks about, and the return address of that one call (0x14044E0DF + 5).
-inline constexpr int kLandingSkipSpEffect = 0x8F;
-inline constexpr uintptr_t kLandingSpEffectReturnRva = 0x44E0E4;
-
 // Heights below this (metres) are ordinary walking and are not logged.
 inline constexpr float kFallLogMinMetres = 1.f;
 inline constexpr uint64_t kFallLogIntervalMs = 250;
@@ -61,10 +57,6 @@ inline bool shouldBlockPlayerKill(GameMode mode, bool mc_mode, int hp) { return 
 
 // "The fall lasted too long" (FallModule+0x18 above a threshold) is decided by 0x14044E3A0 and starts the fall death. Creative mode answers no.
 inline bool shouldDenyLongFall(GameMode mode, bool mc_mode, bool owner_is_player) { return mode == GameMode::Creative && mc_mode && owner_is_player; }
-
-inline bool shouldLogSpEffect(int sp_effect, uintptr_t caller_rva, bool owner_is_player) {
-    return owner_is_player && sp_effect == kLandingSkipSpEffect && caller_rva == kLandingSpEffectReturnRva;
-}
 
 // Per-caller rate limit for the fall height probe: it runs every frame from several callers.
 struct FallLogState {
@@ -95,12 +87,6 @@ inline std::string formatKill(uintptr_t caller_rva, bool player) {
     char buf[160];
     std::snprintf(buf, sizeof(buf), "creative: kill wrapper called (caller RVA 0x%llX) player=%d", static_cast<unsigned long long>(caller_rva),
                   player ? 1 : 0);
-    return buf;
-}
-
-inline std::string formatLanding(bool player) {
-    char buf[96];
-    std::snprintf(buf, sizeof(buf), "creative: hard landing handler entered player=%d", player ? 1 : 0);
     return buf;
 }
 
@@ -143,12 +129,6 @@ inline std::string formatStack(const uintptr_t* frames, size_t n, uintptr_t imag
         out += b;
     }
     return out;
-}
-
-inline std::string formatSpEffect(bool answer) {
-    char buf[96];
-    std::snprintf(buf, sizeof(buf), "creative: landing asked for SpEffect 0x8F, the game returned %d", answer ? 1 : 0);
-    return buf;
 }
 
 } // namespace eldenring::creative

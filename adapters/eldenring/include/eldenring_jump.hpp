@@ -22,6 +22,40 @@ inline float mcJumpPeakHeight() {
     return peak;
 }
 
+// Minecraft's jump, tick by tick (20 ticks per second, 1 block = 1 m): vy = 0.42 on take-off, then each tick y += vy and
+// vy = (vy - 0.08) * 0.98. Real frame time is accumulated into ticks; between two ticks the height runs on straight to the next tick's value
+// (cur + vy, known in advance), so there is no latency and the arc is the same at any frame rate. height() is metres above the take-off.
+class McJumpArc {
+public:
+    static constexpr float kTick = 0.05f;
+    static constexpr float kMaxFrame = 0.1f; // a longer hitch (loading screen, alt-tab) counts as 0.1 s
+
+    void start() {
+        active_ = true;
+        vy_ = 0.42f;
+        cur_ = 0.f;
+        acc_ = 0.f;
+    }
+    void end() { active_ = false; }
+    [[nodiscard]] bool active() const { return active_; }
+    [[nodiscard]] bool descending() const { return vy_ <= 0.f; }
+    [[nodiscard]] float height() const { return cur_ + vy_ * std::clamp(acc_ / kTick, 0.f, 1.f); }
+    float advance(float dt) {
+        if (!active_) return height();
+        acc_ += std::clamp(dt, 0.f, kMaxFrame);
+        while (acc_ >= kTick) {
+            acc_ -= kTick;
+            cur_ += vy_;
+            vy_ = (vy_ - 0.08f) * 0.98f;
+        }
+        return height();
+    }
+
+private:
+    bool active_{false};
+    float vy_{0.f}, cur_{0.f}, acc_{0.f};
+};
+
 class JumpTrace {
 public:
     void start(float y) {

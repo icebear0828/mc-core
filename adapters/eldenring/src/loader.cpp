@@ -466,13 +466,9 @@ void __fastcall KillChrDetour(void* chr) {
 // ---- creative-mode hooks: the fall-height hook is always installed (it only acts in creative mode, F5); the other three are log-only probes (mc_er_creativelog.txt) -------------------------------------
 // Which path kills the player after a fall? Every probe calls the original unchanged and only writes a line to mc_er.log.
 using KillWrapperFn = void(__fastcall*)(void* chr);
-using HardLandingFn = void(__fastcall*)(void* fall_module);
 using FallHeightFn = float(__fastcall*)(void* fall_module);
-using HasSpEffectFn = bool(__fastcall*)(void* container, int sp_effect);
 KillWrapperFn g_cr_kill_orig = nullptr;
-HardLandingFn g_cr_land_orig = nullptr;
 FallHeightFn g_cr_fall_orig = nullptr;
-HasSpEffectFn g_cr_sp_orig = nullptr;
 using FallTimeExceededFn = bool(__fastcall*)(void* fall_module, float threshold);
 FallTimeExceededFn g_cr_exceeded_orig = nullptr;
 using ChrEventFn = uint64_t(__fastcall*)(void* self, void* event);
@@ -510,12 +506,6 @@ void __fastcall CreativeKillDetour(void* chr) {
     }
     g_cr_kill_orig(chr);
 }
-
-void __fastcall CreativeLandingDetour(void* fall_module) {
-    if (creative::isPlayer(ModuleOwner(fall_module), PlayerChrPtr())) Log("%s", creative::formatLanding(true).c_str());
-    g_cr_land_orig(fall_module);
-}
-
 
 float __fastcall CreativeFallDetour(void* fall_module) {
     const float metres = g_cr_fall_orig(fall_module);
@@ -569,22 +559,6 @@ uint64_t __fastcall CreativeEventDetour(void* self, void* event) {
         }
     }
     return g_cr_event_orig(self, event);
-}
-
-bool __fastcall CreativeSpEffectDetour(void* container, int sp_effect) {
-    const bool answer = g_cr_sp_orig(container, sp_effect);
-    if (sp_effect == creative::kLandingSkipSpEffect) {
-        const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base;
-        if (caller == creative::kLandingSpEffectReturnRva) {
-            // The container is [[FallModule+8]+0x178], i.e. [chr+0x178] (0x14043D260): compare it with the player's.
-            const uintptr_t player = PlayerChrPtr();
-            uint64_t player_container = 0;
-            const bool is_player = player != 0 && SafeCopy(player + 0x178, &player_container, sizeof(player_container)) &&
-                                   creative::isPlayer(reinterpret_cast<uintptr_t>(container), static_cast<uintptr_t>(player_container));
-            if (creative::shouldLogSpEffect(sp_effect, caller, is_player)) Log("%s", creative::formatSpEffect(answer).c_str());
-        }
-    }
-    return answer;
 }
 
 // ---- inventory screen ----------------------------------------------------------------------------------------------------
@@ -1664,10 +1638,6 @@ void ResetFallTimer(uintptr_t chr) {
     if (!g_fall_reset.load(std::memory_order_relaxed)) return;
     if (FallTimer(chr) > g_fall_hold.load(std::memory_order_relaxed)) WriteFallTimer(chr, 0.f);
 }
-// Our own landing: what the game does by itself when the player lands.
-void LandFallTimer(uintptr_t chr) {
-    if (g_fall_reset.load(std::memory_order_relaxed)) WriteFallTimer(chr, 0.f);
-}
 
 // Keeps the player out of the blocks. Runs on the game thread, at the start of every camera update (the game's own per-frame hook), so
 // the physics position is never written while the game is using it and the camera sees the corrected position.
@@ -1804,132 +1774,134 @@ void BlocksTick() {
     if (!g_camstep_installed.load()) BlocksCollisionStep(); // without the camera hook the collision runs here (less smooth)
 }
 
-// ---- MC jump (mc_jump=1) ------------------------------------------------------------------------------------------------------
-// The game's jump has a 0.7-0.8 s wind-up and is low, and its vertical speed cannot be written (the first experiment wrote 8.95 m/s and
-// read 0.84 back: +0x124 is only a read-out). So the whole arc is ours: the jump key is hidden from the game (DirectInput), on the press
-// (on the ground or on a block) the height is integrated here with Minecraft's numbers and written into the physics position every frame,
-// the "on the ground" flag is kept cleared so the game does not snap the player back, and the keys drive the horizontal speed. The landing
-// is the game's ground (a static ray down) or the top of a placed block. Game thread (camera update).
-std::atomic<bool> g_mc_jump{false};
+std::atomic<bool> g_flying{false};      // creative flight is on (defined here: the jump stays out of it)
+std::atomic<bool> g_fly_sync{true};     // fly_sync=0: do not ask the engine to move the Havok proxies (diagnostic)
+
+// ---- MC jump (mc_jump=1, on by default) ---------------------------------------------------------------------------------------
+// The game's jump has a 0.7-0.8 s wind-up and is low. The jump key is hidden from the game (DirectInput), so the wind-up never starts; on the
+// press (standing on the ground or on a block) the height is integrated with Minecraft's own numbers (eldenring_jump.hpp: 0.42 blocks per tick,
+// gravity 0.08, drag 0.98) and written into the physics position, plus the proxy sync request +0x91, exactly like the flight. NOTHING else is
+// written (the first version also wrote the ground flags +0x92/+0x1D0/+0x1D1, the velocity and the fall timer, and walking broke). The horizontal
+// movement stays the game's; the landing is the game's ground (a static ray down) or the top of a placed block, then the game takes over.
+// Game thread (camera update).
+std::atomic<bool> g_mc_jump{true};
 std::atomic<int> g_mc_jump_vk{VK_SPACE};
-std::atomic<float> g_mc_jump_speed{8.944f};  // m/s: with 32 m/s^2 gravity the peak is 1.25 m, Minecraft's jump
-std::atomic<float> g_mc_gravity{32.f};
 
 void McJumpStep() {
-    static bool prev_key = false;
-    static bool active = false;
-    static float y = 0.f, vy = 0.f, start_y = 0.f, peak = 0.f;
+    static eldenring::live::McJumpArc arc;
+    static float start_y = 0.f, wrote_y = 0.f, peak = 0.f;
+    static bool have_wrote = false;
     static LARGE_INTEGER last_qpc{};
     static uint64_t start_ms = 0;
     LARGE_INTEGER now_qpc, freq;
     QueryPerformanceCounter(&now_qpc);
     QueryPerformanceFrequency(&freq);
-    float dt = last_qpc.QuadPart != 0 ? static_cast<float>(now_qpc.QuadPart - last_qpc.QuadPart) / static_cast<float>(freq.QuadPart) : 0.f;
+    const float dt = last_qpc.QuadPart != 0 ? static_cast<float>(now_qpc.QuadPart - last_qpc.QuadPart) / static_cast<float>(freq.QuadPart) : 0.f;
     last_qpc = now_qpc;
-    dt = std::clamp(dt, 0.f, 0.05f);
-    if (!g_mc_jump.load(std::memory_order_relaxed) || !g_mc_mode.load(std::memory_order_relaxed) || g_inv_open.load(std::memory_order_relaxed) || !GameInForeground()) {
-        prev_key = false;
-        active = false;
+    const bool allowed = g_mc_jump.load(std::memory_order_relaxed) && g_mc_mode.load(std::memory_order_relaxed) && !g_inv_open.load(std::memory_order_relaxed) &&
+                         GameInForeground() && !g_flying.load(std::memory_order_relaxed) && !PlayerDead();
+    if (!allowed) {
+        if (arc.active()) {
+            arc.end();
+            Log("mcjump: stopped (MC mode, inventory, focus, flight or death changed)");
+        }
+        have_wrote = false;
         return;
     }
     const uintptr_t player = PlayerChrPtr();
     if (player == 0) return;
     const uintptr_t module = detail::readPhysicsModule(g_reader, g_img.base, player);
     float feet[3];
-    if (module == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) return;
-    const bool down = (GetAsyncKeyState(g_mc_jump_vk.load()) & 0x8000) != 0;
-    const bool edge = down && !prev_key;
-    prev_key = down;
-    uint8_t ground = 0;
-    SafeCopy(module + 0x92, &ground, 1);
-    const uint8_t zero = 0, one = 1;
-
-    if (!active) {
-        if (edge && ground == 1 && !PlayerDead()) {
-            active = true;
-            y = start_y = feet[1];
-            vy = g_mc_jump_speed.load();
+    if (module == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) {
+        if (arc.active()) arc.end();
+        have_wrote = false;
+        return;
+    }
+    if (!arc.active()) {
+        uint8_t ground = 0;
+        SafeCopy(module + 0x92, &ground, 1);
+        if ((GetAsyncKeyState(g_mc_jump_vk.load()) & 0x8000) != 0 && ground == 1) { // holding the key jumps again on landing, like Minecraft
+            arc.start();
+            start_y = feet[1];
             peak = 0.f;
+            have_wrote = false;
             start_ms = GetTickCount64();
-            Log("mcjump: start at y=%.3f, v=%.2f m/s, g=%.1f", y, vy, g_mc_gravity.load());
+            Log("mcjump: start at y=%.3f", start_y);
         } else {
             return;
         }
     }
 
-    g_movement_layer_ms.store(GetTickCount64(), std::memory_order_relaxed);
-    // integrate (semi-implicit Euler)
-    vy -= g_mc_gravity.load() * dt;
-    float ny = y + vy * dt;
-    float pos[3] = {feet[0], ny, feet[2]};
+    // The game may re-base its coordinates (whole multiples of 8 m) while we are up: follow it on the height, x and z come from the game anyway.
+    if (have_wrote) {
+        float own[3] = {feet[0], start_y, feet[2]}, wrote[3] = {feet[0], wrote_y, feet[2]};
+        flight::followRebase(own, wrote, feet);
+        start_y = own[1];
+    }
+    const float h = arc.advance(dt);
+    float pos[3] = {feet[0], start_y + h, feet[2]};
     bool landed = false;
-    {   // a block above: the head stops the rise
+    {   // a block above stops the rise; a block below catches the fall
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         if (g_blocks.count() != 0) {
             const blocks::Resolve r = blocks::resolvePlayer(g_blocks, pos);
-            if (r.moved && r.feet[1] < ny - 1e-4f) { // pushed down by a ceiling
+            if (r.moved && r.feet[1] < pos[1] - 1e-4f) { // pushed down by a ceiling: the rise ends here
                 pos[1] = r.feet[1];
-                ny = r.feet[1];
-                if (vy > 0.f) vy = 0.f;
-            } else if (vy <= 0.f && blocks::supportedByBlock(g_blocks, pos)) {
+                start_y = pos[1] - h;
+            } else if (arc.descending() && blocks::supportedByBlock(g_blocks, pos)) {
                 landed = true;
-            } else if (vy <= 0.f) {
-                const float prev_pos[3] = {feet[0], y, feet[2]};
+            } else if (arc.descending() && have_wrote) {
+                const float prev_pos[3] = {feet[0], wrote_y, feet[2]};
                 const blocks::Resolve sw = blocks::resolvePlayerSwept(g_blocks, prev_pos, pos);
                 if (sw.moved && sw.standing) {
                     pos[1] = sw.feet[1];
-                    ny = sw.feet[1];
                     landed = true;
                 }
             }
         }
     }
-    if (!landed && vy <= 0.f && g_los_enabled.load()) { // the game's ground: a ray down from just above the feet
-        const float from[3] = {feet[0], ny + 0.5f, feet[2]};
-        const float drop = std::max(2.0f, (y - start_y) + 2.5f);
+    if (!landed && arc.descending() && g_los_enabled.load()) { // the game's ground: a ray down from just above the feet
+        const float from[3] = {pos[0], pos[1] + 0.5f, pos[2]};
+        const float drop = std::max(2.0f, (pos[1] - start_y) + 2.5f + peak);
         const float disp[3] = {0.f, -drop, 0.f};
         const RayResult r = CastStaticRay(from, disp);
         if (r.ok && r.hit) {
             const float ground_y = from[1] - r.fraction * drop;
-            if (ny <= ground_y + 0.02f) {
+            if (pos[1] <= ground_y + 0.02f) {
                 pos[1] = ground_y;
-                ny = ground_y;
                 landed = true;
             }
-        } else if (ny < start_y - 3.0f) { // no ground within reach (a cliff): hand the fall back to the game
+        } else if (pos[1] < start_y - 3.0f) { // no ground within reach (a cliff): hand the fall back to the game
             Log("mcjump: no ground under the arc, the game takes over");
-            active = false;
-            WriteBytesSafe(module + 0x92, &zero, 1);
+            arc.end();
+            have_wrote = false;
             return;
         }
     }
-    peak = std::max(peak, ny - start_y);
-    y = ny;
+    peak = std::max(peak, pos[1] - start_y);
+    g_movement_layer_ms.store(GetTickCount64(), std::memory_order_relaxed);
     WriteBytesSafe(module + layout::kPhysicsPosition, pos, sizeof(pos));
     WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, pos, sizeof(pos)); // the previous position follows: no speed from the jump itself
-    DriveVelocityFromKeys(module, false);
+    if (g_fly_sync.load(std::memory_order_relaxed)) {
+        const uint8_t one = 1;
+        WriteBytesSafe(module + layout::kPhysicsProxySyncRequest, &one, 1); // the game copies this position into its Havok proxies
+    }
+    wrote_y = pos[1];
+    have_wrote = true;
     if (landed) {
-        WriteBytesSafe(module + 0x92, &one, 1);
-        WriteBytesSafe(module + 0x1D1, &one, 1);
-        WriteBytesSafe(module + 0x1D0, &zero, 1);
-        active = false;
-        Log("mcjump: landed, peak %.2f m, %.2f s in the air, fall timer was %.2f", peak, static_cast<float>(GetTickCount64() - start_ms) / 1000.f, FallTimer(player));
-        LandFallTimer(player);
-    } else {
-        WriteBytesSafe(module + 0x92, &zero, 1); // stay in the air state: the game must not snap the player to the ground
-        WriteBytesSafe(module + 0x1D0, &one, 1);
+        arc.end();
+        have_wrote = false;
+        Log("mcjump: landed, peak %.2f m, %.2f s in the air", peak, static_cast<float>(GetTickCount64() - start_ms) / 1000.f);
     }
 }
 
 // ---- creative flight (F5 creative mode, double-tap Space) ----------------------------------------------------------------------
 // See eldenring_flight.hpp. Game thread (camera update, before the block collision so the player is still kept out of placed blocks).
 // Only the physics position (+0x70, and the previous position +0x80 so no speed is seen) is written: no flags, no velocity, no timers.
-std::atomic<bool> g_flying{false};
 std::atomic<float> g_fly_h_speed{flight::kHorizontalSpeed};
 std::atomic<float> g_fly_v_speed{flight::kVerticalSpeed};
 bool g_fly_have_written = false; // game thread only: the flight's own position (and last_written) are valid
 std::atomic<float> g_fly_yaw{0.f};   // the figure's heading while flying (camera heading)
-std::atomic<bool> g_fly_sync{true}; // fly_sync=0: do not ask the engine to move the Havok proxies (diagnostic)
 
 void FlightStep() {
     static flight::DoubleTap tap;
@@ -2426,9 +2398,7 @@ void SetupCreativeProbes() {
     };
     const Probe probes[] = {
         {"kill wrapper", sigs::kKillWrapper, reinterpret_cast<void*>(&CreativeKillDetour), reinterpret_cast<void**>(&g_cr_kill_orig)},
-        {"hard landing", sigs::kHardLanding, reinterpret_cast<void*>(&CreativeLandingDetour), reinterpret_cast<void**>(&g_cr_land_orig)},
         {"fall height", sigs::kFallHeight, reinterpret_cast<void*>(&CreativeFallDetour), reinterpret_cast<void**>(&g_cr_fall_orig)},
-        {"sp effect query", sigs::kHasSpEffect, reinterpret_cast<void*>(&CreativeSpEffectDetour), reinterpret_cast<void**>(&g_cr_sp_orig)},
         {"fall time exceeded", sigs::kFallTimeExceeded, reinterpret_cast<void*>(&CreativeFallTimeExceededDetour), reinterpret_cast<void**>(&g_cr_exceeded_orig)},
         {"chr event dispatch", sigs::kChrEventDispatch, reinterpret_cast<void*>(&CreativeEventDetour), reinterpret_cast<void**>(&g_cr_event_orig)},
     };
@@ -2833,8 +2803,6 @@ void SetupOverlay() {
                 else if (key == "fly_vspeed") g_fly_v_speed.store(std::clamp(value, 1.f, 40.f));
                 else if (key == "mc_jump") g_mc_jump.store(value != 0.f);
                 else if (key == "mc_jump_key") g_mc_jump_vk.store(static_cast<int>(value));
-                else if (key == "mc_gravity") g_mc_gravity.store(std::clamp(value, 5.f, 80.f));
-                else if (key == "mc_jump_speed") g_mc_jump_speed.store(std::clamp(value, 1.f, 20.f));
                 else if (key == "blocks") g_blocks_enabled.store(value != 0.f);
                 else if (key == "block_drive") g_block_drive.store(value != 0.f);
                 else if (key == "block_speed") g_block_walk_speed.store(std::clamp(value, 0.5f, 12.f));

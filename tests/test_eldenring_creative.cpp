@@ -16,13 +16,6 @@ TEST(EldenRingCreative, OwnerIsPlayerNeverMatchesNull) {
     EXPECT_FALSE(isPlayer(0, 0x1000));
 }
 
-TEST(EldenRingCreative, SpEffectIsLoggedOnlyForTheLandingCallOfThePlayer) {
-    EXPECT_TRUE(shouldLogSpEffect(0x8F, kLandingSpEffectReturnRva, true));
-    EXPECT_FALSE(shouldLogSpEffect(0x8F, kLandingSpEffectReturnRva, false));
-    EXPECT_FALSE(shouldLogSpEffect(0x8E, kLandingSpEffectReturnRva, true));
-    EXPECT_FALSE(shouldLogSpEffect(0x8F, kLandingSpEffectReturnRva + 5, true)); // some other caller asking for 0x8F
-}
-
 TEST(EldenRingCreative, FallHeightBelowOneMetreIsQuiet) {
     FallLogState st;
     EXPECT_FALSE(shouldLogFall(st, 0.f, 0x411324, 1000));
@@ -54,17 +47,12 @@ TEST(EldenRingCreative, LinesCarryTheCallerRvaAndPlayerFlag) {
     EXPECT_NE(fall.find("fall height"), std::string::npos);
     EXPECT_NE(fall.find("0x411324"), std::string::npos);
     EXPECT_NE(fall.find("12.50"), std::string::npos);
-    EXPECT_NE(formatLanding(true).find("hard landing"), std::string::npos);
-    EXPECT_NE(formatSpEffect(true).find("returned 1"), std::string::npos);
-    EXPECT_NE(formatSpEffect(false).find("returned 0"), std::string::npos);
 }
 
 TEST(EldenRingCreative, ProbeSignaturesParseToTheDocumentedLengths) {
     using live::Signature;
     EXPECT_EQ(Signature::parse(live::sigs::kKillWrapper)->size(), 55u);
-    EXPECT_EQ(Signature::parse(live::sigs::kHardLanding)->size(), 39u);
     EXPECT_EQ(Signature::parse(live::sigs::kFallHeight)->size(), 38u);
-    EXPECT_EQ(Signature::parse(live::sigs::kHasSpEffect)->size(), 70u);
     EXPECT_EQ(Signature::parse(live::sigs::kChrEventDispatch)->size(), 45u);
     EXPECT_EQ(Signature::parse(live::sigs::kFallTimeExceeded)->size(), 28u);
 }
