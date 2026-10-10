@@ -10,10 +10,20 @@
 #include <map>
 #include <vector>
 
+#include "eldenring_shadow.hpp"
 #include "eldenring_steve.hpp"
+#include "mc/entity_model.hpp"
 #include "mc/rig.hpp"
 
 namespace erov {
+
+// A skin texture, its upload buffer and whether the pixels still have to be copied to the GPU.
+struct SkinGpu {
+    ID3D12Resource* tex{nullptr};
+    ID3D12Resource* upload{nullptr};
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+    bool pending{false};
+};
 
 struct SteveParams {
     float mode{1.f}; // 0: no depth test, 1: hide behind the scene, 2: calibration colours
@@ -38,6 +48,8 @@ public:
     // Creates the skin texture (RGBA8, usually 64x64) and its SRV at `slot`, which must directly follow the depth SRV in the
     // heap (the two share one descriptor table: t0 depth, t1 skin). The pixels are copied to the GPU by the first draw().
     bool setSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    // The same for the mobs' skin (zombie): its SRV at `slot` must directly follow a depth SRV copy, they form the table the mobs are drawn with.
+    bool setMobSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
 
     // The figure's own depth buffer (D32_FLOAT, standard 0..1 depth, cleared by draw()). Recreated when the size changes.
     bool ensureDepth(ID3D12Device* device, unsigned width, unsigned height);
@@ -83,7 +95,39 @@ public:
               unsigned width, unsigned height, const mc::rig::Mat4& view_proj, const eldenring::render::PartMatrices& parts,
               const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv);
 
+    // A model read from a Bedrock geometry file (mc::model::EntityModel), drawn with the mobs' skin: one mesh per bone built in the game's axes
+    // (feet at the origin, rest pose), one matrix per bone from mc::model::boneMatrices. Returns false when the buffers cannot be created.
+    bool setMobModel(ID3D12Device* device, const mc::model::EntityModel& model);
+    [[nodiscard]] bool mobModelReady() const { return mob_vertices_ != nullptr && !mob_ranges_.empty(); }
+    // Same passes as draw() (own depth buffer, depth test against the scene), without the held item and the calibration histogram.
+    void drawMobModel(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table, unsigned width,
+                      unsigned height, const mc::rig::Mat4& view_proj, const std::vector<mc::rig::Mat4>& bones, const SteveParams& params,
+                      D3D12_CPU_DESCRIPTOR_HANDLE rtv);
+
+    // The blob shadows (flat black discs with a soft edge, eldenring_shadow.hpp) on the ground under the figures. Uses the figure's own depth buffer
+    // (cleared unless params.keep_depth) so placed blocks hide them; the scene's depth hides them the way it hides the figure. Draw before the figure.
+    [[nodiscard]] bool shadowReady() const { return pso_shadow_ != nullptr && shadow_vertices_ != nullptr; }
+    void drawShadows(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table, unsigned width, unsigned height,
+                     const mc::rig::Mat4& view_proj, const std::vector<eldenring::shadow::Shadow>& shadows, const SteveParams& params,
+                     D3D12_CPU_DESCRIPTOR_HANDLE rtv);
+
 private:
+    static constexpr int kShadowSegments = 24;
+    ID3D12PipelineState* pso_shadow_{nullptr};
+    ID3D12Resource* shadow_vertices_{nullptr};
+    ID3D12Resource* shadow_indices_{nullptr};
+    D3D12_VERTEX_BUFFER_VIEW shadow_vbv_{};
+    D3D12_INDEX_BUFFER_VIEW shadow_ibv_{};
+    unsigned shadow_index_count_{0};
+    struct BoneRange {
+        unsigned index_count{0}, first_index{0};
+        int base_vertex{0};
+    };
+    ID3D12Resource* mob_vertices_{nullptr};
+    ID3D12Resource* mob_indices_{nullptr};
+    D3D12_VERTEX_BUFFER_VIEW mob_vbv_{};
+    D3D12_INDEX_BUFFER_VIEW mob_ibv_{};
+    std::vector<BoneRange> mob_ranges_;
     ID3D12RootSignature* root_{nullptr};
     ID3D12PipelineState* pso_{nullptr};
     ID3D12PipelineState* pso_depthview_{nullptr};
@@ -120,10 +164,8 @@ private:
     ID3D12Resource* own_depth_{nullptr};
     ID3D12DescriptorHeap* dsv_heap_{nullptr};
     unsigned own_depth_w_{0}, own_depth_h_{0};
-    ID3D12Resource* skin_tex_{nullptr};
-    ID3D12Resource* skin_upload_{nullptr};
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT skin_footprint_{};
-    bool skin_pending_{false};
+    SkinGpu skin_;     // Steve
+    SkinGpu mob_skin_; // the mobs over the summons (zombie)
     ID3D12Resource* vertices_{nullptr};
     ID3D12Resource* indices_{nullptr};
     D3D12_VERTEX_BUFFER_VIEW vbv_{};

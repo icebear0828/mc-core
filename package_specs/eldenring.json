@@ -8,18 +8,24 @@
     {
       "src": "tools/reverse/eldenring/templates/mc_er_hit.bin",
       "dest": "mc_er_hit.bin"
+    },
+    {
+      "src": "assets/source/models/entities/zombie.geo.json",
+      "dest": "mods/mc_adapter/models/zombie.geo.json"
     }
   ],
   "default_configs": {
     "mc_er_overlay.txt": "",
     "mc_er_damage.txt": "",
     "mc_er_input.txt": "",
+    "mc_er_summon.txt": "",
+    "mc_er_summonhide.txt": "",
     "mc_er_steve.txt": "# Elden Ring Minecraft Adapter Configuration\nocclusion=1\ndepth_const=0.00456\nyaw_offset_deg=180\nhide_native=1\nfirst_person=1\nfp_persist=1\nsound_volume=0.8\ninv_key=73\nblocks=1\nblock_collision=1\nreach=4.5\nmc_jump=0\nfall_reset=0\n"
   },
   "asset_dir": "mods/mc_adapter",
   "readme_notes": [
     "IMPORTANT: Play OFFLINE only with Easy Anti-Cheat (EAC) disabled.",
     "If using Mod Engine 2, rename dinput8.dll to mc_eldenring_adapter.dll and add it to config_eldenring.toml under external_dlls.",
-    "Default hotkeys: F6 = Toggle MC Mode, F10 = First Person View, I = Inventory, Left-Click = Attack/Mine, Right-Click = Eat/Interact."
+    "Default hotkeys: F6 = Toggle MC Mode, F5 = Toggle Creative/Survival Mode, F10 = First Person View, I = Inventory, F2 / Spawn Egg = Summon Zombies, Left-Click = Attack/Mine, Right-Click = Eat/Interact."
   ]
 }

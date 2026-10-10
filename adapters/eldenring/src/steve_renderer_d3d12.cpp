@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "eldenring_blockmesh.hpp"
+#include "eldenring_shadow.hpp"
 #include "mc/item_model.hpp"
 #include "steve_renderer_d3d12.hpp"
 
@@ -97,6 +98,19 @@ float4 PSMain(VSOut i) : SV_Target {
     float4 texel = skin.Sample(skin_sampler, i.uv);
     if (texel.a < 0.5) discard; // the hat / jacket layers are cut out of the skin
     return float4(lerp(texel.rgb * face, tint.rgb, tint.a), 1.0);
+}
+
+// The blob shadow under a figure: a flat disc, uv = (x, z) of the unit circle, tint.a = strength. Hidden by the scene like the blocks.
+float4 PSShadow(VSOut i) : SV_Target {
+    if (scene.w > 0.5) {
+        int2 texel = int2(i.pos.xy / dims.zw * dims.xy);
+        float gd = scene_depth.Load(int3(texel, 0)).r;
+        float steve_z = rcp(i.pos.w);
+        const float near_skip = (scene.w > 1.1 && scene.w < 1.4) ? 2.2 : 0.0;
+        if (steve_z > near_skip && gd > 0.0 && scene.x / gd < steve_z * (1.0 - scene.y) - scene.z) discard;
+    }
+    float r2 = dot(i.uv, i.uv);
+    return float4(0.0, 0.0, 0.0, tint.a * saturate(1.0 - r2));
 }
 )hlsl";
 
@@ -292,6 +306,39 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
         fd.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
         if (FAILED(device->CreateGraphicsPipelineState(&fd, IID_PPV_ARGS(&pso_depthview_))) && log) log("steve: depth view pipeline failed");
     }
+    if (SUCCEEDED(hr)) {
+        ID3DBlob* vs_shadow = nullptr; // pd.VS points into `vs`, which was released above: the shadow pipeline needs its own copy
+        ID3DBlob* ps_shadow = nullptr;
+        if (Compile("VSMain", "vs_5_0", &vs_shadow, log) && Compile("PSShadow", "ps_5_0", &ps_shadow, log)) {
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC sd = pd;
+            sd.VS = {vs_shadow->GetBufferPointer(), vs_shadow->GetBufferSize()};
+            sd.PS = {ps_shadow->GetBufferPointer(), ps_shadow->GetBufferSize()};
+            sd.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO; // shadows test against the blocks but never hide each other
+            sd.BlendState.RenderTarget[0].BlendEnable = TRUE;
+            sd.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+            sd.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+            sd.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+            sd.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+            sd.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+            sd.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+            const HRESULT shr = device->CreateGraphicsPipelineState(&sd, IID_PPV_ARGS(&pso_shadow_));
+            if (FAILED(shr) && log) log("steve: shadow pipeline failed (0x%08X)", static_cast<unsigned>(shr));
+        }
+        Rel(vs_shadow);
+        Rel(ps_shadow);
+        const mc::rig::RigMesh disc = eldenring::shadow::buildShadowDisc(kShadowSegments);
+        shadow_vertices_ = UploadBuffer(device, disc.vertices.data(), disc.vertices.size() * sizeof(mc::rig::RigVertex));
+        shadow_indices_ = UploadBuffer(device, disc.indices.data(), disc.indices.size() * sizeof(uint16_t));
+        if (shadow_vertices_ && shadow_indices_) {
+            shadow_vbv_ = {shadow_vertices_->GetGPUVirtualAddress(), static_cast<UINT>(disc.vertices.size() * sizeof(mc::rig::RigVertex)),
+                           static_cast<UINT>(sizeof(mc::rig::RigVertex))};
+            shadow_ibv_ = {shadow_indices_->GetGPUVirtualAddress(), static_cast<UINT>(disc.indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
+            shadow_index_count_ = static_cast<unsigned>(disc.indices.size());
+        } else {
+            Rel(shadow_vertices_);
+            Rel(shadow_indices_);
+        }
+    }
     Rel(vs_full);
     Rel(ps_full);
     if (FAILED(hr)) {
@@ -365,14 +412,24 @@ void SteveRenderer::release() {
     Rel(own_depth_);
     Rel(dsv_heap_);
     own_depth_w_ = own_depth_h_ = 0;
-    Rel(skin_tex_);
-    Rel(skin_upload_);
-    skin_pending_ = false;
+    Rel(mob_vertices_);
+    Rel(mob_indices_);
+    mob_ranges_.clear();
+    Rel(skin_.tex);
+    Rel(skin_.upload);
+    skin_.pending = false;
+    Rel(mob_skin_.tex);
+    Rel(mob_skin_.upload);
+    mob_skin_.pending = false;
     Rel(stats_);
     Rel(stats_init_);
     Rel(stats_readback_);
     Rel(pso_);
     Rel(pso_depthview_);
+    Rel(pso_shadow_);
+    Rel(shadow_vertices_);
+    Rel(shadow_indices_);
+    shadow_index_count_ = 0;
     Rel(root_);
     Rel(vertices_);
     Rel(indices_);
@@ -555,11 +612,13 @@ bool SteveRenderer::ensureDepth(ID3D12Device* device, unsigned width, unsigned h
     return true;
 }
 
-bool SteveRenderer::setSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+namespace {
+// (re)creates `s` as an RGBA8 texture of the given size with its SRV at `slot`; the pixels are copied by the first draw()
+bool CreateSkinTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot, SkinGpu& s) {
     if (!device || !rgba || width == 0 || height == 0) return false;
-    Rel(skin_tex_);
-    Rel(skin_upload_);
-    skin_pending_ = false;
+    Rel(s.tex);
+    Rel(s.upload);
+    s.pending = false;
     D3D12_HEAP_PROPERTIES hd{};
     hd.Type = D3D12_HEAP_TYPE_DEFAULT;
     D3D12_RESOURCE_DESC td{};
@@ -571,12 +630,12 @@ bool SteveRenderer::setSkin(ID3D12Device* device, const uint8_t* rgba, unsigned 
     td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     td.SampleDesc.Count = 1;
     td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    if (FAILED(device->CreateCommittedResource(&hd, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&skin_tex_)))) {
+    if (FAILED(device->CreateCommittedResource(&hd, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&s.tex)))) {
         return false;
     }
     UINT rows = 0;
     UINT64 row_bytes = 0, total = 0;
-    device->GetCopyableFootprints(&td, 0, 1, 0, &skin_footprint_, &rows, &row_bytes, &total);
+    device->GetCopyableFootprints(&td, 0, 1, 0, &s.footprint, &rows, &row_bytes, &total);
     D3D12_HEAP_PROPERTIES hu{};
     hu.Type = D3D12_HEAP_TYPE_UPLOAD;
     D3D12_RESOURCE_DESC ud{};
@@ -589,25 +648,55 @@ bool SteveRenderer::setSkin(ID3D12Device* device, const uint8_t* rgba, unsigned 
     ud.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     void* mapped = nullptr;
     D3D12_RANGE none{0, 0};
-    if (FAILED(device->CreateCommittedResource(&hu, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&skin_upload_))) ||
-        FAILED(skin_upload_->Map(0, &none, &mapped))) {
-        Rel(skin_tex_);
-        Rel(skin_upload_);
+    if (FAILED(device->CreateCommittedResource(&hu, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&s.upload))) ||
+        FAILED(s.upload->Map(0, &none, &mapped))) {
+        Rel(s.tex);
+        Rel(s.upload);
         return false;
     }
     for (UINT y = 0; y < rows; ++y) {
-        std::memcpy(static_cast<uint8_t*>(mapped) + skin_footprint_.Offset + static_cast<size_t>(y) * skin_footprint_.Footprint.RowPitch,
+        std::memcpy(static_cast<uint8_t*>(mapped) + s.footprint.Offset + static_cast<size_t>(y) * s.footprint.Footprint.RowPitch,
                     rgba + static_cast<size_t>(y) * width * 4, static_cast<size_t>(width) * 4);
     }
-    skin_upload_->Unmap(0, nullptr);
+    s.upload->Unmap(0, nullptr);
     D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
     sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     sd.Texture2D.MipLevels = 1;
-    device->CreateShaderResourceView(skin_tex_, &sd, slot);
-    skin_pending_ = true; // the copy is recorded into the first command list that draws the figure
-    return true;
+    device->CreateShaderResourceView(s.tex, &sd, slot);
+    s.pending = true; // the copy is recorded into the first command list that draws the figure
+    return true;}
+
+// Records the pending upload of `s` into `list` (once).
+void RecordSkinUpload(ID3D12GraphicsCommandList* list, SkinGpu& s) {
+    if (!s.pending || !s.tex || !s.upload) return;
+    D3D12_TEXTURE_COPY_LOCATION dst{};
+    dst.pResource = s.tex;
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dst.SubresourceIndex = 0;
+    D3D12_TEXTURE_COPY_LOCATION src{};
+    src.pResource = s.upload;
+    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    src.PlacedFootprint = s.footprint;
+    list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = s.tex;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    list->ResourceBarrier(1, &b);
+    s.pending = false;
+}
+} // namespace
+
+bool SteveRenderer::setSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    return CreateSkinTexture(device, rgba, width, height, slot, skin_);
+}
+
+bool SteveRenderer::setMobSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    return CreateSkinTexture(device, rgba, width, height, slot, mob_skin_);
 }
 
 void SteveRenderer::setDepthView(ID3D12Device* device, ID3D12Resource* depth, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
@@ -638,29 +727,110 @@ void SteveRenderer::drawDepthView(ID3D12GraphicsCommandList* list, ID3D12Descrip
     list->DrawInstanced(3, 1, 0, 0);
 }
 
+bool SteveRenderer::setMobModel(ID3D12Device* device, const mc::model::EntityModel& model) {
+    Rel(mob_vertices_);
+    Rel(mob_indices_);
+    mob_ranges_.clear();
+    if (!device || model.bones.empty()) return false;
+    std::vector<mc::rig::RigVertex> vertices;
+    std::vector<uint16_t> indices;
+    for (const mc::model::Bone& bone : model.bones) {
+        const mc::rig::RigMesh mesh = model.buildBoneMesh(bone, eldenring::render::kBasis);
+        BoneRange r;
+        r.base_vertex = static_cast<int>(vertices.size());
+        r.first_index = static_cast<unsigned>(indices.size());
+        r.index_count = static_cast<unsigned>(mesh.indices.size());
+        mob_ranges_.push_back(r);
+        vertices.insert(vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
+        indices.insert(indices.end(), mesh.indices.begin(), mesh.indices.end());
+    }
+    if (vertices.empty() || indices.empty()) {
+        mob_ranges_.clear();
+        return false;
+    }
+    mob_vertices_ = UploadBuffer(device, vertices.data(), vertices.size() * sizeof(mc::rig::RigVertex));
+    mob_indices_ = UploadBuffer(device, indices.data(), indices.size() * sizeof(uint16_t));
+    if (!mob_vertices_ || !mob_indices_) {
+        Rel(mob_vertices_);
+        Rel(mob_indices_);
+        mob_ranges_.clear();
+        return false;
+    }
+    mob_vbv_ = {mob_vertices_->GetGPUVirtualAddress(), static_cast<UINT>(vertices.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
+    mob_ibv_ = {mob_indices_->GetGPUVirtualAddress(), static_cast<UINT>(indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
+    return true;
+}
+
+void SteveRenderer::drawMobModel(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table, unsigned width,
+                                 unsigned height, const mc::rig::Mat4& view_proj, const std::vector<mc::rig::Mat4>& bones, const SteveParams& params,
+                                 D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
+    if (!ready() || !own_depth_ || !dsv_heap_ || !mobModelReady()) return;
+    RecordSkinUpload(list, skin_);
+    RecordSkinUpload(list, mob_skin_);
+    D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
+    D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+    list->RSSetViewports(1, &vp);
+    list->RSSetScissorRects(1, &sc);
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
+    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+    if (!params.keep_depth) list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    list->SetPipelineState(pso_);
+    list->SetGraphicsRootSignature(root_);
+    ID3D12DescriptorHeap* heaps[] = {srv_heap};
+    list->SetDescriptorHeaps(1, heaps);
+    list->SetGraphicsRootDescriptorTable(1, depth_table);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->IASetVertexBuffers(0, 1, &mob_vbv_);
+    list->IASetIndexBuffer(&mob_ibv_);
+    list->SetGraphicsRoot32BitConstants(0, 16, view_proj.m.data(), 0);
+    const float extra[8] = {params.depth_const, params.rel_bias, params.abs_bias, params.mode, params.depth_w, params.depth_h, static_cast<float>(width), static_cast<float>(height)};
+    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
+    list->SetGraphicsRoot32BitConstants(0, 4, params.tint, 40);
+    for (size_t i = 0; i < mob_ranges_.size() && i < bones.size(); ++i) {
+        if (mob_ranges_[i].index_count == 0) continue;
+        list->SetGraphicsRoot32BitConstants(0, 16, bones[i].m.data(), 16);
+        list->DrawIndexedInstanced(mob_ranges_[i].index_count, 1, mob_ranges_[i].first_index, mob_ranges_[i].base_vertex, 0);
+    }
+}
+
+void SteveRenderer::drawShadows(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table, unsigned width,
+                                unsigned height, const mc::rig::Mat4& view_proj, const std::vector<eldenring::shadow::Shadow>& shadows,
+                                const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
+    if (!shadowReady() || !own_depth_ || !dsv_heap_ || shadows.empty()) return;
+    D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
+    D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+    list->RSSetViewports(1, &vp);
+    list->RSSetScissorRects(1, &sc);
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
+    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+    if (!params.keep_depth) list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    list->SetPipelineState(pso_shadow_);
+    list->SetGraphicsRootSignature(root_);
+    ID3D12DescriptorHeap* heaps[] = {srv_heap};
+    list->SetDescriptorHeaps(1, heaps);
+    list->SetGraphicsRootDescriptorTable(1, depth_table);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->IASetVertexBuffers(0, 1, &shadow_vbv_);
+    list->IASetIndexBuffer(&shadow_ibv_);
+    list->SetGraphicsRoot32BitConstants(0, 16, view_proj.m.data(), 0);
+    const float extra[8] = {params.depth_const, params.rel_bias, params.abs_bias, params.mode, params.depth_w, params.depth_h, static_cast<float>(width), static_cast<float>(height)};
+    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
+    for (const eldenring::shadow::Shadow& s : shadows) {
+        if (!s.visible) continue;
+        const mc::rig::Mat4 world = eldenring::shadow::shadowMatrix(s);
+        const float tint[4] = {0.f, 0.f, 0.f, s.strength};
+        list->SetGraphicsRoot32BitConstants(0, 16, world.m.data(), 16);
+        list->SetGraphicsRoot32BitConstants(0, 4, tint, 40);
+        list->DrawIndexedInstanced(shadow_index_count_, 1, 0, 0, 0);
+    }
+}
+
 void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table,
                          unsigned width, unsigned height, const mc::rig::Mat4& view_proj,
                          const eldenring::render::PartMatrices& parts, const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
     if (!ready() || !own_depth_ || !dsv_heap_) return;
-    if (skin_pending_ && skin_tex_ && skin_upload_) {
-        D3D12_TEXTURE_COPY_LOCATION dst{};
-        dst.pResource = skin_tex_;
-        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        dst.SubresourceIndex = 0;
-        D3D12_TEXTURE_COPY_LOCATION src{};
-        src.pResource = skin_upload_;
-        src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-        src.PlacedFootprint = skin_footprint_;
-        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-        D3D12_RESOURCE_BARRIER b{};
-        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = skin_tex_;
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-        b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-        list->ResourceBarrier(1, &b);
-        skin_pending_ = false;
-    }
+    RecordSkinUpload(list, skin_);
+    RecordSkinUpload(list, mob_skin_);
     D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
     D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
     list->RSSetViewports(1, &vp);

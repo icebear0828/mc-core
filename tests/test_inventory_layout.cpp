@@ -61,7 +61,7 @@ TEST(InventoryLayout, HitTestFindsSlotsAndMissesTheGaps) {
 
 TEST(InventoryLayout, PaletteListsEveryItemOnce) {
     const auto& items = paletteItems();
-    EXPECT_EQ(items.size(), 17u);
+    EXPECT_EQ(items.size(), 18u); // 17 + the zombie spawn egg
     EXPECT_EQ(items.front(), ItemId::DiamondSword);
     for (size_t i = 0; i < items.size(); ++i) {
         EXPECT_NE(items[i], ItemId::None);

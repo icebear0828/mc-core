@@ -84,7 +84,8 @@ enum class ItemId : uint16_t {
     FireworkRocket,
     BlockDirt,
     BlockStone,
-    BlockTnt
+    BlockTnt,
+    ZombieSpawnEgg // appended: the ids above stay as they are
 };
 
 enum class EffectType : uint8_t {

@@ -72,6 +72,10 @@ TEST(HudEngineTest, ItemSlotsAndDisplayNames) {
     EXPECT_STREQ(hud.getSelectedItemDisplayName(), "");
 }
 
+TEST(HudEngineTest, ZombieSpawnEggHasItsVanillaName) {
+    EXPECT_STREQ(HudEngine::getItemDisplayName(ItemId::ZombieSpawnEgg), "Zombie Spawn Egg");
+}
+
 TEST(HudEngineTest, HeartContainersCalculation) {
     HudEngine hud;
 

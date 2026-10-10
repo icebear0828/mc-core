@@ -90,6 +90,10 @@ Coordinates the end-to-end packaging pipeline across macOS development machines 
      ```bash
      ssh win "cd /d D:\game\mc\mc-core && uv run --python C:\Python313\python.exe python tools\package_mod.py --game sekiro --build-dir build-win\bin\Release --version <version> --channel nexus --out-dir dist"
      ```
+   - For **Standalone Community Assets Pack** (for Cloud Drive/Community sharing):
+     ```bash
+     ssh win "cd /d D:\game\mc\mc-core && uv run --python C:\Python313\python.exe python tools\package_mod.py --package-assets --assets-dir \"C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game\mods\mc_adapter\" --version <version> --out-dir dist"
+     ```
 
 ### Phase 4: Verification & Audit Gate
 

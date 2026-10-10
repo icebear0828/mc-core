@@ -229,6 +229,27 @@ TEST(EldenRingEnumerate, UnknownRelationIsNeverHostile) {
     EXPECT_FALSE(out[0].hostile);
 }
 
+TEST(EldenRingEnumerate, DeadOnesAreListedOnlyWhenAsked) {
+    // 2026-10-10 log: a summon killed in one hit was simply gone from the list, its last hp still positive; the mobs drawn over summons
+    // need the corpse (hp 0) to play the death scene.
+    FakeMemory m = makeWorld();
+    const uintptr_t dead = 0x7ff501000000ull, live = 0x7ff504000000ull;
+    spawnChr(m, dead, layout::kEnemyInsVtableRva, 4070, 47, 0, 500, 13.f, 2.f, 24.f);
+    spawnChr(m, live, layout::kEnemyInsVtableRva, 4070, 47, 300, 500, 16.f, 2.f, 20.f);
+    setEntry(m, 0, dead, 1);
+    setEntry(m, 1, live, 2);
+    std::vector<EnemyInfo> out;
+    ASSERT_TRUE(enumerateEnemies(m, kBase, out, 16));
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_EQ(out[0].chr, live);
+    ASSERT_TRUE(enumerateEnemies(m, kBase, out, 16, /*include_dead=*/true));
+    ASSERT_EQ(out.size(), 2u);
+    EXPECT_EQ(out[0].chr, dead);
+    EXPECT_EQ(out[0].hp, 0);
+    EXPECT_EQ(out[0].max_hp, 500);
+    EXPECT_EQ(out[1].chr, live);
+}
+
 TEST(EldenRingEnumerate, SkipsMainPlayerDeadGraceAndForeignClasses) {
     FakeMemory m = makeWorld();
     const uintptr_t dead = 0x7ff501000000ull, grace = 0x7ff502000000ull, junk = 0x7ff503000000ull, live = 0x7ff504000000ull;

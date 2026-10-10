@@ -32,12 +32,17 @@ add_executable(mc_tests
     test_eldenring_world.cpp
     test_eldenring_buddy.cpp
     test_eldenring_creative.cpp
+    test_eldenring_mobs.cpp
+    test_eldenring_chrscan.cpp
     test_eldenring_flight.cpp
     test_eldenring_state.cpp
     test_eldenring_damage.cpp
     test_eldenring_steve.cpp
     test_eldenring_melee.cpp
     test_eldenring_los.cpp
+    test_eldenring_shadow.cpp
+    test_eldenring_bullet.cpp
+    test_eldenring_handlescan.cpp
     test_eldenring_survival.cpp
     test_eldenring_audio.cpp
     test_eldenring_particles.cpp

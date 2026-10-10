@@ -6,7 +6,11 @@
 //   IDXGISwapChain::Present                 - records and submits our command list on that queue,
 //   IDXGISwapChain::ResizeBuffers           - drops our resources so they are rebuilt after the resize.
 
+#include "eldenring_mobs.hpp"
+#include "mc/entity_model.hpp"
 #include "mc/rig.hpp"
+
+#include <vector>
 
 namespace erov {
 
@@ -58,6 +62,9 @@ struct SteveState {
     float eating{0.f};          // 0..1 progress of the meal in the hand (0 = not eating)
     float speed_mps{0.f};       // horizontal speed, for the walking bob
     bool on_ground{true};
+    bool shadow{false};        // draw the blob shadows under the figure and the summons (mc_er_steve.txt: shadow=1)
+    bool ground_valid{false};  // ground_y is the height of the ground under the feet this frame (otherwise the feet's own height is used)
+    float ground_y{0.f};
     bool cam_valid{false}; // cam/fov_y are a real camera this frame (also set while the figure itself is not drawn)
 };
 
@@ -79,6 +86,13 @@ void SetSteveSkin(const uint8_t* rgba, unsigned width, unsigned height);
 void SetHudAtlas(const uint8_t* rgba, unsigned width, unsigned height);
 // Writes `frames` lines of per-frame figure and camera positions to the log (diagnosing jitter).
 void RequestFrameTrace(int frames);
+
+// The mobs' skin (RGBA8, 64x64, the zombie): call before the overlay is created. Without it the mobs wear the Steve skin.
+void SetMobSkin(const uint8_t* rgba, unsigned width, unsigned height);
+// The mobs' model (a Bedrock geometry file parsed by the loader): call before the overlay is created. Without it the mobs are drawn with the Steve rig.
+void SetMobModel(const mc::model::EntityModel& model);
+// The mobs drawn over the game's summons this frame (positions and headings in game metres/radians). Thread safe, replaces the last list.
+void SetMobs(const std::vector<eldenring::mobs::MobSnapshot>& mobs);
 
 // Combat particles (Minecraft's critical hit stars, damage hearts, sweep arc) at a world position (game metres); `count` is the
 // number of hearts for Damage. Thread safe; the overlay projects and draws them.

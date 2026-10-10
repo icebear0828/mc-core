@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mc/animator.hpp"
 #include "mc/rig.hpp"
 #include "mc/types.hpp"
 
@@ -48,5 +49,25 @@ struct EntityModel {
     // Parse from Bedrock geometry JSON (both 1.12.0+ "minecraft:geometry" and 1.8.0 "geometry.<id>")
     static std::optional<EntityModel> fromJson(std::string_view json_str, std::string_view target_id = "");
 };
+
+// ---- Pose: pivots, rest rotations and the bone hierarchy ------------------------------------------------------------------------
+// The meshes from buildBoneMesh are rest-pose absolute (feet at the origin). A pose is one matrix per bone, in the order of EntityModel::bones:
+// the bone turns about its own pivot by its rest rotation (the file's "rotation", degrees about the Bedrock axes, X then Y then Z) and then by
+// `extra[i]` (a host-space quaternion, for example from the animator), then follows its parent bone, then the whole figure is turned by
+// `host_yaw` about the host's vertical axis and moved to `root`. Row-vector convention like rig::partMatrix.
+
+// A bone's pivot in host units (rest pose, feet at the origin).
+Vec3 bonePivotHost(const Bone& bone, const rig::HostBasis& basis);
+
+// The rest rotation of a bone as a matrix about its pivot's axes in host space (identity when the file gives none). Positive angles turn
+// like the right-hand rule in the canonical frame (X forward, Y left, Z up): the zombie's [-90, 0, 0] arms point forward.
+rig::Mat4 boneRestRotation(const Bone& bone, const rig::HostBasis& basis);
+
+// `extra` may be shorter than `model.bones` or empty (identity for the missing ones).
+std::vector<rig::Mat4> boneMatrices(const EntityModel& model, const std::vector<Quat>& extra, const Vec3& root, float host_yaw,
+                                    const rig::HostBasis& basis);
+
+// The bone names of the humanoid models (zombie, skeleton...) are the Steve rig's parts in snake_case; this lets the Steve animator drive them.
+std::optional<StevePart> humanoidPartForBone(std::string_view bone_name);
 
 } // namespace mc::model

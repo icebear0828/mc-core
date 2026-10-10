@@ -180,7 +180,8 @@ inline bool isCharacterClass(const IMemoryReader& reader, uintptr_t image_base, 
 // allows during the read (origin re-base / torn read): the caller keeps last tick's data and tries again.
 // Excluded: the main player, c1000 anchors (npc_id 1000), dead characters (hp 0), unreadable or foreign-class
 // entries, duplicates reachable from several sets. At most `max` entries.
-inline bool enumerateEnemies(const IMemoryReader& reader, uintptr_t image_base, std::vector<EnemyInfo>& out, size_t max) {
+// Characters that are dead (hp <= 0) are left out unless `include_dead`: a summoned character killed in one hit is otherwise just gone.
+inline bool enumerateEnemies(const IMemoryReader& reader, uintptr_t image_base, std::vector<EnemyInfo>& out, size_t max, bool include_dead = false) {
     out.clear();
     uint64_t world = 0, player = 0;
     if (!reader.read(image_base + layout::kWorldChrManGlobalRva, &world, sizeof(world)) || world == 0) return false;
@@ -219,7 +220,7 @@ inline bool enumerateEnemies(const IMemoryReader& reader, uintptr_t image_base, 
             if (e.npc_id == layout::kGraceNpcId) continue;
             if (!reader.read(chr + layout::kTeamTypeInChrIns, &e.team, sizeof(e.team))) continue;
             Vitals v;
-            if (!readVitals(reader, image_base, chr, v) || v.hp <= 0) continue;
+            if (!readVitals(reader, image_base, chr, v) || (v.hp <= 0 && !include_dead)) continue;
             e.hp = v.hp;
             e.max_hp = v.max_hp;
             float pos[3];

@@ -5,6 +5,7 @@ import io
 import json
 import math
 from pathlib import Path
+import shutil
 import zipfile
 from PIL import Image
 
@@ -358,7 +359,7 @@ def build_cube_block(texture: Image.Image, size_cm: float = 100.0) -> dict:
 _PLACEHOLDER_ITEM_COLORS = {
     "item_arrow": (200, 200, 200), "item_trident": (40, 150, 150), "item_flint_and_steel": (90, 90, 90),
     "item_ender_pearl": (20, 90, 80), "item_enchanted_golden_apple": (200, 120, 230), "item_bread": (200, 150, 70),
-    "item_cooked_beef": (120, 60, 30), "item_firework_rocket": (200, 40, 40),
+    "item_cooked_beef": (120, 60, 30), "item_firework_rocket": (200, 40, 40), "item_zombie_spawn_egg": (0, 175, 175),
     "block_dirt": (134, 96, 67), "block_stone": (125, 125, 125), "block_tnt_top": (160, 80, 70),
     "block_tnt_side": (200, 60, 50), "block_tnt_bottom": (160, 80, 70),
 }
@@ -638,6 +639,8 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("heart_half_blinking", (9, 9)),
     ("xp_bar_background", (182, 5)),
     ("xp_bar_progress", (182, 5)),
+    # the spawn egg of the first mob (appended: the sprites above keep their places)
+    ("item_zombie_spawn_egg", (16, 16)),
 ]
 
 _JAR_HUD_SPRITES = {
@@ -668,6 +671,7 @@ _JAR_HUD_SPRITES = {
     "item_bread": "item/bread.png",
     "item_cooked_beef": "item/cooked_beef.png",
     "item_firework_rocket": "item/firework_rocket.png",
+    "item_zombie_spawn_egg": "item/zombie_spawn_egg.png",
     "block_dirt": "block/dirt.png",
     "block_stone": "block/stone.png",
     "block_tnt_top": "block/tnt_top.png",
@@ -684,6 +688,8 @@ _JAR_HUD_SPRITES = {
 # player's inventory) starts at row 126, as in Minecraft's ContainerScreen.
 _CONTAINER_TEXTURE = "gui/container/generic_54.png"
 _CONTAINER_PARTS = {"container_top": (0, 0, 176, 71), "container_bottom": (0, 126, 176, 222)}
+# Spawn eggs are a grey egg and grey spots tinted per mob (the item model's tint): primary colour for the egg, secondary for the spots.
+_SPAWN_EGG_COLOURS = {"item_zombie_spawn_egg": ((0x00, 0xAF, 0xAF), (0x79, 0x9C, 0x65))}
 _GLINT = (130, 60, 220)  # the enchantment glint, flattened into a tint for the enchanted golden apple
 
 # Block items are drawn by Minecraft as isometric cubes: (top, left/right sides)
@@ -713,6 +719,18 @@ def _shade(img: Image.Image, factor: float) -> Image.Image:
         for x in range(out.width):
             r, g, b, a = px[x, y]
             px[x, y] = (int(r * factor), int(g * factor), int(b * factor), a)
+    return out
+
+
+def _multiply_tint(img: Image.Image, color: tuple[int, int, int]) -> Image.Image:
+    """Colour * texel, per channel (how Minecraft tints a grey layer); alpha is kept."""
+    out = img.convert("RGBA")
+    px = out.load()
+    for y in range(out.height):
+        for x in range(out.width):
+            r, g, b, a = px[x, y]
+            if a:
+                px[x, y] = (r * color[0] // 255, g * color[1] // 255, b * color[2] // 255, a)
     return out
 
 
@@ -777,6 +795,18 @@ def _read_real_hud_sprite(jar_zip: zipfile.ZipFile, name: str, size: tuple[int, 
     if name in _CONTAINER_PARTS:
         src = _open_jar_png(jar_zip, _CONTAINER_TEXTURE)
         return None if src is None else src.crop(_CONTAINER_PARTS[name])
+    if name in _SPAWN_EGG_COLOURS:
+        own = _JAR_HUD_SPRITES.get(name)
+        finished = _open_jar_png(jar_zip, own) if own else None
+        if finished is not None:  # newer jars: the finished texture of the mob's egg
+            return _fit_exact(finished, size)
+        base, spots = _open_jar_png(jar_zip, "item/spawn_egg.png"), _open_jar_png(jar_zip, "item/spawn_egg_overlay.png")
+        if base is None or spots is None:
+            return None
+        primary, secondary = _SPAWN_EGG_COLOURS[name]
+        egg = _multiply_tint(_fit_exact(base, size), primary)
+        egg.alpha_composite(_multiply_tint(_fit_exact(spots, size), secondary))
+        return egg
     if name == "item_enchanted_golden_apple":
         apple = _open_jar_png(jar_zip, "item/golden_apple.png")
         return None if apple is None else _tint(_fit_exact(apple, size), _GLINT, 0.35)
@@ -911,6 +941,79 @@ def export_steve_skin(client_jar: Path, out_dir: Path) -> Path:
     return out
 
 
+# Humanoid mobs whose 64x64 skin has the player's UV layout, so the Steve rig can wear it. (name -> path inside the jar's textures/)
+_MOB_SKINS = {"zombie": "entity/zombie/zombie.png"}
+
+
+def _limb_rects(u0: int, v0: int, d: int = 4, w: int = 4, h: int = 12) -> dict[str, tuple[int, int, int, int]]:
+    """The six faces of a limb's texture block (x, y, width, height), Minecraft's cube UV layout."""
+    return {
+        "top": (u0 + d, v0, w, d),
+        "bottom": (u0 + d + w, v0, w, d),
+        "right": (u0, v0 + d, d, h),
+        "front": (u0 + d, v0 + d, w, h),
+        "left": (u0 + d + w, v0 + d, d, h),
+        "back": (u0 + 2 * d + w, v0 + d, w, h),
+    }
+
+
+# (right limb block origin, left limb block origin) in the 64x64 player layout: leg, arm
+_LIMB_BLOCKS = (((0, 16), (16, 48)), ((40, 16), (32, 48)))
+
+
+def mirror_empty_left_limbs(skin: Image.Image) -> Image.Image:
+    """Old-layout skins (the zombie) leave the left arm and leg blocks empty because the model mirrors the right limbs.
+    The Steve rig reads the modern layout, so fill each empty left block with the mirrored right one: every face flipped
+    horizontally and the two side faces swapped. A block that already has pixels is left alone."""
+    out = skin.copy()
+    for (ru, rv), (lu, lv) in _LIMB_BLOCKS:
+        left = _limb_rects(lu, lv)
+        alpha = out.getchannel("A")
+        if any(alpha.crop((x, y, x + w, y + h)).getbbox() is not None for x, y, w, h in left.values()):
+            continue  # the block already has pixels (a modern-layout skin)
+        right = _limb_rects(ru, rv)
+        swap = {"right": "left", "left": "right"}
+        for face, (lx, ly, lw, lh) in left.items():
+            sx, sy, sw, sh = right[swap.get(face, face)]
+            piece = out.crop((sx, sy, sx + sw, sy + sh)).transpose(Image.FLIP_LEFT_RIGHT)
+            out.paste(piece, (lx, ly))
+    return out
+
+
+def export_mob_skin(client_jar: Path, out_dir: Path, mob: str) -> Path:
+    """Copy a mob's skin out of a local client.jar as <mob>.png."""
+    if mob not in _MOB_SKINS:
+        raise ValueError(f"unknown mob {mob!r}; available mobs: {sorted(_MOB_SKINS)}")
+    entry = _JAR_TEXTURES + _MOB_SKINS[mob]
+    with zipfile.ZipFile(client_jar, "r") as jar:
+        if entry not in jar.namelist():
+            raise FileNotFoundError(f"{entry} not found in {client_jar}")
+        skin = Image.open(io.BytesIO(jar.read(entry))).convert("RGBA")
+    if skin.size != (64, 64):
+        raise ValueError(f"expected a 64x64 skin, got {skin.size}")
+    skin = mirror_empty_left_limbs(skin)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{mob}.png"
+    skin.save(out)
+    return out
+
+
+def export_entity_models(models_dir: Path, out_dir: Path) -> list[Path]:
+    """Copy all entity geometry .geo.json files to out_dir."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    copied = []
+    candidates = list(models_dir.glob("*.geo.json")) + list(models_dir.glob("entities/*.geo.json"))
+    seen = set()
+    for src in candidates:
+        if src.name in seen:
+            continue
+        seen.add(src.name)
+        dst = out_dir / src.name
+        shutil.copy(src, dst)
+        copied.append(dst)
+    return copied
+
+
 def main():
     parser = argparse.ArgumentParser(description="Extract MC Java assets to standard OBJ/PNG models.")
     parser.add_argument("--client-jar", type=Path, help="Path to Minecraft Java client.jar")
@@ -920,11 +1023,18 @@ def main():
     parser.add_argument("--export-adapter-header", type=Path, help="Export an adapter header forwarding the shared atlas names")
     parser.add_argument("--adapter-namespace", default="sekiro::hud", help="Namespace for --export-adapter-header")
     parser.add_argument("--export-steve-skin", action="store_true", help="Export the real Steve skin as steve.png (needs --client-jar)")
+    parser.add_argument("--export-mob-skin", action="append", choices=sorted(_MOB_SKINS), help="Export a mob's skin as <mob>.png (needs --client-jar; repeatable)")
+    parser.add_argument("--export-all-mobs", action="store_true", help="Export all supported mob skins (needs --client-jar)")
+    parser.add_argument("--export-entity-models", action="store_true", help="Export all entity geometry JSONs (.geo.json) to --out-dir")
     parser.add_argument("--geometry-json", type=Path, help="Path to a Bedrock/Blockbench geometry.json to extract OBJ models from")
     parser.add_argument("--geometry-texture", type=Path, help="Optional texture PNG for --geometry-json")
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    if args.export_entity_models:
+        root = Path(__file__).resolve().parent.parent
+        copied = export_entity_models(root / "assets/source/models", args.out_dir)
+        print(f"Exported {len(copied)} entity geometry models to {args.out_dir}")
     if args.geometry_json:
         geo = parse_geometry_json(args.geometry_json.read_text(encoding="utf-8"))
         tex = Image.open(args.geometry_texture).convert("RGBA") if args.geometry_texture else None
@@ -937,7 +1047,15 @@ def main():
         if not args.client_jar:
             parser.error("--export-steve-skin requires --client-jar")
         print(f"Exported Steve skin to {export_steve_skin(args.client_jar, args.out_dir)}")
+    mobs_to_export = list(args.export_mob_skin or [])
+    if args.export_all_mobs:
+        mobs_to_export = sorted(_MOB_SKINS.keys())
+    for mob in mobs_to_export:
+        if not args.client_jar:
+            parser.error("--export-mob-skin / --export-all-mobs requires --client-jar")
+        print(f"Exported {mob} skin to {export_mob_skin(args.client_jar, args.out_dir, mob)}")
     if args.export_hud_atlas or args.export_header or args.export_adapter_header:
+
         atlas_img, uv_map = build_hud_atlas(args.client_jar)
         atlas_path = args.out_dir / "mc_hud_atlas.png"
         atlas_img.save(atlas_path)

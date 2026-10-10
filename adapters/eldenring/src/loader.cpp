@@ -22,7 +22,9 @@
 #include <share.h>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -39,9 +41,13 @@
 #include "eldenring_blockmesh.hpp"
 #include "eldenring_blocks.hpp"
 #include "eldenring_buddy.hpp"
+#include "eldenring_chrscan.hpp"
+#include "eldenring_mobs.hpp"
 #include "eldenring_creative.hpp"
 #include "eldenring_flight.hpp"
 #include "eldenring_los.hpp"
+#include "eldenring_bullet.hpp"
+#include "eldenring_shadow.hpp"
 #include "eldenring_survival.hpp"
 #include "eldenring_xp.hpp"
 #include "eldenring_hunger.hpp"
@@ -257,6 +263,9 @@ std::atomic<int> g_slot_probe{-1}; // F9 probe: -1 = off (all slots), 0..26 = on
 std::atomic<uint32_t> g_hide_mask1{0x100A1}; // bits cleared in disp_flags1 (+0x20): visible + shadow (verified live, not bisected)
 std::atomic<bool> g_no_player_hit_vfx{false}; // mc_er_steve.txt: no_player_hit_vfx=1 (also implied by first person): no blood when the player is hit
 std::atomic<bool> g_fp_persist{true};      // mc_er_steve.txt: fp_persist=0 turns the persistent eye camera off
+std::atomic<bool> g_shadow_enabled{true};  // mc_er_steve.txt: shadow=0 turns the blob shadows off
+std::atomic<float> g_ground_y{0.f};       // the ground under the player's feet, found by ShadowGroundStep on the game thread
+std::atomic<bool> g_ground_valid{false};
 std::atomic<bool> g_first_person{false};  // mc_er_steve.txt: first_person=1 (experiment), F10 toggles
 std::atomic<float> g_eye_height{1.65f};
 std::atomic<float> g_kb_force{-1.f}; // mc_er_steve.txt: kb_force (>= 0 overrides HitContext+0xFC of our own hits; experiment)
@@ -286,6 +295,7 @@ mc::ConsumableSystem g_eating;     // right click on food, guarded by g_melee_mu
 std::atomic<float> g_sound_volume{0.8f}; // mc_er_steve.txt: sound_volume
 std::atomic<float> g_walk_speed{0.f}; // horizontal speed of the player (m/s), measured by the key thread
 std::atomic<bool> g_on_ground{true};
+std::atomic<bool> g_bullet_fire_pending{false}; // F3 pressed with mc_er_bulletfire.txt present: call spawn_bullet once on the game thread
 std::atomic<bool> g_summon_pending{false}; // F2 pressed with mc_er_summon.txt present: write one summon request on the game thread
 std::atomic<int> g_heal_pending{0}; // Elden Ring hit points waiting to be given back on the game thread
 using ApplyHpFn = void*(__fastcall*)(void* data_module, int32_t hp, uint8_t flag);
@@ -319,6 +329,7 @@ using RenderCamCopyFn = void(__fastcall*)(void* self);
 RenderCamCopyFn g_rcc_orig = nullptr;
 
 void UpdateNativeModel(uintptr_t player, bool hide); // defined with the overlay code below
+void HideSummonModels();                             // defined after WriteBytesSafe
 
 // (a function of its own: the one with __try cannot also hold an object with a destructor)
 void ReadHurt(float& hurt, float& side) {
@@ -330,6 +341,7 @@ void ReadHurt(float& hurt, float& side) {
 void __fastcall RenderCamCopyDetour(void* self) {
     // Hide the native model right before the frame is drawn: the game may turn parts back on during a hit reaction, and the
     // Present-time write alone would let that frame show them.
+    HideSummonModels();
     if (g_native_hide_wanted.load(std::memory_order_relaxed)) {
         const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
         uint64_t player = 0;
@@ -637,6 +649,7 @@ struct CamKeep {
 CamKeep g_cam_keep;
 std::atomic<bool> g_camstep_installed{false}; // the camera update hook (game thread, every frame) is in place
 void BlocksCollisionStep(); // defined with the placed blocks below
+void ShadowGroundStep();    // the same
 void McJumpStep();          // defined after them
 void FlightStep();          // defined after them
 void DriveVelocityFromKeys(uintptr_t module, bool force_zero);
@@ -650,6 +663,90 @@ bool WriteBytesSafe(uintptr_t address, const void* src, size_t n) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+
+// Summons (team 47) are drawn by us in the end: their own model is hidden by clearing the "drawn" bit of every CSModelDispEntity they own, every
+// frame before the draw, the way the player's parts are hidden. mc_er_summonhide.txt turns it on. Everything is looked up afresh each frame (no
+// cached pointers: a summon that disappears meanwhile is simply not enumerated any more).
+std::atomic<bool> g_summon_hide{false};
+std::mutex g_summon_mutex;
+std::vector<eldenring::mobs::MobSnapshot> g_summon_list; // the team 47 summons seen by the last HideSummonModels (render thread), read by the HUD provider
+float g_mob_yaw_offset = 3.14159265f;                   // like the player's: the orientation quaternion faces opposite to the model (mob_yaw_offset_deg)
+
+std::set<uintptr_t> g_hidden_flag_addresses; // the disp_flags words whose drawn bit we cleared (render thread only), to put it back
+
+void HideSummonModels() {
+    if (!g_summon_hide.load(std::memory_order_relaxed)) return;
+    const bool mc_on = g_mc_mode.load(std::memory_order_relaxed);
+    if (!mc_on && g_hidden_flag_addresses.empty()) {
+        std::lock_guard<std::mutex> g(g_summon_mutex);
+        g_summon_list.clear();
+        return;
+    }
+    std::vector<EnemyInfo> list;
+    std::vector<eldenring::mobs::MobSnapshot> seen;
+    if (!enumerateEnemies(g_reader, g_img.base, list, 4000, /*include_dead=*/true)) { // the corpses too: the mob over a dead summon plays its death scene
+        std::lock_guard<std::mutex> g(g_summon_mutex);
+        g_summon_list.clear();
+        return;
+    }
+    static unsigned logged = 0;
+    for (const EnemyInfo& e : list) {
+        if (e.team != eldenring::live::summon::kTeam) continue;
+        {   // where it stands and which way it faces, for the figure drawn over it
+            eldenring::mobs::MobSnapshot snap;
+            float q[4];
+            snap.id = e.chr;
+            snap.hp = e.hp;
+            snap.max_hp = e.max_hp;
+            if (detail::readPhysicsPosition(g_reader, g_img.base, e.chr, snap.feet) && detail::readPhysicsOrientation(g_reader, g_img.base, e.chr, q)) {
+                snap.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) + g_mob_yaw_offset;
+                seen.push_back(snap);
+            }
+        }
+        for (const uintptr_t at : collectChrDispFlagAddresses(g_reader, g_img.base, e.chr)) {
+            uint32_t flags = 0;
+            if (!SafeCopy(at, &flags, sizeof(flags))) continue;
+            if (!mc_on) { // MC mode is off: put the drawn bit back where we cleared it, the wolves are drawn by the game again
+                if (g_hidden_flag_addresses.count(at) != 0 && !needsHiding(flags)) {
+                    const uint32_t shown = showDrawnBit(flags);
+                    if (WriteBytesSafe(at, &shown, sizeof(shown)) && ++logged <= 24) Log("summon hide: MC mode off, restored flags at %p 0x%X -> 0x%X", reinterpret_cast<void*>(at), flags, shown);
+                }
+                continue;
+            }
+            if (!needsHiding(flags)) continue;
+            const uint32_t hidden = hideDrawnBit(flags);
+            const bool ok = WriteBytesSafe(at, &hidden, sizeof(hidden));
+            if (ok) g_hidden_flag_addresses.insert(at);
+            if (++logged <= 12) Log("summon hide: chr=%p npc=%d flags at %p 0x%X -> 0x%X (%s)", reinterpret_cast<void*>(e.chr), e.npc_id, reinterpret_cast<void*>(at), flags, hidden, ok ? "ok" : "write failed");
+        }
+    }
+    {   // Diagnostic: what a summon's hit points do when it is hit and when it dies, and how it leaves (does it stay at 0 hp for a while, or just vanish?)
+        static std::map<uintptr_t, int> last_hp;
+        static unsigned traced = 0;
+        for (const auto& snap : seen) {
+            const auto it = last_hp.find(snap.id);
+            if (it == last_hp.end()) {
+                if (++traced <= 80) Log("mob: chr=%p appeared, hp %d/%d", reinterpret_cast<void*>(snap.id), snap.hp, snap.max_hp);
+            } else if (it->second != snap.hp && ++traced <= 80) {
+                Log("mob: chr=%p hp %d -> %d", reinterpret_cast<void*>(snap.id), it->second, snap.hp);
+            }
+            last_hp[snap.id] = snap.hp;
+        }
+        for (auto it = last_hp.begin(); it != last_hp.end();) {
+            bool still = false;
+            for (const auto& snap : seen) still = still || snap.id == it->first;
+            if (still) {
+                ++it;
+                continue;
+            }
+            if (++traced <= 80) Log("mob: chr=%p gone, its last hp was %d", reinterpret_cast<void*>(it->first), it->second);
+            it = last_hp.erase(it);
+        }
+    }
+    if (!mc_on) g_hidden_flag_addresses.clear(); // the ones left belong to summons that are gone: nothing to put back
+    std::lock_guard<std::mutex> g(g_summon_mutex);
+    g_summon_list = mc_on ? seen : std::vector<eldenring::mobs::MobSnapshot>{};
 }
 
 bool ChrCamPosAddress(uintptr_t& addr) {
@@ -697,6 +794,7 @@ uint64_t __fastcall CameraStepDetour(uint64_t self, float dt, uint64_t chr, uint
     FlightStep();
     BlocksCollisionStep();
     McJumpStep();
+    ShadowGroundStep();
     RestoreCamKeep();
     uintptr_t addr = 0;
     float before[3] = {};
@@ -944,6 +1042,37 @@ void LogPlayerHit(void* module, void* attacker, const uint8_t* ctx, uint8_t bloc
         words[2], words[3], words[4], words[5]);
 }
 
+// Read-only (mc_er_chrscan.txt, after F2): the classes behind the pointers of a summoned character, and inside the model-like ones where a dword
+// equal to the live "drawn" display flags (0x000100A1) sits. Finds where a monster model keeps what the player's CSModelDispEntity keeps.
+unsigned g_chrscan_count = 0; // reset by every F2
+void LogChrScan(uintptr_t chr, size_t index) {
+    unsigned& scanned = g_chrscan_count;
+    if (++scanned > 3) return; // three wolves, one is enough to learn the layout
+    if (scanned == 1) { // the player's own parts, for comparison: the flags there are known to read 0x000100A1 while drawn
+        const std::vector<uintptr_t> player_flags = collectDispFlagAddresses(g_reader, g_img.base, PlayerChrPtr());
+        Log("chrscan: the player has %zu drawn parts; first dumps (disp_flags1 sits at +0x20 of the entity)", player_flags.size());
+        for (size_t i = 0; i < player_flags.size() && i < 3; ++i) Log("chrscan:   player part %zu %s", i, dumpDwords(g_reader, player_flags[i] - 0x20, 0x10, 0x50).c_str());
+    }
+    Log("chrscan: entity #%zu chr=%p", index, reinterpret_cast<void*>(chr));
+    for (const ScanHit& h : scanForClasses(g_reader, g_img.base, chr, 0, 0xA00)) {
+        Log("%s", formatScanHit(h, 0).c_str());
+        if (!looksLikeModelClass(h.cls)) continue;
+        for (const ScanHit& h2 : scanForClasses(g_reader, g_img.base, h.object, 0, 0x300, 40)) {
+            Log("%s", formatScanHit(h2, 1).c_str());
+            if (h2.cls.find("CSModelDispEntity") != std::string::npos) Log("chrscan:     dump %s", dumpDwords(g_reader, h2.object, 0x10, 0x50).c_str());
+            if (!looksLikeModelClass(h2.cls)) continue;
+            for (const uintptr_t at : findDwordOffsets(g_reader, h2.object, 0, 0x100, 0x000100A1u)) {
+                Log("chrscan:     display flags 0x000100A1 at +0x%llX of %p (chr+0x%llX -> +0x%llX)", static_cast<unsigned long long>(at), reinterpret_cast<void*>(h2.object),
+                    static_cast<unsigned long long>(h.offset), static_cast<unsigned long long>(h2.offset));
+            }
+        }
+        for (const uintptr_t at : findDwordOffsets(g_reader, h.object, 0, 0x100, 0x000100A1u)) {
+            Log("chrscan:   display flags 0x000100A1 at +0x%llX of %p (chr+0x%llX)", static_cast<unsigned long long>(at), reinterpret_cast<void*>(h.object),
+                static_cast<unsigned long long>(h.offset));
+        }
+    }
+}
+
 uintptr_t PlayerChrPtr() {
     const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
     uint64_t p = 0;
@@ -1030,11 +1159,81 @@ bool PlayerHitSurvival(void* module, void* attacker, uint8_t* ctx, uint8_t block
     return popped;
 }
 
+// Projectiles that hit somebody other than the player (mc_er_bulletlog.txt: log; mc_er_arrowdmg.txt: replace the damage of the player's own bolts with the
+// MC bolt damage). The first run only logs: which of attacker / ctx+0x1D8 is the shooter for a projectile was not known (REVERSE 35.5).
+std::atomic<bool> g_proj_log{false};
+std::atomic<bool> g_arrow_damage{false};
+std::atomic<int> g_proj_log_left{80};
+std::atomic<uint32_t> g_last_bullet_id{0};      // request +0x1C of that call
+std::atomic<uint64_t> g_last_bullet_tick_ms{0}; // the last spawn_bullet call (the player's real shot or ours): hits within 3 s after it are logged whatever they look like
+
+void HandleProjectileHit(void* module, void* attacker, uint8_t* ctx) {
+    // Statistics first, before anything can return: does this hook see hits on enemies at all, and of which kind?
+    static std::atomic<uint32_t> s_calls{0}, s_player_victim{0}, s_unreadable{0};
+    static std::atomic<uint32_t> s_kind[256];
+    static std::atomic<uint64_t> s_stats_ms{0};
+    static std::atomic<uint32_t> s_stats_calls_logged{0};
+    const uint32_t calls = ++s_calls;
+    uint64_t victim = 0, ctx_attacker = 0, ctx_victim = 0;
+    uint8_t kind = 0;
+    int32_t engine_damage = 0;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(ctx);
+    const bool readable = SafeCopy(reinterpret_cast<uintptr_t>(module) + layout::kOwnerInDataModule, &victim, sizeof(victim)) && victim != 0 &&
+                          SafeCopy(base + 0xDA, &kind, sizeof(kind)) && SafeCopy(base + layout::kHitAttacker, &ctx_attacker, sizeof(ctx_attacker)) &&
+                          SafeCopy(base + layout::kHitVictim, &ctx_victim, sizeof(ctx_victim)) && SafeCopy(base + layout::kHitDamage, &engine_damage, sizeof(engine_damage));
+    const uintptr_t player = PlayerChrPtr();
+    if (!readable) {
+        ++s_unreadable;
+    } else if (victim == player) {
+        ++s_player_victim;
+    } else {
+        ++s_kind[kind];
+    }
+    const uint64_t now = GetTickCount64();
+    if (g_proj_log.load(std::memory_order_relaxed) && now - s_stats_ms.load() > 4000 && calls != s_stats_calls_logged.load()) {
+        s_stats_ms.store(now);
+        s_stats_calls_logged.store(calls);
+        char kinds[200] = {};
+        int n = 0;
+        for (int k = 0; k < 256 && n < 180; ++k) {
+            const uint32_t c = s_kind[k].load();
+            if (c != 0) n += snprintf(kinds + n, sizeof(kinds) - static_cast<size_t>(n), " %d:%u", k, c);
+        }
+        Log("PDC-STATS: ProcessDamageContext calls=%u player-victim=%u unreadable=%u; hits on others by u8[DA] kind:%s", calls, s_player_victim.load(), s_unreadable.load(), kinds);
+    }
+    if (!readable || victim == player) return;
+    const uint64_t since_shot = now - g_last_bullet_tick_ms.load(std::memory_order_relaxed);
+    const bool mine = eldenring::bullet::isPlayersBoltHit(kind, reinterpret_cast<uintptr_t>(attacker), player, victim, g_last_bullet_id.load(std::memory_order_relaxed), since_shot);
+    const bool after_shot = since_shot < 3000;
+    const bool interesting = kind == 6 || ctx_attacker == player || reinterpret_cast<uintptr_t>(attacker) == player || after_shot;
+    if (g_proj_log.load(std::memory_order_relaxed) && interesting && g_proj_log_left.fetch_sub(1) > 0) {
+        int32_t npc = 0;
+        uint8_t team = 0;
+        SafeCopy(static_cast<uintptr_t>(victim) + layout::kNpcIdInChrIns, &npc, sizeof(npc));
+        SafeCopy(static_cast<uintptr_t>(victim) + layout::kTeamTypeInChrIns, &team, sizeof(team));
+        int32_t victim_max = 0;
+        if (const uintptr_t vdata = DataModuleOfChr(static_cast<uintptr_t>(victim))) SafeCopy(vdata + layout::kDataMaxHp, &victim_max, sizeof(victim_max));
+        Log("PROJ-HIT: max_hp=%d kind=%u victim=%p npc=%d team=%u attacker-arg=%p ctx+1D8=%p ctx+1E0=%p player=%p shooter_is_player=%d after_shot=%d engine_dmg=%d tid=%lu", victim_max, kind,
+            reinterpret_cast<void*>(victim), npc, static_cast<unsigned>(team), attacker, reinterpret_cast<void*>(ctx_attacker), reinterpret_cast<void*>(ctx_victim),
+            reinterpret_cast<void*>(player), mine ? 1 : 0, after_shot ? 1 : 0, engine_damage, static_cast<unsigned long>(GetCurrentThreadId()));
+    }
+    if (!g_arrow_damage.load(std::memory_order_relaxed) || !mine) return;
+    int32_t max_hp = 0;
+    const uintptr_t data = DataModuleOfChr(static_cast<uintptr_t>(victim));
+    if (data == 0 || !SafeCopy(data + layout::kDataMaxHp, &max_hp, sizeof(max_hp))) return;
+    const int32_t wanted = eldenring::bullet::boltDamageEr(max_hp);
+    int32_t engine = 0;
+    if (wanted > 0 && overrideFinalDamage(ctx, ctx_attacker, ctx_victim, wanted, &engine)) {
+        Log("ARROW: the player's bolt hit %p: engine %d -> MC bolt %d (victim max hp %d)", reinterpret_cast<void*>(victim), engine, wanted, max_hp);
+    }
+}
+
 uint64_t ProcessDamageDetour(void* module, void* attacker, uint8_t* ctx, uint32_t a4, uint8_t a5) {
     uint32_t heal_to = 0;
     bool popped = false;
     if (!t_forced.armed) popped = PlayerHitSurvival(module, attacker, ctx, a5, heal_to);
     if (!t_forced.armed && g_log_player_hits.load(std::memory_order_relaxed)) LogPlayerHit(module, attacker, ctx, a5);
+    if (!t_forced.armed && (g_proj_log.load(std::memory_order_relaxed) || g_arrow_damage.load(std::memory_order_relaxed))) HandleProjectileHit(module, attacker, ctx);
     if (t_forced.armed && !t_forced.applied) {
         t_forced.applied = overrideFinalDamage(ctx, t_forced.attacker, t_forced.victim, t_forced.value, &t_forced.engine_value);
     }
@@ -1199,6 +1398,9 @@ void RunSummonExperiment() {
     LogPlayerPoseForBuddy();
 }
 
+void RunBulletFire(); // defined with the spawn_bullet logger below
+bool QueueBulletFire(); // the same: called from the key thread
+
 void* __fastcall ClampDetour(void* module, int32_t value) {
     void* r = g_clamp_orig(module, value);
     if (g_damage_enabled.load(std::memory_order_relaxed) && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
@@ -1208,6 +1410,10 @@ void* __fastcall ClampDetour(void* module, int32_t value) {
     if (g_summon_pending.load(std::memory_order_relaxed) && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
         g_summon_pending.exchange(false)) {
         RunSummonExperiment();
+    }
+    if (g_bullet_fire_pending.load(std::memory_order_relaxed) && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
+        g_bullet_fire_pending.exchange(false)) {
+        RunBulletFire();
     }
     if (g_heal_pending.load(std::memory_order_relaxed) > 0 && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed)) {
         uint64_t owner = 0;
@@ -1548,6 +1754,53 @@ const char* BlockSound(mc::BlockId id) {
     }
 }
 
+// ---- summoning (F2, or a right click with the zombie spawn egg) ---------------------------------------------------------------------
+// One summon request for the game thread (ClampDetour -> RunSummonExperiment). The entities seen before are remembered so that the ones that
+// appear afterwards can be reported (and scanned, mc_er_chrscan.txt).
+struct SummonWatch {
+    std::vector<uintptr_t> baseline;
+    uint64_t t0_ms{0};
+    int reports_left{0};
+};
+SummonWatch g_summon_watch;
+std::atomic<uint64_t> g_last_summon_ms{0};
+constexpr uint64_t kSummonCooldownMs = 3000; // one request at a time: the manager consumes it on the next frame and spawns for a few seconds
+
+// Returns false when the feature is off (no mc_er_summon.txt) or a request is still in flight.
+bool QueueSummon(const char* source) {
+    if (!FileExists(g_game_dir + "mc_er_summon.txt")) {
+        Log("%s: ignored (no mc_er_summon.txt in the game directory)", source);
+        return false;
+    }
+    const uint64_t now = GetTickCount64();
+    if (now - g_last_summon_ms.load(std::memory_order_relaxed) < kSummonCooldownMs) return false;
+    g_last_summon_ms.store(now);
+    g_summon_watch.baseline.clear();
+    std::vector<EnemyInfo> before;
+    if (enumerateEnemies(g_reader, g_img.base, before, 4000)) {
+        for (const EnemyInfo& e : before) g_summon_watch.baseline.push_back(e.chr);
+    }
+    g_summon_watch.t0_ms = now;
+    g_summon_watch.reports_left = 2;
+    g_chrscan_count = 0;
+    g_summon_pending.store(true);
+    Log("%s: summon queued for the game thread (%zu entities in the baseline)", source, g_summon_watch.baseline.size());
+    return true;
+}
+
+// Right click with the zombie spawn egg in hand: one summon; in survival the egg is used up. True when the click was the egg's.
+bool TryUseSpawnEgg() {
+    {
+        std::lock_guard<std::mutex> g(g_melee_mutex);
+        if (g_melee.heldItem() != mc::ItemId::ZombieSpawnEgg || g_melee.countAt(g_melee.selectedSlot()) == 0) return false;
+    }
+    if (!QueueSummon("spawn egg")) return true; // refused (feature off or too soon): the click is still the egg's
+    std::lock_guard<std::mutex> g(g_melee_mutex);
+    if (creative::consumesItems(CurrentGameMode())) g_melee.consumeAt(g_melee.selectedSlot());
+    g_melee.startSwing();
+    return true;
+}
+
 // Right click with a block in hand. Returns true when the click was used (placed, or refused for a reason the player can see).
 bool TryPlaceBlock() {
     if (!g_blocks_enabled.load()) return false;
@@ -1673,6 +1926,35 @@ void LandFallTimer(uintptr_t chr) {
 
 // Keeps the player out of the blocks. Runs on the game thread, at the start of every camera update (the game's own per-frame hook), so
 // the physics position is never written while the game is using it and the camera sees the corrected position.
+// The ground under the player for the blob shadow: a ray straight down (game thread, like every other cast) and the placed blocks' tops.
+// Without a ground the overlay falls back to the feet's own height, which is right whenever the player stands.
+void ShadowGroundStep() {
+    if (!g_shadow_enabled.load(std::memory_order_relaxed) || !g_steve_enabled.load(std::memory_order_relaxed) || !g_mc_mode.load(std::memory_order_relaxed)) {
+        g_ground_valid.store(false, std::memory_order_relaxed);
+        return;
+    }
+    const uintptr_t player = PlayerChrPtr();
+    float feet[3];
+    if (player == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) {
+        g_ground_valid.store(false, std::memory_order_relaxed);
+        return;
+    }
+    const RayCastFn cast = (g_raycast != nullptr && g_los_enabled.load()) ? RayCastFn(CastStaticRay) : RayCastFn{};
+    const eldenring::shadow::BlockTopFn block_top = [](float x, float feet_y, float z, float max_drop) -> std::optional<float> {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        if (g_blocks.count() == 0) return std::nullopt;
+        const int top_cell = static_cast<int>(std::floor(feet_y + 0.06f));
+        const int low_cell = static_cast<int>(std::floor(feet_y - max_drop));
+        for (int y = top_cell; y >= low_cell; --y) {
+            if (g_blocks.get(blocks::cellOf(x, static_cast<float>(y), z)) != mc::BlockId::Air) return static_cast<float>(y + 1);
+        }
+        return std::nullopt;
+    };
+    const std::optional<float> ground = eldenring::shadow::groundBelow(cast, block_top, feet);
+    g_ground_valid.store(ground.has_value(), std::memory_order_relaxed);
+    if (ground) g_ground_y.store(*ground, std::memory_order_relaxed);
+}
+
 void BlocksCollisionStep() {
     static bool have_prev = false;
     static float prev[3] = {};
@@ -2238,6 +2520,8 @@ DWORD WINAPI KeyThread(LPVOID) {
         const bool right_edge = !inv_open && g_input_enabled.load() && erin::TakeRightClick();
         if (right_edge && fg && WantSuppress() && !PlayerDead() && TryPlaceBlock()) {
             // a block was placed (or the click was refused): not a meal
+        } else if (right_edge && fg && WantSuppress() && !PlayerDead() && g_mc_mode.load() && TryUseSpawnEgg()) {
+            // the zombie spawn egg: a summon request (or a refusal): not a meal
         } else if (right_edge && fg && WantSuppress() && !PlayerDead()) {
             std::lock_guard<std::mutex> g(g_melee_mutex);
             const mc::ItemId item = g_melee.heldItem();
@@ -2306,11 +2590,7 @@ DWORD WINAPI KeyThread(LPVOID) {
             Log("F6: MC mode %s", g_mc_mode.load() ? "on" : "off");
             ResetSlotProbe(slot_cursor);
         }
-        static struct {
-            std::vector<uintptr_t> baseline;
-            uint64_t t0_ms{0};
-            int reports_left{0};
-        } summon_watch;
+        SummonWatch& summon_watch = g_summon_watch;
         if (summon_watch.reports_left > 0) {
             const uint64_t waited = GetTickCount64() - summon_watch.t0_ms;
             if (waited >= (summon_watch.reports_left == 2 ? 1500u : 5000u)) {
@@ -2326,28 +2606,21 @@ DWORD WINAPI KeyThread(LPVOID) {
                         Log("summon:   new chr=%p npc=%d team=%u hp=%d/%d hostile=%d rel=(%.1f %.1f %.1f) dist=%.1f m", reinterpret_cast<void*>(e.chr),
                             e.npc_id, static_cast<unsigned>(e.team), e.hp, e.max_hp, e.hostile ? 1 : 0, e.rel_x, e.rel_y, e.rel_z,
                             std::sqrt(e.rel_x * e.rel_x + e.rel_y * e.rel_y + e.rel_z * e.rel_z));
+                        if (summon_watch.reports_left == 0 && FileExists(g_game_dir + "mc_er_chrscan.txt")) LogChrScan(e.chr, i);
                     }
                 } else {
                     Log("summon: entity enumeration failed");
                 }
             }
         }
+        static bool prev_f3 = false;
+        const bool d3 = fg && (GetAsyncKeyState(VK_F3) & 0x8000) != 0;
+        if (d3 && !prev_f3 && QueueBulletFire()) Log("F3: spawn_bullet queued for the game thread");
+        prev_f3 = d3;
         static bool prev_f2 = false;
         const bool d2 = fg && (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
         if (d2 && !prev_f2) {
-            if (FileExists(g_game_dir + "mc_er_summon.txt")) {
-                summon_watch.baseline.clear();
-                std::vector<EnemyInfo> before;
-                if (enumerateEnemies(g_reader, g_img.base, before, 4000)) {
-                    for (const EnemyInfo& e : before) summon_watch.baseline.push_back(e.chr);
-                }
-                summon_watch.t0_ms = GetTickCount64();
-                summon_watch.reports_left = 2;
-                g_summon_pending.store(true);
-                Log("F2: summon experiment queued for the game thread (%zu entities in the baseline)", summon_watch.baseline.size());
-            } else {
-                Log("F2: ignored (no mc_er_summon.txt in the game directory)");
-            }
+            QueueSummon("F2");
         }
         prev_f2 = d2;
         const bool d9 = fg && (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
@@ -2455,6 +2728,203 @@ void SetupCreativeProbes() {
     }
 }
 
+// ---- spawn_bullet request logger (read-only, switch file mc_er_bulletlog.txt) -----------------------------------------------------------
+// The game builds a request for every arrow/bolt/spell bullet it fires, the player's own included. Fire one bow/crossbow shot with the switch
+// file present and the first requests are written to mc_er.log, so the real BulletParam id and field layout are read, not guessed.
+using SpawnBulletFn = uint32_t*(__fastcall*)(void* manager, uint32_t* out_handle, void* request, void* r9);
+SpawnBulletFn g_spawn_bullet_orig = nullptr;
+eldenring::bullet::LogBudget g_bullet_budget(40);
+std::atomic<unsigned> g_bullet_seen{0};
+
+void LogBulletRequest(void* manager, const void* request, const void* r9, void* ret_addr, uint32_t handle) {
+    const unsigned seq = g_bullet_seen.fetch_add(1) + 1;
+    if (!g_bullet_budget.take()) return;
+    uint8_t body[eldenring::bullet::kRequestBytes] = {};
+    if (!SafeCopy(reinterpret_cast<uintptr_t>(request), body, sizeof(body))) {
+        Log("bullet #%u: the request at %p cannot be read", seq, request);
+        return;
+    }
+    const eldenring::bullet::Fields f = eldenring::bullet::decode(body, sizeof(body));
+    Log("bullet #%u: manager=%p request=%p r9=%p caller RVA 0x%llX tid=%lu -> handle 0x%08X", seq, manager, request, r9,
+        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(ret_addr) - g_img.base), static_cast<unsigned long>(GetCurrentThreadId()), handle);
+    Log("bullet #%u: owner=0x%016llX param row (+0x08)=0x%016llX id@+1C=%u flags@+44=0x%X pos=(%.2f %.2f %.2f) fwd=(%.3f %.3f %.3f)", seq,
+        static_cast<unsigned long long>(f.owner), static_cast<unsigned long long>(f.row_id), f.id_at_1c, f.flags_at_44, f.position[0], f.position[1],
+        f.position[2], f.forward[0], f.forward[1], f.forward[2]);
+    for (const std::string& line : eldenring::bullet::hexDump(body, sizeof(body))) Log("bullet #%u:   %s", seq, line.c_str());
+    uint8_t extra[0x40] = {};
+    if (r9 != nullptr && SafeCopy(reinterpret_cast<uintptr_t>(r9), extra, sizeof(extra))) {
+        for (const std::string& line : eldenring::bullet::hexDump(extra, sizeof(extra))) Log("bullet #%u: r9 %s", seq, line.c_str());
+    }
+}
+
+// The latest request of a shot the player fired himself, as the game wrote it. F3 fires from it. It is also kept on disk (mc_er_bullet.bin in the game
+// directory, like mc_er_hit.bin): +0x08 is a param row id and +0x1C the bullet id, both belong to the ammunition and are the same in every session,
+// so after one real shot F3 works from the start of the next session. Only the player's own shots are kept (owner handle = player ChrIns+0x08).
+struct BulletTemplate {
+    bool valid{false};
+    uint8_t request[eldenring::bullet::kFullRequestBytes]{};
+};
+BulletTemplate g_bullet_template;
+std::mutex g_bullet_mutex;
+std::atomic<bool> g_bullet_fire_enabled{false};
+std::atomic<uint64_t> g_last_bullet_fire_ms{0};
+
+std::string BulletTemplatePath() { return g_game_dir + "mc_er_bullet.bin"; }
+
+void SaveBulletTemplate(const uint8_t* body) {
+    FILE* f = nullptr;
+    if (fopen_s(&f, BulletTemplatePath().c_str(), "wb") != 0 || f == nullptr) {
+        Log("bullet: cannot write %s", BulletTemplatePath().c_str());
+        return;
+    }
+    fwrite(body, 1, eldenring::bullet::kFullRequestBytes, f);
+    fclose(f);
+    Log("bullet: template saved to %s (param row 0x%08X, bullet id %u)", BulletTemplatePath().c_str(), *reinterpret_cast<const uint32_t*>(body + 8), *reinterpret_cast<const uint32_t*>(body + 0x1C));
+}
+
+void LoadBulletTemplate() {
+    uint8_t body[eldenring::bullet::kFullRequestBytes] = {};
+    FILE* f = nullptr;
+    if (fopen_s(&f, BulletTemplatePath().c_str(), "rb") != 0 || f == nullptr) {
+        Log("bullet: no %s yet, fire one real crossbow bolt to create it", BulletTemplatePath().c_str());
+        return;
+    }
+    const size_t got = fread(body, 1, sizeof(body), f);
+    fclose(f);
+    if (got != sizeof(body) || !eldenring::bullet::templateUsable(body, sizeof(body))) {
+        Log("bullet: %s is not a usable template (%zu bytes), it is replaced by the next real shot", BulletTemplatePath().c_str(), got);
+        return;
+    }
+    std::lock_guard<std::mutex> g(g_bullet_mutex);
+    std::memcpy(g_bullet_template.request, body, sizeof(body));
+    g_bullet_template.valid = true;
+    Log("bullet: template loaded from %s (param row 0x%08X, bullet id %u): F3 works without a real shot", BulletTemplatePath().c_str(), *reinterpret_cast<uint32_t*>(body + 8),
+        *reinterpret_cast<uint32_t*>(body + 0x1C));
+}
+
+void RecordBulletTemplate(const void* request) {
+    uint8_t req[eldenring::bullet::kFullRequestBytes] = {};
+    if (request == nullptr || !SafeCopy(reinterpret_cast<uintptr_t>(request), req, sizeof(req))) return;
+    const uintptr_t player = PlayerChrPtr();
+    uint64_t handle = 0, owner = 0;
+    std::memcpy(&owner, req, sizeof(owner));
+    if (player == 0 || !SafeCopy(player + 8, &handle, sizeof(handle)) || handle != owner) return;
+    if (!eldenring::bullet::templateUsable(req, sizeof(req))) return;
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> g(g_bullet_mutex);
+        changed = !g_bullet_template.valid || eldenring::bullet::templateChanged(g_bullet_template.request, req);
+        std::memcpy(g_bullet_template.request, req, sizeof(req));
+        g_bullet_template.valid = true;
+    }
+    if (changed) SaveBulletTemplate(req);
+}
+
+// The call itself, in its own function so that the __try has no C++ objects with destructors around it.
+bool SpawnBulletSafe(void* manager, uint32_t* out_handle, void* request, void* ctx) {
+    __try {
+        g_spawn_bullet_orig(manager, out_handle, request, ctx);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// One shot of our own on the game thread: the player's real request (this session's or the file's) with the aim and the origin replaced. r9 is only
+// the pointer the game writes a status code to (REVERSE 35.3), so a zeroed buffer is enough.
+void RunBulletFire() {
+    alignas(16) uint8_t real[eldenring::bullet::kFullRequestBytes];
+    {
+        std::lock_guard<std::mutex> g(g_bullet_mutex);
+        if (!g_bullet_template.valid) {
+            Log("bullet fire: no template yet, fire one real crossbow bolt first");
+            return;
+        }
+        std::memcpy(real, g_bullet_template.request, sizeof(real));
+    }
+    uint64_t manager = 0;
+    const uintptr_t player = PlayerChrPtr();
+    uint64_t handle = 0;
+    CameraPose cam;
+    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    if (!SafeCopy(g_img.base + 0x3D667A8, &manager, sizeof(manager)) || manager == 0 || player == 0 || !SafeCopy(player + 8, &handle, sizeof(handle)) ||
+        world == 0 || !readCamera(g_reader, g_img.base, world, cam)) {
+        Log("bullet fire: the manager, the player or the camera cannot be read");
+        return;
+    }
+    eldenring::bullet::FireParams fp;
+    fp.owner = handle;
+    std::memcpy(&fp.row_id, real + 8, sizeof(fp.row_id));
+    fp.flags = 0x08;
+    std::memcpy(fp.right, cam.right, sizeof(fp.right));
+    std::memcpy(fp.up, cam.up, sizeof(fp.up));
+    std::memcpy(fp.forward, cam.forward, sizeof(fp.forward));
+    eldenring::bullet::muzzle(cam.position, cam.forward, 0.8f, fp.position);
+    const std::vector<uint8_t> built = eldenring::bullet::buildFireRequest(real, sizeof(real), fp);
+    if (built.size() != eldenring::bullet::kFullRequestBytes) {
+        Log("bullet fire: the template is unusable");
+        return;
+    }
+    alignas(16) uint8_t req[eldenring::bullet::kFullRequestBytes];
+    alignas(16) uint8_t status[64] = {};
+    std::memcpy(req, built.data(), sizeof(req));
+    uint32_t out = 0xFFFFFFFFu;
+    g_last_bullet_id.store(*reinterpret_cast<uint32_t*>(req + 0x1C), std::memory_order_relaxed);
+    g_last_bullet_tick_ms.store(GetTickCount64(), std::memory_order_relaxed);
+    const bool ok = SpawnBulletSafe(reinterpret_cast<void*>(manager), &out, req, status);
+    uint32_t code = 0;
+    std::memcpy(&code, status, sizeof(code));
+    Log("bullet fire: param row 0x%08X id=%u flags=0x%X from (%.2f %.2f %.2f) along (%.3f %.3f %.3f) tid=%lu -> %s handle 0x%08X status %u -> %s", *reinterpret_cast<uint32_t*>(req + 8),
+        *reinterpret_cast<uint32_t*>(req + 0x1C), fp.flags, fp.position[0], fp.position[1], fp.position[2], fp.forward[0], fp.forward[1], fp.forward[2],
+        static_cast<unsigned long>(GetCurrentThreadId()), ok ? "returned" : "FAULTED", out, code, !ok ? "FAULT" : (eldenring::bullet::spawnFailed(out) ? "REFUSED" : "spawned"));
+}
+
+bool QueueBulletFire() {
+    if (!g_bullet_fire_enabled.load()) return false;
+    const uint64_t now = GetTickCount64();
+    if (now - g_last_bullet_fire_ms.load(std::memory_order_relaxed) < 400) return false;
+    g_last_bullet_fire_ms.store(now);
+    g_bullet_fire_pending.store(true);
+    return true;
+}
+
+uint32_t* __fastcall SpawnBulletDetour(void* manager, uint32_t* out_handle, void* request, void* r9) {
+    {
+        uint32_t id = 0;
+        if (request != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(request) + 0x1C, &id, sizeof(id));
+        g_last_bullet_id.store(id, std::memory_order_relaxed);
+        g_last_bullet_tick_ms.store(GetTickCount64(), std::memory_order_relaxed);
+    }
+    if (g_bullet_fire_enabled.load(std::memory_order_relaxed)) RecordBulletTemplate(request);
+    uint32_t* r = g_spawn_bullet_orig(manager, out_handle, request, r9);
+    uint32_t handle = 0xFFFFFFFFu;
+    if (out_handle != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(out_handle), &handle, sizeof(handle));
+    LogBulletRequest(manager, request, r9, _ReturnAddress(), handle);
+    return r;
+}
+
+void SetupBulletLog() {
+    g_proj_log.store(FileExists(g_game_dir + "mc_er_bulletlog.txt"));
+    g_arrow_damage.store(FileExists(g_game_dir + "mc_er_arrowdmg.txt"));
+    if (g_arrow_damage.load()) Log("bullet: mc_er_arrowdmg.txt: the player's bolts do MC bolt damage (9, balanced like the diamond sword)");
+    g_bullet_fire_enabled.store(FileExists(g_game_dir + "mc_er_bulletfire.txt"));
+    if (g_bullet_fire_enabled.load()) LoadBulletTemplate();
+    if (!g_bullet_fire_enabled.load() && !FileExists(g_game_dir + "mc_er_bulletlog.txt")) return;
+    uintptr_t target = 0;
+    if (!EnsureMinHook()) {
+        Log("bullet: MH_Initialize failed, the request logger is not installed");
+    } else if (!LocateByPrefix(g_img, sigs::kSpawnBullet, target)) {
+        Log("bullet: spawn_bullet signature not unique, the request logger is not installed");
+    } else if (MH_CreateHook(reinterpret_cast<void*>(target), reinterpret_cast<void*>(&SpawnBulletDetour), reinterpret_cast<void**>(&g_spawn_bullet_orig)) != MH_OK ||
+               MH_EnableHook(reinterpret_cast<void*>(target)) != MH_OK) {
+        Log("bullet: hooking spawn_bullet at %p failed", reinterpret_cast<void*>(target));
+    } else {
+        Log("bullet: spawn_bullet request logger at %p (RVA 0x%llX): the first 40 requests are written here%s", reinterpret_cast<void*>(target),
+            static_cast<unsigned long long>(target - g_img.base),
+            g_bullet_fire_enabled.load() ? "; mc_er_bulletfire.txt: F3 shoots one bolt of ours from the saved template (a real crossbow shot creates or updates it)" : " (read-only)");
+    }
+}
+
 void SetupDamage() {
     if (!FileExists(g_game_dir + "mc_er_damage.txt")) {
         Log("damage: disabled (no mc_er_damage.txt)");
@@ -2508,6 +2978,8 @@ void SetupDamage() {
         } else {
             Log("first person: render camera copy hooked at %p (RVA 0x%llX); first_person=1 or F10 turns the experiment on", reinterpret_cast<void*>(rcc),
                 static_cast<unsigned long long>(rcc - g_img.base));
+            g_summon_hide.store(FileExists(g_game_dir + "mc_er_summonhide.txt"));
+            if (g_summon_hide.load()) Log("summon hide: on (mc_er_summonhide.txt): the drawn bit of every team 47 model is cleared before each frame");
         }
     }
     {
@@ -2667,6 +3139,14 @@ void UpdateNativeModel(uintptr_t player, bool hide) {
 }
 
 bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
+    {   // the mobs over the summons (mc_er_summonhide.txt): only while MC mode is on, otherwise the wolves are not drawn at all and nothing replaces them
+        std::vector<eldenring::mobs::MobSnapshot> mobs;
+        if (g_summon_hide.load(std::memory_order_relaxed) && g_mc_mode.load(std::memory_order_relaxed)) {
+            std::lock_guard<std::mutex> g(g_summon_mutex);
+            mobs = g_summon_list;
+        }
+        erov::SetMobs(mobs);
+    }
     const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
     if (world == 0) return false;
     uint64_t player = 0;
@@ -2782,6 +3262,9 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         if (steve.dead && !was_dead) eraudio::Play("entity.player.death");
         was_dead = steve.dead;
     }
+    steve.shadow = g_shadow_enabled.load(std::memory_order_relaxed);
+    steve.ground_valid = g_ground_valid.load(std::memory_order_relaxed);
+    steve.ground_y = g_ground_y.load(std::memory_order_relaxed);
     steve.first_person = g_first_person.load() && g_slot_probe.load() < 0;
     steve.speed_mps = g_walk_speed.load();
     steve.on_ground = g_on_ground.load();
@@ -2821,11 +3304,13 @@ void SetupOverlay() {
                 else if (key == "abs_bias") cfg.abs_bias = value;
                 else if (key == "scene_height") cfg.scene_height = value;
                 else if (key == "yaw_offset_deg") g_steve_yaw_offset = value * 3.14159265f / 180.f;
+                else if (key == "mob_yaw_offset_deg") g_mob_yaw_offset = value * 3.14159265f / 180.f;
                 else if (key == "hide_native") g_hide_native.store(value != 0.f);
                 else if (key == "fp_persist") g_fp_persist.store(value != 0.f);
                 else if (key == "sound_volume") g_sound_volume.store(value);
                 else if (key == "no_player_hit_vfx") g_no_player_hit_vfx.store(value != 0.f);
                 else if (key == "first_person") g_first_person.store(value != 0.f);
+                else if (key == "shadow") g_shadow_enabled.store(value != 0.f);
                 else if (key == "eye_height") g_eye_height.store(value);
                 else if (key == "fall_reset") g_fall_reset.store(value != 0.f);
                 else if (key == "fall_hold") g_fall_hold.store(std::clamp(value, 0.f, 2.8f));
@@ -2876,6 +3361,29 @@ void SetupOverlay() {
                 Log("skin: external file %s (%ux%u)", skin_path.c_str(), sw, sh);
             } else {
                 Log("skin: %s missing or not 64x64, the figure stays flat grey-brown (extract it with tools/extract_mc_assets.py --export-steve-skin)", skin_path.c_str());
+            }
+        }
+        {   // the mobs' model: a Bedrock geometry file copied by extract_mc_assets.py --export-entity-models (assets/source/models/entities/zombie.geo.json)
+            std::vector<uint8_t> json;
+            const std::string model_path = g_game_dir + "mods\\mc_adapter\\models\\zombie.geo.json";
+            std::optional<mc::model::EntityModel> model;
+            if (ReadFileAll(model_path, json)) model = mc::model::EntityModel::fromJson(std::string_view(reinterpret_cast<const char*>(json.data()), json.size()));
+            if (model && !model->bones.empty()) {
+                erov::SetMobModel(*model);
+                Log("mobs: model %s: %s, %zu bones", model_path.c_str(), model->identifier.c_str(), model->bones.size());
+            } else {
+                Log("mobs: no model at %s, the mobs use the Steve rig (copy it with tools/extract_mc_assets.py --export-entity-models)", model_path.c_str());
+            }
+        }
+        {
+            std::vector<uint8_t> zombie;
+            unsigned zw = 0, zh = 0;
+            const std::string zombie_path = g_game_dir + "mods\\mc_adapter\\zombie.png";
+            if (erov::DecodePngFile(zombie_path, zombie, zw, zh) && zw == 64 && zh == 64) {
+                erov::SetMobSkin(zombie.data(), zw, zh);
+                Log("skin: external file %s (%ux%u)", zombie_path.c_str(), zw, zh);
+            } else {
+                Log("skin: %s missing or not 64x64, the mobs wear Steve's skin (extract it with tools/extract_mc_assets.py --export-mob-skin zombie)", zombie_path.c_str());
             }
         }
         g_steve_enabled.store(true);
@@ -3008,6 +3516,7 @@ DWORD WINAPI LoaderThread(LPVOID) {
 
     SetupDamage();
     SetupCreativeProbes();
+    SetupBulletLog();
     SetupOverlay();
     SetupInput();
     CreateThread(nullptr, 0, KeyThread, nullptr, 0, nullptr);

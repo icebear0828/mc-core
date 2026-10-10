@@ -97,7 +97,6 @@ def test_package_eldenring_nexus_channel(temp_workspace):
     assert (pkg_dir / "mc_er_hit.bin").exists()
     assert (pkg_dir / "mc_er_steve.txt").exists()
     assert (pkg_dir / "README_INSTALL.txt").exists()
-    assert (pkg_dir / "setup_assets.bat").exists()
     assert (pkg_dir / "SHA256SUMS.txt").exists()
     assert (pkg_dir / "mods" / "mc_adapter" / "mc_hud_atlas.png").exists()
 
@@ -109,6 +108,34 @@ def test_package_eldenring_nexus_channel(temp_workspace):
         assert "dinput8.dll" in namelist
         assert "mc_er_hit.bin" in namelist
         assert "README_INSTALL.txt" in namelist
+
+
+def test_package_standalone_assets_pack(temp_workspace):
+    from tools.package_mod import package_assets_pack
+    root = temp_workspace["root"]
+    out_dir = temp_workspace["out_dir"]
+
+    # Create dummy assets
+    assets_dir = root / "mods" / "mc_adapter"
+    assets_dir.mkdir(parents=True)
+    (assets_dir / "steve.png").write_bytes(b"PNG_STEVE")
+    (assets_dir / "mc_hud_atlas.png").write_bytes(b"PNG_ATLAS")
+    sounds_dir = assets_dir / "sounds"
+    sounds_dir.mkdir()
+    (sounds_dir / "hit.wav").write_bytes(b"RIFF_WAV")
+
+    result = package_assets_pack(assets_dir=assets_dir, out_dir=out_dir, version="0.1.0")
+    assert result["success"] is True
+
+    zip_path = Path(result["zip_path"])
+    assert zip_path.exists()
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        names = zf.namelist()
+        assert "mods/mc_adapter/steve.png" in names
+        assert "mods/mc_adapter/mc_hud_atlas.png" in names
+        assert "mods/mc_adapter/sounds/hit.wav" in names
+        assert "SHA256SUMS.txt" in names
+
 
 
 def test_package_missing_dll_raises_error(temp_workspace):

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "mc/inventory.hpp"
+#include "mc/inventory_layout.hpp"
 
 using namespace mc;
 
@@ -189,4 +190,12 @@ TEST(Inventory, ReturnCursorPutsTheStackBackAndDropsWhatDoesNotFit) {
     inv.setSlot(5, {ItemId::DiamondSword, 1}); // the cursor now holds a second sword and there is no room
     inv.returnCursor();
     EXPECT_TRUE(inv.cursor().empty()); // lost, as an item dropped out of a full inventory
+}
+
+TEST(ZombieSpawnEgg, StacksTo64AndIsOfferedByThePalette) {
+    EXPECT_EQ(maxStackSize(ItemId::ZombieSpawnEgg), 64u);
+    bool found = false;
+    for (ItemId id : paletteItems()) found = found || id == ItemId::ZombieSpawnEgg;
+    EXPECT_TRUE(found);
+    EXPECT_LE(paletteItems().size(), static_cast<size_t>(InventoryLayout::kPaletteSlots));
 }

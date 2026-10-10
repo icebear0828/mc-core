@@ -102,6 +102,47 @@ def generate_default_steve_skin() -> Image.Image:
     return img
 
 
+def generate_default_zombie_skin() -> Image.Image:
+    """Generate canonical placeholder 64x64 Zombie skin with green skin, shirt, and mirrored limbs."""
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    skin_green = (55, 115, 45, 255)
+    hair = (30, 60, 25, 255)
+    eyes = (20, 20, 20, 255)
+    shirt = (0, 150, 160, 255)
+    shirt_dark = (0, 120, 130, 255)
+    pants = (40, 45, 125, 255)
+    shoes = (35, 40, 100, 255)
+
+    # Head: (0, 0) to (32, 16)
+    for x in range(32):
+        for y in range(16):
+            img.putpixel((x, y), hair if y < 8 else skin_green)
+    # Eyes
+    img.putpixel((10, 10), eyes)
+    img.putpixel((11, 10), eyes)
+    img.putpixel((12, 10), eyes)
+    img.putpixel((13, 10), eyes)
+
+    # Torso: (16, 16) to (40, 32)
+    for x in range(16, 40):
+        for y in range(16, 32):
+            img.putpixel((x, y), shirt if ((x + y) % 5 != 0) else shirt_dark)
+
+    # Right Arm: (40, 16) to (56, 32)
+    for x in range(40, 56):
+        for y in range(16, 32):
+            img.putpixel((x, y), shirt if y < 20 else skin_green)
+
+    # Right Leg: (0, 16) to (16, 32)
+    for x in range(16):
+        for y in range(16, 32):
+            img.putpixel((x, y), pants if y < 28 else shoes)
+
+    from extract_mc_assets import mirror_empty_left_limbs
+    return mirror_empty_left_limbs(img)
+
+
+
 def generate_block_texture(palette: list[tuple[int, int, int, int]]) -> Image.Image:
     """Generate a procedural 16x16 pixelated texture using palette seeds."""
     img = Image.new("RGBA", (16, 16), palette[0])
@@ -138,6 +179,12 @@ def generate_all_source_assets(output_dir: Path) -> dict[str, list[str]]:
     skin_path = textures_dir / "steve.png"
     skin.save(skin_path)
     manifest["textures"].append(str(skin_path))
+
+    # 1b. Generate Zombie Skin
+    zombie_skin = generate_default_zombie_skin()
+    zombie_skin_path = textures_dir / "zombie.png"
+    zombie_skin.save(zombie_skin_path)
+    manifest["textures"].append(str(zombie_skin_path))
 
     steve_mtl_path = models_dir / "steve.mtl"
     steve_mtl_path.write_text(export_mtl("steve_mat", "../textures/steve.png"), encoding="utf-8")
