@@ -359,7 +359,7 @@ def build_cube_block(texture: Image.Image, size_cm: float = 100.0) -> dict:
 _PLACEHOLDER_ITEM_COLORS = {
     "item_arrow": (200, 200, 200), "item_trident": (40, 150, 150), "item_flint_and_steel": (90, 90, 90),
     "item_ender_pearl": (20, 90, 80), "item_enchanted_golden_apple": (200, 120, 230), "item_bread": (200, 150, 70),
-    "item_cooked_beef": (120, 60, 30), "item_firework_rocket": (200, 40, 40),
+    "item_cooked_beef": (120, 60, 30), "item_firework_rocket": (200, 40, 40), "item_zombie_spawn_egg": (0, 175, 175),
     "block_dirt": (134, 96, 67), "block_stone": (125, 125, 125), "block_tnt_top": (160, 80, 70),
     "block_tnt_side": (200, 60, 50), "block_tnt_bottom": (160, 80, 70),
 }
@@ -639,6 +639,8 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("heart_half_blinking", (9, 9)),
     ("xp_bar_background", (182, 5)),
     ("xp_bar_progress", (182, 5)),
+    # the spawn egg of the first mob (appended: the sprites above keep their places)
+    ("item_zombie_spawn_egg", (16, 16)),
 ]
 
 _JAR_HUD_SPRITES = {
@@ -685,6 +687,8 @@ _JAR_HUD_SPRITES = {
 # player's inventory) starts at row 126, as in Minecraft's ContainerScreen.
 _CONTAINER_TEXTURE = "gui/container/generic_54.png"
 _CONTAINER_PARTS = {"container_top": (0, 0, 176, 71), "container_bottom": (0, 126, 176, 222)}
+# Spawn eggs are a grey egg and grey spots tinted per mob (the item model's tint): primary colour for the egg, secondary for the spots.
+_SPAWN_EGG_COLOURS = {"item_zombie_spawn_egg": ((0x00, 0xAF, 0xAF), (0x79, 0x9C, 0x65))}
 _GLINT = (130, 60, 220)  # the enchantment glint, flattened into a tint for the enchanted golden apple
 
 # Block items are drawn by Minecraft as isometric cubes: (top, left/right sides)
@@ -714,6 +718,18 @@ def _shade(img: Image.Image, factor: float) -> Image.Image:
         for x in range(out.width):
             r, g, b, a = px[x, y]
             px[x, y] = (int(r * factor), int(g * factor), int(b * factor), a)
+    return out
+
+
+def _multiply_tint(img: Image.Image, color: tuple[int, int, int]) -> Image.Image:
+    """Colour * texel, per channel (how Minecraft tints a grey layer); alpha is kept."""
+    out = img.convert("RGBA")
+    px = out.load()
+    for y in range(out.height):
+        for x in range(out.width):
+            r, g, b, a = px[x, y]
+            if a:
+                px[x, y] = (r * color[0] // 255, g * color[1] // 255, b * color[2] // 255, a)
     return out
 
 
@@ -778,6 +794,14 @@ def _read_real_hud_sprite(jar_zip: zipfile.ZipFile, name: str, size: tuple[int, 
     if name in _CONTAINER_PARTS:
         src = _open_jar_png(jar_zip, _CONTAINER_TEXTURE)
         return None if src is None else src.crop(_CONTAINER_PARTS[name])
+    if name in _SPAWN_EGG_COLOURS:
+        base, spots = _open_jar_png(jar_zip, "item/spawn_egg.png"), _open_jar_png(jar_zip, "item/spawn_egg_overlay.png")
+        if base is None or spots is None:
+            return None
+        primary, secondary = _SPAWN_EGG_COLOURS[name]
+        egg = _multiply_tint(_fit_exact(base, size), primary)
+        egg.alpha_composite(_multiply_tint(_fit_exact(spots, size), secondary))
+        return egg
     if name == "item_enchanted_golden_apple":
         apple = _open_jar_png(jar_zip, "item/golden_apple.png")
         return None if apple is None else _tint(_fit_exact(apple, size), _GLINT, 0.35)

@@ -260,6 +260,7 @@ HUD_KEYS = [
     "item_bread", "item_cooked_beef", "item_firework_rocket", "container_top", "container_bottom",
     "block_dirt", "block_stone", "block_tnt_top", "block_tnt_side", "block_tnt_bottom",
     "heart_container_blinking", "heart_full_blinking", "heart_half_blinking", "xp_bar_background", "xp_bar_progress",
+    "item_zombie_spawn_egg",
 ]
 HUD_SIZES = {
     "heart_absorb_full": (9, 9), "heart_absorb_half": (9, 9), "particle_crit": (8, 8), "particle_damage": (8, 8),
@@ -271,6 +272,13 @@ HUD_SIZES = {
     "xp_bar_background": (182, 5), "xp_bar_progress": (182, 5),
     "heart_container_blinking": (9, 9), "heart_full_blinking": (9, 9), "heart_half_blinking": (9, 9),
 }
+
+
+def _egg_overlay() -> Image.Image:
+    """A fully transparent 16x16 overlay with one opaque white pixel at (8, 8) (the spots of the egg)."""
+    img = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+    img.putpixel((8, 8), (255, 255, 255, 255))
+    return img
 
 
 def _sprite_colors():
@@ -300,6 +308,8 @@ def _sprite_colors():
         "item/bread.png": _solid((16, 16), (43, 44, 45, 255)),
         "item/cooked_beef.png": _solid((16, 16), (46, 47, 48, 255)),
         "item/firework_rocket.png": _solid((16, 16), (49, 50, 51, 255)),
+        "item/spawn_egg.png": _solid((16, 16), (200, 200, 200, 255)),
+        "item/spawn_egg_overlay.png": _egg_overlay(),
         "block/tnt_bottom.png": _solid((16, 16), (52, 53, 54, 255)),
         "gui/sprites/hud/heart/container_blinking.png": _solid((9, 9), (61, 62, 63, 255)),
         "gui/sprites/hud/heart/full_blinking.png": _solid((9, 9), (64, 65, 66, 255)),
@@ -434,6 +444,17 @@ def test_new_item_icons_are_copied_and_the_enchanted_apple_is_a_tinted_golden_ap
     glint = _hud_region(atlas, uv["item_enchanted_golden_apple"]).getpixel((8, 8))
     assert glint != plain and glint[3] == 255
     assert glint[2] > plain[2]  # shifted towards the purple glint
+
+
+def test_zombie_spawn_egg_is_the_egg_tinted_with_the_zombie_colours_and_its_spots_on_top(tmp_path):
+    from extract_mc_assets import build_hud_atlas
+
+    atlas, uv = build_hud_atlas(_hud_jar(tmp_path / "client.jar"))
+    egg = _hud_region(atlas, uv["item_zombie_spawn_egg"])
+    # the egg is grey in the jar and tinted with the mob's primary colour 0x00AFAF (multiply): 200 * 175 / 255 = 137
+    assert egg.getpixel((3, 3)) == (0, 137, 137, 255)
+    # the overlay (white spots) is tinted with the secondary colour 0x799C65 and lies on top
+    assert egg.getpixel((8, 8)) == (0x79, 0x9C, 0x65, 255)
 
 
 def test_block_face_sprites_are_the_flat_block_textures(tmp_path):

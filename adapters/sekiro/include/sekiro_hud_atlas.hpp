@@ -57,6 +57,7 @@ using ::mc::hud::kUV_HEART_FULL_BLINKING;
 using ::mc::hud::kUV_HEART_HALF_BLINKING;
 using ::mc::hud::kUV_XP_BAR_BACKGROUND;
 using ::mc::hud::kUV_XP_BAR_PROGRESS;
+using ::mc::hud::kUV_ITEM_ZOMBIE_SPAWN_EGG;
 using ::mc::hud::kUV_ITEMS;
 using ::mc::hud::kHudAtlasWidth;
 using ::mc::hud::kHudAtlasHeight;
