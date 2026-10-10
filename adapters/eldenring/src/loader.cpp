@@ -298,6 +298,7 @@ std::atomic<float> g_sound_volume{0.8f}; // mc_er_steve.txt: sound_volume
 std::atomic<float> g_walk_speed{0.f}; // horizontal speed of the player (m/s), measured by the key thread
 std::atomic<bool> g_on_ground{true};
 std::atomic<bool> g_bullet_fire_pending{false}; // F3 pressed with mc_er_bulletfire.txt present: call spawn_bullet once on the game thread
+std::atomic<bool> g_bullet_fire_enabled{false};  // mc_er_bulletfire.txt present: F3 and the bow may shoot (needs the saved request template)
 std::atomic<bool> g_summon_pending{false}; // F2 pressed with mc_er_summon.txt present: write one summon request on the game thread
 std::atomic<int> g_heal_pending{0}; // Elden Ring hit points waiting to be given back on the game thread
 using ApplyHpFn = void*(__fastcall*)(void* data_module, int32_t hp, uint8_t flag);
@@ -2801,7 +2802,6 @@ struct BulletTemplate {
 };
 BulletTemplate g_bullet_template;
 std::mutex g_bullet_mutex;
-std::atomic<bool> g_bullet_fire_enabled{false};
 std::atomic<uint64_t> g_last_bullet_fire_ms{0};
 
 std::string BulletTemplatePath() { return g_game_dir + "mc_er_bullet.bin"; }
