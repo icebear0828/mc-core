@@ -22,6 +22,7 @@
 #include <share.h>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <set>
 #include <string>
@@ -689,6 +690,8 @@ void HideSummonModels() {
             eldenring::mobs::MobSnapshot snap;
             float q[4];
             snap.id = e.chr;
+            snap.hp = e.hp;
+            snap.max_hp = e.max_hp;
             if (detail::readPhysicsPosition(g_reader, g_img.base, e.chr, snap.feet) && detail::readPhysicsOrientation(g_reader, g_img.base, e.chr, q)) {
                 snap.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) + g_mob_yaw_offset;
                 seen.push_back(snap);
@@ -709,6 +712,29 @@ void HideSummonModels() {
             const bool ok = WriteBytesSafe(at, &hidden, sizeof(hidden));
             if (ok) g_hidden_flag_addresses.insert(at);
             if (++logged <= 12) Log("summon hide: chr=%p npc=%d flags at %p 0x%X -> 0x%X (%s)", reinterpret_cast<void*>(e.chr), e.npc_id, reinterpret_cast<void*>(at), flags, hidden, ok ? "ok" : "write failed");
+        }
+    }
+    {   // Diagnostic: what a summon's hit points do when it is hit and when it dies, and how it leaves (does it stay at 0 hp for a while, or just vanish?)
+        static std::map<uintptr_t, int> last_hp;
+        static unsigned traced = 0;
+        for (const auto& snap : seen) {
+            const auto it = last_hp.find(snap.id);
+            if (it == last_hp.end()) {
+                if (++traced <= 80) Log("mob: chr=%p appeared, hp %d/%d", reinterpret_cast<void*>(snap.id), snap.hp, snap.max_hp);
+            } else if (it->second != snap.hp && ++traced <= 80) {
+                Log("mob: chr=%p hp %d -> %d", reinterpret_cast<void*>(snap.id), it->second, snap.hp);
+            }
+            last_hp[snap.id] = snap.hp;
+        }
+        for (auto it = last_hp.begin(); it != last_hp.end();) {
+            bool still = false;
+            for (const auto& snap : seen) still = still || snap.id == it->first;
+            if (still) {
+                ++it;
+                continue;
+            }
+            if (++traced <= 80) Log("mob: chr=%p gone, its last hp was %d", reinterpret_cast<void*>(it->first), it->second);
+            it = last_hp.erase(it);
         }
     }
     if (!mc_on) g_hidden_flag_addresses.clear(); // the ones left belong to summons that are gone: nothing to put back

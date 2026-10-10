@@ -991,6 +991,9 @@ void RenderFrame(IDXGISwapChain* sc) {
                 mp.depth_w = static_cast<float>(g_depth_w);
                 mp.depth_h = static_cast<float>(g_depth_h);
                 mp.keep_depth = keep;
+                mp.tint[0] = 1.f; // the same red flash as Steve's hurt: 10 ticks, strongest at the start; a dying mob stays red
+                mp.tint[1] = mp.tint[2] = 0.f;
+                mp.tint[3] = 0.4f * std::min(1.f, d.hurt * 4.f);
                 const D3D12_GPU_DESCRIPTOR_HANDLE table = g_mob_table_gpu.ptr != 0 ? g_mob_table_gpu : g_depth_gpu;
                 if (d.generic) g_steve.drawMobModel(g_s.list, g_s.srv_heap, table, g_s.width, g_s.height, vp, d.bones, mp, f.rtv);
                 else g_steve.draw(g_s.list, g_s.srv_heap, table, g_s.width, g_s.height, vp, d.parts, mp, f.rtv);

@@ -16,6 +16,12 @@ MobSnapshot at(uintptr_t id, float x, float z) {
     s.feet[2] = z;
     return s;
 }
+MobSnapshot withHp(uintptr_t id, int hp, int max_hp = 500) {
+    MobSnapshot s = at(id, 1.f, 1.f);
+    s.hp = hp;
+    s.max_hp = max_hp;
+    return s;
+}
 } // namespace
 
 TEST(EldenRingMobs, EachSummonGetsItsOwnDrawWithTheMatricesAtItsFeet) {
@@ -137,4 +143,89 @@ TEST(EldenRingMobs, ZombieLegsSwingWhenItWalksAndTheArmsStayOut) {
     const mc::Vec3 hand_rest = eldenring::render::kBasis.fromCanonical({0.f, -6.f * mc::rig::kCmPerModelPixel, 12.f * mc::rig::kCmPerModelPixel});
     const mc::Vec3 dir = (mc::rig::transformPoint(d[0].bones[arm], hand_rest) - mc::rig::transformPoint(d[0].bones[arm], pivot)).normalized();
     EXPECT_GT(dir.z, 0.9f);
+}
+
+// ---- hurt flash and death -----------------------------------------------------------------------------------------------------
+TEST(EldenRingMobs, ALossOfHitPointsFlashesRedForHalfASecondAndNothingElseDoes) {
+    MobRegistry r;
+    EXPECT_FLOAT_EQ(r.update(1.f / 60.f, {withHp(1, 500)})[0].hurt, 0.f);
+    EXPECT_FLOAT_EQ(r.update(1.f / 60.f, {withHp(1, 500)})[0].hurt, 0.f);
+    const auto hit = r.update(1.f / 60.f, {withHp(1, 430)});
+    EXPECT_GT(hit[0].hurt, 0.9f);                                          // just hit
+    float last = hit[0].hurt;
+    int frames = 0;
+    while (last > 0.f && frames < 200) {
+        last = r.update(1.f / 60.f, {withHp(1, 430)})[0].hurt;
+        ++frames;
+    }
+    EXPECT_NEAR(static_cast<float>(frames) / 60.f, 0.5f, 0.05f);          // 10 ticks
+    EXPECT_FLOAT_EQ(r.update(1.f / 60.f, {withHp(1, 460)})[0].hurt, 0.f); // healing is not a hit
+}
+
+TEST(EldenRingMobs, UnknownHitPointsNeverHurtOrKill) {
+    MobRegistry r;
+    for (int i = 0; i < 5; ++i) {
+        const auto d = r.update(1.f / 60.f, {at(1, 0.f, 0.f)}); // hp stays -1: not read
+        EXPECT_FLOAT_EQ(d[0].hurt, 0.f);
+    }
+    EXPECT_EQ(r.tracked(), 1u);
+}
+
+TEST(EldenRingMobs, ADeadMobFallsOverRedAndIsGoneAfterAboutASecond) {
+    MobRegistry r;
+    r.update(1.f / 60.f, {withHp(1, 100)});
+    auto d = r.update(1.f / 60.f, {withHp(1, 0)});
+    EXPECT_GT(d[0].hurt, 0.9f);        // dying mobs stay red
+    EXPECT_TRUE(d[0].dying);
+    EXPECT_LT(d[0].fall, 0.2f);        // only just started to tip
+    float fall = 0.f;
+    for (int i = 0; i < 60; ++i) {
+        d = r.update(1.f / 60.f, {withHp(1, 0)});
+        fall = d[0].fall;
+    }
+    EXPECT_NEAR(fall, 1.f, 1e-4f);     // lying on its side after a second
+    // still drawn lying there when the game has already removed the entity
+    d = r.update(1.f / 60.f, {});
+    EXPECT_TRUE(d.empty() || d[0].dying);
+}
+
+TEST(EldenRingMobs, AMobThatDiesKeepsLyingForItsDeathTimeEvenAfterTheGameRemovedIt) {
+    MobRegistry r;
+    r.update(1.f / 60.f, {withHp(1, 100)});
+    r.update(1.f / 60.f, {withHp(1, 0)});   // first sight of 0 hp
+    // the entity disappears on the very next frame
+    std::vector<MobDraw> d;
+    for (int i = 0; i < 20; ++i) d = r.update(1.f / 60.f, {});
+    ASSERT_EQ(d.size(), 1u);               // 0.33 s later it still lies there
+    EXPECT_TRUE(d[0].dying);
+    EXPECT_EQ(d[0].id, 1u);
+    for (int i = 0; i < 60; ++i) d = r.update(1.f / 60.f, {});
+    EXPECT_TRUE(d.empty());                // and then it is gone
+    EXPECT_EQ(r.tracked(), 0u);
+}
+
+TEST(EldenRingMobs, AMobThatSimplyVanishesAliveIsDroppedWithoutADeathScene) {
+    MobRegistry r;
+    r.update(1.f / 60.f, {withHp(1, 500)});
+    std::vector<MobDraw> d;
+    for (int i = 0; i < kMissedFramesBeforeDrop + 2; ++i) d = r.update(1.f / 60.f, {});
+    EXPECT_TRUE(d.empty());
+    EXPECT_EQ(r.tracked(), 0u);
+}
+
+TEST(EldenRingMobs, TheFallTurnsTheWholeFigureAboutItsFeet) {
+    MobRegistry r;
+    MobSnapshot alive = withHp(1, 100);
+    alive.feet[0] = 5.f;
+    alive.feet[2] = 7.f;
+    r.update(1.f / 60.f, {alive});
+    MobSnapshot dead = alive;
+    dead.hp = 0;
+    std::vector<MobDraw> d;
+    for (int i = 0; i < 60; ++i) d = r.update(1.f / 60.f, {dead});
+    const auto head = static_cast<size_t>(mc::StevePart::Head);
+    // after the flip the head is no longer above the feet but about a body length to the side, at roughly knee height
+    const mc::Vec3 top = mc::rig::transformPoint(d[0].parts[head], {0.f, 1.7f, 0.f}); // the matrices act on the rest pose with the feet at the origin
+    EXPECT_LT(top.y, 0.6f);
+    EXPECT_GT(std::fabs(top.x - 5.f) + std::fabs(top.z - 7.f), 1.0f);
 }
