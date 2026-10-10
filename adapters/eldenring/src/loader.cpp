@@ -2911,6 +2911,36 @@ void PosProbeStart(uint64_t manager, uint32_t handle, const float p0[3], const f
         first, p0[0], p0[1], p0[2], dir[0], dir[1], dir[2]);
 }
 
+// The classes and the first bytes of the objects the moving triple was found in, so that the structure (one record per bullet? an array?) can be read.
+void PosProbeDumpStructure(const char* when) {
+    auto class_of = [](uintptr_t object) -> std::string {
+        uint64_t vtable = 0;
+        if (object == 0 || !SafeCopy(object, &vtable, sizeof(vtable))) return "(unreadable)";
+        const auto name = readTypeNameOfVtable(g_reader, g_img.base, vtable);
+        char buf[48];
+        snprintf(buf, sizeof(buf), "first qword %p, ", reinterpret_cast<void*>(vtable));
+        return std::string(buf) + (name ? *name : std::string("no RTTI"));
+    };
+    Log("bullet pos: structure (%s): manager %p = %s", when, reinterpret_cast<void*>(g_pos_probe.manager), class_of(g_pos_probe.manager).c_str());
+    for (const ProbeBlock& block : g_pos_probe.baseline) {
+        if (block.path != "[mgr+0x0]" && block.path != "[mgr+0x198]") continue;
+        const std::vector<uint8_t> now = eldenring::handlescan::detail::readTolerant(g_reader, block.addr, 0x180);
+        Log("bullet pos:   %s at %p: %s", block.path.c_str(), reinterpret_cast<void*>(block.addr), class_of(block.addr).c_str());
+        for (size_t row = 0; row < now.size(); row += 16) {
+            float f[4];
+            std::memcpy(f, now.data() + row, sizeof(f));
+            char line[260];
+            int n = snprintf(line, sizeof(line), "+0x%03zX:", row);
+            for (size_t i = 0; i < 16; ++i) n += snprintf(line + n, sizeof(line) - static_cast<size_t>(n), " %02X", now[row + i]);
+            snprintf(line + n, sizeof(line) - static_cast<size_t>(n), "  | %10.3f %10.3f %10.3f %10.3f", f[0], f[1], f[2], f[3]);
+            Log("bullet pos:     %s", line);
+        }
+        const std::vector<ScanHit> classes = scanForClasses(g_reader, g_img.base, block.addr, 0, 0x400, 32);
+        Log("bullet pos:   %zu known class(es) behind the pointers of %s", classes.size(), block.path.c_str());
+        for (const ScanHit& h : classes) Log("bullet pos:     %s", formatScanHit(h, 0).c_str());
+    }
+}
+
 void PosProbeTick() {
     if (!g_pos_probe.active || GetCurrentThreadId() != g_game_tid.load(std::memory_order_relaxed)) return;
     const uint64_t since = GetTickCount64() - g_pos_probe.t0_ms;
@@ -2960,6 +2990,7 @@ void PosProbeTick() {
             g_pos_probe.baseline.push_back(std::move(top));
         }
         Log("bullet pos: baseline snapshot: %zu block(s)", g_pos_probe.baseline.size());
+        PosProbeDumpStructure("sample 1");
     } else if (!g_pos_probe.baseline.empty()) {
         // Differences against the baseline: triples that moved along the aim, in whatever coordinate frame they are stored.
         const double dt = static_cast<double>(since) / 1000.0 - 0.25; // seconds since the baseline
@@ -2975,6 +3006,7 @@ void PosProbeTick() {
         }
         Log("bullet pos: sample %d: %d mover(s) logged", g_pos_probe.samples, std::min(logged, 24));
     }
+    if (g_pos_probe.samples == 4) PosProbeDumpStructure("sample 4");
     if (g_pos_probe.samples >= 4) g_pos_probe.active = false;
 }
 
