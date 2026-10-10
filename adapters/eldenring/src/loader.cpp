@@ -107,6 +107,7 @@ void InitLogOnce() {
     // _fsopen with _SH_DENYNO: other processes (the probes, `type`) can read the log while the game runs.
     g_log = _fsopen((g_game_dir + "mc_er.log").c_str(), "a", _SH_DENYNO);
     Log("==== eldenring adapter loaded (pid %lu, exe %s) ====", GetCurrentProcessId(), exe);
+    Log("build: OUR adapter (shadow, bolt F3, bow), compiled %s %s", __DATE__, __TIME__); // a log without this line came from another dll (the reverser's probe build)
 }
 
 // ---- guarded memory access -----------------------------------------------------------------------------------
