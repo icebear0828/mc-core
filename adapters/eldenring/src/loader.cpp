@@ -2891,6 +2891,8 @@ struct PosProbe {
     bool isolated{true};              // no other shot in the 4 s before this one: [mgr+0x0] can only be this bullet
     bool have2{false};
     bool have_cam{false};
+    bool have_body{false};
+    float body_yaw_raw_deg{0.f}, body_yaw_deg{0.f}; // the player's facing at the shot: from the physics orientation, raw and with the figure's offset (what Steve is drawn with)
     float cam_forward[3]{};          // the camera's forward at the shot: for a real shot, how far the game's own request is from it
     float pos2[3]{}, q2[4]{};         // the bullet object at sample 2 (500 ms)
     std::vector<ProbeBlock> baseline; // the first snapshot (slot, manager and what their pointers lead to): later ones are compared with it
@@ -2922,6 +2924,16 @@ void PosProbeStart(uint64_t manager, uint32_t handle, const float p0[3], const f
         if (world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
             std::memcpy(g_pos_probe.cam_forward, cam.forward, sizeof(g_pos_probe.cam_forward));
             g_pos_probe.have_cam = true;
+        }
+    }
+    {
+        float q[4];
+        const uintptr_t player = PlayerChrPtr();
+        if (player != 0 && detail::readPhysicsOrientation(g_reader, g_img.base, player, q)) {
+            const float raw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]);
+            g_pos_probe.body_yaw_raw_deg = raw * 180.f / 3.14159265f;
+            g_pos_probe.body_yaw_deg = (raw + g_steve_yaw_offset) * 180.f / 3.14159265f;
+            g_pos_probe.have_body = true;
         }
     }
     uint32_t first = 0;
@@ -3125,6 +3137,14 @@ void PosProbeTick() {
                 if (g_pos_probe.have_cam) {
                     const eldenring::bow::AimError req_vs_cam = eldenring::bow::aimError(g_pos_probe.cam_forward, g_pos_probe.aim);
                     Log("AIMCAL: the request's aim is yaw %+.1f pitch %+.1f deg from the camera's forward at the shot (a real shot shows what the game's own request does)", req_vs_cam.yaw_deg, req_vs_cam.pitch_deg);
+                }
+                {   // which variable does the flight follow? the aim we gave, the camera, or the player's body?
+                    float fy_abs = std::atan2(qf[0], qf[2]) * 180.f / 3.14159265f;
+                    float cam_yaw = g_pos_probe.have_cam ? std::atan2(g_pos_probe.cam_forward[0], g_pos_probe.cam_forward[2]) * 180.f / 3.14159265f : 0.f;
+                    float aim_yaw = std::atan2(g_pos_probe.aim[0], g_pos_probe.aim[2]) * 180.f / 3.14159265f;
+                    Log("AIMCAL-YAWS: flight %+.1f | the aim given %+.1f | camera %+.1f | player body %+.1f (raw %+.1f) | flight minus body %+.1f, minus raw body %+.1f, minus camera %+.1f",
+                        fy_abs, aim_yaw, cam_yaw, g_pos_probe.have_body ? g_pos_probe.body_yaw_deg : 0.f, g_pos_probe.have_body ? g_pos_probe.body_yaw_raw_deg : 0.f,
+                        fy_abs - (g_pos_probe.have_body ? g_pos_probe.body_yaw_deg : 0.f), fy_abs - (g_pos_probe.have_body ? g_pos_probe.body_yaw_raw_deg : 0.f), fy_abs - cam_yaw);
                 }
                 Log("AIMCAL: %s aim=(%.3f %.3f %.3f); moved %.1f m in 0.5 s; flight by motion: yaw %+.1f pitch %+.1f deg off the aim; by quaternion: yaw %+.1f pitch %+.1f deg",
                     g_pos_probe.isolated ? "ISOLATED" : "overlapping (do not trust)", g_pos_probe.aim[0], g_pos_probe.aim[1], g_pos_probe.aim[2], moved, by_motion.yaw_deg, by_motion.pitch_deg,
