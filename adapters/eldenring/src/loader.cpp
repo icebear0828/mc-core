@@ -2867,18 +2867,18 @@ bool SpawnBulletSafe(void* manager, uint32_t* out_handle, void* request, void* c
 }
 
 // ---- where does the game keep a bullet's position? (read-only, mc_er_bulletpos.txt) ------------------------------------------------------------------------
-// The bullet manager keeps 0x40 slots of 0x9D0 bytes at [manager+0x20] (REVERSE 35.3: `imul rdi, rcx, 0x9d0; add rdi, [rsi+0x20]`). Right after one of our
-// shots the whole pool is searched for float triples within 0.3 m of the muzzle, then those few offsets are read again every 80 ms for about a second: the
-// one that moves along the aim is the bullet's position. Game thread only.
+// The bullet manager keeps 0x40 slots of 0x9D0 bytes at [manager+0x20]; the slot of a bullet is the low byte of its handle and the slot's first dword is the
+// handle (measured, REVERSE 35.7). Slot +0x930 holds the spawn point and does not move. So the live position is elsewhere in the slot: 250, 500, 750 and
+// 1000 ms after one of our shots the slot is searched for float triples ahead of the muzzle along the aim, and the classes behind its pointers are logged
+// once (the bullet's model, to hide it later). Game thread only.
 constexpr size_t kBulletSlotBytes = 0x9D0;
-constexpr size_t kBulletSlots = 0x40;
 struct PosProbe {
     bool active{false};
-    uintptr_t pool{0};
-    float p0[3]{};
-    uint64_t t0_ms{0}, last_ms{0};
+    uintptr_t entry{0};
+    uint32_t handle{0};
+    float p0[3]{}, aim[3]{};
+    uint64_t t0_ms{0};
     int samples{0};
-    std::vector<size_t> cands; // byte offsets from the pool start
 };
 PosProbe g_pos_probe;
 
@@ -2889,48 +2889,43 @@ void PosProbeStart(uint64_t manager, uint32_t handle, const float p0[3], const f
         Log("bullet pos: the pool pointer at manager+0x20 cannot be read");
         return;
     }
-    const size_t bytes = kBulletSlotBytes * kBulletSlots;
-    const std::vector<uint8_t> buf = eldenring::handlescan::detail::readTolerant(g_reader, static_cast<uintptr_t>(pool), bytes);
-    const std::vector<int> hits = eldenring::bow::findTriples(buf.data(), buf.size(), p0, 0.3f);
-    int slot_of_handle = -1;
-    for (size_t i = 0; i < kBulletSlots; ++i) {
-        uint32_t first = 0;
-        std::memcpy(&first, buf.data() + i * kBulletSlotBytes, sizeof(first));
-        if (first == handle) {
-            slot_of_handle = static_cast<int>(i);
-            break;
-        }
-    }
-    Log("bullet pos: pool=%p handle=0x%08X (slot whose first dword equals it: %d) muzzle=(%.2f %.2f %.2f) aim=(%.3f %.3f %.3f): %zu float triple(s) within 0.3 m",
-        reinterpret_cast<void*>(pool), handle, slot_of_handle, p0[0], p0[1], p0[2], dir[0], dir[1], dir[2], hits.size());
+    const size_t slot = handle & 0xFFu;
     g_pos_probe = PosProbe{};
-    g_pos_probe.pool = static_cast<uintptr_t>(pool);
+    g_pos_probe.entry = static_cast<uintptr_t>(pool) + slot * kBulletSlotBytes;
+    g_pos_probe.handle = handle;
     std::memcpy(g_pos_probe.p0, p0, sizeof(g_pos_probe.p0));
-    for (size_t k = 0; k < hits.size() && k < 12; ++k) {
-        const size_t off = static_cast<size_t>(hits[k]);
-        float v[3];
-        std::memcpy(v, buf.data() + off, sizeof(v));
-        g_pos_probe.cands.push_back(off);
-        Log("bullet pos:   candidate %zu: slot %zu +0x%zX = (%.3f %.3f %.3f)", k, off / kBulletSlotBytes, off % kBulletSlotBytes, v[0], v[1], v[2]);
-    }
-    g_pos_probe.t0_ms = g_pos_probe.last_ms = GetTickCount64();
-    g_pos_probe.active = !g_pos_probe.cands.empty();
+    std::memcpy(g_pos_probe.aim, dir, sizeof(g_pos_probe.aim));
+    g_pos_probe.t0_ms = GetTickCount64();
+    g_pos_probe.active = true;
+    uint32_t first = 0;
+    SafeCopy(g_pos_probe.entry, &first, sizeof(first));
+    Log("bullet pos: handle 0x%08X -> slot %zu at %p (first dword 0x%08X) muzzle=(%.2f %.2f %.2f) aim=(%.3f %.3f %.3f)", handle, slot, reinterpret_cast<void*>(g_pos_probe.entry),
+        first, p0[0], p0[1], p0[2], dir[0], dir[1], dir[2]);
 }
 
 void PosProbeTick() {
     if (!g_pos_probe.active || GetCurrentThreadId() != g_game_tid.load(std::memory_order_relaxed)) return;
-    const uint64_t now = GetTickCount64();
-    if (now - g_pos_probe.last_ms < 80) return;
-    g_pos_probe.last_ms = now;
+    const uint64_t since = GetTickCount64() - g_pos_probe.t0_ms;
+    if (since < 250u * static_cast<uint64_t>(g_pos_probe.samples + 1)) return;
     ++g_pos_probe.samples;
-    for (size_t k = 0; k < g_pos_probe.cands.size(); ++k) {
+    const std::vector<uint8_t> buf = eldenring::handlescan::detail::readTolerant(g_reader, g_pos_probe.entry, kBulletSlotBytes);
+    uint32_t first = 0;
+    std::memcpy(&first, buf.data(), sizeof(first));
+    const std::vector<int> hits = eldenring::bow::findAlongAim(buf.data(), buf.size(), g_pos_probe.p0, g_pos_probe.aim, 0.3f, 80.f, 0.9f);
+    Log("bullet pos: t=%llu ms sample %d: slot first dword 0x%08X (handle 0x%08X), %zu triple(s) ahead along the aim", static_cast<unsigned long long>(since), g_pos_probe.samples, first,
+        g_pos_probe.handle, hits.size());
+    for (size_t k = 0; k < hits.size() && k < 12; ++k) {
         float v[3];
-        if (!SafeCopy(g_pos_probe.pool + g_pos_probe.cands[k], v, sizeof(v))) continue;
+        std::memcpy(v, buf.data() + hits[k], sizeof(v));
         const float dx = v[0] - g_pos_probe.p0[0], dy = v[1] - g_pos_probe.p0[1], dz = v[2] - g_pos_probe.p0[2];
-        Log("bullet pos: t=%llu ms candidate %zu = (%.3f %.3f %.3f) moved %.2f m", static_cast<unsigned long long>(now - g_pos_probe.t0_ms), k, v[0], v[1], v[2],
-            std::sqrt(dx * dx + dy * dy + dz * dz));
+        Log("bullet pos:   +0x%X = (%.3f %.3f %.3f) %.2f m from the muzzle", hits[k], v[0], v[1], v[2], std::sqrt(dx * dx + dy * dy + dz * dz));
     }
-    if (g_pos_probe.samples >= 14) g_pos_probe.active = false;
+    if (g_pos_probe.samples == 1) {
+        const std::vector<ScanHit> classes = scanForClasses(g_reader, g_img.base, g_pos_probe.entry, 0, kBulletSlotBytes, 64);
+        Log("bullet pos: %zu object(s) with a known class behind the pointers of the slot", classes.size());
+        for (const ScanHit& h : classes) Log("bullet pos:   %s", formatScanHit(h, 0).c_str());
+    }
+    if (g_pos_probe.samples >= 4) g_pos_probe.active = false;
 }
 
 // One shot of our own on the game thread: the player's real request (this session's or the file's) with the aim and the origin replaced. r9 is only

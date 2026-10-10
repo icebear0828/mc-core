@@ -112,3 +112,28 @@ TEST(EldenRingBowProbe, NonFiniteFloatsAreSkipped) {
     const float center[3] = {0.f, 0.f, 0.f};
     EXPECT_TRUE(findTriples(b.data(), b.size(), center, 1000.f).empty());
 }
+
+TEST(EldenRingBowProbe, AlongAimFindsAPointFartherOnTheAimAndSkipsEverythingElse) {
+    std::vector<uint8_t> b(0x200, 0);
+    auto put = [&](size_t off, float x, float y, float z) {
+        const float v[3] = {x, y, z};
+        std::memcpy(b.data() + off, v, 12);
+    };
+    const float p0[3] = {10.f, 5.f, 0.f}, aim[3] = {0.f, 0.f, 1.f};
+    put(0x10, 10.f, 5.f, 8.f);    // 8 m ahead on the aim: the bullet
+    put(0x40, 10.f, 5.f, 0.f);    // the spawn point itself: not moved
+    put(0x70, 18.f, 5.f, 0.5f);   // off the aim (almost perpendicular)
+    put(0xA0, 10.f, 5.f, 500.f);  // beyond the maximum distance
+    put(0xD0, 10.f, 5.f, -8.f);   // behind the muzzle
+    const std::vector<int> hits = findAlongAim(b.data(), b.size(), p0, aim, 0.3f, 80.f, 0.9f);
+    ASSERT_EQ(hits.size(), 1u);
+    EXPECT_EQ(hits[0], 0x10);
+}
+
+TEST(EldenRingBowProbe, AlongAimToleratesTheDropOfAFallingBolt) {
+    std::vector<uint8_t> b(0x40, 0);
+    const float v[3] = {10.f, 3.5f, 20.f}; // 20 m ahead, 1.5 m lower than the muzzle (gravity)
+    std::memcpy(b.data() + 0x8, v, 12);
+    const float p0[3] = {10.f, 5.f, 0.f}, aim[3] = {0.f, 0.f, 1.f};
+    EXPECT_EQ(findAlongAim(b.data(), b.size(), p0, aim, 0.3f, 80.f, 0.9f).size(), 1u);
+}

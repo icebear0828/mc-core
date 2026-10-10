@@ -92,4 +92,25 @@ inline std::vector<int> findTriples(const uint8_t* data, size_t size, const floa
     return out;
 }
 
+
+// Byte offsets (4-aligned) of float triples that lie ahead of `p0` along `aim`: finite, `min_d`..`max_d` metres from p0, and the angle between
+// (triple - p0) and `aim` has a cosine of at least `min_cos`. A moving bolt that has not dropped far matches; the spawn point (distance 0) and anything
+// behind or beside the muzzle does not.
+inline std::vector<int> findAlongAim(const uint8_t* data, size_t size, const float p0[3], const float aim[3], float min_d, float max_d, float min_cos) {
+    std::vector<int> out;
+    const float an = std::sqrt(aim[0] * aim[0] + aim[1] * aim[1] + aim[2] * aim[2]);
+    if (!(an > 1e-6f)) return out;
+    for (size_t at = 0; at + 12 <= size; at += 4) {
+        float v[3];
+        std::memcpy(v, data + at, 12);
+        if (!(std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]))) continue;
+        const float d[3] = {v[0] - p0[0], v[1] - p0[1], v[2] - p0[2]};
+        const float dist = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        if (dist < min_d || dist > max_d) continue;
+        const float cosine = (d[0] * aim[0] + d[1] * aim[1] + d[2] * aim[2]) / (dist * an);
+        if (cosine >= min_cos) out.push_back(static_cast<int>(at));
+    }
+    return out;
+}
+
 } // namespace eldenring::bow
