@@ -120,3 +120,54 @@ TEST(EldenRingChrScan, DumpsDwordsOfAnObjectAsOneHexLine) {
     EXPECT_EQ(line, "+0x20: 000100A1 00000001");
     EXPECT_EQ(dumpDwords(m, 0x7ff600010000ull, 0, 8), "+0x0: ??? ???"); // unreadable memory shows as ???
 }
+
+TEST(EldenRingChrScan, CollectsEveryDisplayEntityBehindEveryChrModel) {
+    // wolf layout from the 2026-10-10 scan: chr+0x50 -> CSChrModelIns -> +0x18 and +0x188 CSModelDispEntity; some wolves also have a second
+    // CSChrModelIns elsewhere. The offsets differ between entities, so the collector goes by class names.
+    Mem m;
+    addRttiClass(m, 0x2B00000, 0x3000000, 0x2B10000, ".?AVCSChrModelIns@CS@@");
+    addRttiClass(m, 0x2B20000, 0x3001000, 0x2B30000, ".?AVCSModelDispEntity@CS@@");
+    addRttiClass(m, 0x2B40000, 0x3002000, 0x2B50000, ".?AVEnemyCtrl@CS@@");
+    const uintptr_t chr = 0x7ff600001000ull, model1 = 0x7ff600010000ull, model2 = 0x7ff600020000ull;
+    const uintptr_t disp_a = 0x7ff600030000ull, disp_b = 0x7ff600040000ull, disp_c = 0x7ff600050000ull, ctrl = 0x7ff600060000ull;
+    for (uintptr_t r : {chr, model1, model2, disp_a, disp_b, disp_c, ctrl}) m.region(r, r == chr ? 0xA00 : 0x400);
+    m.put<uint64_t>(model1, kBase + 0x2B00000);
+    m.put<uint64_t>(model2, kBase + 0x2B00000);
+    m.put<uint64_t>(disp_a, kBase + 0x2B20000);
+    m.put<uint64_t>(disp_b, kBase + 0x2B20000);
+    m.put<uint64_t>(disp_c, kBase + 0x2B20000);
+    m.put<uint64_t>(ctrl, kBase + 0x2B40000);
+    m.put<uint64_t>(chr + 0x50, model1);
+    m.put<uint64_t>(chr + 0x58, ctrl);        // not a model
+    m.put<uint64_t>(chr + 0x640, model2);
+    m.put<uint64_t>(model1 + 0x18, disp_a);
+    m.put<uint64_t>(model1 + 0x188, disp_b);
+    m.put<uint64_t>(model2 + 0x18, disp_c);
+    m.put<uint64_t>(model1 + 0x120, model1);  // a pointer back to itself must not loop or double count
+    const auto flags = collectChrDispFlagAddresses(m, kBase, chr);
+    ASSERT_EQ(flags.size(), 3u);
+    EXPECT_EQ(flags[0], disp_a + 0x20);
+    EXPECT_EQ(flags[1], disp_b + 0x20);
+    EXPECT_EQ(flags[2], disp_c + 0x20);
+}
+
+TEST(EldenRingChrScan, NothingToCollectForAnObjectWithoutAModel) {
+    Mem m;
+    const uintptr_t chr = 0x7ff600001000ull;
+    m.region(chr, 0xA00);
+    EXPECT_TRUE(collectChrDispFlagAddresses(m, kBase, chr).empty());
+    EXPECT_TRUE(collectChrDispFlagAddresses(m, kBase, 0).empty());
+}
+
+TEST(EldenRingChrScan, TheDrawnBitIsTheLowestBitOnly) {
+    EXPECT_EQ(hideDrawnBit(0x000000A7u), 0x000000A6u);
+    EXPECT_EQ(hideDrawnBit(0x000100A1u), 0x000100A0u);
+    EXPECT_EQ(hideDrawnBit(0x000000A6u), 0x000000A6u); // already hidden: nothing to write
+    EXPECT_TRUE(needsHiding(0x000000A7u));
+    EXPECT_FALSE(needsHiding(0x000000A6u));
+}
+
+TEST(EldenRingChrScan, SummonsAreTheTeamTheWolvesWereSeenWith) {
+    EXPECT_EQ(summon::kTeam, 47);
+    EXPECT_EQ(summon::kDispFlags1, 0x20u); // same word as the player's parts (eldenring_model.hpp layout::kDispFlags1)
+}

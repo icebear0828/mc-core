@@ -320,6 +320,7 @@ using RenderCamCopyFn = void(__fastcall*)(void* self);
 RenderCamCopyFn g_rcc_orig = nullptr;
 
 void UpdateNativeModel(uintptr_t player, bool hide); // defined with the overlay code below
+void HideSummonModels();                             // defined after WriteBytesSafe
 
 // (a function of its own: the one with __try cannot also hold an object with a destructor)
 void ReadHurt(float& hurt, float& side) {
@@ -331,6 +332,7 @@ void ReadHurt(float& hurt, float& side) {
 void __fastcall RenderCamCopyDetour(void* self) {
     // Hide the native model right before the frame is drawn: the game may turn parts back on during a hit reaction, and the
     // Present-time write alone would let that frame show them.
+    HideSummonModels();
     if (g_native_hide_wanted.load(std::memory_order_relaxed)) {
         const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
         uint64_t player = 0;
@@ -650,6 +652,28 @@ bool WriteBytesSafe(uintptr_t address, const void* src, size_t n) {
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
+    }
+}
+
+// Summons (team 47) are drawn by us in the end: their own model is hidden by clearing the "drawn" bit of every CSModelDispEntity they own, every
+// frame before the draw, the way the player's parts are hidden. mc_er_summonhide.txt turns it on. Everything is looked up afresh each frame (no
+// cached pointers: a summon that disappears meanwhile is simply not enumerated any more).
+std::atomic<bool> g_summon_hide{false};
+
+void HideSummonModels() {
+    if (!g_summon_hide.load(std::memory_order_relaxed)) return;
+    std::vector<EnemyInfo> list;
+    if (!enumerateEnemies(g_reader, g_img.base, list, 4000)) return;
+    static unsigned logged = 0;
+    for (const EnemyInfo& e : list) {
+        if (e.team != eldenring::live::summon::kTeam) continue;
+        for (const uintptr_t at : collectChrDispFlagAddresses(g_reader, g_img.base, e.chr)) {
+            uint32_t flags = 0;
+            if (!SafeCopy(at, &flags, sizeof(flags)) || !needsHiding(flags)) continue;
+            const uint32_t hidden = hideDrawnBit(flags);
+            const bool ok = WriteBytesSafe(at, &hidden, sizeof(hidden));
+            if (++logged <= 12) Log("summon hide: chr=%p npc=%d flags at %p 0x%X -> 0x%X (%s)", reinterpret_cast<void*>(e.chr), e.npc_id, reinterpret_cast<void*>(at), flags, hidden, ok ? "ok" : "write failed");
+        }
     }
 }
 
@@ -2542,6 +2566,8 @@ void SetupDamage() {
         } else {
             Log("first person: render camera copy hooked at %p (RVA 0x%llX); first_person=1 or F10 turns the experiment on", reinterpret_cast<void*>(rcc),
                 static_cast<unsigned long long>(rcc - g_img.base));
+            g_summon_hide.store(FileExists(g_game_dir + "mc_er_summonhide.txt"));
+            if (g_summon_hide.load()) Log("summon hide: on (mc_er_summonhide.txt): the drawn bit of every team 47 model is cleared before each frame");
         }
     }
     {

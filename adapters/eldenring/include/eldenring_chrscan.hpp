@@ -65,6 +65,41 @@ inline bool looksLikeModelClass(const std::string& cls) {
            cls.find("Render") != std::string::npos;
 }
 
+namespace summon {
+inline constexpr uint8_t kTeam = 47;                  // teamType of the spirit-ash summons seen so far (wolves, npc 4070)
+inline constexpr uintptr_t kDispFlags1 = 0x20;        // CSModelDispEntity: the same word the player's parts use (eldenring_model.hpp)
+inline constexpr uint32_t kDrawnBit = 1u;             // set while the part is drawn (wolf 0xA7, player part 0x100A1)
+inline constexpr uintptr_t kChrScanEnd = 0xA00;       // the wolves' CSChrModelIns sit at chr+0x50 and chr+0x640
+inline constexpr uintptr_t kModelScanEnd = 0x300;     // their CSModelDispEntity at model+0x18 and +0x188
+} // namespace summon
+
+inline uint32_t hideDrawnBit(uint32_t flags) { return flags & ~summon::kDrawnBit; }
+inline bool needsHiding(uint32_t flags) { return (flags & summon::kDrawnBit) != 0; }
+
+// The addresses of the disp_flags1 word of every CSModelDispEntity behind every CSChrModelIns of a character (a wolf has one or two models
+// with one or two entities each; the offsets differ between entities, so this goes by RTTI class name). Reading only.
+inline std::vector<uintptr_t> collectChrDispFlagAddresses(const IMemoryReader& reader, uintptr_t image_base, uintptr_t chr) {
+    std::vector<uintptr_t> out;
+    if (chr == 0) return out;
+    std::vector<uintptr_t> models;
+    for (const ScanHit& h : scanForClasses(reader, image_base, chr, 0, summon::kChrScanEnd, 128)) {
+        if (h.cls.find("CSChrModelIns") == std::string::npos) continue;
+        bool seen = false;
+        for (uintptr_t m : models) seen = seen || m == h.object;
+        if (!seen) models.push_back(h.object);
+    }
+    for (uintptr_t model : models) {
+        for (const ScanHit& h : scanForClasses(reader, image_base, model, 0, summon::kModelScanEnd, 64)) {
+            if (h.cls.find("CSModelDispEntity") == std::string::npos) continue;
+            const uintptr_t at = h.object + summon::kDispFlags1;
+            bool seen = false;
+            for (uintptr_t a : out) seen = seen || a == at;
+            if (!seen) out.push_back(at);
+        }
+    }
+    return out;
+}
+
 inline std::string formatScanHit(const ScanHit& h, int depth) {
     char buf[260];
     std::snprintf(buf, sizeof(buf), "chrscan: %*s+0x%llX -> %p %s", depth * 2, "", static_cast<unsigned long long>(h.offset), reinterpret_cast<void*>(h.object), h.cls.c_str());
