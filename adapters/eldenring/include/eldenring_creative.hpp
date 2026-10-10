@@ -55,6 +55,10 @@ inline bool shouldSkipPlayerKill(bool fall_protect, bool mc_mode, bool blocks_or
 // the fall damage (0x14041131F multiplies it by 100) and compare it with thresholds, so 0 means no damage and no lethal fall.
 inline bool shouldZeroFall(bool creative_nofall, bool mc_mode, bool owner_is_player) { return creative_nofall && mc_mode && owner_is_player; }
 
+// Creative mode cannot be killed while it has hit points: the kill wrapper (0x1403EDA70) is skipped for the player as a whole, whoever calls
+// it (the animation event "die" after a long time in the air, the map kill box, scripts). Once the hit points are 0 the death goes through.
+inline bool shouldBlockPlayerKill(GameMode mode, bool mc_mode, int hp) { return mode == GameMode::Creative && mc_mode && hp > 0; }
+
 inline bool shouldLogSpEffect(int sp_effect, uintptr_t caller_rva, bool owner_is_player) {
     return owner_is_player && sp_effect == kLandingSkipSpEffect && caller_rva == kLandingSpEffectReturnRva;
 }

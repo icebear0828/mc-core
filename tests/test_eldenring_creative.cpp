@@ -112,3 +112,12 @@ TEST(EldenRingCreative, ModePolicyMatchesTheAgreedDifferences) {
     EXPECT_TRUE(consumesItems(GameMode::Survival));
     EXPECT_TRUE(showsVitals(GameMode::Survival));
 }
+
+TEST(EldenRingCreative, CreativeModeBlocksTheWholeKillWrapperWhileTheHitPointsLast) {
+    // 2026-10-10 log: after 14.6 s in the air the animation event handler (0x140428DE0, event 12) called the kill wrapper with hp > 0. Skipping
+    // only KillChr left the rest of the death processing running (death effects without dying), so creative mode skips the whole wrapper.
+    EXPECT_TRUE(shouldBlockPlayerKill(GameMode::Creative, true, 316));
+    EXPECT_FALSE(shouldBlockPlayerKill(GameMode::Creative, true, 0));  // the hit points are gone: a real death must go through
+    EXPECT_FALSE(shouldBlockPlayerKill(GameMode::Creative, false, 316)); // MC mode off: vanilla
+    EXPECT_FALSE(shouldBlockPlayerKill(GameMode::Survival, true, 316)); // survival keeps the old behaviour
+}

@@ -476,6 +476,8 @@ HasSpEffectFn g_cr_sp_orig = nullptr;
 std::mutex g_cr_mutex;
 creative::FallLogState g_cr_fall_state;
 
+std::atomic<bool> g_cr_log{false}; // mc_er_creativelog.txt: log-only probes
+
 uintptr_t PlayerChrPtr(); // defined below
 
 uintptr_t ModuleOwner(void* fall_module) {
@@ -491,7 +493,15 @@ bool CreativeShouldLogFall(float metres, uintptr_t caller_rva) {
 void __fastcall CreativeKillDetour(void* chr) {
     const uintptr_t player = PlayerChrPtr();
     if (creative::isPlayer(reinterpret_cast<uintptr_t>(chr), player)) {
-        Log("%s", creative::formatKill(reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base, true).c_str());
+        const bool block = creative::shouldBlockPlayerKill(CurrentGameMode(), g_mc_mode.load(std::memory_order_relaxed), PlayerDead() ? 0 : 1);
+        static std::atomic<unsigned> logged{0};
+        if (block || g_cr_log.load(std::memory_order_relaxed)) {
+            if (++logged <= 30) {
+                Log("%s%s", creative::formatKill(reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base, true).c_str(),
+                    block ? ": SKIPPED (creative mode, the player still has hit points)" : "");
+            }
+        }
+        if (block) return;
     }
     g_cr_kill_orig(chr);
 }
@@ -501,7 +511,6 @@ void __fastcall CreativeLandingDetour(void* fall_module) {
     g_cr_land_orig(fall_module);
 }
 
-std::atomic<bool> g_cr_log{false};    // mc_er_creativelog.txt: log-only probes
 
 float __fastcall CreativeFallDetour(void* fall_module) {
     const float metres = g_cr_fall_orig(fall_module);
@@ -2382,7 +2391,8 @@ void SetupCreativeProbes() {
         return;
     }
     for (const Probe& p : probes) {
-        if (!g_cr_log.load() && p.orig != reinterpret_cast<void**>(&g_cr_fall_orig)) continue; // mc_er_nofall.txt alone installs only the fall-height hook
+        const bool acts = p.orig == reinterpret_cast<void**>(&g_cr_fall_orig) || p.orig == reinterpret_cast<void**>(&g_cr_kill_orig);
+        if (!g_cr_log.load() && !acts) continue; // without mc_er_creativelog.txt only the two hooks that act in creative mode are installed
         uintptr_t target = 0;
         if (!LocateByPrefix(g_img, p.sig, target)) {
             Log("creative: %s signature not unique, probe not installed", p.name);
@@ -2390,7 +2400,8 @@ void SetupCreativeProbes() {
             Log("creative: hooking %s at %p failed", p.name, reinterpret_cast<void*>(target));
         } else {
             Log("creative: %s probe at %p (RVA 0x%llX)%s", p.name, reinterpret_cast<void*>(target), static_cast<unsigned long long>(target - g_img.base),
-                p.orig == reinterpret_cast<void**>(&g_cr_fall_orig) ? ", fall height is 0 for the player in creative mode (F5)" : ", log-only");
+                p.orig == reinterpret_cast<void**>(&g_cr_fall_orig) ? ", fall height is 0 for the player in creative mode (F5)"
+                : p.orig == reinterpret_cast<void**>(&g_cr_kill_orig) ? ", the player cannot be killed in creative mode while it has hit points (F5)" : ", log-only");
         }
     }
 }
