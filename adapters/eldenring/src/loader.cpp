@@ -2911,6 +2911,61 @@ void PosProbeStart(uint64_t manager, uint32_t handle, const float p0[3], const f
         first, p0[0], p0[1], p0[2], dir[0], dir[1], dir[2]);
 }
 
+// ---- heap scan for CSBulletIns objects (read-only, background thread, mc_er_bulletscan.txt) -------------------------------------------------------------
+// [mgr+0x0] is one CSBulletIns that follows the bullet updated last, not one object per bullet (REVERSE 35.8). To find a CSBulletIns per bullet the private
+// memory of the process is searched for its vtable address. The scan reads memory page by page under SEH and gives up after a time budget; it never runs on the
+// game thread.
+constexpr uint32_t kBulletInsVtableRva = 0x2A28EC0; // CSBulletIns::vftable (RTTI checked, REVERSE 35.0)
+
+size_t ScanRegionForQword(uintptr_t base, size_t size, uint64_t value, uintptr_t* out, size_t out_max, size_t out_count) {
+    __try {
+        for (size_t at = 0; at + 8 <= size; at += 8) {
+            if (*reinterpret_cast<const uint64_t*>(base + at) == value && out_count < out_max) out[out_count++] = base + at;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return out_count;
+}
+
+DWORD WINAPI BulletHeapScanThread(LPVOID param) {
+    const uint64_t shot_id = reinterpret_cast<uintptr_t>(param);
+    const uint64_t vtable = g_img.base + kBulletInsVtableRva;
+    uintptr_t hits[64];
+    size_t count = 0;
+    const uint64_t t0 = GetTickCount64();
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    uintptr_t addr = reinterpret_cast<uintptr_t>(si.lpMinimumApplicationAddress);
+    const uintptr_t top = reinterpret_cast<uintptr_t>(si.lpMaximumApplicationAddress);
+    size_t scanned_mb = 0;
+    bool timed_out = false;
+    MEMORY_BASIC_INFORMATION mbi;
+    while (addr < top && count < 64) {
+        if (GetTickCount64() - t0 > 4000) {
+            timed_out = true;
+            break;
+        }
+        if (VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) == 0) break;
+        const uintptr_t region = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+        const bool readable = mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE && (mbi.Protect & (PAGE_READWRITE | PAGE_READONLY | PAGE_WRITECOPY)) != 0 &&
+                              (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) == 0;
+        if (readable && mbi.RegionSize <= (512u << 20)) {
+            count = ScanRegionForQword(region, mbi.RegionSize, vtable, hits, 64, count);
+            scanned_mb += mbi.RegionSize >> 20;
+        }
+        addr = region + mbi.RegionSize;
+    }
+    Log("bullet scan #%llu: %zu CSBulletIns object(s) (vtable %p), %zu MB scanned in %llu ms%s", static_cast<unsigned long long>(shot_id), count, reinterpret_cast<void*>(vtable), scanned_mb,
+        static_cast<unsigned long long>(GetTickCount64() - t0), timed_out ? " (time budget reached)" : "");
+    for (size_t i = 0; i < count; ++i) {
+        float body[12] = {};
+        SafeCopy(hits[i], body, sizeof(body));
+        Log("bullet scan #%llu:   object %p: position (%.3f %.3f %.3f %.3f) quaternion (%.3f %.3f %.3f %.3f)", static_cast<unsigned long long>(shot_id), reinterpret_cast<void*>(hits[i]),
+            body[4], body[5], body[6], body[7], body[8], body[9], body[10], body[11]);
+    }
+    return 0;
+}
+
 // The classes and the first bytes of the objects the moving triple was found in, so that the structure (one record per bullet? an array?) can be read.
 void PosProbeDumpStructure(const char* when) {
     auto class_of = [](uintptr_t object) -> std::string {
@@ -3005,6 +3060,11 @@ void PosProbeTick() {
             if (logged > 24) break;
         }
         Log("bullet pos: sample %d: %d mover(s) logged", g_pos_probe.samples, std::min(logged, 24));
+    }
+    if (g_pos_probe.samples == 2 && FileExists(g_game_dir + "mc_er_bulletscan.txt")) {
+        static uint64_t s_scan_id = 0;
+        HANDLE th = CreateThread(nullptr, 0, BulletHeapScanThread, reinterpret_cast<LPVOID>(static_cast<uintptr_t>(++s_scan_id)), 0, nullptr);
+        if (th != nullptr) CloseHandle(th);
     }
     if (g_pos_probe.samples == 4) PosProbeDumpStructure("sample 4");
     if (g_pos_probe.samples >= 4) g_pos_probe.active = false;
