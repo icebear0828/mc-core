@@ -140,3 +140,12 @@ TEST(EldenRingCreative, EventLineHasTypeConditionFlagBytesAndCaller) {
     EXPECT_NE(line.find("AA BB CC"), std::string::npos);
     EXPECT_NE(line.find("0x428EF0"), std::string::npos);
 }
+
+TEST(EldenRingCreative, StackLineListsReturnAddressesAsRvas) {
+    const uintptr_t base = 0x7FF600000000ull;
+    const uintptr_t frames[3] = {base + 0x425BEF, base + 0x3F8543, 0x1234}; // the last one is outside the image
+    const std::string line = formatStack(frames, 3, base, 0x4000000);
+    EXPECT_NE(line.find("0x425BEF"), std::string::npos);
+    EXPECT_NE(line.find("0x3F8543"), std::string::npos);
+    EXPECT_NE(line.find("?"), std::string::npos); // addresses outside the image are not RVAs
+}

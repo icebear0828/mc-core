@@ -536,7 +536,7 @@ uint64_t __fastcall CreativeEventDetour(void* self, void* event) {
     uint32_t type = 0;
     if (SafeCopy(reinterpret_cast<uintptr_t>(self) + 0x18, &chr, sizeof(chr)) && SafeCopy(reinterpret_cast<uintptr_t>(event) + 8, &payload, sizeof(payload)) &&
         payload != 0 && SafeCopy(static_cast<uintptr_t>(payload), &type, sizeof(type)) && creative::isDeathEventType(type) &&
-        creative::isPlayer(static_cast<uintptr_t>(chr), PlayerChrPtr())) {
+        creative::isPlayer(static_cast<uintptr_t>(chr), PlayerChrPtr()) && !PlayerDead()) { // a real death repeats every frame: only the events that arrive with hit points left
         static std::atomic<unsigned> logged{0};
         if (++logged <= 40) {
             unsigned char raw[16] = {};
@@ -546,6 +546,11 @@ uint64_t __fastcall CreativeEventDetour(void* self, void* event) {
             SafeCopy(static_cast<uintptr_t>(payload) + 0xE, &cond, sizeof(cond));
             SafeCopy(reinterpret_cast<uintptr_t>(event) + 0x18, &flag, sizeof(flag));
             Log("%s", creative::formatChrEvent(type, cond, flag != 0, raw, reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base).c_str());
+            void* frames[10] = {};
+            const USHORT got = RtlCaptureStackBackTrace(1, 10, frames, nullptr);
+            uintptr_t addrs[10] = {};
+            for (USHORT i = 0; i < got; ++i) addrs[i] = reinterpret_cast<uintptr_t>(frames[i]);
+            Log("%s", creative::formatStack(addrs, got, g_img.base, g_img.image_size).c_str());
         }
     }
     return g_cr_event_orig(self, event);

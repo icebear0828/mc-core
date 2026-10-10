@@ -127,6 +127,21 @@ inline std::string formatChrEvent(uint32_t type, unsigned required_sp_effect, bo
     return buf;
 }
 
+// A call stack as RVAs of the game image ("?" for an address outside it): who raised an event.
+inline std::string formatStack(const uintptr_t* frames, size_t n, uintptr_t image_base, uintptr_t image_size) {
+    std::string out = "creative:   stack:";
+    for (size_t i = 0; i < n; ++i) {
+        char b[32];
+        if (frames[i] >= image_base && frames[i] - image_base < image_size) {
+            std::snprintf(b, sizeof(b), " 0x%llX", static_cast<unsigned long long>(frames[i] - image_base));
+        } else {
+            std::snprintf(b, sizeof(b), " ?");
+        }
+        out += b;
+    }
+    return out;
+}
+
 inline std::string formatSpEffect(bool answer) {
     char buf[96];
     std::snprintf(buf, sizeof(buf), "creative: landing asked for SpEffect 0x8F, the game returned %d", answer ? 1 : 0);
