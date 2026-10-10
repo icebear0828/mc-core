@@ -180,3 +180,7 @@ def test_existing_package_specs_valid():
     assert sekiro_spec["game_id"] == "sekiro"
     assert sekiro_spec["dll_name"] == "dinput8.dll"
 
+    wukong_spec = load_spec(specs_dir / "wukong.json")
+    assert wukong_spec["game_id"] == "wukong"
+    assert wukong_spec["dll_name"] == "wukong_adapter.dll"
+

@@ -1,0 +1,14 @@
+{
+  "game_id": "wukong",
+  "display_name": "Black Myth Wukong Minecraft Mod",
+  "target_exe": "b1-Win64-Shipping.exe",
+  "dll_name": "wukong_adapter.dll",
+  "me2_dll_name": "wukong_adapter.dll",
+  "required_files": [],
+  "default_configs": {},
+  "asset_dir": "mods/mc_adapter",
+  "readme_notes": [
+    "Inject wukong_adapter.dll via UE4SS or a compatible DLL injector.",
+    "Place configuration and textures under mods/mc_adapter/."
+  ]
+}

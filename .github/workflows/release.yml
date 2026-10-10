@@ -1,0 +1,76 @@
+name: Build and Release Mods
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag (e.g. v0.1.0)'
+        required: false
+        default: 'v0.1.0-preview'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Configure CMake
+        run: cmake -B build-win -S . -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+
+      - name: Build Adapters (Release)
+        run: |
+          cmake --build build-win --config Release --target eldenring_adapter
+          cmake --build build-win --config Release --target sekiro_adapter
+          cmake --build build-win --config Release --target wukong_adapter
+
+      - name: Package Mods
+        shell: pwsh
+        run: |
+          $raw_tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "${{ inputs.tag_name }}" }
+          $version = $raw_tag.TrimStart('v')
+          if (-not $version) { $version = "0.1.0" }
+          Write-Host "Packaging version: $version"
+
+          uv run python tools/package_mod.py --game eldenring --build-dir build-win/bin/eldenring --version $version --channel nexus --out-dir dist
+          uv run python tools/package_mod.py --game sekiro --build-dir build-win/bin/Release --version $version --channel nexus --out-dir dist
+          uv run python tools/package_mod.py --game wukong --build-dir build-win/bin/Release --version $version --channel nexus --out-dir dist
+
+      - name: Generate Aggregated Checksums
+        shell: pwsh
+        run: |
+          Get-FileHash dist/*.zip -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $(Split-Path $_.Path -Leaf)" } | Out-File -FilePath dist/SHA256SUMS_ALL.txt -Encoding utf8
+          Get-Content dist/SHA256SUMS_ALL.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "${{ inputs.tag_name }}" }
+          if (-not $tag) { $tag = "v0.1.0-preview" }
+          
+          gh release create $tag dist/*.zip dist/SHA256SUMS_ALL.txt `
+            --title "mc-core $tag - Game Adapters Release" `
+            --notes "Automated release build of mc-core adapters (Elden Ring, Sekiro, Black Myth: Wukong).`n`n**Offline / EULA Compliant nexus distribution packages.**`nRun setup_assets.bat inside the zip to generate full high-res textures and sounds locally."
