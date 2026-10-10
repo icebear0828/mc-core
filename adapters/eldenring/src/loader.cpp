@@ -1874,6 +1874,7 @@ void McJumpStep() {
 std::atomic<bool> g_flying{false};
 std::atomic<float> g_fly_h_speed{flight::kHorizontalSpeed};
 std::atomic<float> g_fly_v_speed{flight::kVerticalSpeed};
+std::atomic<bool> g_fly_sync{true}; // fly_sync=0: do not ask the engine to move the Havok proxies (diagnostic)
 
 void FlightStep() {
     static flight::DoubleTap tap;
@@ -1920,9 +1921,17 @@ void FlightStep() {
     // Written every frame, also when standing still in the air: the game's gravity must not pull the player down between frames.
     WriteBytesSafe(module + layout::kPhysicsPosition, pos, sizeof(pos));
     WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, pos, sizeof(pos));
+    // The Havok character proxies are what the game really moves; +0x91 asks the engine to copy this position into them (the game's own
+    // set-position does the same) and the engine clears it again. Without it they pull the player back to where they were.
+    uint8_t sync_before = 0;
+    SafeCopy(module + layout::kPhysicsProxySyncRequest, &sync_before, 1);
+    if (g_fly_sync.load(std::memory_order_relaxed)) {
+        const uint8_t one = 1;
+        WriteBytesSafe(module + layout::kPhysicsProxySyncRequest, &one, 1);
+    }
     if (now_ms - last_log_ms >= 1000) {
         last_log_ms = now_ms;
-        Log("flight: pos=(%.2f %.2f %.2f) keys[%d%d%d%d up=%d down=%d] dt=%.4f", pos[0], pos[1], pos[2], keys.forward ? 1 : 0, keys.back ? 1 : 0,
+        Log("flight: pos=(%.2f %.2f %.2f) sync91_before=%u keys[%d%d%d%d up=%d down=%d] dt=%.4f", pos[0], pos[1], pos[2], static_cast<unsigned>(sync_before), keys.forward ? 1 : 0, keys.back ? 1 : 0,
             keys.left ? 1 : 0, keys.right ? 1 : 0, keys.up ? 1 : 0, keys.down ? 1 : 0, dt);
     }
 }
@@ -2736,6 +2745,7 @@ void SetupOverlay() {
                 else if (key == "fall_reset") g_fall_reset.store(value != 0.f);
                 else if (key == "fall_hold") g_fall_hold.store(std::clamp(value, 0.f, 2.8f));
                 else if (key == "fall_protect") g_fall_protect.store(value != 0.f);
+                else if (key == "fly_sync") g_fly_sync.store(value != 0.f);
                 else if (key == "fly_speed") g_fly_h_speed.store(std::clamp(value, 1.f, 40.f));
                 else if (key == "fly_vspeed") g_fly_v_speed.store(std::clamp(value, 1.f, 40.f));
                 else if (key == "mc_jump") g_mc_jump.store(value != 0.f);

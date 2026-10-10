@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "eldenring_flight.hpp"
+#include "eldenring_world.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -112,4 +113,10 @@ TEST(EldenRingFlight, TheGameDoesNotSeeMovementJumpOrCrouchKeys) {
     for (int dik : {0x11, 0x1E, 0x1F, 0x20, 0x39, 0x2A}) {
         EXPECT_NE(std::find(std::begin(kHiddenKeys), std::end(kHiddenKeys), dik), std::end(kHiddenKeys)) << dik;
     }
+}
+
+TEST(EldenRingFlight, ThePhysicsPositionIsSyncedToTheProxiesThroughTheRequestByte) {
+    // 0x14045C910 reads [phys+0x91] and clears it after copying [phys+0x70] into the Havok proxies.
+    EXPECT_EQ(eldenring::live::layout::kPhysicsProxySyncRequest, 0x91u);
+    EXPECT_NE(eldenring::live::layout::kPhysicsProxySyncRequest, eldenring::live::layout::kStandingOnGroundInPhysics); // not the ground flag
 }

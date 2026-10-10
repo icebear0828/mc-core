@@ -33,6 +33,10 @@ inline constexpr uint32_t kPhysicsModuleVtableRva = 0x2A3C890; // A
 inline constexpr uintptr_t kPhysicsOrientation = 0x50;   // A: float x,y,z,w, unit length
 inline constexpr uintptr_t kStandingOnGroundInPhysics = 0x92; // B+ (reverser's table 2026-10-09): 1 on the ground, 0 from takeoff to touchdown. NOT +0x1D0: that is a 1-2 frame takeoff pulse
 inline constexpr uintptr_t kPhysicsPosition = 0x70;       // A: float x,y,z; the only basis for relative positions
+// B (own disassembly, REVERSE 31): 0x14045C910 tests this byte; when set it copies [+0x70] into the two Havok character proxies ([+0x98], [+0xA0])
+// and clears it. The game's own set-position (0x14045C8BE) writes the word [+0x90] = 0x101 (this byte is the high half), +0x1DE = 1, +0x70 and +0x80.
+// Writing only +0x70 leaves the proxies where they were, and they pull the player back (observed: flight snapped back every few seconds).
+inline constexpr uintptr_t kPhysicsProxySyncRequest = 0x91;
 
 // c1000 map anchors (sites of grace and the like). Filter by npc_id, never by "team 0".
 inline constexpr int32_t kGraceNpcId = 1000;
