@@ -59,6 +59,9 @@ inline bool shouldZeroFall(bool creative_nofall, bool mc_mode, bool owner_is_pla
 // it (the animation event "die" after a long time in the air, the map kill box, scripts). Once the hit points are 0 the death goes through.
 inline bool shouldBlockPlayerKill(GameMode mode, bool mc_mode, int hp) { return mode == GameMode::Creative && mc_mode && hp > 0; }
 
+// "The fall lasted too long" (FallModule+0x18 above a threshold) is decided by 0x14044E3A0 and starts the fall death. Creative mode answers no.
+inline bool shouldDenyLongFall(GameMode mode, bool mc_mode, bool owner_is_player) { return mode == GameMode::Creative && mc_mode && owner_is_player; }
+
 inline bool shouldLogSpEffect(int sp_effect, uintptr_t caller_rva, bool owner_is_player) {
     return owner_is_player && sp_effect == kLandingSkipSpEffect && caller_rva == kLandingSpEffectReturnRva;
 }

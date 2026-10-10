@@ -66,6 +66,7 @@ TEST(EldenRingCreative, ProbeSignaturesParseToTheDocumentedLengths) {
     EXPECT_EQ(Signature::parse(live::sigs::kFallHeight)->size(), 38u);
     EXPECT_EQ(Signature::parse(live::sigs::kHasSpEffect)->size(), 70u);
     EXPECT_EQ(Signature::parse(live::sigs::kChrEventDispatch)->size(), 45u);
+    EXPECT_EQ(Signature::parse(live::sigs::kFallTimeExceeded)->size(), 28u);
 }
 
 TEST(EldenRingCreative, FallProtectionNeverSkipsTheKillOfAPlayerWhoAlreadyHasNoHitPoints) {
@@ -148,4 +149,13 @@ TEST(EldenRingCreative, StackLineListsReturnAddressesAsRvas) {
     EXPECT_NE(line.find("0x425BEF"), std::string::npos);
     EXPECT_NE(line.find("0x3F8543"), std::string::npos);
     EXPECT_NE(line.find("?"), std::string::npos); // addresses outside the image are not RVAs
+}
+
+TEST(EldenRingCreative, CreativeModeNeverLetsTheGameDecideThePlayerFellTooLong) {
+    // 2026-10-10 log: fall timer 12.02 s -> die event 12 (the timer is FallModule+0x18; 0x14044E3A0 compares it with a threshold and has one
+    // caller, inside the fall damage evaluator). It is not the height: the player was 3.7 m up.
+    EXPECT_TRUE(shouldDenyLongFall(GameMode::Creative, true, true));
+    EXPECT_FALSE(shouldDenyLongFall(GameMode::Creative, true, false)); // enemies keep their rules
+    EXPECT_FALSE(shouldDenyLongFall(GameMode::Creative, false, true)); // MC mode off
+    EXPECT_FALSE(shouldDenyLongFall(GameMode::Survival, true, true));
 }

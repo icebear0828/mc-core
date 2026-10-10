@@ -473,6 +473,8 @@ KillWrapperFn g_cr_kill_orig = nullptr;
 HardLandingFn g_cr_land_orig = nullptr;
 FallHeightFn g_cr_fall_orig = nullptr;
 HasSpEffectFn g_cr_sp_orig = nullptr;
+using FallTimeExceededFn = bool(__fastcall*)(void* fall_module, float threshold);
+FallTimeExceededFn g_cr_exceeded_orig = nullptr;
 using ChrEventFn = uint64_t(__fastcall*)(void* self, void* event);
 ChrEventFn g_cr_event_orig = nullptr;
 std::mutex g_cr_mutex;
@@ -528,6 +530,17 @@ float __fastcall CreativeFallDetour(void* fall_module) {
         Log("%s", (zero ? creative::formatFallZeroed(caller, metres) : creative::formatFall(caller, metres)).c_str());
     }
     return zero ? 0.f : metres;
+}
+
+// 0x14044E3A0: "was the player in the air longer than the threshold" (FallModule+0x18). The game asks it inside the fall damage evaluator and a
+// yes starts the fall death after ~12 s in the air; flying keeps the player in the air state, so in creative mode the answer for the player is no.
+bool __fastcall CreativeFallTimeExceededDetour(void* fall_module, float threshold) {
+    const bool real = g_cr_exceeded_orig(fall_module, threshold);
+    if (!real) return false;
+    if (!creative::shouldDenyLongFall(CurrentGameMode(), g_mc_mode.load(std::memory_order_relaxed), creative::isPlayer(ModuleOwner(fall_module), PlayerChrPtr()))) return real;
+    static std::atomic<unsigned> logged{0};
+    if (++logged <= 10) Log("creative: the fall lasted %.2f s (threshold %.2f s): answered no for the player", FallTimer(PlayerChrPtr()), static_cast<double>(threshold));
+    return false;
 }
 
 // 0x140428DE0 (log only): the character event dispatcher. self+0x18 is the character, event+8 the payload (type at +0, required SpEffect word at +0xE),
@@ -2416,6 +2429,7 @@ void SetupCreativeProbes() {
         {"hard landing", sigs::kHardLanding, reinterpret_cast<void*>(&CreativeLandingDetour), reinterpret_cast<void**>(&g_cr_land_orig)},
         {"fall height", sigs::kFallHeight, reinterpret_cast<void*>(&CreativeFallDetour), reinterpret_cast<void**>(&g_cr_fall_orig)},
         {"sp effect query", sigs::kHasSpEffect, reinterpret_cast<void*>(&CreativeSpEffectDetour), reinterpret_cast<void**>(&g_cr_sp_orig)},
+        {"fall time exceeded", sigs::kFallTimeExceeded, reinterpret_cast<void*>(&CreativeFallTimeExceededDetour), reinterpret_cast<void**>(&g_cr_exceeded_orig)},
         {"chr event dispatch", sigs::kChrEventDispatch, reinterpret_cast<void*>(&CreativeEventDetour), reinterpret_cast<void**>(&g_cr_event_orig)},
     };
     if (!EnsureMinHook()) {
@@ -2423,7 +2437,7 @@ void SetupCreativeProbes() {
         return;
     }
     for (const Probe& p : probes) {
-        const bool acts = p.orig == reinterpret_cast<void**>(&g_cr_fall_orig) || p.orig == reinterpret_cast<void**>(&g_cr_kill_orig);
+        const bool acts = p.orig == reinterpret_cast<void**>(&g_cr_fall_orig) || p.orig == reinterpret_cast<void**>(&g_cr_kill_orig) || p.orig == reinterpret_cast<void**>(&g_cr_exceeded_orig);
         if (!g_cr_log.load() && !acts) continue; // without mc_er_creativelog.txt only the two hooks that act in creative mode are installed
         uintptr_t target = 0;
         if (!LocateByPrefix(g_img, p.sig, target)) {
@@ -2433,7 +2447,8 @@ void SetupCreativeProbes() {
         } else {
             Log("creative: %s probe at %p (RVA 0x%llX)%s", p.name, reinterpret_cast<void*>(target), static_cast<unsigned long long>(target - g_img.base),
                 p.orig == reinterpret_cast<void**>(&g_cr_fall_orig) ? ", fall height is 0 for the player in creative mode (F5)"
-                : p.orig == reinterpret_cast<void**>(&g_cr_kill_orig) ? ", the player cannot be killed in creative mode while it has hit points (F5)" : ", log-only");
+                : p.orig == reinterpret_cast<void**>(&g_cr_kill_orig) ? ", the player cannot be killed in creative mode while it has hit points (F5)"
+                : p.orig == reinterpret_cast<void**>(&g_cr_exceeded_orig) ? ", the player never 'fell too long' in creative mode (F5)" : ", log-only");
         }
     }
 }

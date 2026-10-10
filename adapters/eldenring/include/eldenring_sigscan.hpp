@@ -155,6 +155,9 @@ inline constexpr const char* kHasSpEffect =
 // 48/126 clean up or tear down. 45 bytes, no wildcard needed, one match in 2.7.1.0.
 inline constexpr const char* kChrEventDispatch =
     "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B 72 08 33 C0 0F B6 7A 18 48 8B 59 18 0F B7 56 0E 66 3B C2 73 14 48 8B 8B 78 01 00 00";
+// 0x14044E3A0 bool (FallModule* this, float threshold in xmm1): [this+0x18] (the time in the air) > threshold, with two more checks. One caller
+// (0x1404117EB, inside the fall damage evaluator). 28 bytes, one match in 2.7.1.0.
+inline constexpr const char* kFallTimeExceeded = "48 89 5C 24 08 57 48 83 EC 20 F3 0F 10 41 18 48 8B F9 0F 2F C1 0F 97 C3 84 DB 74 72";
 inline constexpr const char* kGetEffectiveTeamType = "48 89 5C 24 10 57 48 83 EC 20 0F B6 41 6C 48 8B F9 88 02";
 } // namespace sigs
 
