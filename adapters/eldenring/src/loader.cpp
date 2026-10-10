@@ -481,6 +481,7 @@ creative::FallLogState g_cr_fall_state;
 std::atomic<bool> g_cr_log{false}; // mc_er_creativelog.txt: log-only probes
 
 uintptr_t PlayerChrPtr(); // defined below
+float FallTimer(uintptr_t chr); // defined with the block collision below
 
 uintptr_t ModuleOwner(void* fall_module) {
     uint64_t owner = 0;
@@ -546,6 +547,7 @@ uint64_t __fastcall CreativeEventDetour(void* self, void* event) {
             SafeCopy(static_cast<uintptr_t>(payload) + 0xE, &cond, sizeof(cond));
             SafeCopy(reinterpret_cast<uintptr_t>(event) + 0x18, &flag, sizeof(flag));
             Log("%s", creative::formatChrEvent(type, cond, flag != 0, raw, reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base).c_str());
+            Log("creative:   fall timer (FallModule+0x18, read only) = %.2f s", FallTimer(PlayerChrPtr()));
             void* frames[10] = {};
             const USHORT got = RtlCaptureStackBackTrace(1, 10, frames, nullptr);
             uintptr_t addrs[10] = {};
@@ -1993,7 +1995,7 @@ void FlightStep() {
     g_fly_have_written = true;
     if (now_ms - last_log_ms >= 1000) {
         last_log_ms = now_ms;
-        Log("flight: pos=(%.2f %.2f %.2f) read_back=(%.2f %.2f %.2f) sync91_before=%u keys[%d%d%d%d up=%d down=%d] dt=%.4f", own[0], own[1], own[2], read_pos[0], read_pos[1], read_pos[2], static_cast<unsigned>(sync_before), keys.forward ? 1 : 0, keys.back ? 1 : 0,
+        Log("flight: pos=(%.2f %.2f %.2f) read_back=(%.2f %.2f %.2f) fall_t=%.2f sync91_before=%u keys[%d%d%d%d up=%d down=%d] dt=%.4f", own[0], own[1], own[2], read_pos[0], read_pos[1], read_pos[2], FallTimer(player), static_cast<unsigned>(sync_before), keys.forward ? 1 : 0, keys.back ? 1 : 0,
             keys.left ? 1 : 0, keys.right ? 1 : 0, keys.up ? 1 : 0, keys.down ? 1 : 0, dt);
     }
 }
