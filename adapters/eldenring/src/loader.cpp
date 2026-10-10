@@ -1163,29 +1163,55 @@ bool PlayerHitSurvival(void* module, void* attacker, uint8_t* ctx, uint8_t block
 // MC bolt damage). The first run only logs: which of attacker / ctx+0x1D8 is the shooter for a projectile was not known (REVERSE 35.5).
 std::atomic<bool> g_proj_log{false};
 std::atomic<bool> g_arrow_damage{false};
-std::atomic<int> g_proj_log_left{60};
-std::atomic<int> g_proj_other_left{10};
+std::atomic<int> g_proj_log_left{80};
+std::atomic<uint64_t> g_last_bullet_tick_ms{0}; // the last spawn_bullet call (the player's real shot or ours): hits within 3 s after it are logged whatever they look like
 
 void HandleProjectileHit(void* module, void* attacker, uint8_t* ctx) {
+    // Statistics first, before anything can return: does this hook see hits on enemies at all, and of which kind?
+    static std::atomic<uint32_t> s_calls{0}, s_player_victim{0}, s_unreadable{0};
+    static std::atomic<uint32_t> s_kind[256];
+    static std::atomic<uint64_t> s_stats_ms{0};
+    static std::atomic<uint32_t> s_stats_calls_logged{0};
+    const uint32_t calls = ++s_calls;
     uint64_t victim = 0, ctx_attacker = 0, ctx_victim = 0;
     uint8_t kind = 0;
     int32_t engine_damage = 0;
     const uintptr_t base = reinterpret_cast<uintptr_t>(ctx);
-    if (!SafeCopy(reinterpret_cast<uintptr_t>(module) + layout::kOwnerInDataModule, &victim, sizeof(victim)) || victim == 0 ||
-        !SafeCopy(base + 0xDA, &kind, sizeof(kind)) || !SafeCopy(base + layout::kHitAttacker, &ctx_attacker, sizeof(ctx_attacker)) ||
-        !SafeCopy(base + layout::kHitVictim, &ctx_victim, sizeof(ctx_victim)) || !SafeCopy(base + layout::kHitDamage, &engine_damage, sizeof(engine_damage))) {
-        return;
-    }
+    const bool readable = SafeCopy(reinterpret_cast<uintptr_t>(module) + layout::kOwnerInDataModule, &victim, sizeof(victim)) && victim != 0 &&
+                          SafeCopy(base + 0xDA, &kind, sizeof(kind)) && SafeCopy(base + layout::kHitAttacker, &ctx_attacker, sizeof(ctx_attacker)) &&
+                          SafeCopy(base + layout::kHitVictim, &ctx_victim, sizeof(ctx_victim)) && SafeCopy(base + layout::kHitDamage, &engine_damage, sizeof(engine_damage));
     const uintptr_t player = PlayerChrPtr();
-    if (victim == player) return;
+    if (!readable) {
+        ++s_unreadable;
+    } else if (victim == player) {
+        ++s_player_victim;
+    } else {
+        ++s_kind[kind];
+    }
+    const uint64_t now = GetTickCount64();
+    if (g_proj_log.load(std::memory_order_relaxed) && now - s_stats_ms.load() > 4000 && calls != s_stats_calls_logged.load()) {
+        s_stats_ms.store(now);
+        s_stats_calls_logged.store(calls);
+        char kinds[200] = {};
+        int n = 0;
+        for (int k = 0; k < 256 && n < 180; ++k) {
+            const uint32_t c = s_kind[k].load();
+            if (c != 0) n += snprintf(kinds + n, sizeof(kinds) - static_cast<size_t>(n), " %d:%u", k, c);
+        }
+        Log("PDC-STATS: ProcessDamageContext calls=%u player-victim=%u unreadable=%u; hits on others by u8[DA] kind:%s", calls, s_player_victim.load(), s_unreadable.load(), kinds);
+    }
+    if (!readable || victim == player) return;
     const bool mine = eldenring::bullet::isPlayersBoltHit(kind, ctx_attacker, player, victim);
-    const bool is_projectile = kind == 6;
-    if (g_proj_log.load(std::memory_order_relaxed) && (is_projectile ? g_proj_log_left.fetch_sub(1) > 0 : (ctx_attacker == player && g_proj_other_left.fetch_sub(1) > 0))) {
+    const bool after_shot = now - g_last_bullet_tick_ms.load(std::memory_order_relaxed) < 3000;
+    const bool interesting = kind == 6 || ctx_attacker == player || reinterpret_cast<uintptr_t>(attacker) == player || after_shot;
+    if (g_proj_log.load(std::memory_order_relaxed) && interesting && g_proj_log_left.fetch_sub(1) > 0) {
         int32_t npc = 0;
+        uint8_t team = 0;
         SafeCopy(static_cast<uintptr_t>(victim) + layout::kNpcIdInChrIns, &npc, sizeof(npc));
-        Log("PROJ-HIT: kind=%u victim=%p npc=%d attacker-arg=%p ctx+1D8=%p ctx+1E0=%p player=%p shooter_is_player=%d engine_dmg=%d tid=%lu", kind,
-            reinterpret_cast<void*>(victim), npc, attacker, reinterpret_cast<void*>(ctx_attacker), reinterpret_cast<void*>(ctx_victim), reinterpret_cast<void*>(player),
-            mine ? 1 : 0, engine_damage, static_cast<unsigned long>(GetCurrentThreadId()));
+        SafeCopy(static_cast<uintptr_t>(victim) + layout::kTeamTypeInChrIns, &team, sizeof(team));
+        Log("PROJ-HIT: kind=%u victim=%p npc=%d team=%u attacker-arg=%p ctx+1D8=%p ctx+1E0=%p player=%p shooter_is_player=%d after_shot=%d engine_dmg=%d tid=%lu", kind,
+            reinterpret_cast<void*>(victim), npc, static_cast<unsigned>(team), attacker, reinterpret_cast<void*>(ctx_attacker), reinterpret_cast<void*>(ctx_victim),
+            reinterpret_cast<void*>(player), mine ? 1 : 0, after_shot ? 1 : 0, engine_damage, static_cast<unsigned long>(GetCurrentThreadId()));
     }
     if (!g_arrow_damage.load(std::memory_order_relaxed) || !mine) return;
     int32_t max_hp = 0;
@@ -2839,6 +2865,7 @@ void RunBulletFire() {
     alignas(16) uint8_t status[64] = {};
     std::memcpy(req, built.data(), sizeof(req));
     uint32_t out = 0xFFFFFFFFu;
+    g_last_bullet_tick_ms.store(GetTickCount64(), std::memory_order_relaxed);
     const bool ok = SpawnBulletSafe(reinterpret_cast<void*>(manager), &out, req, status);
     uint32_t code = 0;
     std::memcpy(&code, status, sizeof(code));
@@ -2857,6 +2884,7 @@ bool QueueBulletFire() {
 }
 
 uint32_t* __fastcall SpawnBulletDetour(void* manager, uint32_t* out_handle, void* request, void* r9) {
+    g_last_bullet_tick_ms.store(GetTickCount64(), std::memory_order_relaxed);
     if (g_bullet_fire_enabled.load(std::memory_order_relaxed)) RecordBulletTemplate(request);
     uint32_t* r = g_spawn_bullet_orig(manager, out_handle, request, r9);
     uint32_t handle = 0xFFFFFFFFu;
