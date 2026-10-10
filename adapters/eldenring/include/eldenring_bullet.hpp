@@ -4,6 +4,8 @@
 // at the offsets the audit accepted, and a search for a known id anywhere in the body (the reverser's two field tables disagree, so the log
 // must show which dword really holds the id). Pure logic, unit-tested without the game.
 
+#include "eldenring_melee.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -130,6 +132,22 @@ inline bool templateUsable(const uint8_t* b, size_t n) {
 // The file only changes when the shot used another ammo: the param row or the bullet id differ (the matrix and the rest change on every shot).
 inline bool templateChanged(const uint8_t* old_body, const uint8_t* new_body) {
     return std::memcmp(old_body + 0x08, new_body + 0x08, 4) != 0 || std::memcmp(old_body + 0x1C, new_body + 0x1C, 4) != 0;
+}
+
+
+// ---- the damage of a bolt the player shot --------------------------------------------------------------------------------------------------
+// MC: a fully charged crossbow bolt does 9. Converted like the melee hits (a 7-damage diamond sword hit is 5% of the victim's maximum health), so
+// the balance of the two weapons is the same.
+inline int boltDamageEr(int victim_max_hp) {
+    mc::HitIntent intent;
+    intent.damage = 9.f;
+    intent.max_hp_percent = 0.05f;
+    return live::erDamage(intent, victim_max_hp);
+}
+
+// A hit context (ctx[+0xDA] == 6: projectile) whose attacker (ctx+0x1D8) is the player and whose victim is someone else.
+inline bool isPlayersBoltHit(uint8_t hit_kind, uint64_t ctx_attacker, uint64_t player, uint64_t victim) {
+    return hit_kind == 6 && player != 0 && ctx_attacker == player && victim != 0 && victim != player;
 }
 
 inline bool spawnFailed(uint32_t handle) { return handle == 0xFFFFFFFFu; }

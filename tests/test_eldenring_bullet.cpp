@@ -184,3 +184,25 @@ TEST(EldenRingBulletFire, TheTemplateOnDiskIsRewrittenOnlyWhenTheParamRowOrTheBu
     std::memcpy(d.data() + 0x80, &moved, 4);
     EXPECT_FALSE(templateChanged(a.data(), d.data()));
 }
+
+TEST(EldenRingBulletDamage, ABoltDoesMoreThanADiamondSwordHitAndScalesWithTheVictimsHealth) {
+    // MC: a crossbow bolt does 9, a diamond sword 7. Same balance as the melee hits: a 7-damage sword hit is 5% of the maximum health.
+    EXPECT_EQ(boltDamageEr(1000), 64);   // 1000 * 0.05 * 9 / 7
+    EXPECT_GT(boltDamageEr(1000), 50);   // more than the sword's 50
+    EXPECT_EQ(boltDamageEr(2000), 129);  // linear in the health
+}
+
+TEST(EldenRingBulletDamage, AnUnknownHealthGivesNoDamageAndAHitNeverRoundsToZero) {
+    EXPECT_EQ(boltDamageEr(0), 0);
+    EXPECT_EQ(boltDamageEr(-5), 0);
+    EXPECT_EQ(boltDamageEr(3), 1);
+}
+
+TEST(EldenRingBulletDamage, OnlyAProjectileHitFromTheShooterIsReplaced) {
+    const uint64_t player = 0x7FF500100000ull, other = 0x7FF500400000ull;
+    EXPECT_TRUE(isPlayersBoltHit(6, player, player, other));
+    EXPECT_FALSE(isPlayersBoltHit(5, player, player, other));   // a melee-class hit
+    EXPECT_FALSE(isPlayersBoltHit(6, other, player, other));    // somebody else's arrow
+    EXPECT_FALSE(isPlayersBoltHit(6, player, player, player));  // the player is the victim
+    EXPECT_FALSE(isPlayersBoltHit(6, player, 0, other));        // no player yet
+}

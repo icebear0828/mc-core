@@ -1159,11 +1159,51 @@ bool PlayerHitSurvival(void* module, void* attacker, uint8_t* ctx, uint8_t block
     return popped;
 }
 
+// Projectiles that hit somebody other than the player (mc_er_bulletlog.txt: log; mc_er_arrowdmg.txt: replace the damage of the player's own bolts with the
+// MC bolt damage). The first run only logs: which of attacker / ctx+0x1D8 is the shooter for a projectile was not known (REVERSE 35.5).
+std::atomic<bool> g_proj_log{false};
+std::atomic<bool> g_arrow_damage{false};
+std::atomic<int> g_proj_log_left{60};
+std::atomic<int> g_proj_other_left{10};
+
+void HandleProjectileHit(void* module, void* attacker, uint8_t* ctx) {
+    uint64_t victim = 0, ctx_attacker = 0, ctx_victim = 0;
+    uint8_t kind = 0;
+    int32_t engine_damage = 0;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(ctx);
+    if (!SafeCopy(reinterpret_cast<uintptr_t>(module) + layout::kOwnerInDataModule, &victim, sizeof(victim)) || victim == 0 ||
+        !SafeCopy(base + 0xDA, &kind, sizeof(kind)) || !SafeCopy(base + layout::kHitAttacker, &ctx_attacker, sizeof(ctx_attacker)) ||
+        !SafeCopy(base + layout::kHitVictim, &ctx_victim, sizeof(ctx_victim)) || !SafeCopy(base + layout::kHitDamage, &engine_damage, sizeof(engine_damage))) {
+        return;
+    }
+    const uintptr_t player = PlayerChrPtr();
+    if (victim == player) return;
+    const bool mine = eldenring::bullet::isPlayersBoltHit(kind, ctx_attacker, player, victim);
+    const bool is_projectile = kind == 6;
+    if (g_proj_log.load(std::memory_order_relaxed) && (is_projectile ? g_proj_log_left.fetch_sub(1) > 0 : (ctx_attacker == player && g_proj_other_left.fetch_sub(1) > 0))) {
+        int32_t npc = 0;
+        SafeCopy(static_cast<uintptr_t>(victim) + layout::kNpcIdInChrIns, &npc, sizeof(npc));
+        Log("PROJ-HIT: kind=%u victim=%p npc=%d attacker-arg=%p ctx+1D8=%p ctx+1E0=%p player=%p shooter_is_player=%d engine_dmg=%d tid=%lu", kind,
+            reinterpret_cast<void*>(victim), npc, attacker, reinterpret_cast<void*>(ctx_attacker), reinterpret_cast<void*>(ctx_victim), reinterpret_cast<void*>(player),
+            mine ? 1 : 0, engine_damage, static_cast<unsigned long>(GetCurrentThreadId()));
+    }
+    if (!g_arrow_damage.load(std::memory_order_relaxed) || !mine) return;
+    int32_t max_hp = 0;
+    const uintptr_t data = DataModuleOfChr(static_cast<uintptr_t>(victim));
+    if (data == 0 || !SafeCopy(data + layout::kDataMaxHp, &max_hp, sizeof(max_hp))) return;
+    const int32_t wanted = eldenring::bullet::boltDamageEr(max_hp);
+    int32_t engine = 0;
+    if (wanted > 0 && overrideFinalDamage(ctx, ctx_attacker, ctx_victim, wanted, &engine)) {
+        Log("ARROW: the player's bolt hit %p: engine %d -> MC bolt %d (victim max hp %d)", reinterpret_cast<void*>(victim), engine, wanted, max_hp);
+    }
+}
+
 uint64_t ProcessDamageDetour(void* module, void* attacker, uint8_t* ctx, uint32_t a4, uint8_t a5) {
     uint32_t heal_to = 0;
     bool popped = false;
     if (!t_forced.armed) popped = PlayerHitSurvival(module, attacker, ctx, a5, heal_to);
     if (!t_forced.armed && g_log_player_hits.load(std::memory_order_relaxed)) LogPlayerHit(module, attacker, ctx, a5);
+    if (!t_forced.armed && (g_proj_log.load(std::memory_order_relaxed) || g_arrow_damage.load(std::memory_order_relaxed))) HandleProjectileHit(module, attacker, ctx);
     if (t_forced.armed && !t_forced.applied) {
         t_forced.applied = overrideFinalDamage(ctx, t_forced.attacker, t_forced.victim, t_forced.value, &t_forced.engine_value);
     }
@@ -2826,6 +2866,9 @@ uint32_t* __fastcall SpawnBulletDetour(void* manager, uint32_t* out_handle, void
 }
 
 void SetupBulletLog() {
+    g_proj_log.store(FileExists(g_game_dir + "mc_er_bulletlog.txt"));
+    g_arrow_damage.store(FileExists(g_game_dir + "mc_er_arrowdmg.txt"));
+    if (g_arrow_damage.load()) Log("bullet: mc_er_arrowdmg.txt: the player's bolts do MC bolt damage (9, balanced like the diamond sword)");
     g_bullet_fire_enabled.store(FileExists(g_game_dir + "mc_er_bulletfire.txt"));
     if (g_bullet_fire_enabled.load()) LoadBulletTemplate();
     if (!g_bullet_fire_enabled.load() && !FileExists(g_game_dir + "mc_er_bulletlog.txt")) return;
