@@ -124,8 +124,8 @@
 | `eldenring_chrscan.hpp` | 角色结构只读扫描（RTTI 类名）、`collectChrDispFlagAddresses`（召唤物模型的显示标志地址）、隐藏/还原绘制位 |
 | `eldenring_mobs.hpp` | `MobRegistry`：每只召唤物的走路动画、受击红闪、死亡倒地；有模型文件时输出每骨骼矩阵 |
 | `eldenring_shadow.hpp` | 脚下阴影：`groundBelow`（射线 + 方块顶面取高）、`shadowAt`（随高度衰减）、`shadowMatrix`、`buildShadowDisc`、`falloff` |
-| `eldenring_bullet.hpp` | 弩箭：请求体解码/十六进制转储、`buildFireRequest`（用真实模板构造请求）、`templateUsable/templateChanged`、`boltDamageEr`、`isPlayersBoltHit`、`muzzle`、`LogBudget` |
-| `eldenring_handlescan.hpp` | 只读搜索一个 32 位值出现在哪些结构里（含一层指针），当时用来找 `+0x08`；留作通用工具 |
+| `eldenring_bullet.hpp` | 弩箭：请求体解码/十六进制转储、`buildFireRequest`（用真实模板构造请求）、`templateUsable/templateChanged`、`boltDamageEr`、`isPlayersBoltHit`、`hitHearts/isCriticalShot`（命中反馈）、`muzzle`、`LogBudget` |
+| `eldenring_bow.hpp` | MC 拉弓：`BowController`（按住/松开状态机）、`powerForTicks`/`damageForPower`、`pullingStage`/`shownBow`（拉弓贴图阶段）、瞄准校准（`quatForward`、`aimError`）、`buildBasis`/`determinant` |
 | `eldenring_jump.hpp` | MC 起跳的数值与 `McJumpArc`（起跳实验已搁置，代码保留） |
 | `eldenring_fp.hpp` | 第一人称矩阵链（`itemPose`/`eatPose`/`bareArmPose`/`itemDisplay`/`walkBob`/`handSway`）、`HandAnimator`、`SwayFilter`、`toHost`（MC 右手系 → 渲染左手系） |
 | `eldenring_particles.hpp` | 粒子系统、受击镜头倾斜曲线 |
@@ -277,6 +277,6 @@
 
 1. 读：本文件 → `docs/ELDENRING_VERIFY_CHECKLIST.md`（尤其 F 节）→ 需要时查 `docs/ELDENRING_REVERSE.md` 对应章节（目录：§1 已确认、§3 受击管线、§8~§18 近期审计与任务单）。
 2. 检查状态：`git status -sb && git log --oneline -5`；`ssh win 'cd /d D:\game\mc\mc-core && git rev-parse --short HEAD'`；`ssh win 'tasklist | findstr /I "eldenring start_protected"'`；`ssh win 'certutil -hashfile "<游戏目录>\dinput8.dll" SHA256'` 与 win 构建产物对比。
-3. 跑基线：`cmake --build build -j8 && ./build/bin/mc_tests`（715 个应全过）和 Python（`uv run --with pillow --with pytest python -m pytest tests -q`，74 个）。
+3. 跑基线：`cmake --build build -j8 && ./build/bin/mc_tests`（738 个应全过）和 Python（`uv run --with pillow --with pytest python -m pytest tests -q`，75 个）。
 4. 问用户这次想做什么。第 0 节"未解决 / 待办"里有当前最想做的：弩箭外观与 MC 拉弓输入、盾牌/副手/双持/盔甲、光照（屏幕采样环境光）、召唤/死亡粒子、人形体型的单体骨灰（碰撞体积）、骷髅/苦力怕、站方块走不动；**P0 的 30 分钟稳定性长跑仍没跑过**。
 5. 每个功能结束时：更新清单（F 节新增条目）、项目记忆（`~/.claude/projects/-Users-c-mc-core/memory/`）、如果有新逆向结论写进 `ELDENRING_REVERSE.md` 并分级。
