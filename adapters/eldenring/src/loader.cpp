@@ -2796,6 +2796,33 @@ void LogBulletRequest(void* manager, const void* request, const void* r9, void* 
     if (r9 != nullptr && SafeCopy(reinterpret_cast<uintptr_t>(r9), extra, sizeof(extra))) {
         for (const std::string& line : eldenring::bullet::hexDump(extra, sizeof(extra))) Log("bullet #%u: r9 %s", seq, line.c_str());
     }
+    // A real request carries a non-zero pointer at +0xB0 (to an object on the caller's stack) that our replay sets to 0, and the replay flies along the shooter's
+    // body instead of the matrix: does that object hold the aim? Dumped with its floats so a vector near the camera's forward can be spotted (REVERSE 35.11).
+    {
+        auto dump = [&](const char* label, uintptr_t at, size_t bytes) {
+            std::vector<uint8_t> buf(bytes, 0);
+            if (at == 0 || !SafeCopy(at, buf.data(), bytes)) {
+                Log("bullet #%u: %s at %p cannot be read", seq, label, reinterpret_cast<void*>(at));
+                return;
+            }
+            Log("bullet #%u: %s at %p (%zu bytes):", seq, label, reinterpret_cast<void*>(at), bytes);
+            for (size_t row = 0; row < bytes; row += 16) {
+                float v[4];
+                std::memcpy(v, buf.data() + row, sizeof(v));
+                char line[200];
+                int n = snprintf(line, sizeof(line), "+0x%03zX:", row);
+                for (size_t i = 0; i < 16; ++i) n += snprintf(line + n, sizeof(line) - static_cast<size_t>(n), " %02X", buf[row + i]);
+                snprintf(line + n, sizeof(line) - static_cast<size_t>(n), "  | %10.4f %10.4f %10.4f %10.4f", v[0], v[1], v[2], v[3]);
+                Log("bullet #%u:   %s", seq, line);
+            }
+        };
+        uint64_t sub = 0;
+        std::memcpy(&sub, body + 0xB0, sizeof(sub));
+        dump("sub-object at request+0xB0", static_cast<uintptr_t>(sub), 0x100);
+        dump("r9 context", reinterpret_cast<uintptr_t>(r9), 0x100);
+        uint64_t ctx_ptr = 0;
+        if (r9 != nullptr && SafeCopy(reinterpret_cast<uintptr_t>(r9) + 0x28, &ctx_ptr, sizeof(ctx_ptr))) dump("object at r9+0x28", static_cast<uintptr_t>(ctx_ptr), 0x80);
+    }
 }
 
 // The latest request of a shot the player fired himself, as the game wrote it. F3 fires from it. It is also kept on disk (mc_er_bullet.bin in the game
