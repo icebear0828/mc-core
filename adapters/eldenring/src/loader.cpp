@@ -39,6 +39,7 @@
 #include "eldenring_blockmesh.hpp"
 #include "eldenring_blocks.hpp"
 #include "eldenring_buddy.hpp"
+#include "eldenring_creative.hpp"
 #include "eldenring_los.hpp"
 #include "eldenring_survival.hpp"
 #include "eldenring_xp.hpp"
@@ -59,6 +60,7 @@
 
 using namespace eldenring::live;
 namespace blocks = eldenring::blocks;
+namespace creative = eldenring::creative;
 
 namespace {
 
@@ -451,6 +453,70 @@ void __fastcall KillChrDetour(void* chr) {
         if (protect) return;
     }
     g_kill_orig(chr);
+}
+
+// ---- creative-mode probes (mc_er_creativelog.txt; log-only, nothing here changes the game) -------------------------------------
+// Which path kills the player after a fall? Every probe calls the original unchanged and only writes a line to mc_er.log.
+using KillWrapperFn = void(__fastcall*)(void* chr);
+using HardLandingFn = void(__fastcall*)(void* fall_module);
+using FallHeightFn = float(__fastcall*)(void* fall_module);
+using HasSpEffectFn = bool(__fastcall*)(void* container, int sp_effect);
+KillWrapperFn g_cr_kill_orig = nullptr;
+HardLandingFn g_cr_land_orig = nullptr;
+FallHeightFn g_cr_fall_orig = nullptr;
+HasSpEffectFn g_cr_sp_orig = nullptr;
+std::mutex g_cr_mutex;
+creative::FallLogState g_cr_fall_state;
+
+uintptr_t PlayerChrPtr(); // defined below
+
+uintptr_t ModuleOwner(void* fall_module) {
+    uint64_t owner = 0;
+    return SafeCopy(reinterpret_cast<uintptr_t>(fall_module) + 8, &owner, sizeof(owner)) ? static_cast<uintptr_t>(owner) : 0;
+}
+
+bool CreativeShouldLogFall(float metres, uintptr_t caller_rva) {
+    std::lock_guard<std::mutex> lock(g_cr_mutex);
+    return creative::shouldLogFall(g_cr_fall_state, metres, caller_rva, GetTickCount64());
+}
+
+void __fastcall CreativeKillDetour(void* chr) {
+    const uintptr_t player = PlayerChrPtr();
+    if (creative::isPlayer(reinterpret_cast<uintptr_t>(chr), player)) {
+        Log("%s", creative::formatKill(reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base, true).c_str());
+    }
+    g_cr_kill_orig(chr);
+}
+
+void __fastcall CreativeLandingDetour(void* fall_module) {
+    if (creative::isPlayer(ModuleOwner(fall_module), PlayerChrPtr())) Log("%s", creative::formatLanding(true).c_str());
+    g_cr_land_orig(fall_module);
+}
+
+float __fastcall CreativeFallDetour(void* fall_module) {
+    const float metres = g_cr_fall_orig(fall_module);
+    const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base;
+    if ((!std::isfinite(metres) || metres >= creative::kFallLogMinMetres) && creative::isPlayer(ModuleOwner(fall_module), PlayerChrPtr()) &&
+        CreativeShouldLogFall(metres, caller)) {
+        Log("%s", creative::formatFall(caller, metres).c_str());
+    }
+    return metres;
+}
+
+bool __fastcall CreativeSpEffectDetour(void* container, int sp_effect) {
+    const bool answer = g_cr_sp_orig(container, sp_effect);
+    if (sp_effect == creative::kLandingSkipSpEffect) {
+        const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base;
+        if (caller == creative::kLandingSpEffectReturnRva) {
+            // The container is [[FallModule+8]+0x178], i.e. [chr+0x178] (0x14043D260): compare it with the player's.
+            const uintptr_t player = PlayerChrPtr();
+            uint64_t player_container = 0;
+            const bool is_player = player != 0 && SafeCopy(player + 0x178, &player_container, sizeof(player_container)) &&
+                                   creative::isPlayer(reinterpret_cast<uintptr_t>(container), static_cast<uintptr_t>(player_container));
+            if (creative::shouldLogSpEffect(sp_effect, caller, is_player)) Log("%s", creative::formatSpEffect(answer).c_str());
+        }
+    }
+    return answer;
 }
 
 // ---- inventory screen ----------------------------------------------------------------------------------------------------
@@ -2172,6 +2238,36 @@ bool ReadFileAll(const std::string& path, std::vector<uint8_t>& out) {
     return got == out.size();
 }
 
+void SetupCreativeProbes() {
+    if (!FileExists(g_game_dir + "mc_er_creativelog.txt")) return;
+    struct Probe {
+        const char* name;
+        const char* sig;
+        void* detour;
+        void** orig;
+    };
+    const Probe probes[] = {
+        {"kill wrapper", sigs::kKillWrapper, reinterpret_cast<void*>(&CreativeKillDetour), reinterpret_cast<void**>(&g_cr_kill_orig)},
+        {"hard landing", sigs::kHardLanding, reinterpret_cast<void*>(&CreativeLandingDetour), reinterpret_cast<void**>(&g_cr_land_orig)},
+        {"fall height", sigs::kFallHeight, reinterpret_cast<void*>(&CreativeFallDetour), reinterpret_cast<void**>(&g_cr_fall_orig)},
+        {"sp effect query", sigs::kHasSpEffect, reinterpret_cast<void*>(&CreativeSpEffectDetour), reinterpret_cast<void**>(&g_cr_sp_orig)},
+    };
+    if (!EnsureMinHook()) {
+        Log("creative: MH_Initialize failed, probes not installed");
+        return;
+    }
+    for (const Probe& p : probes) {
+        uintptr_t target = 0;
+        if (!LocateByPrefix(g_img, p.sig, target)) {
+            Log("creative: %s signature not unique, probe not installed", p.name);
+        } else if (MH_CreateHook(reinterpret_cast<void*>(target), p.detour, p.orig) != MH_OK || MH_EnableHook(reinterpret_cast<void*>(target)) != MH_OK) {
+            Log("creative: hooking %s at %p failed", p.name, reinterpret_cast<void*>(target));
+        } else {
+            Log("creative: %s probe at %p (RVA 0x%llX), log-only", p.name, reinterpret_cast<void*>(target), static_cast<unsigned long long>(target - g_img.base));
+        }
+    }
+}
+
 void SetupDamage() {
     if (!FileExists(g_game_dir + "mc_er_damage.txt")) {
         Log("damage: disabled (no mc_er_damage.txt)");
@@ -2715,6 +2811,7 @@ DWORD WINAPI LoaderThread(LPVOID) {
     }
 
     SetupDamage();
+    SetupCreativeProbes();
     SetupOverlay();
     SetupInput();
     CreateThread(nullptr, 0, KeyThread, nullptr, 0, nullptr);
