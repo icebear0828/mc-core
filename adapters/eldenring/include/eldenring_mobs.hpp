@@ -31,6 +31,7 @@ struct MobSnapshot {
 
 struct MobDraw {
     uintptr_t id{0};
+    float feet[3]{};   // where it stands (game metres), for its shadow
     float hurt{0.f};   // 1 just hurt .. 0 (a dying mob stays at 1): the figure is tinted red
     bool dying{false};
     float fall{0.f};   // 0..1 how far the dead body has tipped over (already applied to the matrices below)
@@ -121,6 +122,7 @@ private:
         const MobSnapshot& s = e.last;
         MobDraw d;
         d.id = id;
+        for (int i = 0; i < 3; ++i) d.feet[i] = s.feet[i];
         d.dying = e.dying >= 0.f;
         d.hurt = d.dying ? 1.f : std::min(1.f, e.hurt / kHurtSeconds);
         d.fall = d.dying ? eldenring::render::deathFlipFraction(e.dying) : 0.f;

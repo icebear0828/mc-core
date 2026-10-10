@@ -929,6 +929,20 @@ void RenderFrame(IDXGISwapChain* sc) {
                                                                          eldenring::render::deathFlipFraction(g_death_seconds));
             for (auto& m : parts) m = m * fall;
         }
+        if (steve.shadow && g_steve.shadowReady() && g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
+            const float ground = steve.ground_valid ? steve.ground_y : steve.feet[1];
+            SteveParams shp;
+            shp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.occlusion ? 1.25f : 0.f); // like the blocks: not within 2.2 m of the camera
+            shp.depth_const = g_steve_cfg.depth_const;
+            shp.rel_bias = g_steve_cfg.rel_bias;
+            shp.abs_bias = g_steve_cfg.abs_bias;
+            shp.depth_w = static_cast<float>(g_depth_w);
+            shp.depth_h = static_cast<float>(g_depth_h);
+            shp.keep_depth = blocks_drawn;
+            g_steve.drawShadows(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp,
+                                {eldenring::shadow::shadowAt(steve.feet[0], steve.feet[1], steve.feet[2], ground)}, shp, f.rtv);
+            g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
+        }
         SteveParams sp;
         sp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.debug == 2 ? 3.f : (g_steve_cfg.debug != 0 ? 2.f : (g_steve_cfg.occlusion ? 1.f : 0.f)));
         sp.depth_const = g_steve_cfg.depth_const;
@@ -982,6 +996,19 @@ void RenderFrame(IDXGISwapChain* sc) {
             const float scene_h = g_steve_cfg.scene_height > 0.f ? g_steve_cfg.scene_height : static_cast<float>(g_s.height);
             const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
             bool keep = blocks_drawn || steve.draw; // the blocks and Steve left their depth in the figure's buffer
+            if (steve.shadow && g_steve.shadowReady()) {
+                std::vector<eldenring::shadow::Shadow> shadows;
+                for (const auto& d : draws) shadows.push_back(eldenring::shadow::shadowAt(d.feet[0], d.feet[1], d.feet[2], d.feet[1])); // a mob stands on the ground
+                SteveParams shp;
+                shp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.occlusion ? 1.25f : 0.f);
+                shp.depth_const = g_steve_cfg.depth_const;
+                shp.rel_bias = g_steve_cfg.rel_bias;
+                shp.abs_bias = g_steve_cfg.abs_bias;
+                shp.depth_w = static_cast<float>(g_depth_w);
+                shp.depth_h = static_cast<float>(g_depth_h);
+                shp.keep_depth = keep;
+                g_steve.drawShadows(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, shadows, shp, f.rtv);
+            }
             for (const auto& d : draws) {
                 SteveParams mp;
                 mp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.occlusion ? 1.f : 0.f);

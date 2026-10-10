@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "eldenring_blockmesh.hpp"
+#include "eldenring_shadow.hpp"
 #include "mc/item_model.hpp"
 #include "steve_renderer_d3d12.hpp"
 
@@ -97,6 +98,19 @@ float4 PSMain(VSOut i) : SV_Target {
     float4 texel = skin.Sample(skin_sampler, i.uv);
     if (texel.a < 0.5) discard; // the hat / jacket layers are cut out of the skin
     return float4(lerp(texel.rgb * face, tint.rgb, tint.a), 1.0);
+}
+
+// The blob shadow under a figure: a flat disc, uv = (x, z) of the unit circle, tint.a = strength. Hidden by the scene like the blocks.
+float4 PSShadow(VSOut i) : SV_Target {
+    if (scene.w > 0.5) {
+        int2 texel = int2(i.pos.xy / dims.zw * dims.xy);
+        float gd = scene_depth.Load(int3(texel, 0)).r;
+        float steve_z = rcp(i.pos.w);
+        const float near_skip = (scene.w > 1.1 && scene.w < 1.4) ? 2.2 : 0.0;
+        if (steve_z > near_skip && gd > 0.0 && scene.x / gd < steve_z * (1.0 - scene.y) - scene.z) discard;
+    }
+    float r2 = dot(i.uv, i.uv);
+    return float4(0.0, 0.0, 0.0, tint.a * saturate(1.0 - r2));
 }
 )hlsl";
 
@@ -292,6 +306,37 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
         fd.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
         if (FAILED(device->CreateGraphicsPipelineState(&fd, IID_PPV_ARGS(&pso_depthview_))) && log) log("steve: depth view pipeline failed");
     }
+    if (SUCCEEDED(hr)) {
+        ID3DBlob* ps_shadow = nullptr;
+        if (Compile("PSShadow", "ps_5_0", &ps_shadow, log)) {
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC sd = pd;
+            sd.PS = {ps_shadow->GetBufferPointer(), ps_shadow->GetBufferSize()};
+            sd.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO; // shadows test against the blocks but never hide each other
+            sd.BlendState.RenderTarget[0].BlendEnable = TRUE;
+            sd.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+            sd.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+            sd.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+            sd.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+            sd.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+            sd.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+            if (FAILED(device->CreateGraphicsPipelineState(&sd, IID_PPV_ARGS(&pso_shadow_)))) {
+                if (log) log("steve: shadow pipeline failed");
+            }
+            Rel(ps_shadow);
+        }
+        const mc::rig::RigMesh disc = eldenring::shadow::buildShadowDisc(kShadowSegments);
+        shadow_vertices_ = UploadBuffer(device, disc.vertices.data(), disc.vertices.size() * sizeof(mc::rig::RigVertex));
+        shadow_indices_ = UploadBuffer(device, disc.indices.data(), disc.indices.size() * sizeof(uint16_t));
+        if (shadow_vertices_ && shadow_indices_) {
+            shadow_vbv_ = {shadow_vertices_->GetGPUVirtualAddress(), static_cast<UINT>(disc.vertices.size() * sizeof(mc::rig::RigVertex)),
+                           static_cast<UINT>(sizeof(mc::rig::RigVertex))};
+            shadow_ibv_ = {shadow_indices_->GetGPUVirtualAddress(), static_cast<UINT>(disc.indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
+            shadow_index_count_ = static_cast<unsigned>(disc.indices.size());
+        } else {
+            Rel(shadow_vertices_);
+            Rel(shadow_indices_);
+        }
+    }
     Rel(vs_full);
     Rel(ps_full);
     if (FAILED(hr)) {
@@ -379,6 +424,10 @@ void SteveRenderer::release() {
     Rel(stats_readback_);
     Rel(pso_);
     Rel(pso_depthview_);
+    Rel(pso_shadow_);
+    Rel(shadow_vertices_);
+    Rel(shadow_indices_);
+    shadow_index_count_ = 0;
     Rel(root_);
     Rel(vertices_);
     Rel(indices_);
@@ -739,6 +788,38 @@ void SteveRenderer::drawMobModel(ID3D12GraphicsCommandList* list, ID3D12Descript
         if (mob_ranges_[i].index_count == 0) continue;
         list->SetGraphicsRoot32BitConstants(0, 16, bones[i].m.data(), 16);
         list->DrawIndexedInstanced(mob_ranges_[i].index_count, 1, mob_ranges_[i].first_index, mob_ranges_[i].base_vertex, 0);
+    }
+}
+
+void SteveRenderer::drawShadows(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table, unsigned width,
+                                unsigned height, const mc::rig::Mat4& view_proj, const std::vector<eldenring::shadow::Shadow>& shadows,
+                                const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
+    if (!shadowReady() || !own_depth_ || !dsv_heap_ || shadows.empty()) return;
+    D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
+    D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+    list->RSSetViewports(1, &vp);
+    list->RSSetScissorRects(1, &sc);
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
+    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+    if (!params.keep_depth) list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    list->SetPipelineState(pso_shadow_);
+    list->SetGraphicsRootSignature(root_);
+    ID3D12DescriptorHeap* heaps[] = {srv_heap};
+    list->SetDescriptorHeaps(1, heaps);
+    list->SetGraphicsRootDescriptorTable(1, depth_table);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->IASetVertexBuffers(0, 1, &shadow_vbv_);
+    list->IASetIndexBuffer(&shadow_ibv_);
+    list->SetGraphicsRoot32BitConstants(0, 16, view_proj.m.data(), 0);
+    const float extra[8] = {params.depth_const, params.rel_bias, params.abs_bias, params.mode, params.depth_w, params.depth_h, static_cast<float>(width), static_cast<float>(height)};
+    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
+    for (const eldenring::shadow::Shadow& s : shadows) {
+        if (!s.visible) continue;
+        const mc::rig::Mat4 world = eldenring::shadow::shadowMatrix(s);
+        const float tint[4] = {0.f, 0.f, 0.f, s.strength};
+        list->SetGraphicsRoot32BitConstants(0, 16, world.m.data(), 16);
+        list->SetGraphicsRoot32BitConstants(0, 4, tint, 40);
+        list->DrawIndexedInstanced(shadow_index_count_, 1, 0, 0, 0);
     }
 }
 

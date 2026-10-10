@@ -255,3 +255,14 @@ TEST(EldenRingMobs, AnotherMobIsStillDrawnWhileAnotherCorpseLies) {
     EXPECT_EQ(d[0].id, 2u);
     EXPECT_FALSE(d[0].dying);
 }
+
+TEST(EldenRingMobs, TheDrawCarriesTheFeetSoTheShadowCanBePlacedUnderIt) {
+    MobRegistry r;
+    MobSnapshot s = at(0x10, 1.f, 2.f);
+    s.feet[1] = 7.f;
+    const auto draws = r.update(1.f / 60.f, {s});
+    ASSERT_EQ(draws.size(), 1u);
+    EXPECT_FLOAT_EQ(draws[0].feet[0], 1.f);
+    EXPECT_FLOAT_EQ(draws[0].feet[1], 7.f);
+    EXPECT_FLOAT_EQ(draws[0].feet[2], 2.f);
+}

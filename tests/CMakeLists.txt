@@ -40,6 +40,7 @@ add_executable(mc_tests
     test_eldenring_steve.cpp
     test_eldenring_melee.cpp
     test_eldenring_los.cpp
+    test_eldenring_shadow.cpp
     test_eldenring_survival.cpp
     test_eldenring_audio.cpp
     test_eldenring_particles.cpp

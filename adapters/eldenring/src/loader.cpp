@@ -46,6 +46,7 @@
 #include "eldenring_creative.hpp"
 #include "eldenring_flight.hpp"
 #include "eldenring_los.hpp"
+#include "eldenring_shadow.hpp"
 #include "eldenring_survival.hpp"
 #include "eldenring_xp.hpp"
 #include "eldenring_hunger.hpp"
@@ -261,6 +262,9 @@ std::atomic<int> g_slot_probe{-1}; // F9 probe: -1 = off (all slots), 0..26 = on
 std::atomic<uint32_t> g_hide_mask1{0x100A1}; // bits cleared in disp_flags1 (+0x20): visible + shadow (verified live, not bisected)
 std::atomic<bool> g_no_player_hit_vfx{false}; // mc_er_steve.txt: no_player_hit_vfx=1 (also implied by first person): no blood when the player is hit
 std::atomic<bool> g_fp_persist{true};      // mc_er_steve.txt: fp_persist=0 turns the persistent eye camera off
+std::atomic<bool> g_shadow_enabled{true};  // mc_er_steve.txt: shadow=0 turns the blob shadows off
+std::atomic<float> g_ground_y{0.f};       // the ground under the player's feet, found by ShadowGroundStep on the game thread
+std::atomic<bool> g_ground_valid{false};
 std::atomic<bool> g_first_person{false};  // mc_er_steve.txt: first_person=1 (experiment), F10 toggles
 std::atomic<float> g_eye_height{1.65f};
 std::atomic<float> g_kb_force{-1.f}; // mc_er_steve.txt: kb_force (>= 0 overrides HitContext+0xFC of our own hits; experiment)
@@ -643,6 +647,7 @@ struct CamKeep {
 CamKeep g_cam_keep;
 std::atomic<bool> g_camstep_installed{false}; // the camera update hook (game thread, every frame) is in place
 void BlocksCollisionStep(); // defined with the placed blocks below
+void ShadowGroundStep();    // the same
 void McJumpStep();          // defined after them
 void FlightStep();          // defined after them
 void DriveVelocityFromKeys(uintptr_t module, bool force_zero);
@@ -787,6 +792,7 @@ uint64_t __fastcall CameraStepDetour(uint64_t self, float dt, uint64_t chr, uint
     FlightStep();
     BlocksCollisionStep();
     McJumpStep();
+    ShadowGroundStep();
     RestoreCamKeep();
     uintptr_t addr = 0;
     float before[3] = {};
@@ -1841,6 +1847,35 @@ void LandFallTimer(uintptr_t chr) {
 
 // Keeps the player out of the blocks. Runs on the game thread, at the start of every camera update (the game's own per-frame hook), so
 // the physics position is never written while the game is using it and the camera sees the corrected position.
+// The ground under the player for the blob shadow: a ray straight down (game thread, like every other cast) and the placed blocks' tops.
+// Without a ground the overlay falls back to the feet's own height, which is right whenever the player stands.
+void ShadowGroundStep() {
+    if (!g_shadow_enabled.load(std::memory_order_relaxed) || !g_steve_enabled.load(std::memory_order_relaxed) || !g_mc_mode.load(std::memory_order_relaxed)) {
+        g_ground_valid.store(false, std::memory_order_relaxed);
+        return;
+    }
+    const uintptr_t player = PlayerChrPtr();
+    float feet[3];
+    if (player == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) {
+        g_ground_valid.store(false, std::memory_order_relaxed);
+        return;
+    }
+    const RayCastFn cast = (g_raycast != nullptr && g_los_enabled.load()) ? RayCastFn(CastStaticRay) : RayCastFn{};
+    const eldenring::shadow::BlockTopFn block_top = [](float x, float feet_y, float z, float max_drop) -> std::optional<float> {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        if (g_blocks.count() == 0) return std::nullopt;
+        const int top_cell = static_cast<int>(std::floor(feet_y + 0.06f));
+        const int low_cell = static_cast<int>(std::floor(feet_y - max_drop));
+        for (int y = top_cell; y >= low_cell; --y) {
+            if (g_blocks.get(blocks::cellOf(x, static_cast<float>(y), z)) != mc::BlockId::Air) return static_cast<float>(y + 1);
+        }
+        return std::nullopt;
+    };
+    const std::optional<float> ground = eldenring::shadow::groundBelow(cast, block_top, feet);
+    g_ground_valid.store(ground.has_value(), std::memory_order_relaxed);
+    if (ground) g_ground_y.store(*ground, std::memory_order_relaxed);
+}
+
 void BlocksCollisionStep() {
     static bool have_prev = false;
     static float prev[3] = {};
@@ -2947,6 +2982,9 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         if (steve.dead && !was_dead) eraudio::Play("entity.player.death");
         was_dead = steve.dead;
     }
+    steve.shadow = g_shadow_enabled.load(std::memory_order_relaxed);
+    steve.ground_valid = g_ground_valid.load(std::memory_order_relaxed);
+    steve.ground_y = g_ground_y.load(std::memory_order_relaxed);
     steve.first_person = g_first_person.load() && g_slot_probe.load() < 0;
     steve.speed_mps = g_walk_speed.load();
     steve.on_ground = g_on_ground.load();
@@ -2992,6 +3030,7 @@ void SetupOverlay() {
                 else if (key == "sound_volume") g_sound_volume.store(value);
                 else if (key == "no_player_hit_vfx") g_no_player_hit_vfx.store(value != 0.f);
                 else if (key == "first_person") g_first_person.store(value != 0.f);
+                else if (key == "shadow") g_shadow_enabled.store(value != 0.f);
                 else if (key == "eye_height") g_eye_height.store(value);
                 else if (key == "fall_reset") g_fall_reset.store(value != 0.f);
                 else if (key == "fall_hold") g_fall_hold.store(std::clamp(value, 0.f, 2.8f));

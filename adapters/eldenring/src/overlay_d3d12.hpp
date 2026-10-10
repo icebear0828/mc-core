@@ -62,6 +62,9 @@ struct SteveState {
     float eating{0.f};          // 0..1 progress of the meal in the hand (0 = not eating)
     float speed_mps{0.f};       // horizontal speed, for the walking bob
     bool on_ground{true};
+    bool shadow{false};        // draw the blob shadows under the figure and the summons (mc_er_steve.txt: shadow=1)
+    bool ground_valid{false};  // ground_y is the height of the ground under the feet this frame (otherwise the feet's own height is used)
+    float ground_y{0.f};
     bool cam_valid{false}; // cam/fov_y are a real camera this frame (also set while the figure itself is not drawn)
 };
 

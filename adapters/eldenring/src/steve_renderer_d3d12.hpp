@@ -10,6 +10,7 @@
 #include <map>
 #include <vector>
 
+#include "eldenring_shadow.hpp"
 #include "eldenring_steve.hpp"
 #include "mc/entity_model.hpp"
 #include "mc/rig.hpp"
@@ -103,7 +104,21 @@ public:
                       unsigned height, const mc::rig::Mat4& view_proj, const std::vector<mc::rig::Mat4>& bones, const SteveParams& params,
                       D3D12_CPU_DESCRIPTOR_HANDLE rtv);
 
+    // The blob shadows (flat black discs with a soft edge, eldenring_shadow.hpp) on the ground under the figures. Uses the figure's own depth buffer
+    // (cleared unless params.keep_depth) so placed blocks hide them; the scene's depth hides them the way it hides the figure. Draw before the figure.
+    [[nodiscard]] bool shadowReady() const { return pso_shadow_ != nullptr && shadow_vertices_ != nullptr; }
+    void drawShadows(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table, unsigned width, unsigned height,
+                     const mc::rig::Mat4& view_proj, const std::vector<eldenring::shadow::Shadow>& shadows, const SteveParams& params,
+                     D3D12_CPU_DESCRIPTOR_HANDLE rtv);
+
 private:
+    static constexpr int kShadowSegments = 24;
+    ID3D12PipelineState* pso_shadow_{nullptr};
+    ID3D12Resource* shadow_vertices_{nullptr};
+    ID3D12Resource* shadow_indices_{nullptr};
+    D3D12_VERTEX_BUFFER_VIEW shadow_vbv_{};
+    D3D12_INDEX_BUFFER_VIEW shadow_ibv_{};
+    unsigned shadow_index_count_{0};
     struct BoneRange {
         unsigned index_count{0}, first_index{0};
         int base_vertex{0};
