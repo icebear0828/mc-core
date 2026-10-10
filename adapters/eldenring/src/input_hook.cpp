@@ -38,7 +38,16 @@ std::atomic<int> g_wheel{0};
 std::atomic<int> g_dx{0}, g_dy{0};
 std::atomic<bool> g_suppress_motion{false};
 std::atomic<bool> g_suppress_keys{false};
-std::atomic<int> g_masked_dik{0}; // one key (a DIK scan code) the game must not see, 0 = none
+std::atomic<uint64_t> g_masked_bits[4]{}; // DIK scan codes the game must not see (bit n of the 256-bit set), all clear = none
+bool AnyMasked() {
+    for (const auto& b : g_masked_bits) {
+        if (b.load(std::memory_order_relaxed) != 0) return true;
+    }
+    return false;
+}
+bool IsMasked(int dik) {
+    return dik > 0 && dik < 256 && ((g_masked_bits[dik >> 6].load(std::memory_order_relaxed) >> (dik & 63)) & 1u) != 0;
+}
 std::atomic<unsigned> g_keys_zeroed{0}, g_motion_zeroed{0};
 std::atomic<unsigned> g_kb_failed{0};
 std::atomic<long> g_kb_last_hr{0};
@@ -80,8 +89,11 @@ HRESULT STDMETHODCALLTYPE GetStateDetour(void* self, DWORD cb, LPVOID data) {
             memset(data, 0, cb); // the game sees a keyboard with nothing pressed (our own hotkeys read the OS state)
             ++g_keys_zeroed;
         } else if (k == Kind::Keyboard && data != nullptr) {
-            const int dik = g_masked_dik.load(std::memory_order_relaxed);
-            if (dik > 0 && dik < 256 && cb > static_cast<DWORD>(dik)) static_cast<BYTE*>(data)[dik] = 0; // one key hidden from the game
+            if (AnyMasked()) {
+                for (int dik = 1; dik < 256 && cb > static_cast<DWORD>(dik); ++dik) {
+                    if (IsMasked(dik)) static_cast<BYTE*>(data)[dik] = 0; // these keys are hidden from the game
+                }
+            }
         }
         if (k == Kind::Mouse && data != nullptr && cb >= kMouseButtonsOffset + 2) {
             const bool down = (static_cast<BYTE*>(data)[kMouseButtonsOffset] & 0x80) != 0;
@@ -125,10 +137,9 @@ HRESULT STDMETHODCALLTYPE GetDataDetour(void* self, DWORD cb, LPDIDEVICEOBJECTDA
             *count = 0; // buffered keyboard events are dropped
             ++g_keys_zeroed;
         } else if (k == Kind::Keyboard && data != nullptr && count != nullptr && cb >= sizeof(DIDEVICEOBJECTDATA)) {
-            const int dik = g_masked_dik.load(std::memory_order_relaxed);
-            for (DWORD i = 0; dik > 0 && i < *count; ++i) {
+            for (DWORD i = 0; AnyMasked() && i < *count; ++i) {
                 auto* e = reinterpret_cast<DIDEVICEOBJECTDATA*>(reinterpret_cast<BYTE*>(data) + static_cast<size_t>(i) * cb);
-                if (e->dwOfs == static_cast<DWORD>(dik)) e->dwData = 0; // the key is always "up" for the game
+                if (e->dwOfs < 256 && IsMasked(static_cast<int>(e->dwOfs))) e->dwData = 0; // the key is always "up" for the game
             }
         }
         if (k == Kind::Mouse && data != nullptr && count != nullptr && cb >= sizeof(DIDEVICEOBJECTDATA)) {
@@ -242,7 +253,14 @@ unsigned TakeKeyboardFailures(long& last_hr) {
     return g_kb_failed.exchange(0);
 }
 
-void SetMaskedKey(int dik) { g_masked_dik.store(dik, std::memory_order_relaxed); }
+void SetMaskedKeys(const int* diks, size_t n) {
+    uint64_t bits[4] = {};
+    for (size_t i = 0; diks != nullptr && i < n; ++i) {
+        if (diks[i] > 0 && diks[i] < 256) bits[diks[i] >> 6] |= 1ull << (diks[i] & 63);
+    }
+    for (int i = 0; i < 4; ++i) g_masked_bits[i].store(bits[i], std::memory_order_relaxed);
+}
+void SetMaskedKey(int dik) { SetMaskedKeys(&dik, dik > 0 ? 1u : 0u); }
 
 void SetSuppressKeyboard(bool on) { g_suppress_keys.store(on, std::memory_order_relaxed); }
 

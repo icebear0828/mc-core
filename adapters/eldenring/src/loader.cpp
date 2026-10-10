@@ -40,6 +40,7 @@
 #include "eldenring_blocks.hpp"
 #include "eldenring_buddy.hpp"
 #include "eldenring_creative.hpp"
+#include "eldenring_flight.hpp"
 #include "eldenring_los.hpp"
 #include "eldenring_survival.hpp"
 #include "eldenring_xp.hpp"
@@ -61,6 +62,7 @@
 using namespace eldenring::live;
 namespace blocks = eldenring::blocks;
 namespace creative = eldenring::creative;
+namespace flight = eldenring::flight;
 
 namespace {
 
@@ -581,6 +583,7 @@ CamKeep g_cam_keep;
 std::atomic<bool> g_camstep_installed{false}; // the camera update hook (game thread, every frame) is in place
 void BlocksCollisionStep(); // defined with the placed blocks below
 void McJumpStep();          // defined after them
+void FlightStep();          // defined after them
 void DriveVelocityFromKeys(uintptr_t module, bool force_zero);
 std::atomic<unsigned> g_camstep_calls{0}, g_camstep_changed{0};
 
@@ -636,6 +639,7 @@ void AfterCameraStep(bool have_before, uintptr_t addr, const float before[3]) {
 }
 
 uint64_t __fastcall CameraStepDetour(uint64_t self, float dt, uint64_t chr, uint64_t flag) {
+    FlightStep();
     BlocksCollisionStep();
     McJumpStep();
     RestoreCamKeep();
@@ -1864,6 +1868,65 @@ void McJumpStep() {
     }
 }
 
+// ---- creative flight (F5 creative mode, double-tap Space) ----------------------------------------------------------------------
+// See eldenring_flight.hpp. Game thread (camera update, before the block collision so the player is still kept out of placed blocks).
+// Only the physics position (+0x70, and the previous position +0x80 so no speed is seen) is written: no flags, no velocity, no timers.
+std::atomic<bool> g_flying{false};
+std::atomic<float> g_fly_h_speed{flight::kHorizontalSpeed};
+std::atomic<float> g_fly_v_speed{flight::kVerticalSpeed};
+
+void FlightStep() {
+    static flight::DoubleTap tap;
+    static LARGE_INTEGER last_qpc{};
+    static uint64_t last_log_ms = 0;
+    LARGE_INTEGER now_qpc, freq;
+    QueryPerformanceCounter(&now_qpc);
+    QueryPerformanceFrequency(&freq);
+    const float dt = last_qpc.QuadPart != 0 ? static_cast<float>(now_qpc.QuadPart - last_qpc.QuadPart) / static_cast<float>(freq.QuadPart) : 0.f;
+    last_qpc = now_qpc;
+    const bool allowed = g_mc_mode.load(std::memory_order_relaxed) && CurrentGameMode() == creative::GameMode::Creative &&
+                         !g_inv_open.load(std::memory_order_relaxed) && GameInForeground() && !PlayerDead();
+    if (!allowed) {
+        tap.reset();
+        if (g_flying.exchange(false)) Log("flight: stopped (creative mode, MC mode, focus, inventory or death changed)");
+        return;
+    }
+    const uint64_t now_ms = GetTickCount64();
+    if (tap.update((GetAsyncKeyState(VK_SPACE) & 0x8000) != 0, now_ms)) {
+        const bool on = !g_flying.load();
+        g_flying.store(on);
+        Log("flight: %s", on ? "started" : "stopped");
+    }
+    if (!g_flying.load(std::memory_order_relaxed)) return;
+    const uintptr_t player = PlayerChrPtr();
+    const uintptr_t module = player != 0 ? detail::readPhysicsModule(g_reader, g_img.base, player) : 0;
+    float pos[3];
+    if (module == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, pos)) return;
+    flight::Keys keys;
+    keys.forward = (GetAsyncKeyState('W') & 0x8000) != 0;
+    keys.back = (GetAsyncKeyState('S') & 0x8000) != 0;
+    keys.left = (GetAsyncKeyState('A') & 0x8000) != 0;
+    keys.right = (GetAsyncKeyState('D') & 0x8000) != 0;
+    keys.up = (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0;
+    keys.down = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    flight::Heading heading;
+    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    CameraPose cam;
+    if (world == 0 || !readCamera(g_reader, g_img.base, world, cam) || !flight::headingFromCamera(cam.forward, cam.right, heading)) {
+        keys.forward = keys.back = keys.left = keys.right = false; // no heading this frame: vertical only
+    }
+    g_movement_layer_ms.store(now_ms, std::memory_order_relaxed);
+    flight::step(pos, keys, heading, dt, g_fly_h_speed.load(std::memory_order_relaxed), g_fly_v_speed.load(std::memory_order_relaxed));
+    // Written every frame, also when standing still in the air: the game's gravity must not pull the player down between frames.
+    WriteBytesSafe(module + layout::kPhysicsPosition, pos, sizeof(pos));
+    WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, pos, sizeof(pos));
+    if (now_ms - last_log_ms >= 1000) {
+        last_log_ms = now_ms;
+        Log("flight: pos=(%.2f %.2f %.2f) keys[%d%d%d%d up=%d down=%d] dt=%.4f", pos[0], pos[1], pos[2], keys.forward ? 1 : 0, keys.back ? 1 : 0,
+            keys.left ? 1 : 0, keys.right ? 1 : 0, keys.up ? 1 : 0, keys.down ? 1 : 0, dt);
+    }
+}
+
 // Opens / closes the inventory and drives its virtual pointer. Runs on the key thread before the normal MC input, and takes the
 // click edges while the screen is open so nothing else (attack, eating) reacts to them.
 void InventoryTick(bool fg) {
@@ -2072,9 +2135,17 @@ DWORD WINAPI KeyThread(LPVOID) {
         }
         InventoryTick(fg);
         BlocksTick();
-        erin::SetMaskedKey(g_mc_jump.load() && g_mc_mode.load() && fg && !g_inv_open.load()
-                               ? static_cast<int>(MapVirtualKeyW(static_cast<UINT>(g_mc_jump_vk.load()), MAPVK_VK_TO_VSC))
-                               : 0);
+        {
+            int hidden[16];
+            size_t n_hidden = 0;
+            if (g_mc_jump.load() && g_mc_mode.load() && fg && !g_inv_open.load()) {
+                hidden[n_hidden++] = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(g_mc_jump_vk.load()), MAPVK_VK_TO_VSC));
+            }
+            if (g_flying.load()) { // while flying the game never sees the movement keys: the position is ours
+                for (const int dik : flight::kHiddenKeys) hidden[n_hidden++] = dik;
+            }
+            erin::SetMaskedKeys(hidden, n_hidden);
+        }
         const bool inv_open = g_inv_open.load();
         const bool right_edge = !inv_open && g_input_enabled.load() && erin::TakeRightClick();
         if (right_edge && fg && WantSuppress() && !PlayerDead() && TryPlaceBlock()) {
@@ -2665,6 +2736,8 @@ void SetupOverlay() {
                 else if (key == "fall_reset") g_fall_reset.store(value != 0.f);
                 else if (key == "fall_hold") g_fall_hold.store(std::clamp(value, 0.f, 2.8f));
                 else if (key == "fall_protect") g_fall_protect.store(value != 0.f);
+                else if (key == "fly_speed") g_fly_h_speed.store(std::clamp(value, 1.f, 40.f));
+                else if (key == "fly_vspeed") g_fly_v_speed.store(std::clamp(value, 1.f, 40.f));
                 else if (key == "mc_jump") g_mc_jump.store(value != 0.f);
                 else if (key == "mc_jump_key") g_mc_jump_vk.store(static_cast<int>(value));
                 else if (key == "mc_gravity") g_mc_gravity.store(std::clamp(value, 5.f, 80.f));

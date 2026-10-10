@@ -611,7 +611,6 @@ void DrawHud(const HudState& hud, float w, float h) {
     };
     const float ratio_hp = hud.max_hp > 0 ? std::clamp(static_cast<float>(hud.hp) / static_cast<float>(hud.max_hp), 0.f, 1.f) : 0.f;
     const int hp_halves = static_cast<int>(std::ceil(ratio_hp * 20.f));
-    float text_x = x0, text_y = y_bar - cell - 6.f * scale - 18.f * scale;
     if (g_atlas_ready) {
         // Real Minecraft sprites at vanilla positions (mc::HudLayout), the Minecraft GUI scale of this resolution.
         sprite(layout.hotbar(), mc::hud::kUV_HOTBAR);
@@ -698,11 +697,10 @@ void DrawHud(const HudState& hud, float w, float h) {
             for (int i = 0; i < std::min(10, full + (half ? 1 : 0)); ++i) {
                 mc::HudRect r = layout.heart(i);
                 r.y -= 10.f * static_cast<float>(layout.scale());
+                sprite(r, mc::hud::kUV_HEART_CONTAINER);
                 sprite(r, i < full ? mc::hud::kUV_HEART_ABSORB_FULL : mc::hud::kUV_HEART_ABSORB_HALF);
             }
         }
-        text_x = layout.heart(0).x;
-        text_y = layout.heart(0).y - 28.f * scale;
     }
     // hotbar
     for (int i = 0; i < 9 && !g_atlas_ready; ++i) {
@@ -785,9 +783,6 @@ void DrawHud(const HudState& hud, float w, float h) {
         snprintf(pb, sizeof(pb), "PART SLOT %d HIDDEN", hud.slot_probe);
         dl->AddText(ImGui::GetFont(), 36.f * scale, {w * 0.5f - 200.f * scale, 60.f * scale}, IM_COL32(255, 230, 0, 255), pb);
     }
-    char buf[64];
-    snprintf(buf, sizeof(buf), "MC %d/%d", hud.hp, hud.max_hp);
-    dl->AddText({text_x, text_y}, IM_COL32(255, 255, 255, 220), buf);
 }
 
 void RenderFrame(IDXGISwapChain* sc) {
