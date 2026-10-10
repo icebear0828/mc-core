@@ -111,6 +111,28 @@ inline std::vector<uint8_t> buildFireRequest(const uint8_t* real, size_t n, cons
     return out;
 }
 
+
+// Which of the two things the game wants (the audit of the first bolts: free aim, target -1 with flags 0x08, was refused; the real shot's target
+// handle with flags 0x09 was accepted): one variant per F3 press, so the log says which single change is enough. None of them is guided
+// (bit 0) while targeting the shooter.
+struct Variant {
+    std::string name;
+    uint64_t target{0};
+    uint32_t flags{0};
+};
+
+inline unsigned variantCount() { return 4; }
+
+inline Variant variant(unsigned index, uint64_t real_target, uint32_t real_flags, uint64_t own_handle) {
+    (void)real_flags;
+    switch (index % variantCount()) {
+        case 0: return {"real target handle, bit 0 clear", real_target, 0x08};
+        case 1: return {"no target (-1), bit 0 set", 0xFFFFFFFFFFFFFFFFull, 0x09};
+        case 2: return {"the shooter's own handle, bit 0 clear", own_handle, 0x08};
+        default: return {"target 0, bit 0 clear", 0, 0x08};
+    }
+}
+
 inline void muzzle(const float eye[3], const float forward[3], float distance, float out[3]) {
     for (int i = 0; i < 3; ++i) out[i] = eye[i] + forward[i] * distance;
 }

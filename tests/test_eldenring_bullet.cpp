@@ -153,3 +153,29 @@ TEST(EldenRingBulletFire, OnlyAnInvalidHandleCountsAsAFailedSpawn) {
     EXPECT_FALSE(spawnFailed(0x0000FF00u));
     EXPECT_FALSE(spawnFailed(0x0003FF00u));
 }
+
+TEST(EldenRingBulletFire, TheVariantsSeparateTheTargetHandleFromTheHomingBitAndNeverHomeOntoThePlayer) {
+    const uint64_t real = 0xFFFFFFFF06455A50ull, own = 0xFFFFFFFF16F00000ull;
+    const unsigned n = variantCount();
+    ASSERT_GE(n, 4u);
+    bool has_target_only = false, has_bit_only = false, has_own_without_bit = false;
+    for (unsigned i = 0; i < n; ++i) {
+        const Variant v = variant(i, real, 0x09, own);
+        EXPECT_FALSE(v.name.empty());
+        EXPECT_TRUE(v.flags == 0x08u || v.flags == 0x09u);
+        EXPECT_FALSE(v.target == own && (v.flags & 1u)); // a guided bolt that targets the shooter would fly back into him
+        if (v.target == real && v.flags == 0x08u) has_target_only = true;
+        if (v.target == 0xFFFFFFFFFFFFFFFFull && v.flags == 0x09u) has_bit_only = true;
+        if (v.target == own && v.flags == 0x08u) has_own_without_bit = true;
+    }
+    EXPECT_TRUE(has_target_only);
+    EXPECT_TRUE(has_bit_only);
+    EXPECT_TRUE(has_own_without_bit);
+}
+
+TEST(EldenRingBulletFire, TheVariantIndexWrapsAround) {
+    const uint64_t real = 1, own = 2;
+    const unsigned n = variantCount();
+    EXPECT_EQ(variant(0, real, 9, own).name, variant(n, real, 9, own).name);
+    EXPECT_EQ(variant(1, real, 9, own).target, variant(n + 1, real, 9, own).target);
+}

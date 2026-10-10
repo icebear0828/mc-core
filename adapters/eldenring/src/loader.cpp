@@ -2727,8 +2727,7 @@ bool SpawnBulletSafe(void* manager, uint32_t* out_handle, void* request, void* c
     }
 }
 
-// One shot of our own on the game thread: the player's real request with the aim and the origin replaced. First free aim (no target, flags 0x08);
-// when the game refuses that (invalid handle) once more exactly as the real shot was (its target handle and flags).
+// One shot of our own on the game thread: the player's real request with the aim and the origin replaced, target and flags from the next variant.
 void RunBulletFire() {
     alignas(16) uint8_t real[eldenring::bullet::kFullRequestBytes];
     alignas(16) uint8_t ctx[kBulletCtxBytes];
@@ -2761,27 +2760,27 @@ void RunBulletFire() {
     uint32_t real_flags = 0;
     std::memcpy(&real_target, real + 8, sizeof(real_target));
     std::memcpy(&real_flags, real + 0x44, sizeof(real_flags));
-    for (int attempt = 0; attempt < 2; ++attempt) {
-        fp.target = attempt == 0 ? 0xFFFFFFFFFFFFFFFFull : real_target;
-        fp.flags = attempt == 0 ? 0x08u : real_flags;
-        std::vector<uint8_t> built = eldenring::bullet::buildFireRequest(real, sizeof(real), fp);
-        if (built.size() != eldenring::bullet::kFullRequestBytes) {
-            Log("bullet fire: the template is unusable");
-            return;
-        }
-        alignas(16) uint8_t req[eldenring::bullet::kFullRequestBytes];
-        alignas(16) uint8_t ctx_copy[kBulletCtxBytes];
-        std::memcpy(req, built.data(), sizeof(req));
-        std::memcpy(ctx_copy, ctx, sizeof(ctx_copy));
-        uint32_t out = 0xFFFFFFFFu;
-        const bool ok = SpawnBulletSafe(reinterpret_cast<void*>(manager), &out, req, ctx_copy);
-        Log("bullet fire: attempt %d (%s) id=%u target=0x%016llX flags=0x%X from (%.2f %.2f %.2f) along (%.3f %.3f %.3f) tid=%lu -> %s handle 0x%08X", attempt + 1,
-            attempt == 0 ? "free aim" : "as the real shot", *reinterpret_cast<uint32_t*>(req + 0x1C), static_cast<unsigned long long>(fp.target), fp.flags,
-            fp.position[0], fp.position[1], fp.position[2], fp.forward[0], fp.forward[1], fp.forward[2], static_cast<unsigned long>(GetCurrentThreadId()),
-            ok ? "returned" : "FAULTED", out);
-        if (!ok) return;
-        if (!eldenring::bullet::spawnFailed(out)) return;
+    // One variant per press (eldenring_bullet.hpp): which single change from the refused free aim is enough. No automatic retry, so each press tells.
+    static unsigned s_variant = 0;
+    const eldenring::bullet::Variant v = eldenring::bullet::variant(s_variant, real_target, real_flags, handle);
+    const unsigned index = s_variant++ % eldenring::bullet::variantCount();
+    fp.target = v.target;
+    fp.flags = v.flags;
+    std::vector<uint8_t> built = eldenring::bullet::buildFireRequest(real, sizeof(real), fp);
+    if (built.size() != eldenring::bullet::kFullRequestBytes) {
+        Log("bullet fire: the template is unusable");
+        return;
     }
+    alignas(16) uint8_t req[eldenring::bullet::kFullRequestBytes];
+    alignas(16) uint8_t ctx_copy[kBulletCtxBytes];
+    std::memcpy(req, built.data(), sizeof(req));
+    std::memcpy(ctx_copy, ctx, sizeof(ctx_copy));
+    uint32_t out = 0xFFFFFFFFu;
+    const bool ok = SpawnBulletSafe(reinterpret_cast<void*>(manager), &out, req, ctx_copy);
+    Log("bullet fire: variant %u (%s) id=%u target=0x%016llX flags=0x%X from (%.2f %.2f %.2f) along (%.3f %.3f %.3f) tid=%lu -> %s handle 0x%08X -> %s", index,
+        v.name.c_str(), *reinterpret_cast<uint32_t*>(req + 0x1C), static_cast<unsigned long long>(fp.target), fp.flags, fp.position[0], fp.position[1],
+        fp.position[2], fp.forward[0], fp.forward[1], fp.forward[2], static_cast<unsigned long>(GetCurrentThreadId()), ok ? "returned" : "FAULTED", out,
+        !ok ? "FAULT" : (eldenring::bullet::spawnFailed(out) ? "REFUSED" : "spawned"));
 }
 
 bool QueueBulletFire() {
@@ -2816,7 +2815,7 @@ void SetupBulletLog() {
     } else {
         Log("bullet: spawn_bullet request logger at %p (RVA 0x%llX): the first 40 requests are written here%s", reinterpret_cast<void*>(target),
             static_cast<unsigned long long>(target - g_img.base),
-            g_bullet_fire_enabled.load() ? "; mc_er_bulletfire.txt: fire one real crossbow bolt, then F3 shoots one of ours" : " (read-only)");
+            g_bullet_fire_enabled.load() ? "; mc_er_bulletfire.txt: fire one real crossbow bolt, then each F3 shoots one of ours with the next target/flag variant" : " (read-only)");
     }
 }
 
