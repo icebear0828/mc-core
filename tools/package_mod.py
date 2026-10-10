@@ -80,8 +80,8 @@ class ModPackager:
             lines.extend([
                 " - This package includes placeholder HUD sprites and models to comply with Mojang EULA.",
                 " - To use authentic high-res Minecraft UI, Steve skin and 90+ game sounds:",
-                "     1) Copy your own Minecraft client.jar (1.21.x) to this folder or pass its path.",
-                "     2) Double-click 'setup_assets.bat' and follow instructions.",
+                "     Download the community asset pack (e.g. mc_adapter_assets_v*.zip)",
+                "     and extract the 'mods' folder directly into your game root directory.",
             ])
         else:
             lines.extend([
@@ -98,36 +98,13 @@ class ModPackager:
         readme_file.write_text("\n".join(lines), encoding="utf-8")
         return readme_file
 
-    def _generate_setup_assets_bat(self, dest_dir: Path) -> Path:
-        bat_file = dest_dir / "setup_assets.bat"
-        content = (
-            "@echo off\r\n"
-            "echo ============================================================\r\n"
-            "echo  Extract Minecraft Assets for mc-core Adapter\r\n"
-            "echo ============================================================\r\n"
-            "echo.\r\n"
-            "set /p CLIENT_JAR=\"Please enter the path to your Minecraft client.jar (e.g. client_1.21.jar): \"\r\n"
-            "if not exist \"%CLIENT_JAR%\" (\r\n"
-            "    echo [ERROR] File not found: %CLIENT_JAR%\r\n"
-            "    pause\r\n"
-            "    exit /b 1\r\n"
-            ")\r\n"
-            "echo Extracting assets...\r\n"
-            "python tools\\extract_mc_assets.py --client-jar \"%CLIENT_JAR%\" --export-hud-atlas --export-steve-skin --out-dir \"mods\\mc_adapter\"\r\n"
-            "python tools\\extract_mc_sounds.py --out-dir \"mods\\mc_adapter\\sounds\"\r\n"
-            "echo.\r\n"
-            "echo [DONE] Assets extracted to mods\\mc_adapter.\r\n"
-            "pause\r\n"
-        )
-        bat_file.write_text(content, encoding="utf-8")
-        return bat_file
-
     def build_package(self, out_dir: Path, make_zip: bool = True) -> Dict[str, Any]:
         """Assemble the complete package directory and optionally compress it into a zip archive."""
         out_dir = out_dir.resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
 
         pkg_name = f"mc_{self.spec['game_id']}_v{self.version}_{self.channel}"
+
         pkg_dir = out_dir / pkg_name
         if pkg_dir.exists():
             shutil.rmtree(pkg_dir)
@@ -178,11 +155,9 @@ class ModPackager:
             shutil.copy2(placeholder_atlas, target_asset_dir / "mc_hud_atlas.png")
 
         # Channel specific assets
-        if self.channel == "nexus":
-            self._generate_setup_assets_bat(pkg_dir)
-        elif self.channel == "full" and self.client_jar and self.client_jar.exists():
+        if self.channel == "full" and self.client_jar and self.client_jar.exists():
             # If client_jar provided in full channel, extract real assets
-            pass  # Future direct asset extraction integration
+            pass
 
         # 5. Generate README
         self._generate_readme(pkg_dir)
@@ -216,9 +191,48 @@ class ModPackager:
         }
 
 
+def package_assets_pack(assets_dir: Path, out_dir: Path, version: str = "0.1.0") -> Dict[str, Any]:
+    """Package an extracted mods/mc_adapter folder into a standalone distribution zip."""
+    assets_dir = assets_dir.resolve()
+    if not assets_dir.exists():
+        raise FileNotFoundError(f"Assets directory not found: {assets_dir}")
+
+    out_dir = out_dir.resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    zip_name = f"mc_adapter_assets_v{version}.zip"
+    zip_path = out_dir / zip_name
+
+    checksum_lines = []
+    # Collect files
+    file_list: List[Path] = []
+    for f in sorted(assets_dir.rglob("*")):
+        if f.is_file():
+            file_list.append(f)
+            rel = f.relative_to(assets_dir)
+            arcname = f"mods/mc_adapter/{rel.as_posix()}"
+            checksum_lines.append(f"{compute_sha256(f)}  {arcname}")
+
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for f in file_list:
+            rel = f.relative_to(assets_dir)
+            arcname = f"mods/mc_adapter/{rel.as_posix()}"
+            zf.write(f, arcname=arcname)
+        # Write checksum file directly inside the zip
+        sums_content = "\n".join(checksum_lines) + "\n"
+        zf.writestr("SHA256SUMS.txt", sums_content)
+
+    return {
+        "success": True,
+        "zip_path": str(zip_path),
+        "version": version,
+        "files_count": len(file_list),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Package mc-core mod for distribution.")
-    parser.add_argument("--game", required=True, help="Game identifier (e.g. eldenring, sekiro, wukong)")
+    parser.add_argument("--game", help="Game identifier (e.g. eldenring, sekiro, wukong)")
     parser.add_argument("--spec", help="Path to package spec JSON (defaults to package_specs/<game>.json)")
     parser.add_argument("--build-dir", type=Path, default=Path("build-win"), help="Build directory containing compiled binaries")
     parser.add_argument("--out-dir", type=Path, default=Path("dist"), help="Output directory for generated packages")
@@ -226,8 +240,24 @@ def main() -> None:
     parser.add_argument("--channel", choices=["nexus", "full"], default="nexus", help="Distribution channel")
     parser.add_argument("--client-jar", type=Path, help="Minecraft client.jar path for extracting assets")
     parser.add_argument("--no-zip", action="store_true", help="Do not create zip archive")
+    parser.add_argument("--package-assets", action="store_true", help="Package a standalone community assets pack")
+    parser.add_argument("--assets-dir", type=Path, help="Path to existing mods/mc_adapter assets folder to package")
 
     args = parser.parse_args()
+
+    if args.package_assets:
+        assets_dir = args.assets_dir or Path("mods/mc_adapter")
+        try:
+            res = package_assets_pack(assets_dir=assets_dir, out_dir=args.out_dir, version=args.version)
+            print(f"[SUCCESS] Standalone assets pack created at: {res['zip_path']} ({res['files_count']} files)")
+            return
+        except Exception as e:
+            print(f"[ERROR] Assets packaging failed: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    if not args.game:
+        print("[ERROR] --game is required when not using --package-assets", file=sys.stderr)
+        sys.exit(1)
 
     repo_root = Path(__file__).resolve().parent.parent
     spec_path = Path(args.spec) if args.spec else repo_root / "package_specs" / f"{args.game}.json"
@@ -254,6 +284,7 @@ def main() -> None:
     except Exception as e:
         print(f"[ERROR] Packaging failed: {e}", file=sys.stderr)
         sys.exit(1)
+
 
 
 if __name__ == "__main__":

@@ -25,7 +25,9 @@ Verification checklist for mc-core mod distribution.
   - `mc_er_hit.bin` exists and matches repository template (576 bytes).
   - `mc_er_steve.txt` contains valid default settings (`occlusion=1`, `blocks=1`, `mc_jump=0`, `fall_reset=0`).
   - `README_INSTALL.txt` has explicit EAC disabled and offline requirement warnings.
-  - `setup_assets.bat` exists for one-click asset extraction by users.
+  - `README_INSTALL.txt` provides clear instructions for extracting community asset pack.
   - `SHA256SUMS.txt` is populated and matches `certutil -hashfile` output.
 - [ ] **Copyright Compliance Gate**:
-  - Nexus distribution zip does not contain raw unpacked proprietary client sound packs without user extraction step.
+  - Nexus distribution zip contains only code DLL, templates, and procedural placeholders.
+  - Proprietary assets are packaged separately via `--package-assets` for community/drive distribution.
+
