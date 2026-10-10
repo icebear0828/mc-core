@@ -192,4 +192,40 @@ inline void rotateYaw(const float v[3], float deg, float out[3]) {
     out[2] = z * c - x * s;
 }
 
+
+// determinant of the rows (right, up, forward): +1 for a proper rotation in which right x up = forward (a real request's matrix), -1 when one axis is mirrored.
+inline float determinant(const float r[3], const float u[3], const float f[3]) {
+    return r[0] * (u[1] * f[2] - u[2] * f[1]) - r[1] * (u[0] * f[2] - u[2] * f[0]) + r[2] * (u[0] * f[1] - u[1] * f[0]);
+}
+
+// A roll-free basis from a forward vector, built the way a real request's matrix is: up is the world up as far as the forward allows,
+// right = up x forward, then up = forward x right (so right x up = forward). Looking straight up or down falls back to a fixed right.
+inline void buildBasis(const float forward_in[3], float right[3], float up[3]) {
+    float f[3] = {forward_in[0], forward_in[1], forward_in[2]};
+    const float fn = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+    if (fn > 1e-6f) {
+        for (float& c : f) c /= fn;
+    } else {
+        f[0] = 0.f;
+        f[1] = 0.f;
+        f[2] = 1.f;
+    }
+    float r[3] = {f[2], 0.f, -f[0]}; // (0, 1, 0) x forward
+    const float rn = std::sqrt(r[0] * r[0] + r[2] * r[2]);
+    if (rn < 1e-4f) { // straight up or down
+        r[0] = 1.f;
+        r[1] = 0.f;
+        r[2] = 0.f;
+    } else {
+        r[0] /= rn;
+        r[2] /= rn;
+    }
+    right[0] = r[0];
+    right[1] = r[1];
+    right[2] = r[2];
+    up[0] = f[1] * r[2] - f[2] * r[1]; // forward x right
+    up[1] = f[2] * r[0] - f[0] * r[2];
+    up[2] = f[0] * r[1] - f[1] * r[0];
+}
+
 } // namespace eldenring::bow

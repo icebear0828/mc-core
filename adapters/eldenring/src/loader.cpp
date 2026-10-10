@@ -3171,11 +3171,22 @@ void RunBulletFire() {
     std::memcpy(&fp.flags, real + 0x44, sizeof(fp.flags)); // a real shot has 0x09: bit 0 is kept (the replay with 0x08 flew along the body, not the matrix)
     fp.flags |= 0x08u;     // bit 3 must be set or spawn_bullet returns early
     fp.flags &= ~0x02u;    // bit 1 must be clear (the game would overwrite our matrix with a skeleton one)
-    // The game turns the flight of a replayed bolt by about +31 degrees about the vertical axis (REVERSE 35.9): the matrix is given turned by the opposite angle, so the
-    // bolt flies along the camera's forward, through the crosshair. The muzzle stays on the camera ray.
+    // The matrix is built from the camera's forward alone, the way a real request's matrix is (right = up x forward, up = forward x right, right x up = forward), not
+    // from the camera's own right/up rows: their handedness was never checked (REVERSE 35.11). bolt_yaw_offset_deg (default 0) can still turn it about the vertical axis.
+    float basis_right[3], basis_up[3];
+    eldenring::bow::buildBasis(cam.forward, basis_right, basis_up);
+    {
+        const float cam_det = eldenring::bow::determinant(cam.right, cam.up, cam.forward);
+        static unsigned s_logged = 0;
+        if (s_logged++ < 12) {
+            Log("bullet fire: the camera's own basis has determinant %+.2f (right (%.3f %.3f %.3f) up (%.3f %.3f %.3f) forward (%.3f %.3f %.3f)); the request gets right (%.3f %.3f %.3f) up (%.3f %.3f %.3f)",
+                cam_det, cam.right[0], cam.right[1], cam.right[2], cam.up[0], cam.up[1], cam.up[2], cam.forward[0], cam.forward[1], cam.forward[2], basis_right[0], basis_right[1],
+                basis_right[2], basis_up[0], basis_up[1], basis_up[2]);
+        }
+    }
     const float yaw_comp = -g_bolt_yaw_offset.load();
-    eldenring::bow::rotateYaw(cam.right, yaw_comp, fp.right);
-    eldenring::bow::rotateYaw(cam.up, yaw_comp, fp.up);
+    eldenring::bow::rotateYaw(basis_right, yaw_comp, fp.right);
+    eldenring::bow::rotateYaw(basis_up, yaw_comp, fp.up);
     eldenring::bow::rotateYaw(cam.forward, yaw_comp, fp.forward);
     eldenring::bullet::muzzle(cam.position, cam.forward, 0.8f, fp.position);
     const std::vector<uint8_t> built = eldenring::bullet::buildFireRequest(real, sizeof(real), fp);

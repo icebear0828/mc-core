@@ -250,3 +250,48 @@ TEST(EldenRingBowAim, TheMeasuredOffsetOfTheGameCancelsOut) {
     EXPECT_NEAR(e.yaw_deg, 0.f, 1e-3f);
     EXPECT_NEAR(e.pitch_deg, 0.f, 1e-3f);
 }
+
+TEST(EldenRingBowAim, TheBasisFromAForwardMatchesTheMatrixOfARealShot) {
+    // A real request (REVERSE 35.1): right (0.857, -0.001, -0.516), up (0.001, 1.0, 0.0), forward (0.516, -0.001, 0.857).
+    const float forward[3] = {0.516f, 0.f, 0.857f};
+    float right[3], up[3];
+    buildBasis(forward, right, up);
+    EXPECT_NEAR(right[0], 0.857f, 2e-3f);
+    EXPECT_NEAR(right[1], 0.f, 1e-5f);
+    EXPECT_NEAR(right[2], -0.516f, 2e-3f);
+    EXPECT_NEAR(up[0], 0.f, 1e-4f);
+    EXPECT_NEAR(up[1], 1.f, 1e-4f);
+    EXPECT_NEAR(up[2], 0.f, 1e-4f);
+}
+
+TEST(EldenRingBowAim, TheBasisIsOrthonormalAndProperEvenWhenLookingUpAndDown) {
+    for (float pitch : {-80.f, -30.f, 0.f, 45.f, 85.f}) {
+        const float p = pitch * 3.14159265f / 180.f;
+        const float forward[3] = {0.6f * std::cos(p), std::sin(p), 0.8f * std::cos(p)};
+        float right[3], up[3];
+        buildBasis(forward, right, up);
+        auto dot = [](const float a[3], const float b[3]) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+        EXPECT_NEAR(dot(right, right), 1.f, 1e-5f);
+        EXPECT_NEAR(dot(up, up), 1.f, 1e-5f);
+        EXPECT_NEAR(dot(right, up), 0.f, 1e-5f);
+        EXPECT_NEAR(dot(right, forward), 0.f, 1e-5f);
+        EXPECT_NEAR(dot(up, forward), 0.f, 1e-5f);
+        EXPECT_NEAR(determinant(right, up, forward), 1.f, 1e-4f);   // proper: right x up = forward
+        EXPECT_GT(up[1], 0.f);                                      // never upside down
+    }
+}
+
+TEST(EldenRingBowAim, ALookStraightUpOrDownStillGivesAUsableBasis) {
+    const float forward[3] = {0.f, 1.f, 0.f};
+    float right[3], up[3];
+    buildBasis(forward, right, up);
+    EXPECT_TRUE(std::isfinite(right[0]) && std::isfinite(right[2]) && std::isfinite(up[1]));
+    EXPECT_NEAR(std::sqrt(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]), 1.f, 1e-4f);
+}
+
+TEST(EldenRingBowAim, AMirroredBasisHasADeterminantOfMinusOne) {
+    const float right[3] = {-1.f, 0.f, 0.f}, up[3] = {0.f, 1.f, 0.f}, forward[3] = {0.f, 0.f, 1.f};
+    EXPECT_NEAR(determinant(right, up, forward), -1.f, 1e-6f);
+    const float right2[3] = {1.f, 0.f, 0.f};
+    EXPECT_NEAR(determinant(right2, up, forward), 1.f, 1e-6f);
+}
