@@ -606,3 +606,64 @@ def test_build_geometry_mesh_generates_valid_triangles():
         assert 0.0 <= u <= 1.0
         assert 0.0 <= v <= 1.0
 
+
+def test_zombie_geo_json_file_is_valid():
+    from extract_mc_assets import parse_geometry_json, build_geometry_mesh
+
+    root = Path(__file__).resolve().parent.parent
+    zombie_path = root / "assets/source/models/entities/zombie.geo.json"
+    assert zombie_path.exists(), f"Missing {zombie_path}"
+
+    content = zombie_path.read_text(encoding="utf-8")
+    geo = parse_geometry_json(content)
+    assert geo["identifier"] == "geometry.zombie"
+    assert geo["texture_width"] == 64
+    assert geo["texture_height"] == 64
+    assert len(geo["bones"]) == 12
+
+    bone_names = {b["name"] for b in geo["bones"]}
+    assert "head" in bone_names
+    assert "body" in bone_names
+    assert "right_arm" in bone_names
+    assert "left_arm" in bone_names
+    assert "right_leg" in bone_names
+    assert "left_leg" in bone_names
+
+    parts = build_geometry_mesh(geo)
+    assert len(parts) == 12
+    for name, mesh in parts.items():
+        assert len(mesh["positions"]) >= 24
+        assert len(mesh["triangles"]) >= 36
+
+
+def test_creeper_and_skeleton_geo_json_files_are_valid():
+    from extract_mc_assets import parse_geometry_json, build_geometry_mesh
+
+    root = Path(__file__).resolve().parent.parent
+    for mob_id, filename in [("geometry.creeper", "creeper.geo.json"), ("geometry.skeleton", "skeleton.geo.json")]:
+        p = root / "assets/source/models/entities" / filename
+        assert p.exists(), f"Missing {p}"
+        geo = parse_geometry_json(p.read_text(encoding="utf-8"))
+        assert geo["identifier"] == mob_id
+        parts = build_geometry_mesh(geo)
+        assert len(parts) >= 6
+
+
+def test_export_entity_models(tmp_path: Path):
+    from extract_mc_assets import export_entity_models
+
+    root = Path(__file__).resolve().parent.parent
+    models_dir = root / "assets/source/models"
+    out_dir = tmp_path / "mods/mc_adapter"
+
+    copied = export_entity_models(models_dir, out_dir)
+    assert len(copied) >= 3
+    copied_names = {f.name for f in copied}
+    assert "zombie.geo.json" in copied_names
+    assert "creeper.geo.json" in copied_names
+    assert "skeleton.geo.json" in copied_names
+    for f in copied:
+        assert f.exists()
+        assert f.stat().st_size > 0
+
+

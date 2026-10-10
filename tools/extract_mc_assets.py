@@ -5,6 +5,7 @@ import io
 import json
 import math
 from pathlib import Path
+import shutil
 import zipfile
 from PIL import Image
 
@@ -951,9 +952,9 @@ def mirror_empty_left_limbs(skin: Image.Image) -> Image.Image:
 
 
 def export_mob_skin(client_jar: Path, out_dir: Path, mob: str) -> Path:
-    """Copy a humanoid mob's skin (64x64, the player's UV layout) out of a local client.jar as <mob>.png."""
+    """Copy a mob's skin out of a local client.jar as <mob>.png."""
     if mob not in _MOB_SKINS:
-        raise ValueError(f"unknown mob {mob!r}; humanoid mobs with the player's UV layout: {sorted(_MOB_SKINS)}")
+        raise ValueError(f"unknown mob {mob!r}; available mobs: {sorted(_MOB_SKINS)}")
     entry = _JAR_TEXTURES + _MOB_SKINS[mob]
     with zipfile.ZipFile(client_jar, "r") as jar:
         if entry not in jar.namelist():
@@ -968,6 +969,22 @@ def export_mob_skin(client_jar: Path, out_dir: Path, mob: str) -> Path:
     return out
 
 
+def export_entity_models(models_dir: Path, out_dir: Path) -> list[Path]:
+    """Copy all entity geometry .geo.json files to out_dir."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    copied = []
+    candidates = list(models_dir.glob("*.geo.json")) + list(models_dir.glob("entities/*.geo.json"))
+    seen = set()
+    for src in candidates:
+        if src.name in seen:
+            continue
+        seen.add(src.name)
+        dst = out_dir / src.name
+        shutil.copy(src, dst)
+        copied.append(dst)
+    return copied
+
+
 def main():
     parser = argparse.ArgumentParser(description="Extract MC Java assets to standard OBJ/PNG models.")
     parser.add_argument("--client-jar", type=Path, help="Path to Minecraft Java client.jar")
@@ -977,12 +994,18 @@ def main():
     parser.add_argument("--export-adapter-header", type=Path, help="Export an adapter header forwarding the shared atlas names")
     parser.add_argument("--adapter-namespace", default="sekiro::hud", help="Namespace for --export-adapter-header")
     parser.add_argument("--export-steve-skin", action="store_true", help="Export the real Steve skin as steve.png (needs --client-jar)")
-    parser.add_argument("--export-mob-skin", action="append", choices=sorted(_MOB_SKINS), help="Export a humanoid mob's skin as <mob>.png (needs --client-jar; repeatable)")
+    parser.add_argument("--export-mob-skin", action="append", choices=sorted(_MOB_SKINS), help="Export a mob's skin as <mob>.png (needs --client-jar; repeatable)")
+    parser.add_argument("--export-all-mobs", action="store_true", help="Export all supported mob skins (needs --client-jar)")
+    parser.add_argument("--export-entity-models", action="store_true", help="Export all entity geometry JSONs (.geo.json) to --out-dir")
     parser.add_argument("--geometry-json", type=Path, help="Path to a Bedrock/Blockbench geometry.json to extract OBJ models from")
     parser.add_argument("--geometry-texture", type=Path, help="Optional texture PNG for --geometry-json")
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    if args.export_entity_models:
+        root = Path(__file__).resolve().parent.parent
+        copied = export_entity_models(root / "assets/source/models", args.out_dir)
+        print(f"Exported {len(copied)} entity geometry models to {args.out_dir}")
     if args.geometry_json:
         geo = parse_geometry_json(args.geometry_json.read_text(encoding="utf-8"))
         tex = Image.open(args.geometry_texture).convert("RGBA") if args.geometry_texture else None
@@ -995,11 +1018,15 @@ def main():
         if not args.client_jar:
             parser.error("--export-steve-skin requires --client-jar")
         print(f"Exported Steve skin to {export_steve_skin(args.client_jar, args.out_dir)}")
-    for mob in args.export_mob_skin or []:
+    mobs_to_export = list(args.export_mob_skin or [])
+    if args.export_all_mobs:
+        mobs_to_export = sorted(_MOB_SKINS.keys())
+    for mob in mobs_to_export:
         if not args.client_jar:
-            parser.error("--export-mob-skin requires --client-jar")
+            parser.error("--export-mob-skin / --export-all-mobs requires --client-jar")
         print(f"Exported {mob} skin to {export_mob_skin(args.client_jar, args.out_dir, mob)}")
     if args.export_hud_atlas or args.export_header or args.export_adapter_header:
+
         atlas_img, uv_map = build_hud_atlas(args.client_jar)
         atlas_path = args.out_dir / "mc_hud_atlas.png"
         atlas_img.save(atlas_path)

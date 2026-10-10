@@ -1,5 +1,6 @@
 #include "mc/entity_model.hpp"
 
+#include <fstream>
 #include <gtest/gtest.h>
 
 namespace mc::model {
@@ -160,5 +161,53 @@ TEST(EntityModel, RejectsMalformedJson) {
     EXPECT_FALSE(EntityModel::fromJson(R"({"format_version": "1.12.0"})").has_value());
 }
 
+TEST(EntityModel, ParsesActualZombieGeoJsonFile) {
+    const std::string path = std::string(MC_ASSET_DIR) + "/models/entities/zombie.geo.json";
+    std::ifstream file(path);
+    ASSERT_TRUE(file.is_open()) << "Failed to open " << path;
+    std::stringstream ss;
+    ss << file.rdbuf();
+
+    const auto opt = EntityModel::fromJson(ss.str());
+    ASSERT_TRUE(opt.has_value());
+    const auto& model = *opt;
+
+    EXPECT_EQ(model.identifier, "geometry.zombie");
+    EXPECT_FLOAT_EQ(model.texture_width, 64.0f);
+    EXPECT_FLOAT_EQ(model.texture_height, 64.0f);
+    ASSERT_EQ(model.bones.size(), 12u);
+
+    const auto* head = model.findBone("head");
+    ASSERT_NE(head, nullptr);
+    const auto* right_arm = model.findBone("right_arm");
+    ASSERT_NE(right_arm, nullptr);
+    EXPECT_FLOAT_EQ(right_arm->rotation.x, -90.0f);
+
+    const rig::HostBasis basis{
+        .forward = {1.f, 0.f, 0.f},
+        .left = {0.f, 1.f, 0.f},
+        .up = {0.f, 0.f, 1.f},
+        .units_per_cm = 1.0f,
+    };
+    const rig::RigMesh mesh = model.buildCombinedMesh(basis);
+    EXPECT_GT(mesh.vertices.size(), 0u);
+    EXPECT_GT(mesh.indices.size(), 0u);
+}
+
+TEST(EntityModel, ParsesActualCreeperAndSkeletonGeoJsonFiles) {
+    for (const auto& [mob_id, filename] : {std::pair{"geometry.creeper", "creeper.geo.json"}, {"geometry.skeleton", "skeleton.geo.json"}}) {
+        const std::string path = std::string(MC_ASSET_DIR) + "/models/entities/" + filename;
+        std::ifstream file(path);
+        ASSERT_TRUE(file.is_open()) << "Failed to open " << path;
+        std::stringstream ss;
+        ss << file.rdbuf();
+
+        const auto opt = EntityModel::fromJson(ss.str());
+        ASSERT_TRUE(opt.has_value());
+        EXPECT_EQ(opt->identifier, mob_id);
+    }
+}
+
 } // namespace
 } // namespace mc::model
+

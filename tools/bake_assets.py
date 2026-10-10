@@ -112,6 +112,39 @@ def bake_sekiro(source_dir: Path, output_dir: Path) -> bool:
     return True
 
 
+def bake_eldenring(source_dir: Path, output_dir: Path) -> bool:
+    print(f"\n[ELDENRING] Baking Elden Ring mod assets (D3D12 / mods/mc_adapter layout)...")
+    er_out = output_dir / "eldenring"
+    entities_out = er_out / "entities"
+    er_out.mkdir(parents=True, exist_ok=True)
+    entities_out.mkdir(parents=True, exist_ok=True)
+
+    print("            Staging entity geometry models (.geo.json)...")
+    for f in source_dir.glob("models/entities/*.geo.json"):
+        shutil.copy(f, entities_out)
+        shutil.copy(f, er_out)
+    for f in source_dir.glob("models/*.geo.json"):
+        shutil.copy(f, er_out)
+
+    print("            Staging textures...")
+    for f in source_dir.glob("textures/*.png"):
+        shutil.copy(f, er_out)
+
+    # Build and stage HUD atlas texture
+    try:
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent))
+        from extract_mc_assets import build_hud_atlas
+        atlas_img, _ = build_hud_atlas()
+        atlas_img.save(er_out / "mc_hud_atlas.png")
+        print("            Staged mc_hud_atlas.png for Elden Ring D3D12 HUD overlay.")
+    except Exception as e:
+        print(f"            Notice: HUD atlas generation skipped: {e}")
+
+    print(f"[ELDENRING] Staged {len(list(er_out.glob('*.geo.json')))} entity models and {len(list(er_out.glob('*.png')))} textures.")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Bake source assets into engine-specific binary packages.")
     parser.add_argument("--source-dir", type=Path, default=Path("assets/source"), help="Path to source OBJ/PNG assets")
@@ -136,12 +169,15 @@ def main():
             bake_gta5(args.source_dir, args.output_dir)
         elif t == "sekiro":
             bake_sekiro(args.source_dir, args.output_dir)
-        elif t in ["eldenring", "re_engine"]:
+        elif t == "eldenring":
+            bake_eldenring(args.source_dir, args.output_dir)
+        elif t in ["re_engine"]:
             dest = args.output_dir / t
             dest.mkdir(parents=True, exist_ok=True)
             print(f"[{t.upper()}] Prepped asset staging directory at {dest}")
 
     print("\nBaking pipeline staging complete.")
+
 
 
 if __name__ == "__main__":
