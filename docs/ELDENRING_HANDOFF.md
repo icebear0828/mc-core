@@ -51,7 +51,9 @@
 - 模板：第一次真射一发时，`SpawnBulletDetour` 把请求体存成游戏目录的 `mc_er_bullet.bin`，之后每次启动读取，F3 就不需要先射一发、也不需要手持弩。换弹药（行 ID 或子弹 ID 变）才会重写。纯逻辑在 `eldenring_bullet.hpp`（`buildFireRequest`、`templateUsable`、`boltDamageEr` 等），有测试。
 - 发射在游戏线程（`ClampDetour`）里调用，带 SEH（`SpawnBulletSafe`）。F3 → `QueueBulletFire` → `g_bullet_fire_pending` → `RunBulletFire`。
 - 命中：弩箭击中敌人时 `ProcessDamageContext` 看到 **`u8[DA]==2`、`attacker` 参数是玩家、`ctx+0x1D8` 是子弹对象**（`6` 只是玩家被箭射时的值）。`HandleProjectileHit` 在 `mc_er_arrowdmg.txt` 存在、最近一次 `spawn_bullet` 是弩箭（ID 56）且在 4 s 内时，把 `ctx+0x228` 换成 `boltDamageEr`（MC 弩箭 9 点，按敌人最大生命值的 5% × 9/7 折算，与近战同口径）。实测 `max_hp=219` 的敌人每发 14，F3 与真射一致（引擎原来算 13~25 / 74）。
-- **没做**：把游戏的弩箭模型换成 MC 箭（要读子弹位置，`CSBulletIns` 虚表 `0x142A28EC0`、RTTI 已核，但位置偏移没有证据，需要自己做只读探针）；MC 右键拉弓输入与蓄力；击退、命中音效/标记；其他弹药和弓（每种要真射一发学它的行 ID 和子弹 ID，用户没有弓）。
+- **MC 右键拉弓**（`feat/bow`，用户实机确认，`eldenring_bow.hpp`）：按住右键拉弓，松手发射，力度/伤害按 MC 规则缩放，生存模式消耗背包里的箭（起始背包主栏第 1 格有 64 支）。见 `ELDENRING_REVERSE.md` §35.7。
+- **弩箭外观不做 MC 覆盖**（用户看到游戏弩箭与 MC 箭差不多）。子弹实时位置已查清但不使用：`[manager+0x0]` → `CSBulletIns`，`+0x10` 位置、`+0x20` 四元数；原生弩箭是特效（`GXFfxSceneCtrl`），没法隐藏；见 §35.8。位置探针只在 `mc_er_bulletpos.txt` / `mc_er_bulletscan.txt` 存在时运行，**默认应该删掉这两个开关文件**。
+- **没做**：第一人称拉弓动画和弓的三阶段拉伸贴图；箭速随力度变化；击退、命中音效/标记；其他弹药和弓（每种要真射一发学它的行 ID 和子弹 ID，用户没有弓）。
 
 **体感/光照（阴影之后的下一步；未开始写渲染侧）**：现在 `PSMain` 只有 MC 固定面明暗，颜色直接写进显示空间的后缓冲（交换链格式 24 = R10G10B10A2）。可用：半球环境光、距离雾。**不可照搬**：ACES + 伽马和写死的太阳/天空/雾数值。两条路：①屏幕采样（不依赖逆向，要在画角色前拷一份后缓冲）；②读游戏真实光照。**②的现状（`ELDENRING_REVERSE.md` §34）**：逆向方的同进程昼夜差分显示，`SetGraphicsRootConstantBufferView` root 1（调用点返回地址 `0xECBCF0`，绑定函数 `0xECBCC1` 起，分配器 `0xECC2B0`）里堆内偏移 `+0xC00` 的 256 字节缓冲随昼夜剧变（A 级，我核对过日志）。**但字段含义是推测**（白天 `(-0.4175, 0.7063, 0.5645)` 长度 0.996，更像太阳方向；夜晚同偏移含义变了），只有两个时间点，且同一调用点每帧调用 11 次，"第几次"跨帧是否稳定没验证。他们在 win 上的探针每次调用都加互斥锁，**不能原样合入**。
 
