@@ -252,3 +252,17 @@ TEST(EldenRingBulletFire, TheAttachPointFieldAt1CIsTakenFromTheTemplateUnlessAsk
     std::memcpy(&v, same.data() + 0x1C, 4);
     EXPECT_EQ(v, 56u);
 }
+
+TEST(EldenRingBulletTiming, TheExpectedFlightTimeFollowsTheMeasuredBoltSpeed) {
+    EXPECT_NEAR(kBoltSpeedMps, 32.5f, 1e-4f);    // measured (REVERSE 35.8): about 32~33 m/s along a straight line
+    EXPECT_NEAR(boltFlightMs(32.5f), 1000.f, 1e-2f);
+    EXPECT_NEAR(boltFlightMs(10.f), 307.7f, 0.1f);
+    EXPECT_FLOAT_EQ(boltFlightMs(0.f), 0.f);
+    EXPECT_FLOAT_EQ(boltFlightMs(-5.f), 0.f);
+}
+
+TEST(EldenRingBulletTiming, TheLagIsHowMuchLaterThanTheFlightTheHitWasProcessed) {
+    EXPECT_NEAR(hitLagMs(10.f, 307.7f), 0.f, 0.2f);      // on time
+    EXPECT_NEAR(hitLagMs(10.f, 1300.f), 992.3f, 0.2f);   // 1.3 s for 10 m: about a second late
+    EXPECT_LT(hitLagMs(30.f, 400.f), 0.f);               // earlier than a straight 32 m/s flight (a nearer target than assumed)
+}
