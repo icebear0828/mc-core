@@ -527,7 +527,9 @@ float __fastcall CreativeFallDetour(void* fall_module) {
 bool __fastcall CreativeFallTimeExceededDetour(void* fall_module, float threshold) {
     const bool real = g_cr_exceeded_orig(fall_module, threshold);
     if (!real) return false;
-    if (!creative::shouldDenyLongFall(CurrentGameMode(), g_mc_mode.load(std::memory_order_relaxed), creative::isPlayer(ModuleOwner(fall_module), PlayerChrPtr()))) return real;
+    const bool held_up = g_fall_protect.load(std::memory_order_relaxed) &&
+                         (BlocksPresent() || GetTickCount64() - g_movement_layer_ms.load(std::memory_order_relaxed) < 3000);
+    if (!creative::shouldDenyLongFall(CurrentGameMode(), g_mc_mode.load(std::memory_order_relaxed), creative::isPlayer(ModuleOwner(fall_module), PlayerChrPtr()), held_up)) return real;
     static std::atomic<unsigned> logged{0};
     if (++logged <= 10) Log("creative: the fall lasted %.2f s (threshold %.2f s): answered no for the player", FallTimer(PlayerChrPtr()), static_cast<double>(threshold));
     return false;

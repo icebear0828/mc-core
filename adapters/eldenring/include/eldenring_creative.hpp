@@ -56,7 +56,11 @@ inline bool shouldZeroFall(bool creative_nofall, bool mc_mode, bool owner_is_pla
 inline bool shouldBlockPlayerKill(GameMode mode, bool mc_mode, int hp) { return mode == GameMode::Creative && mc_mode && hp > 0; }
 
 // "The fall lasted too long" (FallModule+0x18 above a threshold) is decided by 0x14044E3A0 and starts the fall death. Creative mode answers no.
-inline bool shouldDenyLongFall(GameMode mode, bool mc_mode, bool owner_is_player) { return mode == GameMode::Creative && mc_mode && owner_is_player; }
+// Survival answers no only while our own movement layer holds the player up (standing on placed blocks, which the game does not know, or
+// within a few seconds of our jump/flight): the same 12 s timer ran out there and the old KillChr-only skip left a death effect without a death.
+inline bool shouldDenyLongFall(GameMode mode, bool mc_mode, bool owner_is_player, bool held_up_by_our_movement) {
+    return mc_mode && owner_is_player && (mode == GameMode::Creative || held_up_by_our_movement);
+}
 
 // Per-caller rate limit for the fall height probe: it runs every frame from several callers.
 struct FallLogState {
