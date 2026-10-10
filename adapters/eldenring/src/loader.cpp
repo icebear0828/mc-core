@@ -1172,6 +1172,7 @@ std::atomic<float> g_last_shot_damage{eldenring::bullet::kCrossbowDamage}; // th
 std::atomic<float> g_pending_shot_damage{eldenring::bullet::kCrossbowDamage}; // of the shot queued for the game thread
 std::atomic<float> g_bow_power{0.f};             // 0..1 while the bow is drawn (third-person arms), written by the key thread
 std::atomic<float> g_bow_ticks{0.f};             // ticks drawn (first-person pose)
+std::atomic<int> g_bolt_attach_poly{-1};         // mc_er_steve.txt: bolt_attach_poly. Request +0x1C is the shooter's dummy poly id, not a bullet id: >= 0 makes the game take that bone's matrix instead of ours (REVERSE 35.12); -1 keeps ours; 56 is what a real shot sends
 std::atomic<uint64_t> g_last_bullet_tick_ms{0}; // the last spawn_bullet call (the player's real shot or ours): hits within 3 s after it are logged whatever they look like
 
 void HandleProjectileHit(void* module, void* attacker, uint8_t* ctx) {
@@ -3036,6 +3037,7 @@ void RunBulletFire() {
     std::memcpy(fp.up, basis_up, sizeof(fp.up));
     std::memcpy(fp.forward, cam.forward, sizeof(fp.forward));
     eldenring::bullet::muzzle(cam.position, cam.forward, 0.8f, fp.position);
+    fp.attach_poly = g_bolt_attach_poly.load();
     const std::vector<uint8_t> built = eldenring::bullet::buildFireRequest(real, sizeof(real), fp);
     if (built.size() != eldenring::bullet::kFullRequestBytes) {
         Log("bullet fire: the template is unusable");
@@ -3047,13 +3049,13 @@ void RunBulletFire() {
     uint32_t out = 0xFFFFFFFFu;
     const float shot_damage = g_pending_shot_damage.load();
     g_last_shot_damage.store(shot_damage, std::memory_order_relaxed);
-    g_last_bullet_id.store(*reinterpret_cast<uint32_t*>(req + 0x1C), std::memory_order_relaxed);
+    g_last_bullet_id.store(eldenring::bullet::kBoltBulletId, std::memory_order_relaxed); // our crossbow bolt: the marker for the hit handler, whatever +0x1C holds
     g_last_bullet_tick_ms.store(GetTickCount64(), std::memory_order_relaxed);
     const bool ok = SpawnBulletSafe(reinterpret_cast<void*>(manager), &out, req, status);
     uint32_t code = 0;
     std::memcpy(&code, status, sizeof(code));
-    Log("bullet fire: MC damage %.1f param row 0x%08X id=%u flags=0x%X from (%.2f %.2f %.2f) along (%.3f %.3f %.3f) tid=%lu -> %s handle 0x%08X status %u -> %s", shot_damage, *reinterpret_cast<uint32_t*>(req + 8),
-        *reinterpret_cast<uint32_t*>(req + 0x1C), fp.flags, fp.position[0], fp.position[1], fp.position[2], fp.forward[0], fp.forward[1], fp.forward[2],
+    Log("bullet fire: MC damage %.1f param row 0x%08X +0x1C(dummy poly)=%d flags=0x%X from (%.2f %.2f %.2f) along (%.3f %.3f %.3f) tid=%lu -> %s handle 0x%08X status %u -> %s", shot_damage, *reinterpret_cast<uint32_t*>(req + 8),
+        *reinterpret_cast<int32_t*>(req + 0x1C), fp.flags, fp.position[0], fp.position[1], fp.position[2], fp.forward[0], fp.forward[1], fp.forward[2],
         static_cast<unsigned long>(GetCurrentThreadId()), ok ? "returned" : "FAULTED", out, code, !ok ? "FAULT" : (eldenring::bullet::spawnFailed(out) ? "REFUSED" : "spawned"));
     if (ok && !eldenring::bullet::spawnFailed(out)) AimCalStart(manager, out, cam.forward); // the intended aim: AIMCAL shows how far the flight is from it
 }
@@ -3508,6 +3510,7 @@ void SetupOverlay() {
                 else if (key == "no_player_hit_vfx") g_no_player_hit_vfx.store(value != 0.f);
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "shadow") g_shadow_enabled.store(value != 0.f);
+                else if (key == "bolt_attach_poly") g_bolt_attach_poly.store(static_cast<int>(value));
                 else if (key == "eye_height") g_eye_height.store(value);
                 else if (key == "fall_reset") g_fall_reset.store(value != 0.f);
                 else if (key == "fall_hold") g_fall_hold.store(std::clamp(value, 0.f, 2.8f));

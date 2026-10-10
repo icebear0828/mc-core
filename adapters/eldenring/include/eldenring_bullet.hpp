@@ -87,11 +87,14 @@ private:
 // ---- firing a bolt of our own from a request the game itself wrote ---------------------------------------------------------------------
 inline constexpr size_t kFullRequestBytes = 0x110; // the constructor's size (0x14038C580); the logger only dumps the first kRequestBytes
 
+inline constexpr int64_t kKeepTemplate = INT64_MIN; // FireParams::attach_poly: leave the template's value
+
 struct FireParams {
     uint64_t owner{0};   // the shooter's entity handle (player ChrIns+0x08)
     uint64_t row_id{0xFFFFFFFFFFFFFFFFull}; // +0x08: a param row id the game can resolve (the real shot's value)
     uint32_t flags{0x08}; // +0x44: bit 3 must be set (spawn_bullet returns early otherwise), bit 1 must be clear
     float right[3]{}, up[3]{}, forward[3]{}, position[3]{}; // row-major world matrix at +0x50
+    int64_t attach_poly{kKeepTemplate}; // +0x1C: the dummy poly (attachment point) id of the shooter's model, NOT a bullet id (REVERSE 35.12); >= 0 makes the game take that point's matrix
 };
 
 // A copy of a real request (from the logger) with the fields we own replaced; everything else is what the game wrote. +0xB0 (a pointer to a
@@ -110,6 +113,10 @@ inline std::vector<uint8_t> buildFireRequest(const uint8_t* real, size_t n, cons
     const float one = 1.f; // w of the translation row, as in the real request
     std::memcpy(out.data() + 0x8C, &one, 4);
     std::memset(out.data() + 0xB0, 0, 8);
+    if (p.attach_poly != kKeepTemplate) {
+        const int32_t poly = static_cast<int32_t>(p.attach_poly);
+        std::memcpy(out.data() + 0x1C, &poly, 4);
+    }
     return out;
 }
 
