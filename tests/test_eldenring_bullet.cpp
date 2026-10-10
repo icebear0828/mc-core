@@ -218,3 +218,21 @@ TEST(EldenRingBulletDamage, OnlyAHitByTheShootersBoltRightAfterAShotIsReplaced) 
     EXPECT_FALSE(isPlayersBoltHit(2, player, player, other, kBoltBulletId, 4000));        // too long ago to be this bolt
     EXPECT_TRUE(isPlayersBoltHit(2, player, player, other, kBoltBulletId, 3999));
 }
+
+TEST(EldenRingBulletFire, TheDummyPolyFieldIsOnlyChangedWhenAnExperimentAsksForIt) {
+    const auto t = realTemplate();
+    FireParams p = params();
+    const auto untouched = buildFireRequest(t.data(), t.size(), p);
+    uint32_t v = 7;
+    std::memcpy(&v, untouched.data() + 0x10, 4);
+    EXPECT_EQ(v, 0xCDCDCDCDu);           // the template's own bytes survive
+    p.dummy_poly = -1;
+    const auto none = buildFireRequest(t.data(), t.size(), p);
+    std::memcpy(&v, none.data() + 0x10, 4);
+    EXPECT_EQ(v, 0xFFFFFFFFu);
+    p.dummy_poly = 220;
+    const auto hand = buildFireRequest(t.data(), t.size(), p);
+    std::memcpy(&v, hand.data() + 0x10, 4);
+    EXPECT_EQ(v, 220u);
+    EXPECT_EQ(hand[0x14], 0xCD);          // the neighbours are not touched
+}

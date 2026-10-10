@@ -1173,6 +1173,7 @@ std::atomic<float> g_last_shot_damage{eldenring::bullet::kCrossbowDamage}; // th
 std::atomic<float> g_pending_shot_damage{eldenring::bullet::kCrossbowDamage}; // of the shot queued for the game thread
 std::atomic<float> g_bow_power{0.f};             // 0..1 while the bow is drawn (third-person arms), written by the key thread
 std::atomic<float> g_bow_ticks{0.f};             // ticks drawn (first-person pose)
+int g_bolt_variant = -1;                         // the experiment variant of the last shot (mc_er_boltexp.txt), -1 = none; game thread only
 std::atomic<float> g_bolt_yaw_offset{0.f};        // mc_er_steve.txt: bolt_yaw_offset_deg (default 0: the turn was not a yaw offset of the matrix, REVERSE 35.9)
 std::atomic<uint64_t> g_last_bullet_tick_ms{0}; // the last spawn_bullet call (the player's real shot or ours): hits within 3 s after it are logged whatever they look like
 
@@ -3142,8 +3143,8 @@ void PosProbeTick() {
                     float fy_abs = std::atan2(qf[0], qf[2]) * 180.f / 3.14159265f;
                     float cam_yaw = g_pos_probe.have_cam ? std::atan2(g_pos_probe.cam_forward[0], g_pos_probe.cam_forward[2]) * 180.f / 3.14159265f : 0.f;
                     float aim_yaw = std::atan2(g_pos_probe.aim[0], g_pos_probe.aim[2]) * 180.f / 3.14159265f;
-                    Log("AIMCAL-YAWS: flight %+.1f | the aim given %+.1f | camera %+.1f | player body %+.1f (raw %+.1f) | flight minus body %+.1f, minus raw body %+.1f, minus camera %+.1f",
-                        fy_abs, aim_yaw, cam_yaw, g_pos_probe.have_body ? g_pos_probe.body_yaw_deg : 0.f, g_pos_probe.have_body ? g_pos_probe.body_yaw_raw_deg : 0.f,
+                    Log("AIMCAL-YAWS: variant %d | flight %+.1f | the aim given %+.1f | camera %+.1f | player body %+.1f (raw %+.1f) | flight minus body %+.1f, minus raw body %+.1f, minus camera %+.1f",
+                        g_bolt_variant, fy_abs, aim_yaw, cam_yaw, g_pos_probe.have_body ? g_pos_probe.body_yaw_deg : 0.f, g_pos_probe.have_body ? g_pos_probe.body_yaw_raw_deg : 0.f,
                         fy_abs - (g_pos_probe.have_body ? g_pos_probe.body_yaw_deg : 0.f), fy_abs - (g_pos_probe.have_body ? g_pos_probe.body_yaw_raw_deg : 0.f), fy_abs - cam_yaw);
                 }
                 Log("AIMCAL: %s aim=(%.3f %.3f %.3f); moved %.1f m in 0.5 s; flight by motion: yaw %+.1f pitch %+.1f deg off the aim; by quaternion: yaw %+.1f pitch %+.1f deg",
@@ -3209,6 +3210,17 @@ void RunBulletFire() {
     eldenring::bow::rotateYaw(basis_up, yaw_comp, fp.up);
     eldenring::bow::rotateYaw(cam.forward, yaw_comp, fp.forward);
     eldenring::bullet::muzzle(cam.position, cam.forward, 0.8f, fp.position);
+    // mc_er_boltexp.txt: every shot tries the next value of request +0x10 (the attachment point on the shooter's model) to find which one makes the bolt fly along
+    // the matrix instead of along the shooter's body (REVERSE 35.11). 0: the template's own value, 1: -1 (none), 2: 220, 3: 200.
+    g_bolt_variant = -1;
+    if (FileExists(g_game_dir + "mc_er_boltexp.txt")) {
+        static unsigned s_exp = 0;
+        static const int64_t polys[4] = {eldenring::bullet::kKeepTemplate, -1, 220, 200};
+        const unsigned v = s_exp++ % 4;
+        fp.dummy_poly = polys[v];
+        g_bolt_variant = static_cast<int>(v);
+        Log("bullet fire: EXPERIMENT variant %u: request +0x10 = %s", v, v == 0 ? "the template's own value" : (v == 1 ? "-1" : (v == 2 ? "220" : "200")));
+    }
     const std::vector<uint8_t> built = eldenring::bullet::buildFireRequest(real, sizeof(real), fp);
     if (built.size() != eldenring::bullet::kFullRequestBytes) {
         Log("bullet fire: the template is unusable");
