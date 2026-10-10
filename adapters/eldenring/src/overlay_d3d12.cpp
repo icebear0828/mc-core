@@ -912,6 +912,7 @@ void RenderFrame(IDXGISwapChain* sc) {
         const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
         mc::SteveAnimInput anim_in = g_motion.update(dt, steve.feet, steve.yaw);
         anim_in.swing_progress = steve.swing;
+        anim_in.bow_charge = steve.bow_charge;
         g_head.update(steve.cam.forward.x, steve.cam.forward.y, steve.cam.forward.z, steve.yaw, anim_in);
         g_anim.update(dt, anim_in);
         if (g_trace_left.load() > 0) {

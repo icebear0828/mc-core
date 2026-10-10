@@ -60,6 +60,7 @@ struct SteveState {
     uint16_t held_item{0};      // mc::ItemId the hotbar wants in the hand (0 = bare hand)
     float cooldown{1.f};        // attack strength 0..1
     float eating{0.f};          // 0..1 progress of the meal in the hand (0 = not eating)
+    float bow_charge{0.f};      // 0..1 how far the bow is drawn (0 = not drawing): the third-person arms aim
     float speed_mps{0.f};       // horizontal speed, for the walking bob
     bool on_ground{true};
     bool shadow{false};        // draw the blob shadows under the figure and the summons (mc_er_steve.txt: shadow=1)

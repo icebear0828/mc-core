@@ -46,7 +46,9 @@
 #include "eldenring_creative.hpp"
 #include "eldenring_flight.hpp"
 #include "eldenring_los.hpp"
+#include "eldenring_bow.hpp"
 #include "eldenring_bullet.hpp"
+#include "eldenring_handlescan.hpp"
 #include "eldenring_shadow.hpp"
 #include "eldenring_survival.hpp"
 #include "eldenring_xp.hpp"
@@ -1165,6 +1167,9 @@ std::atomic<bool> g_proj_log{false};
 std::atomic<bool> g_arrow_damage{false};
 std::atomic<int> g_proj_log_left{80};
 std::atomic<uint32_t> g_last_bullet_id{0};      // request +0x1C of that call
+std::atomic<float> g_last_shot_damage{eldenring::bullet::kCrossbowDamage}; // the MC damage of that shot (9 for a crossbow bolt, 6 * power + crit for a bow arrow)
+std::atomic<float> g_pending_shot_damage{eldenring::bullet::kCrossbowDamage}; // of the shot queued for the game thread
+std::atomic<float> g_bow_power{0.f};             // 0..1 while the bow is drawn (third-person arms), written by the key thread
 std::atomic<uint64_t> g_last_bullet_tick_ms{0}; // the last spawn_bullet call (the player's real shot or ours): hits within 3 s after it are logged whatever they look like
 
 void HandleProjectileHit(void* module, void* attacker, uint8_t* ctx) {
@@ -1221,10 +1226,11 @@ void HandleProjectileHit(void* module, void* attacker, uint8_t* ctx) {
     int32_t max_hp = 0;
     const uintptr_t data = DataModuleOfChr(static_cast<uintptr_t>(victim));
     if (data == 0 || !SafeCopy(data + layout::kDataMaxHp, &max_hp, sizeof(max_hp))) return;
-    const int32_t wanted = eldenring::bullet::boltDamageEr(max_hp);
+    const float mc_damage = g_last_shot_damage.load(std::memory_order_relaxed);
+    const int32_t wanted = eldenring::bullet::boltDamageEr(max_hp, mc_damage);
     int32_t engine = 0;
     if (wanted > 0 && overrideFinalDamage(ctx, ctx_attacker, ctx_victim, wanted, &engine)) {
-        Log("ARROW: the player's bolt hit %p: engine %d -> MC bolt %d (victim max hp %d)", reinterpret_cast<void*>(victim), engine, wanted, max_hp);
+        Log("ARROW: the player's shot hit %p: engine %d -> MC %.1f = %d (victim max hp %d)", reinterpret_cast<void*>(victim), engine, mc_damage, wanted, max_hp);
     }
 }
 
@@ -1399,7 +1405,8 @@ void RunSummonExperiment() {
 }
 
 void RunBulletFire(); // defined with the spawn_bullet logger below
-bool QueueBulletFire(); // the same: called from the key thread
+bool QueueBulletFire(float mc_damage); // the same: called from the key thread
+void PosProbeTick();                    // the same: samples where the game keeps a bullet's position (mc_er_bulletpos.txt)
 
 void* __fastcall ClampDetour(void* module, int32_t value) {
     void* r = g_clamp_orig(module, value);
@@ -1415,6 +1422,7 @@ void* __fastcall ClampDetour(void* module, int32_t value) {
         g_bullet_fire_pending.exchange(false)) {
         RunBulletFire();
     }
+    PosProbeTick();
     if (g_heal_pending.load(std::memory_order_relaxed) > 0 && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed)) {
         uint64_t owner = 0;
         if (SafeCopy(reinterpret_cast<uintptr_t>(module) + layout::kOwnerInDataModule, &owner, sizeof(owner)) && owner != 0 &&
@@ -2529,6 +2537,33 @@ DWORD WINAPI KeyThread(LPVOID) {
                 Log("SURVIVAL: started eating item %d", static_cast<int>(item));
             }
         }
+        {   // Minecraft's bow: hold the right button to draw, release to shoot a real bolt through the saved template (mc_er_bulletfire.txt).
+            static eldenring::bow::BowController s_bow;
+            bool usable = false;
+            {
+                std::lock_guard<std::mutex> g(g_melee_mutex);
+                usable = g_melee.heldItem() == mc::ItemId::Bow && g_melee.countAt(g_melee.selectedSlot()) > 0 &&
+                         (!creative::consumesItems(CurrentGameMode()) || g_melee.has(mc::ItemId::Arrow));
+            }
+            usable = usable && g_bullet_fire_enabled.load() && g_mc_mode.load() && fg && WantSuppress() && !inv_open && g_input_enabled.load() && !PlayerDead();
+            const eldenring::bow::Update u = s_bow.update(dt, g_input_enabled.load() && erin::RightHeld(), usable);
+            g_bow_power.store(s_bow.power(), std::memory_order_relaxed);
+            if (u.started) Log("bow: draw started");
+            if (u.cancelled) Log("bow: draw cancelled (too short or the bow was lost)");
+            if (u.released) {
+                const float damage = eldenring::bow::damageForPower(u.power);
+                if (QueueBulletFire(damage)) {
+                    if (creative::consumesItems(CurrentGameMode())) {
+                        std::lock_guard<std::mutex> g(g_melee_mutex);
+                        g_melee.consumeFirst(mc::ItemId::Arrow);
+                    }
+                    eraudio::Play("entity.arrow.shoot");
+                    Log("bow: released at power %.2f -> MC damage %.1f", u.power, damage);
+                } else {
+                    Log("bow: shot refused (no template, too soon, or the feature is off)");
+                }
+            }
+        }
         if (g_input_enabled.load()) {
             const int notches = erin::TakeWheelNotches();
             if (notches != 0 && fg && !inv_open && WantSuppress()) {
@@ -2615,7 +2650,7 @@ DWORD WINAPI KeyThread(LPVOID) {
         }
         static bool prev_f3 = false;
         const bool d3 = fg && (GetAsyncKeyState(VK_F3) & 0x8000) != 0;
-        if (d3 && !prev_f3 && QueueBulletFire()) Log("F3: spawn_bullet queued for the game thread");
+        if (d3 && !prev_f3 && QueueBulletFire(eldenring::bullet::kCrossbowDamage)) Log("F3: spawn_bullet queued for the game thread");
         prev_f3 = d3;
         static bool prev_f2 = false;
         const bool d2 = fg && (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
@@ -2830,6 +2865,73 @@ bool SpawnBulletSafe(void* manager, uint32_t* out_handle, void* request, void* c
     }
 }
 
+// ---- where does the game keep a bullet's position? (read-only, mc_er_bulletpos.txt) ------------------------------------------------------------------------
+// The bullet manager keeps 0x40 slots of 0x9D0 bytes at [manager+0x20] (REVERSE 35.3: `imul rdi, rcx, 0x9d0; add rdi, [rsi+0x20]`). Right after one of our
+// shots the whole pool is searched for float triples within 0.3 m of the muzzle, then those few offsets are read again every 80 ms for about a second: the
+// one that moves along the aim is the bullet's position. Game thread only.
+constexpr size_t kBulletSlotBytes = 0x9D0;
+constexpr size_t kBulletSlots = 0x40;
+struct PosProbe {
+    bool active{false};
+    uintptr_t pool{0};
+    float p0[3]{};
+    uint64_t t0_ms{0}, last_ms{0};
+    int samples{0};
+    std::vector<size_t> cands; // byte offsets from the pool start
+};
+PosProbe g_pos_probe;
+
+void PosProbeStart(uint64_t manager, uint32_t handle, const float p0[3], const float dir[3]) {
+    if (!FileExists(g_game_dir + "mc_er_bulletpos.txt")) return;
+    uint64_t pool = 0;
+    if (!SafeCopy(static_cast<uintptr_t>(manager) + 0x20, &pool, sizeof(pool)) || pool == 0) {
+        Log("bullet pos: the pool pointer at manager+0x20 cannot be read");
+        return;
+    }
+    const size_t bytes = kBulletSlotBytes * kBulletSlots;
+    const std::vector<uint8_t> buf = eldenring::handlescan::detail::readTolerant(g_reader, static_cast<uintptr_t>(pool), bytes);
+    const std::vector<int> hits = eldenring::bow::findTriples(buf.data(), buf.size(), p0, 0.3f);
+    int slot_of_handle = -1;
+    for (size_t i = 0; i < kBulletSlots; ++i) {
+        uint32_t first = 0;
+        std::memcpy(&first, buf.data() + i * kBulletSlotBytes, sizeof(first));
+        if (first == handle) {
+            slot_of_handle = static_cast<int>(i);
+            break;
+        }
+    }
+    Log("bullet pos: pool=%p handle=0x%08X (slot whose first dword equals it: %d) muzzle=(%.2f %.2f %.2f) aim=(%.3f %.3f %.3f): %zu float triple(s) within 0.3 m",
+        reinterpret_cast<void*>(pool), handle, slot_of_handle, p0[0], p0[1], p0[2], dir[0], dir[1], dir[2], hits.size());
+    g_pos_probe = PosProbe{};
+    g_pos_probe.pool = static_cast<uintptr_t>(pool);
+    std::memcpy(g_pos_probe.p0, p0, sizeof(g_pos_probe.p0));
+    for (size_t k = 0; k < hits.size() && k < 12; ++k) {
+        const size_t off = static_cast<size_t>(hits[k]);
+        float v[3];
+        std::memcpy(v, buf.data() + off, sizeof(v));
+        g_pos_probe.cands.push_back(off);
+        Log("bullet pos:   candidate %zu: slot %zu +0x%zX = (%.3f %.3f %.3f)", k, off / kBulletSlotBytes, off % kBulletSlotBytes, v[0], v[1], v[2]);
+    }
+    g_pos_probe.t0_ms = g_pos_probe.last_ms = GetTickCount64();
+    g_pos_probe.active = !g_pos_probe.cands.empty();
+}
+
+void PosProbeTick() {
+    if (!g_pos_probe.active || GetCurrentThreadId() != g_game_tid.load(std::memory_order_relaxed)) return;
+    const uint64_t now = GetTickCount64();
+    if (now - g_pos_probe.last_ms < 80) return;
+    g_pos_probe.last_ms = now;
+    ++g_pos_probe.samples;
+    for (size_t k = 0; k < g_pos_probe.cands.size(); ++k) {
+        float v[3];
+        if (!SafeCopy(g_pos_probe.pool + g_pos_probe.cands[k], v, sizeof(v))) continue;
+        const float dx = v[0] - g_pos_probe.p0[0], dy = v[1] - g_pos_probe.p0[1], dz = v[2] - g_pos_probe.p0[2];
+        Log("bullet pos: t=%llu ms candidate %zu = (%.3f %.3f %.3f) moved %.2f m", static_cast<unsigned long long>(now - g_pos_probe.t0_ms), k, v[0], v[1], v[2],
+            std::sqrt(dx * dx + dy * dy + dz * dz));
+    }
+    if (g_pos_probe.samples >= 14) g_pos_probe.active = false;
+}
+
 // One shot of our own on the game thread: the player's real request (this session's or the file's) with the aim and the origin replaced. r9 is only
 // the pointer the game writes a status code to (REVERSE 35.3), so a zeroed buffer is enough.
 void RunBulletFire() {
@@ -2869,21 +2971,32 @@ void RunBulletFire() {
     alignas(16) uint8_t status[64] = {};
     std::memcpy(req, built.data(), sizeof(req));
     uint32_t out = 0xFFFFFFFFu;
+    const float shot_damage = g_pending_shot_damage.load();
+    g_last_shot_damage.store(shot_damage, std::memory_order_relaxed);
     g_last_bullet_id.store(*reinterpret_cast<uint32_t*>(req + 0x1C), std::memory_order_relaxed);
     g_last_bullet_tick_ms.store(GetTickCount64(), std::memory_order_relaxed);
     const bool ok = SpawnBulletSafe(reinterpret_cast<void*>(manager), &out, req, status);
     uint32_t code = 0;
     std::memcpy(&code, status, sizeof(code));
-    Log("bullet fire: param row 0x%08X id=%u flags=0x%X from (%.2f %.2f %.2f) along (%.3f %.3f %.3f) tid=%lu -> %s handle 0x%08X status %u -> %s", *reinterpret_cast<uint32_t*>(req + 8),
+    Log("bullet fire: MC damage %.1f param row 0x%08X id=%u flags=0x%X from (%.2f %.2f %.2f) along (%.3f %.3f %.3f) tid=%lu -> %s handle 0x%08X status %u -> %s", shot_damage, *reinterpret_cast<uint32_t*>(req + 8),
         *reinterpret_cast<uint32_t*>(req + 0x1C), fp.flags, fp.position[0], fp.position[1], fp.position[2], fp.forward[0], fp.forward[1], fp.forward[2],
         static_cast<unsigned long>(GetCurrentThreadId()), ok ? "returned" : "FAULTED", out, code, !ok ? "FAULT" : (eldenring::bullet::spawnFailed(out) ? "REFUSED" : "spawned"));
+    if (ok && !eldenring::bullet::spawnFailed(out)) PosProbeStart(manager, out, fp.position, fp.forward);
 }
 
-bool QueueBulletFire() {
+bool QueueBulletFire(float mc_damage) {
     if (!g_bullet_fire_enabled.load()) return false;
+    {
+        std::lock_guard<std::mutex> g(g_bullet_mutex);
+        if (!g_bullet_template.valid) {
+            Log("bullet fire: no template yet (mc_er_bullet.bin), fire one real crossbow bolt first");
+            return false;
+        }
+    }
     const uint64_t now = GetTickCount64();
     if (now - g_last_bullet_fire_ms.load(std::memory_order_relaxed) < 400) return false;
     g_last_bullet_fire_ms.store(now);
+    g_pending_shot_damage.store(mc_damage);
     g_bullet_fire_pending.store(true);
     return true;
 }
@@ -2893,6 +3006,7 @@ uint32_t* __fastcall SpawnBulletDetour(void* manager, uint32_t* out_handle, void
         uint32_t id = 0;
         if (request != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(request) + 0x1C, &id, sizeof(id));
         g_last_bullet_id.store(id, std::memory_order_relaxed);
+        g_last_shot_damage.store(eldenring::bullet::kCrossbowDamage, std::memory_order_relaxed);
         g_last_bullet_tick_ms.store(GetTickCount64(), std::memory_order_relaxed);
     }
     if (g_bullet_fire_enabled.load(std::memory_order_relaxed)) RecordBulletTemplate(request);
@@ -3194,6 +3308,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.held_item = static_cast<uint16_t>(g_melee.heldItem());
         steve.cooldown = g_melee.cooldown();
         steve.eating = steve_dead_now ? 0.f : g_eating.getProgress();
+        steve.bow_charge = steve_dead_now ? 0.f : g_bow_power.load(std::memory_order_relaxed);
         out.totem = g_feedback.totem();
         steve.swing = steve_dead_now ? 0.f : g_melee.swingProgress();
         out.hit = g_feedback.hit();

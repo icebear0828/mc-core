@@ -136,11 +136,12 @@ inline bool templateChanged(const uint8_t* old_body, const uint8_t* new_body) {
 
 
 // ---- the damage of a bolt the player shot --------------------------------------------------------------------------------------------------
-// MC: a fully charged crossbow bolt does 9. Converted like the melee hits (a 7-damage diamond sword hit is 5% of the victim's maximum health), so
-// the balance of the two weapons is the same.
-inline int boltDamageEr(int victim_max_hp) {
+// MC: a crossbow bolt does 9; a bow arrow 6 at full power plus a critical bonus (eldenring_bow.hpp). Converted like the melee hits (a 7-damage diamond sword
+// hit is 5% of the victim's maximum health), so the balance of the weapons is the same.
+inline constexpr float kCrossbowDamage = 9.f;
+inline int boltDamageEr(int victim_max_hp, float mc_damage = kCrossbowDamage) {
     mc::HitIntent intent;
-    intent.damage = 9.f;
+    intent.damage = mc_damage;
     intent.max_hp_percent = 0.05f;
     return live::erDamage(intent, victim_max_hp);
 }

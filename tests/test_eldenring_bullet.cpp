@@ -192,6 +192,13 @@ TEST(EldenRingBulletDamage, ABoltDoesMoreThanADiamondSwordHitAndScalesWithTheVic
     EXPECT_EQ(boltDamageEr(2000), 129);  // linear in the health
 }
 
+TEST(EldenRingBulletDamage, TheMcDamageOfTheShotScalesTheHit) {
+    EXPECT_EQ(boltDamageEr(1000, 9.f), boltDamageEr(1000));
+    EXPECT_EQ(boltDamageEr(1000, 4.5f), 32);           // half the damage, half the hit
+    EXPECT_GT(boltDamageEr(1000, 9.f), boltDamageEr(1000, 3.f));
+    EXPECT_EQ(boltDamageEr(1000, 0.f), 1);             // a landed hit is never zero
+}
+
 TEST(EldenRingBulletDamage, AnUnknownHealthGivesNoDamageAndAHitNeverRoundsToZero) {
     EXPECT_EQ(boltDamageEr(0), 0);
     EXPECT_EQ(boltDamageEr(-5), 0);

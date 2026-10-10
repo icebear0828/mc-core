@@ -42,6 +42,7 @@ add_executable(mc_tests
     test_eldenring_los.cpp
     test_eldenring_shadow.cpp
     test_eldenring_bullet.cpp
+    test_eldenring_bow.cpp
     test_eldenring_handlescan.cpp
     test_eldenring_survival.cpp
     test_eldenring_audio.cpp

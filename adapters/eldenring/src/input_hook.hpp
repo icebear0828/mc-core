@@ -29,6 +29,8 @@ Counters TakeCounters(); // returns the counts since the last call and resets th
 bool TakeLeftClick();
 // Same for the right button (read before it is cleared); used to eat food.
 bool TakeRightClick();
+// True while the right button is down (as of the last mouse read at the DirectInput layer, before any clearing); the bow draws while it is held.
+bool RightHeld();
 // Wheel notches (+ = away from the user) since the last call, read from the DirectInput mouse state.
 int TakeWheelNotches();
 // Mouse movement (counts) since the last call, read before any suppression. Drives the inventory's virtual cursor.

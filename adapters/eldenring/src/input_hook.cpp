@@ -238,6 +238,7 @@ void OnDirectInputCreated(REFIID riid, void* iface) {
 bool TakeLeftClick() { return g_left_edge.exchange(false); }
 
 bool TakeRightClick() { return g_right_edge.exchange(false); }
+bool RightHeld() { return g_right_prev.load(); }
 
 int TakeWheelNotches() { return g_wheel.exchange(0) / 120; }
 
