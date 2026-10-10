@@ -154,8 +154,16 @@ TEST(EldenRingCreative, StackLineListsReturnAddressesAsRvas) {
 TEST(EldenRingCreative, CreativeModeNeverLetsTheGameDecideThePlayerFellTooLong) {
     // 2026-10-10 log: fall timer 12.02 s -> die event 12 (the timer is FallModule+0x18; 0x14044E3A0 compares it with a threshold and has one
     // caller, inside the fall damage evaluator). It is not the height: the player was 3.7 m up.
-    EXPECT_TRUE(shouldDenyLongFall(GameMode::Creative, true, true));
-    EXPECT_FALSE(shouldDenyLongFall(GameMode::Creative, true, false)); // enemies keep their rules
-    EXPECT_FALSE(shouldDenyLongFall(GameMode::Creative, false, true)); // MC mode off
-    EXPECT_FALSE(shouldDenyLongFall(GameMode::Survival, true, true));
+    EXPECT_TRUE(shouldDenyLongFall(GameMode::Creative, true, true, false));
+    EXPECT_FALSE(shouldDenyLongFall(GameMode::Creative, true, false, false)); // enemies keep their rules
+    EXPECT_FALSE(shouldDenyLongFall(GameMode::Creative, false, true, false)); // MC mode off
+}
+
+TEST(EldenRingCreative, SurvivalOnlyDeniesItWhileOurOwnMovementHoldsThePlayerUp) {
+    // 2026-10-10 log, survival: standing on placed blocks (not Havok geometry) the game believes the player is falling; at 12.03 s the die event
+    // came and the old KillChr-only skip left a fake death. Standing on blocks (or within 3 s of our movement layer) the answer is no too.
+    EXPECT_TRUE(shouldDenyLongFall(GameMode::Survival, true, true, true));
+    EXPECT_FALSE(shouldDenyLongFall(GameMode::Survival, true, true, false)); // a real long fall in survival is left to the game
+    EXPECT_FALSE(shouldDenyLongFall(GameMode::Survival, true, false, true)); // not the player
+    EXPECT_FALSE(shouldDenyLongFall(GameMode::Survival, false, true, true)); // MC mode off
 }
