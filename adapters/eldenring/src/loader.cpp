@@ -39,6 +39,7 @@
 #include "eldenring_blockmesh.hpp"
 #include "eldenring_blocks.hpp"
 #include "eldenring_buddy.hpp"
+#include "eldenring_chrscan.hpp"
 #include "eldenring_creative.hpp"
 #include "eldenring_flight.hpp"
 #include "eldenring_los.hpp"
@@ -942,6 +943,30 @@ void LogPlayerHit(void* module, void* attacker, const uint8_t* ctx, uint8_t bloc
         "module+148..15C=%u %u %u %u %u %u",
         u32(0x22C), u32(0x228), u16(0x220), u16(0x222), u16(0x224), u16(0x226), b[0x258], b[0x259], b[0x25A], b[0x266], b[0x267], words[0], words[1],
         words[2], words[3], words[4], words[5]);
+}
+
+// Read-only (mc_er_chrscan.txt, after F2): the classes behind the pointers of a summoned character, and inside the model-like ones where a dword
+// equal to the live "drawn" display flags (0x000100A1) sits. Finds where a monster model keeps what the player's CSModelDispEntity keeps.
+void LogChrScan(uintptr_t chr, size_t index) {
+    static unsigned scanned = 0;
+    if (++scanned > 3) return; // three wolves, one is enough to learn the layout
+    Log("chrscan: entity #%zu chr=%p", index, reinterpret_cast<void*>(chr));
+    for (const ScanHit& h : scanForClasses(g_reader, g_img.base, chr, 0, 0xA00)) {
+        Log("%s", formatScanHit(h, 0).c_str());
+        if (!looksLikeModelClass(h.cls)) continue;
+        for (const ScanHit& h2 : scanForClasses(g_reader, g_img.base, h.object, 0, 0x300, 40)) {
+            Log("%s", formatScanHit(h2, 1).c_str());
+            if (!looksLikeModelClass(h2.cls)) continue;
+            for (const uintptr_t at : findDwordOffsets(g_reader, h2.object, 0, 0x100, 0x000100A1u)) {
+                Log("chrscan:     display flags 0x000100A1 at +0x%llX of %p (chr+0x%llX -> +0x%llX)", static_cast<unsigned long long>(at), reinterpret_cast<void*>(h2.object),
+                    static_cast<unsigned long long>(h.offset), static_cast<unsigned long long>(h2.offset));
+            }
+        }
+        for (const uintptr_t at : findDwordOffsets(g_reader, h.object, 0, 0x100, 0x000100A1u)) {
+            Log("chrscan:   display flags 0x000100A1 at +0x%llX of %p (chr+0x%llX)", static_cast<unsigned long long>(at), reinterpret_cast<void*>(h.object),
+                static_cast<unsigned long long>(h.offset));
+        }
+    }
 }
 
 uintptr_t PlayerChrPtr() {
@@ -2326,6 +2351,7 @@ DWORD WINAPI KeyThread(LPVOID) {
                         Log("summon:   new chr=%p npc=%d team=%u hp=%d/%d hostile=%d rel=(%.1f %.1f %.1f) dist=%.1f m", reinterpret_cast<void*>(e.chr),
                             e.npc_id, static_cast<unsigned>(e.team), e.hp, e.max_hp, e.hostile ? 1 : 0, e.rel_x, e.rel_y, e.rel_z,
                             std::sqrt(e.rel_x * e.rel_x + e.rel_y * e.rel_y + e.rel_z * e.rel_z));
+                        if (summon_watch.reports_left == 0 && FileExists(g_game_dir + "mc_er_chrscan.txt")) LogChrScan(e.chr, i);
                     }
                 } else {
                     Log("summon: entity enumeration failed");
