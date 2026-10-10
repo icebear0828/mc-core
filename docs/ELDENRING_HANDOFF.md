@@ -1,7 +1,51 @@
 # 艾尔登法环 Minecraft 适配器：交接文档
 
-给**新开的 Claude Code 对话**（或接手的人）。先读完这一份，再按"第 12 节"的顺序动手。最后更新：2026-10-09，分支 `feat/eldenring-m1`。
+给**新开的 Claude Code 对话**（或接手的人）。先读完这一份，先看紧接着的"0. 当前状态"，再按"第 11 节"的顺序动手。最后更新：2026-10-09 夜，分支见第 0 节。
 需要查证据时，权威文档是 `docs/ELDENRING_REVERSE.md`（逆向事实与审计）和 `docs/ELDENRING_VERIFY_CHECKLIST.md`（逐项验证状态，F1~F22 是近战/生存/视觉/音效）。
+
+---
+
+## 0. 当前状态（2026-10-09 夜，最新，先读这里）
+
+**分支与部署**
+- `origin/main` = `a1d2017`（头部跟随相机，用户已实机确认）。本地 `main` 多一个 `a856f75`（只读召唤监视的第一版，未推送）。
+- **召唤相关全部在 `feat/buddy-probe`（已推送，最新代码提交 `1431367`，文档 `9de3545`），未合入 main。** win 仓库 `D:\game\mc\mc-core` 停在 `feat/buddy-probe` @ `1431367`；游戏目录 `dinput8.dll` = 该提交的构建，SHA256 `80ce4cce658de9a3a9dbd21f925f35f811859663c345441569214b9c69f571fc`（两边一致）。
+- **项目有 PreToolUse 钩子禁止直接 `git push` 到 main/master，必须走分支 + PR。**（`a1d2017` 那次是命令以 `cd` 开头没被钩子匹配到，无意绕过；以后别这么做。）
+- 用户的打包计划：**按功能拆版本，创造模式（MC 起跳 + 飞行 + 免摔死）优先级最高**，其次召唤物、体感（光照）。每个功能开独立分支（`feat/creative`、`feat/summon`、`feat/feel`），在配置里单独开关，默认关，验证后再默认开。**这一轮 mac 测试 608 个全过（main 是 597）。**
+- 游戏目录里现在有两个测试开关文件：`mc_er_buddylog.txt`（**存在时探针线程会占满一个 CPU 核**，不测时删掉）和 `mc_er_summon.txt`（存在时 F2 才生效）。仓库里有用户的未跟踪文件 `docs/123/youhua.md`、`package_specs/`，**不是我们写的，别动**。`docs/ELDENRING_HANDOFF.md` 之前的未提交改动（删了旧第 11 节"用户偏好"，因为已在全局 CLAUDE.md）一并提交了。
+
+**2026-10-10 更新（`feat/creative`）**：已加 4 个只记录探针（击杀包装 `0x1403EDA70`、重着陆 `0x14044E090`、坠落高度 `0x14044E240`、SpEffect 查询 `0x1404FA370`，开关 `mc_er_creativelog.txt`）；修复“摔死后不能复活”（`fall_protect` 不再在 `hp<=0` 时跳过 `KillChr`，用户已实机确认）。**摔死走摔伤路径（`0x14044E240` → `0x411324` ×100），不走重着陆**，下一步免摔 = hook `0x14044E240` 对玩家返回 0，一步一测。**用 RTSS（RivaTuner）时带我们的 dll 会崩，玩 mod 时先退出 RTSS。** 核对结论见 `ELDENRING_REVERSE.md` §31。
+
+**2026-10-10 晚更新（`feat/creative`，创造模式基本完成，用户已实机确认）**：F5 切生存（默认）/创造；创造 = 物品选取区 + 免摔 + 物品不消耗 + 无血/饥饿/经验条；双击空格飞行（`eldenring_flight.hpp`：自己积分位置、只写 `+0x70/+0x80/+0x91`，跟随游戏 8 m 坐标重基，Steve 朝向取相机朝向）；创造模式下玩家不会被"滞空 12 秒"/击杀包装杀死（HP>0）。**机制与证据见 `ELDENRING_REVERSE.md` §32。** 还没做：飞行地形碰撞（v0 能穿地面和墙）、MC 起跳、`creative_*` 配置项、探针收尾（`mc_er_creativelog.txt` 目前仍开着，日志较多）。win 构建现用 Windows SDK 10.0.19041.0。**玩 mod 时先退出 RTSS。**
+
+**待逆向清单（已整理好，用户会丢给逆向 agent）：`docs/REVERSE_REQUESTS.md`**——创造模式 C1~C8、召唤 S1~S6、光照 L1~L2、战斗手感 H1~H4、弓箭、其它，含证据格式要求和已确认事实；回复回来后按第 8 节规则逐字节核对，结论写进 `ELDENRING_REVERSE.md` 新的一节。
+**光照捕获那份回复（`d3d12_lighting_capture_hook.hpp`）暂不采信**（文件不在仓库、无真实抓取数据），见 REVERSE §30。
+
+**这一轮完成并经用户实机确认**
+1. **第三人称头部跟随相机**（`HeadTracker`，`eldenring_steve.hpp`）：偏航最多偏离身体 50°，俯仰全范围，相机在身体正后方时保持上一侧。已在 main。
+2. **召唤物（灵灰）能由我们触发**（`feat/buddy-probe`）：F2 + `mc_er_summon.txt`，在游戏线程（`ClampDetour`）写 `CSBuddyMan`（`WorldChrMan(0x143D69FF8)+0x1E538`）：出生点 `+0xA0`（4 个 float）、朝向 `+0xB0`、石碑 `+0x3C`=1042360100，最后请求 `+0x20`=232000（群狼，ash 2320 × 100 + 等级 0）。三只狼（`npc=4070 team=47 hp=500`）出现在玩家面前 3 米、随朝向，开不开 MC 模式都行。出生点规律（A 级）：位置 = 玩家位置 + 3 m × `-(sin h, 0, cos h)`，朝向 = `yawFromQuat`；只写请求和石碑时狼会出生在残留的世界点然后一直下落（屏幕上只剩常驻血条）。详见 `ELDENRING_REVERSE.md` §29、§29.1。
+3. **只读探针**（`eldenring_buddy.hpp` + `loader.cpp` 的 `BuddyThread`）：开关 `mc_er_buddylog.txt`，约 1 ms 轮询管理器，字段变化时写 `buddy:` 日志（含原始转储和玩家位姿）；F2 后 1.5 s、5 s 记录新出现的实体（`summon:   new chr=...`）。
+
+**逆向方回复的核对结果（我们逐字节核对，别再采信被推翻的）**
+- **推翻**：`0x14044E090` **不是**"落地复位"，**不能调用**：没有 SpEffect `0x8F` 时写 `[[chr+0x190]+8]+0x34=6`、调虚函数、并设全局标志 `+0x9328`；它只有 2 个调用者 `0x14045AF25/0x14045AF90`。
+- **推翻**：`[[chr+0x58]+0xC8]+0x24` bit0 **是"已死亡"标志**，不是免死标志：`KillChr(0x1403FCD90)` 内 `0x1403FCDE1` 置位，复活初始化 `0x1403EA2C0` 清除（同时 `FallModule+0x1D=0`）。**绝对不能写它**。之前"跳过 KillChr 留半截死亡"的原因**不是**这个标志（我们跳过的正是置位它的函数），而是击杀包装 `0x1403EDA70` 里 KillChr 之后继续执行的死亡处理。
+- **推翻**：`PhysModule+0x1C0`（setter `0x14045FB30`，3 个调用点 `0x14042687E/0x140428780/0x14042879D`）不是重力，是地面运动里算出来的标量；别写。`IsFlyState` 只是脚本函数名表里的字符串（`0x142A093D0`），不是飞行机制；`0x142EF5DE0` 是数据不是代码。
+- **未采信**："每帧把 `FallModule+0x18` 写 0"（我们 5 种写法都失败，且无地址）；"立即起跳 ActionModule vfunc[18]"（无地址）。
+- **召唤侧推翻**：逆向方的 BuddyParam/NpcParam ID（21200000 等）与实测不符；虚表 RVA 是 `+0x3B458B8`；`0x1404B82D0` 不是 DismissBuddy 序言；`ELDENRING_VERIFIED_EVIDENCE.md` 不存在。
+- 另：`docs/ELDENRING_REVERSE.md` §29 记录了这些核对。
+
+**下一步（用户睡前说"以后再说"，没有开始）**
+1. **创造模式（最高优先级，开 `feat/creative`）**：思路是对玩家**跳过决策函数**，不往游戏状态字段写值。验证顺序，一步一测，每步只问用户"能走/不能走/死没死"：
+   ① 装两个**只记录、不改行为**的钩子：击杀包装 `0x1403EDA70`（4 个调用者 `0x1403E93DE/0x1403F8543/0x140428EEB/0x14042BC1E`）和重着陆 `0x14044E090`，记录调用者地址、是否玩家。用户跳、摔、堆高柱子摔下，看是哪条路径在杀玩家。
+   ② 日志确认后，仅在创造模式开启时对玩家跳过包装，测摔下去会不会死、死后状态是否正常。
+   ③ 飞行本身：自己积分位置（沿用方块碰撞已验证的 `+0x70/+0x80` 位置写法），不动任何标志位。
+   ④ 落地：再决定是否跳过 `0x14044E090`。
+   MC 起跳另走二分：从 `d9103d0`（自写起跳弧线、不写坠落计时、无击杀钩子，用户说垒柱子顺）往后一个提交一个提交加，每步用配置开关隔离。
+2. **召唤物（开 `feat/summon`，由现有 `feat/buddy-probe` 改名/合并而来）**：目标是 MC 的僵尸/骷髅/苦力怕。先让用户用不同的骨灰各自然召唤一次，探针记下请求值和 `npc id`，找单体骨灰；再识别 `team=47` 实体、隐藏它们的原模型（现有隐藏只作用于玩家）、用我们的渲染画 MC 模型；骨骼用 `include/mc/entity_model.hpp`（JSON 解析已存在但**没有任何适配器调用**，且缺骨骼矩阵、逐面 UV，见对话记录的缺口清单：`cubeFaces` 与 `rig.cpp::boxFaces` 重复、坐标系与 Steve 的 Y 轴方向不同、`uint16_t` 索引可能溢出）。
+3. **体感/光照（开 `feat/feel`）**：现在 `PSMain` 只有 MC 固定面明暗，颜色直接写进显示空间的后缓冲（交换链格式 24 = R10G10B10A2），所以"像贴上去"。可用：半球环境光、距离雾（距离用 `1/SV_POSITION.w`）。**不可照搬**：ACES + 伽马（画面已是显示空间，会发灰）和写死的太阳/天空/雾数值（昼夜、天气、洞穴都会不对）。两条路：①屏幕采样（复制后缓冲，在人物周围取点估计亮度和色调，不需要逆向）；②逆向方给游戏的太阳方向/颜色/环境光/雾参数（需要 A 级运行时地址）。
+4. 其余待办见第 9 节（弓箭、受击倒地、背包存档、30 分钟稳定性长跑等不变）。
+
+**用户的工作方式（再强调）**：经常 Alt+Tab，失焦是正常的；一次只改一件事、用配置开关二分；只问"能走/不能走"；不要在没问的情况下往游戏内存写新字段；不要凭猜测下结论；改完文件后先贴验证命令和完整输出，不说"改好了"。
 
 ---
 
@@ -46,7 +90,8 @@
 | `eldenring_melee.hpp` | `MeleeController`（热键栏、数量、冷却）、`JumpTracker`、`HitFeedback`（命中/击杀/图腾/受伤计时）、`erDamage` |
 | `eldenring_survival.hpp` | 再生、吸收、图腾夹伤、`scaleToEr`（MC 20 点血 ↔ 角色最大血量） |
 | `eldenring_los.hpp` | 视线判定（射线，注入式，两端容差，失败放行） |
-| `eldenring_steve.hpp` | Steve 朝向、`SteveMotion`、死亡倒下 |
+| `eldenring_steve.hpp` | Steve 朝向、`SteveMotion`、`HeadTracker`（第三人称头部跟随相机）、死亡倒下 |
+| `eldenring_buddy.hpp` | （`feat/buddy-probe`）`CSBuddyMan` 只读采样、`Monitor` 日志、召唤出生点/写入计划、`newEntities` |
 | `eldenring_fp.hpp` | 第一人称矩阵链（`itemPose`/`eatPose`/`bareArmPose`/`itemDisplay`/`walkBob`/`handSway`）、`HandAnimator`、`SwayFilter`、`toHost`（MC 右手系 → 渲染左手系） |
 | `eldenring_particles.hpp` | 粒子系统、受击镜头倾斜曲线 |
 | `eldenring_hudtex.hpp` / `eldenring_audio_data.hpp` | 物品→图集格、最近邻放大；声音清单/WAV 解析、脚步节拍 |
@@ -90,7 +135,7 @@
 
 ### 5.1 开关文件（空文件即可，存在就启用）
 
-`mc_er_overlay.txt`（覆盖层）、`mc_er_damage.txt`（伤害功能）、`mc_er_input.txt`（输入拦截）、`mc_er_hit.bin`（**必须**，见 5.2）、`mc_er_steve.txt`（配置，见下）、`mc_er_physlog.txt`（物理向量日志）、`mc_er_hitlog.txt`（`HIT-IN` 受击日志）、`mc_er_hitvfx.txt`（装受击特效钩子）、`mc_er_nolos.txt`（**应急**：关闭墙体遮挡）、`mc_er_anyvictim.txt`（不等受害者被更新，有小概率与 worker 线程竞争）。
+`mc_er_overlay.txt`（覆盖层）、`mc_er_damage.txt`（伤害功能）、`mc_er_input.txt`（输入拦截）、`mc_er_hit.bin`（**必须**，见 5.2）、`mc_er_steve.txt`（配置，见下）、`mc_er_physlog.txt`（物理向量日志）、`mc_er_hitlog.txt`（`HIT-IN` 受击日志）、`mc_er_hitvfx.txt`（装受击特效钩子）、`mc_er_buddylog.txt`（召唤管理器只读探针，**会占满一个 CPU 核**）、`mc_er_summon.txt`（让 F2 触发一次群狼召唤）、`mc_er_nolos.txt`（**应急**：关闭墙体遮挡）、`mc_er_anyvictim.txt`（不等受害者被更新，有小概率与 worker 线程竞争）。
 
 ### 5.2 `mc_er_hit.bin`（576 字节，必备）
 
@@ -102,7 +147,7 @@
 
 ### 5.4 热键（游戏窗口在前台时）
 
-`F6` MC 模式开关 · `F7` 切换深度候选（标定） · `F8` 打最近的敌人 · `F9` 逐槽隐藏部件（屏幕黄字显示槽号，`F6`/`F10` 会复位）· `F10` 第一人称 · `F11` 打印部件槽快照 · `F12` 记录 240 帧位置轨迹 · `I` 背包（Esc/再按 `I` 关；打开后：左键拿/放/合并/交换，右键拿一半/放一个，Shift+左键在热键栏和主背包间移动，数字键把悬停格与热键栏对换，物品栏面板上方是 17 种物品的创造选取区）· 滚轮/数字 `1~9` 切热键栏 · 右键 吃东西 · 左键 攻击 · 空格（写死）起跳判定。
+`F2` 召唤实验（需 `mc_er_summon.txt`）· `F6` MC 模式开关 · `F7` 切换深度候选（标定） · `F8` 打最近的敌人 · `F9` 逐槽隐藏部件（屏幕黄字显示槽号，`F6`/`F10` 会复位）· `F10` 第一人称 · `F11` 打印部件槽快照 · `F12` 记录 240 帧位置轨迹 · `I` 背包（Esc/再按 `I` 关；打开后：左键拿/放/合并/交换，右键拿一半/放一个，Shift+左键在热键栏和主背包间移动，数字键把悬停格与热键栏对换，物品栏面板上方是 17 种物品的创造选取区）· 滚轮/数字 `1~9` 切热键栏 · 右键 吃东西 · 左键 攻击 · 空格（写死）起跳判定。
 
 ---
 
@@ -183,16 +228,13 @@
 
 ---
 
-## 11. 用户偏好（来自全局 CLAUDE.md，必须遵守）
-
-中文交流、代码/commit 英文；简洁直接。**改完文件后不得说"改好了"，必须先贴验证命令和完整输出**；先 trace 根因再改，不猜；"之前能跑现在不能"先看 `git diff`；涉及代理路由/网络出口的改动**先问用户**；TypeScript 禁 `any`、Python 用 `uv run`；TDD（新增功能先写测试）；提交格式 `<type>: <description>`（feat/fix/refactor/docs/test/chore/perf/ci）。**这个项目里**用户明确说过"不用验证了，相信我就好了"的功能（Steve 皮肤等视觉项）不再要求 ≥3 次实机重复，但仍要登记结果。真实资产绝不提交。
 
 ---
 
-## 12. 新对话的第一步
+## 11. 新对话的第一步
 
 1. 读：本文件 → `docs/ELDENRING_VERIFY_CHECKLIST.md`（尤其 F 节）→ 需要时查 `docs/ELDENRING_REVERSE.md` 对应章节（目录：§1 已确认、§3 受击管线、§8~§18 近期审计与任务单）。
 2. 检查状态：`git status -sb && git log --oneline -5`；`ssh win 'cd /d D:\game\mc\mc-core && git rev-parse --short HEAD'`；`ssh win 'tasklist | findstr /I "eldenring start_protected"'`；`ssh win 'certutil -hashfile "<游戏目录>\dinput8.dll" SHA256'` 与 win 构建产物对比。
-3. 跑基线：`cmake --build build -j8 && ./build/bin/mc_tests`（当前 487 个测试应全过）。
+3. 跑基线：`cmake --build build -j8 && ./build/bin/mc_tests`（main 当前 597 个、`feat/buddy-probe` 608 个测试应全过）。
 4. 问用户这次想做什么，**默认建议先做 P0（稳定性长跑）**，同时可以开始 P1 的背包界面素材。
 5. 每个功能结束时：更新清单（F 节新增条目）、项目记忆（`~/.claude/projects/-Users-c-mc-core/memory/`）、如果有新逆向结论写进 `ELDENRING_REVERSE.md` 并分级。

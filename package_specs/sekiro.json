@@ -1,0 +1,14 @@
+{
+  "game_id": "sekiro",
+  "display_name": "Sekiro Minecraft Mod",
+  "target_exe": "sekiro.exe",
+  "dll_name": "dinput8.dll",
+  "me2_dll_name": "sekiro_adapter.dll",
+  "required_files": [],
+  "default_configs": {},
+  "asset_dir": "mods/mc_adapter",
+  "readme_notes": [
+    "Place dinput8.dll in the Sekiro root directory alongside sekiro.exe.",
+    "Or if using Mod Engine, place sekiro_adapter.dll under mods/mc_adapter/ and configure modengine.ini chain loading."
+  ]
+}

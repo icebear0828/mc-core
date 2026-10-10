@@ -519,7 +519,7 @@ void DrawInventory(const HudState& hud, float w, float h) {
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     const ImTextureID atlas = reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(g_atlas_gpu.ptr));
     dl->AddRectFilled({0.f, 0.f}, {w, h}, IM_COL32(16, 16, 16, 150)); // Minecraft dims the world behind a screen
-    const mc::InventoryLayout lay(w, h);
+    const mc::InventoryLayout lay(w, h, hud.creative);
     const mc::HudRect p = lay.panel();
     const float gs = static_cast<float>(lay.scale());
     auto image = [&](float x, float y, float rw, float rh, const mc::hud::HudUV& uv) {
@@ -533,7 +533,8 @@ void DrawInventory(const HudState& hud, float w, float h) {
     }
     const float fs = 8.f * gs;
     const ImU32 label = IM_COL32(64, 64, 64, 255);
-    dl->AddText(ImGui::GetFont(), fs, {lay.titleItems().x, lay.titleItems().y}, label, "Items");
+    dl->AddText(ImGui::GetFont(), fs, {p.x, p.y - 10.f * gs}, IM_COL32(255, 255, 255, 230), hud.creative ? "Creative Mode" : "Survival Mode");
+    if (hud.creative) dl->AddText(ImGui::GetFont(), fs, {lay.titleItems().x, lay.titleItems().y}, label, "Items");
     dl->AddText(ImGui::GetFont(), fs, {lay.titleInventory().x, lay.titleInventory().y}, label, "Inventory");
 
     auto stackCount = [&](const mc::HudRect& r, unsigned n) {
@@ -547,7 +548,7 @@ void DrawInventory(const HudState& hud, float w, float h) {
     };
     auto icon = [&](const mc::HudRect& r, mc::ItemId item) { DrawItemIcon(dl, atlas, r, item); };
     const auto& palette = mc::paletteItems();
-    for (size_t i = 0; i < palette.size() && i < mc::InventoryLayout::kPaletteSlots; ++i) icon(lay.paletteSlot(static_cast<int>(i)), palette[i]);
+    for (size_t i = 0; hud.creative && i < palette.size() && i < mc::InventoryLayout::kPaletteSlots; ++i) icon(lay.paletteSlot(static_cast<int>(i)), palette[i]);
     for (int i = 0; i < 36; ++i) {
         const mc::ItemId item = static_cast<mc::ItemId>(hud.inv_item[i]);
         if (item == mc::ItemId::None) continue;
@@ -610,7 +611,6 @@ void DrawHud(const HudState& hud, float w, float h) {
     };
     const float ratio_hp = hud.max_hp > 0 ? std::clamp(static_cast<float>(hud.hp) / static_cast<float>(hud.max_hp), 0.f, 1.f) : 0.f;
     const int hp_halves = static_cast<int>(std::ceil(ratio_hp * 20.f));
-    float text_x = x0, text_y = y_bar - cell - 6.f * scale - 18.f * scale;
     if (g_atlas_ready) {
         // Real Minecraft sprites at vanilla positions (mc::HudLayout), the Minecraft GUI scale of this resolution.
         sprite(layout.hotbar(), mc::hud::kUV_HOTBAR);
@@ -623,7 +623,7 @@ void DrawHud(const HudState& hud, float w, float h) {
         const bool blink = g_hearts.blink();
         const int shown_before = g_hearts.displayHealth();
         const float gs = static_cast<float>(layout.scale());
-        for (int i = 0; i < 10; ++i) {
+        for (int i = 0; !hud.creative && i < 10; ++i) { // creative mode shows no health, hunger or experience
             mc::HudRect r = layout.heart(i);
             if (g_hearts.regenIndex() == i) r.y -= 2.f * gs;
             r.y += static_cast<float>(g_hearts.shake(i)) * gs;
@@ -636,7 +636,7 @@ void DrawHud(const HudState& hud, float w, float h) {
             else if (2 * i + 1 == hp_halves) sprite(r, mc::hud::kUV_HEART_HALF);
         }
         // hunger: ten icons from the right, shaking once the saturation is used up
-        {
+        if (!hud.creative) {
             static uint32_t food_rng = 7u;
             static float food_clock = 0.f;
             static int food_shake[10] = {};
@@ -657,7 +657,7 @@ void DrawHud(const HudState& hud, float w, float h) {
             }
         }
         // experience bar and level number
-        {
+        if (!hud.creative) {
             const mc::HudRect bar = layout.xpBar();
             sprite(bar, mc::hud::kUV_XP_BAR_BACKGROUND);
             const int px = std::clamp(static_cast<int>(hud.xp_progress * 183.f), 0, 182);
@@ -691,17 +691,16 @@ void DrawHud(const HudState& hud, float w, float h) {
             dl->AddText(ImGui::GetFont(), fs, pos, IM_COL32(255, 255, 255, 255), cnt);
         }
         // absorption (golden apple, totem): golden hearts in a row above the health, 2 Minecraft HP per heart
-        {
+        if (!hud.creative) {
             const int full = static_cast<int>(std::floor(hud.absorption_mc / 2.f));
             const bool half = hud.absorption_mc - 2.f * static_cast<float>(full) >= 1.f;
             for (int i = 0; i < std::min(10, full + (half ? 1 : 0)); ++i) {
                 mc::HudRect r = layout.heart(i);
                 r.y -= 10.f * static_cast<float>(layout.scale());
+                sprite(r, mc::hud::kUV_HEART_CONTAINER);
                 sprite(r, i < full ? mc::hud::kUV_HEART_ABSORB_FULL : mc::hud::kUV_HEART_ABSORB_HALF);
             }
         }
-        text_x = layout.heart(0).x;
-        text_y = layout.heart(0).y - 28.f * scale;
     }
     // hotbar
     for (int i = 0; i < 9 && !g_atlas_ready; ++i) {
@@ -715,7 +714,7 @@ void DrawHud(const HudState& hud, float w, float h) {
     const float ratio = hud.max_hp > 0 ? std::clamp(static_cast<float>(hud.hp) / static_cast<float>(hud.max_hp), 0.f, 1.f) : 0.f;
     const int halves = static_cast<int>(std::ceil(ratio * 20.f));
     const float y_hearts = y_bar - cell - 6.f * scale;
-    for (int i = 0; i < 10 && !g_atlas_ready; ++i) {
+    for (int i = 0; i < 10 && !g_atlas_ready && !hud.creative; ++i) {
         const float x = x0 + static_cast<float>(i) * (cell + gap);
         dl->AddRectFilled({x, y_hearts}, {x + cell, y_hearts + cell}, IM_COL32(40, 0, 0, 200));
         const int fill = std::clamp(halves - i * 2, 0, 2);
@@ -756,6 +755,14 @@ void DrawHud(const HudState& hud, float w, float h) {
         }
     }
     DrawFx(dl, atlas, w, h);
+    if (hud.mode_toast > 0.f) { // F5: the mode name, top left, fading out
+        const float a = std::clamp(hud.mode_toast, 0.f, 1.f);
+        const float fs = 18.f * scale;
+        const ImVec2 pos{16.f * scale, 16.f * scale};
+        const char* name = hud.creative ? "Creative Mode" : "Survival Mode";
+        dl->AddText(ImGui::GetFont(), fs, {pos.x + scale, pos.y + scale}, IM_COL32(0, 0, 0, static_cast<int>(200 * a)), name);
+        dl->AddText(ImGui::GetFont(), fs, pos, hud.creative ? IM_COL32(255, 220, 90, static_cast<int>(255 * a)) : IM_COL32(255, 255, 255, static_cast<int>(255 * a)), name);
+    }
     // eating: a thin bar under the crosshair that fills in 1.6 s
     if (hud.eating > 0.f) {
         const float bw = 60.f * scale, bh = 5.f * scale, bx = cx - bw * 0.5f, by = cy + 22.f * scale;
@@ -776,9 +783,6 @@ void DrawHud(const HudState& hud, float w, float h) {
         snprintf(pb, sizeof(pb), "PART SLOT %d HIDDEN", hud.slot_probe);
         dl->AddText(ImGui::GetFont(), 36.f * scale, {w * 0.5f - 200.f * scale, 60.f * scale}, IM_COL32(255, 230, 0, 255), pb);
     }
-    char buf[64];
-    snprintf(buf, sizeof(buf), "MC %d/%d", hud.hp, hud.max_hp);
-    dl->AddText({text_x, text_y}, IM_COL32(255, 255, 255, 220), buf);
 }
 
 void RenderFrame(IDXGISwapChain* sc) {

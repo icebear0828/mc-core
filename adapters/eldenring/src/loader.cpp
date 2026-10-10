@@ -38,6 +38,9 @@
 #include "eldenring_audio_data.hpp"
 #include "eldenring_blockmesh.hpp"
 #include "eldenring_blocks.hpp"
+#include "eldenring_buddy.hpp"
+#include "eldenring_creative.hpp"
+#include "eldenring_flight.hpp"
 #include "eldenring_los.hpp"
 #include "eldenring_survival.hpp"
 #include "eldenring_xp.hpp"
@@ -58,6 +61,8 @@
 
 using namespace eldenring::live;
 namespace blocks = eldenring::blocks;
+namespace creative = eldenring::creative;
+namespace flight = eldenring::flight;
 
 namespace {
 
@@ -232,6 +237,9 @@ bool GameInForeground() {
 
 std::atomic<bool> g_damage_enabled{false};
 std::atomic<bool> g_mc_mode{false};
+std::atomic<uint8_t> g_game_mode{static_cast<uint8_t>(creative::GameMode::Survival)}; // F5: survival (default) or creative, inside MC mode
+std::atomic<uint64_t> g_mode_toast_ms{0};                                              // tick count of the last F5, drives the on-screen name
+creative::GameMode CurrentGameMode() { return static_cast<creative::GameMode>(g_game_mode.load(std::memory_order_relaxed)); }
 std::atomic<bool> g_input_enabled{false};
 std::atomic<bool> g_click_attack{false};
 std::atomic<bool> g_steve_enabled{false};
@@ -278,6 +286,7 @@ mc::ConsumableSystem g_eating;     // right click on food, guarded by g_melee_mu
 std::atomic<float> g_sound_volume{0.8f}; // mc_er_steve.txt: sound_volume
 std::atomic<float> g_walk_speed{0.f}; // horizontal speed of the player (m/s), measured by the key thread
 std::atomic<bool> g_on_ground{true};
+std::atomic<bool> g_summon_pending{false}; // F2 pressed with mc_er_summon.txt present: write one summon request on the game thread
 std::atomic<int> g_heal_pending{0}; // Elden Ring hit points waiting to be given back on the game thread
 using ApplyHpFn = void*(__fastcall*)(void* data_module, int32_t hp, uint8_t flag);
 ApplyHpFn g_apply_hp = nullptr;
@@ -439,16 +448,143 @@ std::atomic<uint64_t> g_movement_layer_ms{0}; // last time one of our movement f
 std::atomic<unsigned> g_kills_skipped{0};
 uintptr_t PlayerChrPtr(); // defined below
 bool BlocksPresent();     // defined with the placed blocks
+bool PlayerDead();        // defined below
 
 void __fastcall KillChrDetour(void* chr) {
     if (reinterpret_cast<uintptr_t>(chr) == PlayerChrPtr() && PlayerChrPtr() != 0) {
         const bool recent = GetTickCount64() - g_movement_layer_ms.load(std::memory_order_relaxed) < 3000;
-        const bool protect = g_fall_protect.load(std::memory_order_relaxed) && g_mc_mode.load(std::memory_order_relaxed) && (BlocksPresent() || recent);
+        // hp 0 already means the damage path killed the player: skipping KillChr then leaves a player at 0 hp who never dies or respawns.
+        const bool protect = creative::shouldSkipPlayerKill(g_fall_protect.load(std::memory_order_relaxed), g_mc_mode.load(std::memory_order_relaxed),
+                                                            BlocksPresent() || recent, PlayerDead() ? 0 : 1);
         const unsigned n = ++g_kills_skipped;
         if (n <= 20) Log("kill: the game kills the player (caller %p, RVA 0x%llX): %s", _ReturnAddress(), static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base), protect ? "SKIPPED (fall protection)" : "allowed");
         if (protect) return;
     }
     g_kill_orig(chr);
+}
+
+// ---- creative-mode hooks: the fall-height hook is always installed (it only acts in creative mode, F5); the other three are log-only probes (mc_er_creativelog.txt) -------------------------------------
+// Which path kills the player after a fall? Every probe calls the original unchanged and only writes a line to mc_er.log.
+using KillWrapperFn = void(__fastcall*)(void* chr);
+using HardLandingFn = void(__fastcall*)(void* fall_module);
+using FallHeightFn = float(__fastcall*)(void* fall_module);
+using HasSpEffectFn = bool(__fastcall*)(void* container, int sp_effect);
+KillWrapperFn g_cr_kill_orig = nullptr;
+HardLandingFn g_cr_land_orig = nullptr;
+FallHeightFn g_cr_fall_orig = nullptr;
+HasSpEffectFn g_cr_sp_orig = nullptr;
+using FallTimeExceededFn = bool(__fastcall*)(void* fall_module, float threshold);
+FallTimeExceededFn g_cr_exceeded_orig = nullptr;
+using ChrEventFn = uint64_t(__fastcall*)(void* self, void* event);
+ChrEventFn g_cr_event_orig = nullptr;
+std::mutex g_cr_mutex;
+creative::FallLogState g_cr_fall_state;
+
+std::atomic<bool> g_cr_log{false}; // mc_er_creativelog.txt: log-only probes
+
+uintptr_t PlayerChrPtr(); // defined below
+float FallTimer(uintptr_t chr); // defined with the block collision below
+
+uintptr_t ModuleOwner(void* fall_module) {
+    uint64_t owner = 0;
+    return SafeCopy(reinterpret_cast<uintptr_t>(fall_module) + 8, &owner, sizeof(owner)) ? static_cast<uintptr_t>(owner) : 0;
+}
+
+bool CreativeShouldLogFall(float metres, uintptr_t caller_rva) {
+    std::lock_guard<std::mutex> lock(g_cr_mutex);
+    return creative::shouldLogFall(g_cr_fall_state, metres, caller_rva, GetTickCount64());
+}
+
+void __fastcall CreativeKillDetour(void* chr) {
+    const uintptr_t player = PlayerChrPtr();
+    if (creative::isPlayer(reinterpret_cast<uintptr_t>(chr), player)) {
+        const bool block = creative::shouldBlockPlayerKill(CurrentGameMode(), g_mc_mode.load(std::memory_order_relaxed), PlayerDead() ? 0 : 1);
+        static std::atomic<unsigned> logged{0};
+        if (block || g_cr_log.load(std::memory_order_relaxed)) {
+            if (++logged <= 30) {
+                Log("%s%s", creative::formatKill(reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base, true).c_str(),
+                    block ? ": SKIPPED (creative mode, the player still has hit points)" : "");
+            }
+        }
+        if (block) return;
+    }
+    g_cr_kill_orig(chr);
+}
+
+void __fastcall CreativeLandingDetour(void* fall_module) {
+    if (creative::isPlayer(ModuleOwner(fall_module), PlayerChrPtr())) Log("%s", creative::formatLanding(true).c_str());
+    g_cr_land_orig(fall_module);
+}
+
+
+float __fastcall CreativeFallDetour(void* fall_module) {
+    const float metres = g_cr_fall_orig(fall_module);
+    const bool interesting = !std::isfinite(metres) || metres >= creative::kFallLogMinMetres;
+    if (!interesting) return metres;
+    const bool zero_wanted = creative::zeroesFall(CurrentGameMode()) && g_mc_mode.load(std::memory_order_relaxed);
+    if (!zero_wanted && !g_cr_log.load(std::memory_order_relaxed)) return metres;
+    if (!creative::isPlayer(ModuleOwner(fall_module), PlayerChrPtr())) return metres;
+    const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base;
+    const bool zero = creative::shouldZeroFall(creative::zeroesFall(CurrentGameMode()), g_mc_mode.load(std::memory_order_relaxed), true);
+    if (CreativeShouldLogFall(metres, caller)) {
+        Log("%s", (zero ? creative::formatFallZeroed(caller, metres) : creative::formatFall(caller, metres)).c_str());
+    }
+    return zero ? 0.f : metres;
+}
+
+// 0x14044E3A0: "was the player in the air longer than the threshold" (FallModule+0x18). The game asks it inside the fall damage evaluator and a
+// yes starts the fall death after ~12 s in the air; flying keeps the player in the air state, so in creative mode the answer for the player is no.
+bool __fastcall CreativeFallTimeExceededDetour(void* fall_module, float threshold) {
+    const bool real = g_cr_exceeded_orig(fall_module, threshold);
+    if (!real) return false;
+    if (!creative::shouldDenyLongFall(CurrentGameMode(), g_mc_mode.load(std::memory_order_relaxed), creative::isPlayer(ModuleOwner(fall_module), PlayerChrPtr()))) return real;
+    static std::atomic<unsigned> logged{0};
+    if (++logged <= 10) Log("creative: the fall lasted %.2f s (threshold %.2f s): answered no for the player", FallTimer(PlayerChrPtr()), static_cast<double>(threshold));
+    return false;
+}
+
+// 0x140428DE0 (log only): the character event dispatcher. self+0x18 is the character, event+8 the payload (type at +0, required SpEffect word at +0xE),
+// event+0x18 a flag byte. Logged for the player and the death-related types only.
+uint64_t __fastcall CreativeEventDetour(void* self, void* event) {
+    uint64_t chr = 0, payload = 0;
+    uint32_t type = 0;
+    if (SafeCopy(reinterpret_cast<uintptr_t>(self) + 0x18, &chr, sizeof(chr)) && SafeCopy(reinterpret_cast<uintptr_t>(event) + 8, &payload, sizeof(payload)) &&
+        payload != 0 && SafeCopy(static_cast<uintptr_t>(payload), &type, sizeof(type)) && creative::isDeathEventType(type) &&
+        creative::isPlayer(static_cast<uintptr_t>(chr), PlayerChrPtr()) && !PlayerDead()) { // a real death repeats every frame: only the events that arrive with hit points left
+        static std::atomic<unsigned> logged{0};
+        if (++logged <= 40) {
+            unsigned char raw[16] = {};
+            uint16_t cond = 0;
+            uint8_t flag = 0;
+            SafeCopy(static_cast<uintptr_t>(payload), raw, sizeof(raw));
+            SafeCopy(static_cast<uintptr_t>(payload) + 0xE, &cond, sizeof(cond));
+            SafeCopy(reinterpret_cast<uintptr_t>(event) + 0x18, &flag, sizeof(flag));
+            Log("%s", creative::formatChrEvent(type, cond, flag != 0, raw, reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base).c_str());
+            Log("creative:   fall timer (FallModule+0x18, read only) = %.2f s", FallTimer(PlayerChrPtr()));
+            void* frames[10] = {};
+            const USHORT got = RtlCaptureStackBackTrace(1, 10, frames, nullptr);
+            uintptr_t addrs[10] = {};
+            for (USHORT i = 0; i < got; ++i) addrs[i] = reinterpret_cast<uintptr_t>(frames[i]);
+            Log("%s", creative::formatStack(addrs, got, g_img.base, g_img.image_size).c_str());
+        }
+    }
+    return g_cr_event_orig(self, event);
+}
+
+bool __fastcall CreativeSpEffectDetour(void* container, int sp_effect) {
+    const bool answer = g_cr_sp_orig(container, sp_effect);
+    if (sp_effect == creative::kLandingSkipSpEffect) {
+        const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base;
+        if (caller == creative::kLandingSpEffectReturnRva) {
+            // The container is [[FallModule+8]+0x178], i.e. [chr+0x178] (0x14043D260): compare it with the player's.
+            const uintptr_t player = PlayerChrPtr();
+            uint64_t player_container = 0;
+            const bool is_player = player != 0 && SafeCopy(player + 0x178, &player_container, sizeof(player_container)) &&
+                                   creative::isPlayer(reinterpret_cast<uintptr_t>(container), static_cast<uintptr_t>(player_container));
+            if (creative::shouldLogSpEffect(sp_effect, caller, is_player)) Log("%s", creative::formatSpEffect(answer).c_str());
+        }
+    }
+    return answer;
 }
 
 // ---- inventory screen ----------------------------------------------------------------------------------------------------
@@ -500,6 +636,7 @@ CamKeep g_cam_keep;
 std::atomic<bool> g_camstep_installed{false}; // the camera update hook (game thread, every frame) is in place
 void BlocksCollisionStep(); // defined with the placed blocks below
 void McJumpStep();          // defined after them
+void FlightStep();          // defined after them
 void DriveVelocityFromKeys(uintptr_t module, bool force_zero);
 std::atomic<unsigned> g_camstep_calls{0}, g_camstep_changed{0};
 
@@ -555,6 +692,7 @@ void AfterCameraStep(bool have_before, uintptr_t addr, const float before[3]) {
 }
 
 uint64_t __fastcall CameraStepDetour(uint64_t self, float dt, uint64_t chr, uint64_t flag) {
+    FlightStep();
     BlocksCollisionStep();
     McJumpStep();
     RestoreCamKeep();
@@ -1004,11 +1142,70 @@ void DrainOnce(uintptr_t updating_data_module) {
     }
 }
 
+// Experiment (mc_er_summon.txt + F2): asks the ash manager for a Wolf Pack summon the way the item code does (tablet id and
+// request together). Runs on the game thread. Logs the manager before and after, so a failure is visible either way.
+void LogPlayerPoseForBuddy(); // defined below
+
+void RunSummonExperiment() {
+    constexpr int32_t kWolfPackRequest = 232000;     // ash 2320 * 100 + level 0, observed live
+    constexpr int32_t kTabletEntityId = 1042360100;  // the tablet entity observed with it (Limgrave tile 42_36)
+    using eldenring::buddy::sample;
+    const auto before = sample(g_reader, g_img.base);
+    const char* why = eldenring::buddy::refusalReason(before);
+    if (why[0] != '\0') {
+        Log("summon: refused: %s", why);
+        return;
+    }
+    const uintptr_t player = PlayerChrPtr();
+    float pos[3], q[4];
+    if (player == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, pos) ||
+        !detail::readPhysicsOrientation(g_reader, g_img.base, player, q)) {
+        Log("summon: refused: the player's position is not readable");
+        return;
+    }
+    const auto spawn = eldenring::buddy::spawnPointAhead(pos, eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]));
+    const auto plan = eldenring::buddy::planSummon(before, kWolfPackRequest, kTabletEntityId, spawn);
+    if (!plan) {
+        Log("summon: no plan");
+        return;
+    }
+    bool sp_ok = true;
+    for (int i = 0; i < 4; ++i) {
+        uint32_t bits;
+        std::memcpy(&bits, &plan->spawn.pos[i], sizeof(bits));
+        sp_ok = SafeWrite32(plan->spawn_address + 4 * static_cast<uintptr_t>(i), bits) && sp_ok;
+    }
+    uint32_t yaw_bits;
+    std::memcpy(&yaw_bits, &plan->spawn.yaw, sizeof(yaw_bits));
+    sp_ok = SafeWrite32(plan->yaw_address, yaw_bits) && sp_ok;
+    if (!sp_ok) {
+        Log("summon: writing the spawn point failed; nothing else was written");
+        return;
+    }
+    const bool t_ok = SafeWrite32(plan->tablet_address, static_cast<uint32_t>(plan->tablet));
+    const bool r_ok = t_ok && SafeWrite32(plan->request_address, static_cast<uint32_t>(plan->request));
+    const auto after = sample(g_reader, g_img.base);
+    Log("summon: wrote tablet=%d request=%d (%s) | before request=%d active=%d tablet=%d | right after request=%d active=%d tablet=%d",
+        plan->tablet, plan->request, r_ok ? "ok" : "WRITE FAILED", before.request, before.active, before.tablet, after.request, after.active,
+        after.tablet);
+    Log("summon: wrote spawn=(%.2f %.2f %.2f %.2f) yaw=%.2f for the player at (%.2f %.2f %.2f)", static_cast<double>(plan->spawn.pos[0]),
+        static_cast<double>(plan->spawn.pos[1]), static_cast<double>(plan->spawn.pos[2]), static_cast<double>(plan->spawn.pos[3]),
+        static_cast<double>(plan->spawn.yaw), static_cast<double>(pos[0]), static_cast<double>(pos[1]), static_cast<double>(pos[2]));
+    Log("summon: spawn point in the manager was (%.2f %.2f %.2f %.2f) yaw=%.2f", static_cast<double>(before.spawn_pos[0]),
+        static_cast<double>(before.spawn_pos[1]), static_cast<double>(before.spawn_pos[2]), static_cast<double>(before.spawn_pos[3]),
+        static_cast<double>(before.spawn_yaw));
+    LogPlayerPoseForBuddy();
+}
+
 void* __fastcall ClampDetour(void* module, int32_t value) {
     void* r = g_clamp_orig(module, value);
     if (g_damage_enabled.load(std::memory_order_relaxed) && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
         g_queue.pending() > 0) {
         DrainOnce(reinterpret_cast<uintptr_t>(module));
+    }
+    if (g_summon_pending.load(std::memory_order_relaxed) && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
+        g_summon_pending.exchange(false)) {
+        RunSummonExperiment();
     }
     if (g_heal_pending.load(std::memory_order_relaxed) > 0 && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed)) {
         uint64_t owner = 0;
@@ -1139,6 +1336,48 @@ void LogPhysicsVectors() {
     }
     Log("phys: +70=(%.3f %.3f %.3f) +80=(%.3f %.3f %.3f) +120=(%.3f %.3f %.3f)", p70[0], p70[1], p70[2], p80[0], p80[1], p80[2], p120[0],
         p120[1], p120[2]);
+}
+
+// Diagnostic (read only): the spirit-ash manager's fields, one log entry each time they change. Armed by mc_er_buddylog.txt
+// in the game directory (looked for once a second); works outside MC mode so ashes can be used normally. The request slot
+// (+0x20) lives for less than a frame, so while armed this thread polls as fast as it can (one core busy; delete the file
+// to stop). Never writes to the game.
+// The player's own position (PhysicsModule+0x70) and heading, next to a buddy log entry: to compare with the spawn point
+// the item code writes into the manager (read only).
+void LogPlayerPoseForBuddy() {
+    const uintptr_t player = PlayerChrPtr();
+    float pos[3], q[4];
+    if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, pos) &&
+        detail::readPhysicsOrientation(g_reader, g_img.base, player, q)) {
+        Log("buddy: player pos=(%.2f %.2f %.2f) heading=%.2f", pos[0], pos[1], pos[2],
+            eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]));
+    }
+}
+
+DWORD WINAPI BuddyThread(LPVOID) {
+    eldenring::buddy::Monitor monitor;
+    uint64_t last_check_ms = 0;
+    bool armed = false;
+    for (;;) {
+        const uint64_t now = GetTickCount64();
+        if (now - last_check_ms >= 1000) {
+            last_check_ms = now;
+            const bool file = FileExists(g_game_dir + "mc_er_buddylog.txt");
+            if (file && !armed) monitor = eldenring::buddy::Monitor{};
+            armed = file;
+        }
+        if (!armed) {
+            Sleep(1000);
+            continue;
+        }
+        const std::string text = monitor.update(eldenring::buddy::sample(g_reader, g_img.base));
+        if (!text.empty()) {
+            Log("%s", text.c_str());
+            LogPlayerPoseForBuddy();
+        }
+        YieldProcessor();
+        SwitchToThread();
+    }
 }
 
 // Diagnostic: the player's ground-contact bytes, one log line each time they change (jump / fall / roll / swim).
@@ -1331,7 +1570,7 @@ bool TryPlaceBlock() {
     }
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
-        g_melee.consumeAt(slot);
+        if (creative::consumesItems(CurrentGameMode())) g_melee.consumeAt(slot); // creative: blocks are not used up
         g_melee.startSwing();
     }
     SendBlockMesh();
@@ -1682,6 +1921,98 @@ void McJumpStep() {
     }
 }
 
+// ---- creative flight (F5 creative mode, double-tap Space) ----------------------------------------------------------------------
+// See eldenring_flight.hpp. Game thread (camera update, before the block collision so the player is still kept out of placed blocks).
+// Only the physics position (+0x70, and the previous position +0x80 so no speed is seen) is written: no flags, no velocity, no timers.
+std::atomic<bool> g_flying{false};
+std::atomic<float> g_fly_h_speed{flight::kHorizontalSpeed};
+std::atomic<float> g_fly_v_speed{flight::kVerticalSpeed};
+bool g_fly_have_written = false; // game thread only: the flight's own position (and last_written) are valid
+std::atomic<float> g_fly_yaw{0.f};   // the figure's heading while flying (camera heading)
+std::atomic<bool> g_fly_sync{true}; // fly_sync=0: do not ask the engine to move the Havok proxies (diagnostic)
+
+void FlightStep() {
+    static flight::DoubleTap tap;
+    static LARGE_INTEGER last_qpc{};
+    static uint64_t last_log_ms = 0;
+    LARGE_INTEGER now_qpc, freq;
+    QueryPerformanceCounter(&now_qpc);
+    QueryPerformanceFrequency(&freq);
+    const float dt = last_qpc.QuadPart != 0 ? static_cast<float>(now_qpc.QuadPart - last_qpc.QuadPart) / static_cast<float>(freq.QuadPart) : 0.f;
+    last_qpc = now_qpc;
+    const bool allowed = g_mc_mode.load(std::memory_order_relaxed) && CurrentGameMode() == creative::GameMode::Creative &&
+                         !g_inv_open.load(std::memory_order_relaxed) && GameInForeground() && !PlayerDead();
+    if (!allowed) {
+        tap.reset();
+        g_fly_have_written = false;
+        if (g_flying.exchange(false)) Log("flight: stopped (creative mode, MC mode, focus, inventory or death changed)");
+        return;
+    }
+    const uint64_t now_ms = GetTickCount64();
+    if (tap.update((GetAsyncKeyState(VK_SPACE) & 0x8000) != 0, now_ms)) {
+        const bool on = !g_flying.load();
+        g_flying.store(on);
+        g_fly_have_written = false;
+        Log("flight: %s", on ? "started" : "stopped");
+    }
+    if (!g_flying.load(std::memory_order_relaxed)) return;
+    const uintptr_t player = PlayerChrPtr();
+    const uintptr_t module = player != 0 ? detail::readPhysicsModule(g_reader, g_img.base, player) : 0;
+    float read_pos[3];
+    if (module == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, read_pos)) {
+        g_fly_have_written = false; // loading screen, no world: start again from the game's position
+        return;
+    }
+    // Flight keeps its own position. Reading the game's back every frame would take over what its gravity pulled down in between (hovering
+    // sank, climbing was eaten). The game's floating-origin re-bases (whole multiples of 8 m on an axis, the fraction kept) are followed.
+    static float own[3] = {};
+    static float last_written[3] = {};
+    static unsigned rebases = 0;
+    if (!g_fly_have_written) {
+        std::memcpy(own, read_pos, sizeof(own));
+    } else if (flight::positionOverwritten(last_written, read_pos, 3.f)) {
+        const float before[3] = {own[0], own[1], own[2]};
+        flight::followRebase(own, last_written, read_pos);
+        if (++rebases <= 20) {
+            Log("flight: coordinates re-based by the game: wrote=(%.2f %.2f %.2f) read=(%.2f %.2f %.2f) own (%.2f %.2f %.2f) -> (%.2f %.2f %.2f)", last_written[0],
+                last_written[1], last_written[2], read_pos[0], read_pos[1], read_pos[2], before[0], before[1], before[2], own[0], own[1], own[2]);
+        }
+    }
+    flight::Keys keys;
+    keys.forward = (GetAsyncKeyState('W') & 0x8000) != 0;
+    keys.back = (GetAsyncKeyState('S') & 0x8000) != 0;
+    keys.left = (GetAsyncKeyState('A') & 0x8000) != 0;
+    keys.right = (GetAsyncKeyState('D') & 0x8000) != 0;
+    keys.up = (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0;
+    keys.down = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    flight::Heading heading;
+    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    CameraPose cam;
+    const bool have_heading = world != 0 && readCamera(g_reader, g_img.base, world, cam) && flight::headingFromCamera(cam.forward, cam.right, heading);
+    if (!have_heading) keys.forward = keys.back = keys.left = keys.right = false; // no heading this frame: vertical only
+    g_movement_layer_ms.store(now_ms, std::memory_order_relaxed);
+    flight::step(own, keys, heading, dt, g_fly_h_speed.load(std::memory_order_relaxed), g_fly_v_speed.load(std::memory_order_relaxed));
+    if (have_heading) g_fly_yaw.store(flight::bodyYaw(heading), std::memory_order_relaxed);
+    // Written every frame, also when standing still in the air: the game's gravity must not pull the player down between frames.
+    WriteBytesSafe(module + layout::kPhysicsPosition, own, sizeof(own));
+    WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, own, sizeof(own));
+    // The Havok character proxies are what the game really moves; +0x91 asks the engine to copy this position into them (the game's own
+    // set-position does the same) and the engine clears it again. Without it they pull the player back to where they were.
+    uint8_t sync_before = 0;
+    SafeCopy(module + layout::kPhysicsProxySyncRequest, &sync_before, 1);
+    if (g_fly_sync.load(std::memory_order_relaxed)) {
+        const uint8_t one = 1;
+        WriteBytesSafe(module + layout::kPhysicsProxySyncRequest, &one, 1);
+    }
+    std::memcpy(last_written, own, sizeof(last_written));
+    g_fly_have_written = true;
+    if (now_ms - last_log_ms >= 1000) {
+        last_log_ms = now_ms;
+        Log("flight: pos=(%.2f %.2f %.2f) read_back=(%.2f %.2f %.2f) fall_t=%.2f sync91_before=%u keys[%d%d%d%d up=%d down=%d] dt=%.4f", own[0], own[1], own[2], read_pos[0], read_pos[1], read_pos[2], FallTimer(player), static_cast<unsigned>(sync_before), keys.forward ? 1 : 0, keys.back ? 1 : 0,
+            keys.left ? 1 : 0, keys.right ? 1 : 0, keys.up ? 1 : 0, keys.down ? 1 : 0, dt);
+    }
+}
+
 // Opens / closes the inventory and drives its virtual pointer. Runs on the key thread before the normal MC input, and takes the
 // click edges while the screen is open so nothing else (attack, eating) reacts to them.
 void InventoryTick(bool fg) {
@@ -1753,7 +2084,7 @@ void InventoryTick(bool fg) {
     g_inv_my.store(my);
     erin::TakeWheelNotches();
 
-    const mc::InventoryLayout lay(w, h);
+    const mc::InventoryLayout lay(w, h, creative::showsPalette(CurrentGameMode()));
     const mc::SlotRef ref = lay.hitTest(mx, my);
     const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
     auto click = [&](mc::Button button) {
@@ -1878,7 +2209,7 @@ DWORD WINAPI KeyThread(LPVOID) {
                             if (e.play_burp_sound) eraudio::Play("entity.player.burp");
                             g_survival.apply(e.effects);
                             g_hunger.eat(meal);
-                            g_melee.consumeAt(g_melee.selectedSlot());
+                            if (creative::consumesItems(CurrentGameMode())) g_melee.consumeAt(g_melee.selectedSlot());
                             Log("SURVIVAL: finished eating: food %d, saturation %.1f (regen/absorption from the item)", g_hunger.food(), g_hunger.saturation());
                         }
                     } else {
@@ -1890,9 +2221,17 @@ DWORD WINAPI KeyThread(LPVOID) {
         }
         InventoryTick(fg);
         BlocksTick();
-        erin::SetMaskedKey(g_mc_jump.load() && g_mc_mode.load() && fg && !g_inv_open.load()
-                               ? static_cast<int>(MapVirtualKeyW(static_cast<UINT>(g_mc_jump_vk.load()), MAPVK_VK_TO_VSC))
-                               : 0);
+        {
+            int hidden[16];
+            size_t n_hidden = 0;
+            if (g_mc_jump.load() && g_mc_mode.load() && fg && !g_inv_open.load()) {
+                hidden[n_hidden++] = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(g_mc_jump_vk.load()), MAPVK_VK_TO_VSC));
+            }
+            if (g_flying.load()) { // while flying the game never sees the movement keys: the position is ours
+                for (const int dik : flight::kHiddenKeys) hidden[n_hidden++] = dik;
+            }
+            erin::SetMaskedKeys(hidden, n_hidden);
+        }
         const bool inv_open = g_inv_open.load();
         const bool right_edge = !inv_open && g_input_enabled.load() && erin::TakeRightClick();
         if (right_edge && fg && WantSuppress() && !PlayerDead() && TryPlaceBlock()) {
@@ -1952,11 +2291,63 @@ DWORD WINAPI KeyThread(LPVOID) {
         const bool d8 = fg && (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
         const bool d6 = fg && (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
         if (d8 && !prev8 && g_damage_enabled.load()) EnqueueNearestHostile();
+        const bool d5 = fg && (GetAsyncKeyState(VK_F5) & 0x8000) != 0;
+        static bool prev5 = false;
+        if (d5 && !prev5) {
+            g_game_mode.store(static_cast<uint8_t>(creative::toggled(CurrentGameMode())));
+            g_mode_toast_ms.store(GetTickCount64());
+            Log("F5: %s", creative::modeName(CurrentGameMode()));
+        }
+        prev5 = d5;
         if (d6 && !prev6) {
             g_mc_mode.store(!g_mc_mode.load());
             Log("F6: MC mode %s", g_mc_mode.load() ? "on" : "off");
             ResetSlotProbe(slot_cursor);
         }
+        static struct {
+            std::vector<uintptr_t> baseline;
+            uint64_t t0_ms{0};
+            int reports_left{0};
+        } summon_watch;
+        if (summon_watch.reports_left > 0) {
+            const uint64_t waited = GetTickCount64() - summon_watch.t0_ms;
+            if (waited >= (summon_watch.reports_left == 2 ? 1500u : 5000u)) {
+                --summon_watch.reports_left;
+                std::vector<EnemyInfo> now_list;
+                if (enumerateEnemies(g_reader, g_img.base, now_list, 4000)) {
+                    std::vector<uintptr_t> ptrs;
+                    for (const EnemyInfo& e : now_list) ptrs.push_back(e.chr);
+                    const auto fresh = eldenring::buddy::newEntities(summon_watch.baseline, ptrs);
+                    Log("summon: %.1f s after F2, %zu new entities (of %zu)", static_cast<double>(waited) / 1000.0, fresh.size(), now_list.size());
+                    for (size_t i : fresh) {
+                        const EnemyInfo& e = now_list[i];
+                        Log("summon:   new chr=%p npc=%d team=%u hp=%d/%d hostile=%d rel=(%.1f %.1f %.1f) dist=%.1f m", reinterpret_cast<void*>(e.chr),
+                            e.npc_id, static_cast<unsigned>(e.team), e.hp, e.max_hp, e.hostile ? 1 : 0, e.rel_x, e.rel_y, e.rel_z,
+                            std::sqrt(e.rel_x * e.rel_x + e.rel_y * e.rel_y + e.rel_z * e.rel_z));
+                    }
+                } else {
+                    Log("summon: entity enumeration failed");
+                }
+            }
+        }
+        static bool prev_f2 = false;
+        const bool d2 = fg && (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
+        if (d2 && !prev_f2) {
+            if (FileExists(g_game_dir + "mc_er_summon.txt")) {
+                summon_watch.baseline.clear();
+                std::vector<EnemyInfo> before;
+                if (enumerateEnemies(g_reader, g_img.base, before, 4000)) {
+                    for (const EnemyInfo& e : before) summon_watch.baseline.push_back(e.chr);
+                }
+                summon_watch.t0_ms = GetTickCount64();
+                summon_watch.reports_left = 2;
+                g_summon_pending.store(true);
+                Log("F2: summon experiment queued for the game thread (%zu entities in the baseline)", summon_watch.baseline.size());
+            } else {
+                Log("F2: ignored (no mc_er_summon.txt in the game directory)");
+            }
+        }
+        prev_f2 = d2;
         const bool d9 = fg && (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
         if (d9 && !prev9 && g_hide_native.load()) CycleHiddenSlot(slot_cursor);
         prev9 = d9;
@@ -2023,6 +2414,43 @@ bool ReadFileAll(const std::string& path, std::vector<uint8_t>& out) {
     const size_t got = out.empty() ? 0 : fread(out.data(), 1, out.size(), f);
     fclose(f);
     return got == out.size();
+}
+
+void SetupCreativeProbes() {
+    g_cr_log.store(FileExists(g_game_dir + "mc_er_creativelog.txt"));
+    struct Probe {
+        const char* name;
+        const char* sig;
+        void* detour;
+        void** orig;
+    };
+    const Probe probes[] = {
+        {"kill wrapper", sigs::kKillWrapper, reinterpret_cast<void*>(&CreativeKillDetour), reinterpret_cast<void**>(&g_cr_kill_orig)},
+        {"hard landing", sigs::kHardLanding, reinterpret_cast<void*>(&CreativeLandingDetour), reinterpret_cast<void**>(&g_cr_land_orig)},
+        {"fall height", sigs::kFallHeight, reinterpret_cast<void*>(&CreativeFallDetour), reinterpret_cast<void**>(&g_cr_fall_orig)},
+        {"sp effect query", sigs::kHasSpEffect, reinterpret_cast<void*>(&CreativeSpEffectDetour), reinterpret_cast<void**>(&g_cr_sp_orig)},
+        {"fall time exceeded", sigs::kFallTimeExceeded, reinterpret_cast<void*>(&CreativeFallTimeExceededDetour), reinterpret_cast<void**>(&g_cr_exceeded_orig)},
+        {"chr event dispatch", sigs::kChrEventDispatch, reinterpret_cast<void*>(&CreativeEventDetour), reinterpret_cast<void**>(&g_cr_event_orig)},
+    };
+    if (!EnsureMinHook()) {
+        Log("creative: MH_Initialize failed, probes not installed");
+        return;
+    }
+    for (const Probe& p : probes) {
+        const bool acts = p.orig == reinterpret_cast<void**>(&g_cr_fall_orig) || p.orig == reinterpret_cast<void**>(&g_cr_kill_orig) || p.orig == reinterpret_cast<void**>(&g_cr_exceeded_orig);
+        if (!g_cr_log.load() && !acts) continue; // without mc_er_creativelog.txt only the two hooks that act in creative mode are installed
+        uintptr_t target = 0;
+        if (!LocateByPrefix(g_img, p.sig, target)) {
+            Log("creative: %s signature not unique, probe not installed", p.name);
+        } else if (MH_CreateHook(reinterpret_cast<void*>(target), p.detour, p.orig) != MH_OK || MH_EnableHook(reinterpret_cast<void*>(target)) != MH_OK) {
+            Log("creative: hooking %s at %p failed", p.name, reinterpret_cast<void*>(target));
+        } else {
+            Log("creative: %s probe at %p (RVA 0x%llX)%s", p.name, reinterpret_cast<void*>(target), static_cast<unsigned long long>(target - g_img.base),
+                p.orig == reinterpret_cast<void**>(&g_cr_fall_orig) ? ", fall height is 0 for the player in creative mode (F5)"
+                : p.orig == reinterpret_cast<void**>(&g_cr_kill_orig) ? ", the player cannot be killed in creative mode while it has hit points (F5)"
+                : p.orig == reinterpret_cast<void**>(&g_cr_exceeded_orig) ? ", the player never 'fell too long' in creative mode (F5)" : ", log-only");
+        }
+    }
 }
 
 void SetupDamage() {
@@ -2252,6 +2680,11 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
                             readLoadingState(g_reader, readSingleton(g_reader, g_img.base, g_rva_loading, sigs::kCSNowLoadingHelper), ls) &&
                             readFadeAlpha(g_reader, readSingleton(g_reader, g_img.base, g_rva_fade, sigs::kCSFade), fade);
     out.mc_mode = g_mc_mode.load();
+    out.creative = !creative::showsVitals(CurrentGameMode());
+    {
+        const uint64_t since = GetTickCount64() - g_mode_toast_ms.load(std::memory_order_relaxed);
+        out.mode_toast = g_mode_toast_ms.load(std::memory_order_relaxed) != 0 && since < 2500 ? 1.f - static_cast<float>(since) / 2500.f : 0.f;
+    }
     out.slot_probe = g_slot_probe.load();
     {
         // CSMenuMan+0x654C was a candidate for the game's HUD option, but it reads 0x3D240000 (a float-looking value) and never
@@ -2335,6 +2768,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.feet[1] = feet[1];
         steve.feet[2] = feet[2];
         steve.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) + g_steve_yaw_offset;
+        if (g_flying.load(std::memory_order_relaxed)) steve.yaw = g_fly_yaw.load(std::memory_order_relaxed); // the game does not turn a character that never sees a key
     }
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
@@ -2394,6 +2828,9 @@ void SetupOverlay() {
                 else if (key == "fall_reset") g_fall_reset.store(value != 0.f);
                 else if (key == "fall_hold") g_fall_hold.store(std::clamp(value, 0.f, 2.8f));
                 else if (key == "fall_protect") g_fall_protect.store(value != 0.f);
+                else if (key == "fly_sync") g_fly_sync.store(value != 0.f);
+                else if (key == "fly_speed") g_fly_h_speed.store(std::clamp(value, 1.f, 40.f));
+                else if (key == "fly_vspeed") g_fly_v_speed.store(std::clamp(value, 1.f, 40.f));
                 else if (key == "mc_jump") g_mc_jump.store(value != 0.f);
                 else if (key == "mc_jump_key") g_mc_jump_vk.store(static_cast<int>(value));
                 else if (key == "mc_gravity") g_mc_gravity.store(std::clamp(value, 5.f, 80.f));
@@ -2568,9 +3005,11 @@ DWORD WINAPI LoaderThread(LPVOID) {
     }
 
     SetupDamage();
+    SetupCreativeProbes();
     SetupOverlay();
     SetupInput();
     CreateThread(nullptr, 0, KeyThread, nullptr, 0, nullptr);
+    CreateThread(nullptr, 0, BuddyThread, nullptr, 0, nullptr);
 
     for (;;) {
         Sleep(1000);

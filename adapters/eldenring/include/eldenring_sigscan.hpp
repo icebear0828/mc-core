@@ -136,6 +136,28 @@ inline constexpr const char* kHitReactHeavy =
 // a great height (no hit context, so the damage pipeline never sees it). Four callers. 56 bytes, one match.
 inline constexpr const char* kKillChr =
     "40 53 48 83 EC 40 C7 44 24 50 00 00 00 00 48 8B D9 48 8B 89 90 01 00 00 0F 57 DB F3 0F 10 05 ?? ?? ?? ?? 45 33 C0 C6 44 24 28 01 33 D2 F3 0F 11 44 24 20 48 8B 09 E8";
+// Creative-mode probes (log-only, see eldenring_creative.hpp). Each is unique in 2.7.1.0 (checked in the exe), displacements wildcarded.
+// Kill wrapper 0x1403EDA70: a near-identical sibling sits at 0x1403EDB60, so the literal jne displacement (0xB6) is part of the signature.
+inline constexpr const char* kKillWrapper =
+    "40 53 48 83 EC 40 48 C7 44 24 20 FE FF FF FF 0F 29 74 24 30 48 8B D9 48 8B 41 58 48 8B 90 C8 00 00 00 F6 42 24 01 0F 85 B6 00 00 00 E8 ?? ?? ?? ?? "
+    "8B 43 68 83 F8 03";
+// Hard landing 0x14044E090 (rcx = FallModule*).
+inline constexpr const char* kHardLanding =
+    "48 89 5C 24 08 57 48 83 EC 40 48 8B D9 E8 ?? ?? ?? ?? F3 0F 10 05 ?? ?? ?? ?? 0F 57 DB C6 44 24 28 01 45 33 C0 33 D2";
+// Fall height 0x14044E240 (rcx = FallModule*, float result).
+inline constexpr const char* kFallHeight =
+    "48 83 EC 58 0F 29 74 24 40 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 30 80 79 1D 00 48 89 7C 24 50 48 8B F9 74 0A";
+// SpEffect query 0x1404FA370 (container, id): sibling copies at 0x1404FA3F0, 0x1404FA470 and one more, told apart by the tail after the shared head.
+inline constexpr const char* kHasSpEffect =
+    "44 0F B7 D2 48 B8 89 88 88 88 88 88 88 88 66 45 85 D2 4C 8B D9 45 8B C2 41 0F 95 C1 49 F7 E2 48 C1 EA 03 48 6B C2 0F BA 0F 00 00 00 4C 2B C0 "
+    "43 8D 04 08 C0 E0 02 0F B6 C8 48 D3 E2 49 85 53 28 74 34 49 8B 43 08";
+// Character event dispatcher 0x140428DE0 (this, event*): switches on the event type; types 12/47 call the kill wrappers, 46 sets a state bit,
+// 48/126 clean up or tear down. 45 bytes, no wildcard needed, one match in 2.7.1.0.
+inline constexpr const char* kChrEventDispatch =
+    "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B 72 08 33 C0 0F B6 7A 18 48 8B 59 18 0F B7 56 0E 66 3B C2 73 14 48 8B 8B 78 01 00 00";
+// 0x14044E3A0 bool (FallModule* this, float threshold in xmm1): [this+0x18] (the time in the air) > threshold, with two more checks. One caller
+// (0x1404117EB, inside the fall damage evaluator). 28 bytes, one match in 2.7.1.0.
+inline constexpr const char* kFallTimeExceeded = "48 89 5C 24 08 57 48 83 EC 20 F3 0F 10 41 18 48 8B F9 0F 2F C1 0F 97 C3 84 DB 74 72";
 inline constexpr const char* kGetEffectiveTeamType = "48 89 5C 24 10 57 48 83 EC 20 0F B6 41 6C 48 8B F9 88 02";
 } // namespace sigs
 
