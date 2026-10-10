@@ -1164,6 +1164,7 @@ bool PlayerHitSurvival(void* module, void* attacker, uint8_t* ctx, uint8_t block
 std::atomic<bool> g_proj_log{false};
 std::atomic<bool> g_arrow_damage{false};
 std::atomic<int> g_proj_log_left{80};
+std::atomic<uint32_t> g_last_bullet_id{0};      // request +0x1C of that call
 std::atomic<uint64_t> g_last_bullet_tick_ms{0}; // the last spawn_bullet call (the player's real shot or ours): hits within 3 s after it are logged whatever they look like
 
 void HandleProjectileHit(void* module, void* attacker, uint8_t* ctx) {
@@ -1201,15 +1202,18 @@ void HandleProjectileHit(void* module, void* attacker, uint8_t* ctx) {
         Log("PDC-STATS: ProcessDamageContext calls=%u player-victim=%u unreadable=%u; hits on others by u8[DA] kind:%s", calls, s_player_victim.load(), s_unreadable.load(), kinds);
     }
     if (!readable || victim == player) return;
-    const bool mine = eldenring::bullet::isPlayersBoltHit(kind, ctx_attacker, player, victim);
-    const bool after_shot = now - g_last_bullet_tick_ms.load(std::memory_order_relaxed) < 3000;
+    const uint64_t since_shot = now - g_last_bullet_tick_ms.load(std::memory_order_relaxed);
+    const bool mine = eldenring::bullet::isPlayersBoltHit(kind, reinterpret_cast<uintptr_t>(attacker), player, victim, g_last_bullet_id.load(std::memory_order_relaxed), since_shot);
+    const bool after_shot = since_shot < 3000;
     const bool interesting = kind == 6 || ctx_attacker == player || reinterpret_cast<uintptr_t>(attacker) == player || after_shot;
     if (g_proj_log.load(std::memory_order_relaxed) && interesting && g_proj_log_left.fetch_sub(1) > 0) {
         int32_t npc = 0;
         uint8_t team = 0;
         SafeCopy(static_cast<uintptr_t>(victim) + layout::kNpcIdInChrIns, &npc, sizeof(npc));
         SafeCopy(static_cast<uintptr_t>(victim) + layout::kTeamTypeInChrIns, &team, sizeof(team));
-        Log("PROJ-HIT: kind=%u victim=%p npc=%d team=%u attacker-arg=%p ctx+1D8=%p ctx+1E0=%p player=%p shooter_is_player=%d after_shot=%d engine_dmg=%d tid=%lu", kind,
+        int32_t victim_max = 0;
+        if (const uintptr_t vdata = DataModuleOfChr(static_cast<uintptr_t>(victim))) SafeCopy(vdata + layout::kDataMaxHp, &victim_max, sizeof(victim_max));
+        Log("PROJ-HIT: max_hp=%d kind=%u victim=%p npc=%d team=%u attacker-arg=%p ctx+1D8=%p ctx+1E0=%p player=%p shooter_is_player=%d after_shot=%d engine_dmg=%d tid=%lu", victim_max, kind,
             reinterpret_cast<void*>(victim), npc, static_cast<unsigned>(team), attacker, reinterpret_cast<void*>(ctx_attacker), reinterpret_cast<void*>(ctx_victim),
             reinterpret_cast<void*>(player), mine ? 1 : 0, after_shot ? 1 : 0, engine_damage, static_cast<unsigned long>(GetCurrentThreadId()));
     }
@@ -2865,6 +2869,7 @@ void RunBulletFire() {
     alignas(16) uint8_t status[64] = {};
     std::memcpy(req, built.data(), sizeof(req));
     uint32_t out = 0xFFFFFFFFu;
+    g_last_bullet_id.store(*reinterpret_cast<uint32_t*>(req + 0x1C), std::memory_order_relaxed);
     g_last_bullet_tick_ms.store(GetTickCount64(), std::memory_order_relaxed);
     const bool ok = SpawnBulletSafe(reinterpret_cast<void*>(manager), &out, req, status);
     uint32_t code = 0;
@@ -2884,7 +2889,12 @@ bool QueueBulletFire() {
 }
 
 uint32_t* __fastcall SpawnBulletDetour(void* manager, uint32_t* out_handle, void* request, void* r9) {
-    g_last_bullet_tick_ms.store(GetTickCount64(), std::memory_order_relaxed);
+    {
+        uint32_t id = 0;
+        if (request != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(request) + 0x1C, &id, sizeof(id));
+        g_last_bullet_id.store(id, std::memory_order_relaxed);
+        g_last_bullet_tick_ms.store(GetTickCount64(), std::memory_order_relaxed);
+    }
     if (g_bullet_fire_enabled.load(std::memory_order_relaxed)) RecordBulletTemplate(request);
     uint32_t* r = g_spawn_bullet_orig(manager, out_handle, request, r9);
     uint32_t handle = 0xFFFFFFFFu;

@@ -1187,3 +1187,14 @@ Table 1                     Table 2
 - 会话 A：真射 1 发 → `bullet: template saved to ...\mc_er_bullet.bin (param row 0x06455A50, bullet id 56)`，文件 272 字节（0x110）。
 - 会话 B（重启游戏，**没有射击**）：`bullet: template loaded ... F3 works without a real shot`；F3 两次：`bullet fire: param row 0x06455A50 id=56 flags=0x8 ... tid=19852 -> returned handle 0x0000FF00 status 0 -> spawned`、`... handle 0x0000FF01 status 0 -> spawned`。`status 0` 就是 `0x1403A5A20` 写进 `r9` 的成功码，验证了"`r9` 只是状态码指针，零缓冲足够"。
 - 结论：弩箭发射所需的只有：请求体模板（行 ID `0x06455A50`、子弹 ID 56，来自装备的弩和弩箭，跨会话不变）、玩家句柄、相机朝向、零缓冲 `r9`。不需要手持弩，不需要真射。
+
+### 35.5 弩箭命中敌人时的 `ProcessDamageContext`（我方日志，2026-10-10，A）
+`PROJ-HIT`/`PDC-STATS`（`mc_er_bulletlog.txt`），敌人 npc 4311（team 48），F3 射 3 发 + 手持弩真射 2 发 + 1 次近战：
+| 命中 | `u8[DA]` | `attacker` 参数 | `ctx+0x1D8` | `ctx+0x1E0` | 引擎伤害（`ctx+0x228`） |
+|---|---|---|---|---|---|
+| 真射弩箭 | **2** | 玩家 ChrIns | 子弹对象（≠玩家） | 受害者 | 74、74 |
+| F3 弩箭 | **2** | 玩家 ChrIns | 子弹对象 | 受害者 | 25、16、16 |
+| 近战（玩家自己的武器） | 1 | 玩家 ChrIns | 玩家 | 受害者 | 63 |
+- 结论：弩箭命中敌人是 `u8[DA] == 2`（不是玩家被射时的 6），**射手以 `attacker` 参数为准，`ctx+0x1D8` 是子弹对象**；钩子确实看得到这些命中（`PDC-STATS: calls=5`）。上一版的判断条件 `kind==6 && ctx+0x1D8==玩家` 因此一次都没触发。
+- 真射比 F3 伤害高（74 对 16~25）：引擎在命中时用发射者的武器攻击数据算伤害，F3 的请求没有这些，所以低；这是引擎侧的差异，用 MC 伤害替换后两者一致。
+- 判断条件改为：`kind == 2` 且 `attacker 参数 == 玩家` 且受害者 ≠ 玩家，并且最近一次 `spawn_bullet` 是子弹 ID 56（弩箭）且在 4 s 内（法术等其他投射物的 kind 也是 2，用最近一次发射的 ID 和时间区分；一支弩箭最长存活 3 s）。

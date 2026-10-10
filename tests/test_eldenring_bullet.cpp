@@ -198,11 +198,16 @@ TEST(EldenRingBulletDamage, AnUnknownHealthGivesNoDamageAndAHitNeverRoundsToZero
     EXPECT_EQ(boltDamageEr(3), 1);
 }
 
-TEST(EldenRingBulletDamage, OnlyAProjectileHitFromTheShooterIsReplaced) {
+TEST(EldenRingBulletDamage, OnlyAHitByTheShootersBoltRightAfterAShotIsReplaced) {
     const uint64_t player = 0x7FF500100000ull, other = 0x7FF500400000ull;
-    EXPECT_TRUE(isPlayersBoltHit(6, player, player, other));
-    EXPECT_FALSE(isPlayersBoltHit(5, player, player, other));   // a melee-class hit
-    EXPECT_FALSE(isPlayersBoltHit(6, other, player, other));    // somebody else's arrow
-    EXPECT_FALSE(isPlayersBoltHit(6, player, player, player));  // the player is the victim
-    EXPECT_FALSE(isPlayersBoltHit(6, player, 0, other));        // no player yet
+    // Measured (REVERSE 35.5): a bolt hit on an enemy is u8[DA] == 2 with the player as the attacker argument.
+    EXPECT_TRUE(isPlayersBoltHit(2, player, player, other, kBoltBulletId, 500));
+    EXPECT_FALSE(isPlayersBoltHit(1, player, player, other, kBoltBulletId, 500));         // a melee hit
+    EXPECT_FALSE(isPlayersBoltHit(6, player, player, other, kBoltBulletId, 500));         // the kind of an arrow that hits the player
+    EXPECT_FALSE(isPlayersBoltHit(2, other, player, other, kBoltBulletId, 500));          // somebody else's projectile
+    EXPECT_FALSE(isPlayersBoltHit(2, player, player, player, kBoltBulletId, 500));        // the player is the victim
+    EXPECT_FALSE(isPlayersBoltHit(2, player, 0, other, kBoltBulletId, 500));              // no player yet
+    EXPECT_FALSE(isPlayersBoltHit(2, player, player, other, 1234u, 500));                 // the last bullet was a spell, not a bolt
+    EXPECT_FALSE(isPlayersBoltHit(2, player, player, other, kBoltBulletId, 4000));        // too long ago to be this bolt
+    EXPECT_TRUE(isPlayersBoltHit(2, player, player, other, kBoltBulletId, 3999));
 }

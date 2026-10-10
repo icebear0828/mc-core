@@ -145,9 +145,13 @@ inline int boltDamageEr(int victim_max_hp) {
     return live::erDamage(intent, victim_max_hp);
 }
 
-// A hit context (ctx[+0xDA] == 6: projectile) whose attacker (ctx+0x1D8) is the player and whose victim is someone else.
-inline bool isPlayersBoltHit(uint8_t hit_kind, uint64_t ctx_attacker, uint64_t player, uint64_t victim) {
-    return hit_kind == 6 && player != 0 && ctx_attacker == player && victim != 0 && victim != player;
+inline constexpr uint32_t kBoltBulletId = 56; // request +0x1C of a crossbow shot with normal bolts (REVERSE 35.1)
+
+// A bolt hit on somebody else (REVERSE 35.5, measured): ProcessDamageContext sees u8[DA] == 2 with the player as the `attacker` argument; ctx+0x1D8 is the
+// bullet object, not the shooter. A spell or another projectile of the player has the same kind, so the last spawn_bullet call (id, time) must be a bolt
+// shot less than 4 s ago (a bolt lives 3 s at most).
+inline bool isPlayersBoltHit(uint8_t hit_kind, uint64_t attacker_arg, uint64_t player, uint64_t victim, uint32_t last_bullet_id, uint64_t ms_since_shot) {
+    return hit_kind == 2 && player != 0 && attacker_arg == player && victim != 0 && victim != player && last_bullet_id == kBoltBulletId && ms_since_shot < 4000;
 }
 
 inline bool spawnFailed(uint32_t handle) { return handle == 0xFFFFFFFFu; }
