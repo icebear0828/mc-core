@@ -31,7 +31,7 @@ TEST(EldenRingBullet, TheNamedFieldsAreReadAtTheAcceptedOffsets) {
     const Fields f = decode(b.data(), b.size());
     ASSERT_TRUE(f.valid);
     EXPECT_EQ(f.owner, 0xFFFFFFFF16F00000ull);
-    EXPECT_EQ(f.target, 0xFFFFFFFFFFFFFFFFull);
+    EXPECT_EQ(f.row_id, 0xFFFFFFFFFFFFFFFFull);
     EXPECT_EQ(f.id_at_1c, 20007000u);
     EXPECT_EQ(f.flags_at_44, 0x08u);
     EXPECT_FLOAT_EQ(f.position[0], 10.5f);
@@ -77,7 +77,7 @@ namespace {
 FireParams params() {
     FireParams p;
     p.owner = 0xFFFFFFFF16F00000ull;
-    p.target = 0xFFFFFFFFFFFFFFFFull;
+    p.row_id = 0xFFFFFFFFFFFFFFFFull;
     p.flags = 0x08;
     const float r[3] = {0.f, 0.f, -1.f}, u[3] = {0.f, 1.f, 0.f}, f[3] = {1.f, 0.f, 0.f}, pos[3] = {4.f, 5.f, 6.f};
     std::memcpy(p.right, r, 12);
@@ -105,7 +105,7 @@ TEST(EldenRingBulletFire, TheRequestKeepsTheRealShotsBodyAndOverwritesOnlyTheFie
     ASSERT_EQ(out.size(), kFullRequestBytes);
     const Fields f = decode(out.data(), out.size());
     EXPECT_EQ(f.owner, 0xFFFFFFFF16F00000ull);
-    EXPECT_EQ(f.target, 0xFFFFFFFFFFFFFFFFull);   // free aim: no target
+    EXPECT_EQ(f.row_id, 0xFFFFFFFFFFFFFFFFull);
     EXPECT_EQ(f.id_at_1c, 56u);                   // the id of the real crossbow bolt survives
     EXPECT_EQ(f.flags_at_44, 0x08u);
     EXPECT_FLOAT_EQ(f.forward[0], 1.f);
@@ -154,28 +154,33 @@ TEST(EldenRingBulletFire, OnlyAnInvalidHandleCountsAsAFailedSpawn) {
     EXPECT_FALSE(spawnFailed(0x0003FF00u));
 }
 
-TEST(EldenRingBulletFire, TheVariantsSeparateTheTargetHandleFromTheHomingBitAndNeverHomeOntoThePlayer) {
-    const uint64_t real = 0xFFFFFFFF06455A50ull, own = 0xFFFFFFFF16F00000ull;
-    const unsigned n = variantCount();
-    ASSERT_GE(n, 4u);
-    bool has_target_only = false, has_bit_only = false, has_own_without_bit = false;
-    for (unsigned i = 0; i < n; ++i) {
-        const Variant v = variant(i, real, 0x09, own);
-        EXPECT_FALSE(v.name.empty());
-        EXPECT_TRUE(v.flags == 0x08u || v.flags == 0x09u);
-        EXPECT_FALSE(v.target == own && (v.flags & 1u)); // a guided bolt that targets the shooter would fly back into him
-        if (v.target == real && v.flags == 0x08u) has_target_only = true;
-        if (v.target == 0xFFFFFFFFFFFFFFFFull && v.flags == 0x09u) has_bit_only = true;
-        if (v.target == own && v.flags == 0x08u) has_own_without_bit = true;
-    }
-    EXPECT_TRUE(has_target_only);
-    EXPECT_TRUE(has_bit_only);
-    EXPECT_TRUE(has_own_without_bit);
+TEST(EldenRingBulletFire, ATemplateIsUsableOnlyWithTheFullBodyAndARealParamRowAndBulletId) {
+    auto t = realTemplate();
+    EXPECT_TRUE(templateUsable(t.data(), t.size()));
+    EXPECT_FALSE(templateUsable(t.data(), kRequestBytes));        // the file must hold the whole 0x110 bytes
+    EXPECT_FALSE(templateUsable(nullptr, 0));
+    auto no_row = realTemplate();
+    const uint32_t minus_one = 0xFFFFFFFFu; // +0x08 = -1: the game refuses it (REVERSE 35.3)
+    std::memcpy(no_row.data() + 0x08, &minus_one, 4);
+    EXPECT_FALSE(templateUsable(no_row.data(), no_row.size()));
+    auto no_id = realTemplate();
+    std::memcpy(no_id.data() + 0x1C, &minus_one, 4);
+    EXPECT_FALSE(templateUsable(no_id.data(), no_id.size()));
 }
 
-TEST(EldenRingBulletFire, TheVariantIndexWrapsAround) {
-    const uint64_t real = 1, own = 2;
-    const unsigned n = variantCount();
-    EXPECT_EQ(variant(0, real, 9, own).name, variant(n, real, 9, own).name);
-    EXPECT_EQ(variant(1, real, 9, own).target, variant(n + 1, real, 9, own).target);
+TEST(EldenRingBulletFire, TheTemplateOnDiskIsRewrittenOnlyWhenTheParamRowOrTheBulletIdChanged) {
+    const auto a = realTemplate();
+    auto b = realTemplate();
+    EXPECT_FALSE(templateChanged(a.data(), b.data()));
+    const uint32_t other = 56u + 1;
+    std::memcpy(b.data() + 0x1C, &other, 4);
+    EXPECT_TRUE(templateChanged(a.data(), b.data()));
+    auto c = realTemplate();
+    const uint32_t row = 0x06453B10u;
+    std::memcpy(c.data() + 0x08, &row, 4);
+    EXPECT_TRUE(templateChanged(a.data(), c.data()));
+    auto d = realTemplate();
+    const float moved = 99.f; // the matrix is different on every shot and is not a reason to rewrite the file
+    std::memcpy(d.data() + 0x80, &moved, 4);
+    EXPECT_FALSE(templateChanged(a.data(), d.data()));
 }

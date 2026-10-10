@@ -18,7 +18,7 @@ inline constexpr size_t kRequestBytes = 0xB8; // the smallest size the reverser 
 struct Fields {
     bool valid{false};
     uint64_t owner{0};      // +0x00, the shooter's 64-bit entity handle (ChrIns+0x08)
-    uint64_t target{0};     // +0x08, -1 = no lock-on
+    uint64_t row_id{0};     // +0x08: the param row spawn_bullet resolves (REVERSE 35.3), NOT a target handle; the high dword is -1
     uint32_t id_at_1c{0};   // +0x1C, BulletParam id per REVERSE 23 (disputed: see findDword)
     uint32_t flags_at_44{0};
     float right[3]{}, up[3]{}, forward[3]{}, position[3]{}; // the row-major world matrix at +0x50
@@ -28,7 +28,7 @@ inline Fields decode(const uint8_t* b, size_t n) {
     Fields f;
     if (b == nullptr || n < 0x90) return f;
     std::memcpy(&f.owner, b + 0x00, 8);
-    std::memcpy(&f.target, b + 0x08, 8);
+    std::memcpy(&f.row_id, b + 0x08, 8);
     std::memcpy(&f.id_at_1c, b + 0x1C, 4);
     std::memcpy(&f.flags_at_44, b + 0x44, 4);
     std::memcpy(f.right, b + 0x50, 12);
@@ -87,7 +87,7 @@ inline constexpr size_t kFullRequestBytes = 0x110; // the constructor's size (0x
 
 struct FireParams {
     uint64_t owner{0};   // the shooter's entity handle (player ChrIns+0x08)
-    uint64_t target{0xFFFFFFFFFFFFFFFFull};
+    uint64_t row_id{0xFFFFFFFFFFFFFFFFull}; // +0x08: a param row id the game can resolve (the real shot's value)
     uint32_t flags{0x08}; // +0x44: bit 3 must be set (spawn_bullet returns early otherwise), bit 1 must be clear
     float right[3]{}, up[3]{}, forward[3]{}, position[3]{}; // row-major world matrix at +0x50
 };
@@ -99,7 +99,7 @@ inline std::vector<uint8_t> buildFireRequest(const uint8_t* real, size_t n, cons
     std::vector<uint8_t> out(kFullRequestBytes, 0);
     std::memcpy(out.data(), real, n < kFullRequestBytes ? n : kFullRequestBytes);
     std::memcpy(out.data() + 0x00, &p.owner, 8);
-    std::memcpy(out.data() + 0x08, &p.target, 8);
+    std::memcpy(out.data() + 0x08, &p.row_id, 8);
     std::memcpy(out.data() + 0x44, &p.flags, 4);
     std::memcpy(out.data() + 0x50, p.right, 12);
     std::memcpy(out.data() + 0x60, p.up, 12);
@@ -112,29 +112,24 @@ inline std::vector<uint8_t> buildFireRequest(const uint8_t* real, size_t n, cons
 }
 
 
-// Which of the two things the game wants (the audit of the first bolts: free aim, target -1 with flags 0x08, was refused; the real shot's target
-// handle with flags 0x09 was accepted): one variant per F3 press, so the log says which single change is enough. None of them is guided
-// (bit 0) while targeting the shooter.
-struct Variant {
-    std::string name;
-    uint64_t target{0};
-    uint32_t flags{0};
-};
-
-inline unsigned variantCount() { return 4; }
-
-inline Variant variant(unsigned index, uint64_t real_target, uint32_t real_flags, uint64_t own_handle) {
-    (void)real_flags;
-    switch (index % variantCount()) {
-        case 0: return {"real target handle, bit 0 clear", real_target, 0x08};
-        case 1: return {"no target (-1), bit 0 set", 0xFFFFFFFFFFFFFFFFull, 0x09};
-        case 2: return {"the shooter's own handle, bit 0 clear", own_handle, 0x08};
-        default: return {"target 0, bit 0 clear", 0, 0x08};
-    }
-}
-
 inline void muzzle(const float eye[3], const float forward[3], float distance, float out[3]) {
     for (int i = 0; i < 3; ++i) out[i] = eye[i] + forward[i] * distance;
+}
+
+
+// A template read from disk (mc_er_bullet.bin) is only used when it has the whole body and the two values the game resolves: +0x08 (low dword) is
+// a non-negative param row id and +0x1C a non-negative bullet id. A body with -1 there is exactly what the game refuses.
+inline bool templateUsable(const uint8_t* b, size_t n) {
+    if (b == nullptr || n != kFullRequestBytes) return false;
+    int32_t row, id;
+    std::memcpy(&row, b + 0x08, 4);
+    std::memcpy(&id, b + 0x1C, 4);
+    return row >= 0 && id >= 0;
+}
+
+// The file only changes when the shot used another ammo: the param row or the bullet id differ (the matrix and the rest change on every shot).
+inline bool templateChanged(const uint8_t* old_body, const uint8_t* new_body) {
+    return std::memcmp(old_body + 0x08, new_body + 0x08, 4) != 0 || std::memcmp(old_body + 0x1C, new_body + 0x1C, 4) != 0;
 }
 
 inline bool spawnFailed(uint32_t handle) { return handle == 0xFFFFFFFFu; }
