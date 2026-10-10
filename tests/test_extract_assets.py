@@ -188,6 +188,63 @@ def test_export_mob_skin_rejects_unknown_mobs_missing_entries_and_wrong_sizes(tm
         export_mob_skin(legacy, tmp_path / "out", "zombie")
 
 
+# The zombie's skin has the old layout: the left arm and leg are the right ones mirrored by the model, their blocks in the lower half are empty.
+def _limb_skin():
+    """A 64x64 skin whose right leg (0,16) and right arm (40,16) blocks have a different colour in every face, left blocks empty."""
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    colours = {"top": (10, 0, 0), "bottom": (20, 0, 0), "right": (30, 0, 0), "front": (40, 0, 0), "left": (50, 0, 0), "back": (60, 0, 0)}
+
+    def paint(u0, v0):
+        d, w, h = 4, 4, 12
+        rects = {"top": (u0 + d, v0, w, d), "bottom": (u0 + d + w, v0, w, d), "right": (u0, v0 + d, d, h), "front": (u0 + d, v0 + d, w, h),
+                 "left": (u0 + d + w, v0 + d, d, h), "back": (u0 + 2 * d + w, v0 + d, w, h)}
+        for face, (x, y, fw, fh) in rects.items():
+            for yy in range(fh):
+                for xx in range(fw):
+                    # a gradient along x so a horizontal flip is visible
+                    img.putpixel((x + xx, y + yy), (colours[face][0] + xx, 100, 100, 255))
+
+    paint(0, 16)
+    paint(40, 16)
+    return img
+
+
+def test_mirror_empty_left_limbs_fills_them_from_the_right_ones_flipped():
+    from extract_mc_assets import mirror_empty_left_limbs
+
+    skin = _limb_skin()
+    out = mirror_empty_left_limbs(skin)
+    # left leg block origin (16,48): its front face (u0+4, v0+4) is the right leg's front (4,20) flipped horizontally
+    assert out.getpixel((20, 52)) == skin.getpixel((4 + 3, 20))
+    assert out.getpixel((23, 52)) == skin.getpixel((4 + 0, 20))
+    # the outer side faces swap: the left leg's "right" face (16,52) is the right leg's "left" face (8,20) flipped
+    assert out.getpixel((16, 52)) == skin.getpixel((8 + 3, 20))
+    assert out.getpixel((24, 52)) == skin.getpixel((0 + 3, 20))
+    # left arm block origin (32,48): front face (36,52) from the right arm's front (44,20)
+    assert out.getpixel((36, 52)) == skin.getpixel((44 + 3, 20))
+    # the right limbs are untouched
+    assert out.getpixel((4, 20)) == skin.getpixel((4, 20))
+
+
+def test_mirror_empty_left_limbs_leaves_a_skin_that_already_has_them_alone():
+    from extract_mc_assets import mirror_empty_left_limbs
+
+    skin = _limb_skin()
+    skin.putpixel((20, 52), (7, 7, 7, 255))  # the left leg block is not empty
+    out = mirror_empty_left_limbs(skin)
+    assert out.getpixel((20, 52)) == (7, 7, 7, 255)
+    assert out.getpixel((21, 52)) == (0, 0, 0, 0)  # untouched too
+
+
+def test_export_mob_skin_fills_the_zombie_left_limbs(tmp_path):
+    from extract_mc_assets import export_mob_skin
+
+    jar = _jar_with_mob(tmp_path / "client.jar", _limb_skin())
+    out = Image.open(export_mob_skin(jar, tmp_path / "out", "zombie")).convert("RGBA")
+    assert out.getpixel((20, 52))[3] == 255  # the left leg is there now
+    assert out.getpixel((36, 52))[3] == 255  # and the left arm
+
+
 # --- HUD atlas: original Minecraft sprites, native sizes, vanilla layout --------------------------
 
 HUD_KEYS = [

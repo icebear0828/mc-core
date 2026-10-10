@@ -915,6 +915,41 @@ def export_steve_skin(client_jar: Path, out_dir: Path) -> Path:
 _MOB_SKINS = {"zombie": "entity/zombie/zombie.png"}
 
 
+def _limb_rects(u0: int, v0: int, d: int = 4, w: int = 4, h: int = 12) -> dict[str, tuple[int, int, int, int]]:
+    """The six faces of a limb's texture block (x, y, width, height), Minecraft's cube UV layout."""
+    return {
+        "top": (u0 + d, v0, w, d),
+        "bottom": (u0 + d + w, v0, w, d),
+        "right": (u0, v0 + d, d, h),
+        "front": (u0 + d, v0 + d, w, h),
+        "left": (u0 + d + w, v0 + d, d, h),
+        "back": (u0 + 2 * d + w, v0 + d, w, h),
+    }
+
+
+# (right limb block origin, left limb block origin) in the 64x64 player layout: leg, arm
+_LIMB_BLOCKS = (((0, 16), (16, 48)), ((40, 16), (32, 48)))
+
+
+def mirror_empty_left_limbs(skin: Image.Image) -> Image.Image:
+    """Old-layout skins (the zombie) leave the left arm and leg blocks empty because the model mirrors the right limbs.
+    The Steve rig reads the modern layout, so fill each empty left block with the mirrored right one: every face flipped
+    horizontally and the two side faces swapped. A block that already has pixels is left alone."""
+    out = skin.copy()
+    for (ru, rv), (lu, lv) in _LIMB_BLOCKS:
+        left = _limb_rects(lu, lv)
+        alpha = out.getchannel("A")
+        if any(alpha.crop((x, y, x + w, y + h)).getbbox() is not None for x, y, w, h in left.values()):
+            continue  # the block already has pixels (a modern-layout skin)
+        right = _limb_rects(ru, rv)
+        swap = {"right": "left", "left": "right"}
+        for face, (lx, ly, lw, lh) in left.items():
+            sx, sy, sw, sh = right[swap.get(face, face)]
+            piece = out.crop((sx, sy, sx + sw, sy + sh)).transpose(Image.FLIP_LEFT_RIGHT)
+            out.paste(piece, (lx, ly))
+    return out
+
+
 def export_mob_skin(client_jar: Path, out_dir: Path, mob: str) -> Path:
     """Copy a humanoid mob's skin (64x64, the player's UV layout) out of a local client.jar as <mob>.png."""
     if mob not in _MOB_SKINS:
@@ -926,6 +961,7 @@ def export_mob_skin(client_jar: Path, out_dir: Path, mob: str) -> Path:
         skin = Image.open(io.BytesIO(jar.read(entry))).convert("RGBA")
     if skin.size != (64, 64):
         raise ValueError(f"expected a 64x64 skin, got {skin.size}")
+    skin = mirror_empty_left_limbs(skin)
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{mob}.png"
     skin.save(out)
