@@ -2723,9 +2723,10 @@ void RecordBulletTemplate(const void* request, const void* r9) {
             uint64_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
             const std::vector<eldenring::handlescan::Root> roots = {
                 {"chr", player, 0x1000}, {"manager", reinterpret_cast<uintptr_t>(g_bullet_manager_seen), 0x800},
-                {"r9", reinterpret_cast<uintptr_t>(r9), 0x200}, {"world", static_cast<uintptr_t>(world), 0x400}};
+                {"r9", reinterpret_cast<uintptr_t>(r9), 0x200}, {"world", static_cast<uintptr_t>(world), 0x400},
+                {"stack", reinterpret_cast<uintptr_t>(request) - 0x200, 0x800}}; // the caller's frame: the launcher object is saved in it
             const std::vector<std::string> hits = eldenring::handlescan::findValue(g_reader, roots, wanted);
-            Log("handle scan #%u: 0x%08X found %zu time(s)%s", s_scans, wanted, hits.size(), hits.empty() ? " (not in the player, the bullet manager, r9 or the world manager, one pointer level down)" : ":");
+            Log("handle scan #%u: 0x%08X found %zu time(s)%s", s_scans, wanted, hits.size(), hits.empty() ? " (not in the player, the bullet manager, r9, the world manager or the caller's stack frame, one pointer level down)" : ":");
             for (const std::string& h : hits) Log("handle scan #%u:   %s", s_scans, h.c_str());
         }
     }
@@ -2811,9 +2812,9 @@ bool QueueBulletFire() {
 }
 
 uint32_t* __fastcall SpawnBulletDetour(void* manager, uint32_t* out_handle, void* request, void* r9) {
-    uint32_t* r = g_spawn_bullet_orig(manager, out_handle, request, r9);
     g_bullet_manager_seen = manager;
-    if (g_bullet_fire_enabled.load(std::memory_order_relaxed)) RecordBulletTemplate(request, r9);
+    if (g_bullet_fire_enabled.load(std::memory_order_relaxed)) RecordBulletTemplate(request, r9); // before the call: what the game has already stored, not what the spawn copies
+    uint32_t* r = g_spawn_bullet_orig(manager, out_handle, request, r9);
     uint32_t handle = 0xFFFFFFFFu;
     if (out_handle != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(out_handle), &handle, sizeof(handle));
     LogBulletRequest(manager, request, r9, _ReturnAddress(), handle);
