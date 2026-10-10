@@ -46,6 +46,7 @@
 #include "eldenring_creative.hpp"
 #include "eldenring_flight.hpp"
 #include "eldenring_los.hpp"
+#include "eldenring_bullet.hpp"
 #include "eldenring_shadow.hpp"
 #include "eldenring_survival.hpp"
 #include "eldenring_xp.hpp"
@@ -2645,6 +2646,59 @@ void SetupCreativeProbes() {
     }
 }
 
+// ---- spawn_bullet request logger (read-only, switch file mc_er_bulletlog.txt) -----------------------------------------------------------
+// The game builds a request for every arrow/bolt/spell bullet it fires, the player's own included. Fire one bow/crossbow shot with the switch
+// file present and the first requests are written to mc_er.log, so the real BulletParam id and field layout are read, not guessed.
+using SpawnBulletFn = uint32_t*(__fastcall*)(void* manager, uint32_t* out_handle, void* request, void* r9);
+SpawnBulletFn g_spawn_bullet_orig = nullptr;
+eldenring::bullet::LogBudget g_bullet_budget(40);
+std::atomic<unsigned> g_bullet_seen{0};
+
+void LogBulletRequest(void* manager, const void* request, const void* r9, void* ret_addr, uint32_t handle) {
+    const unsigned seq = g_bullet_seen.fetch_add(1) + 1;
+    if (!g_bullet_budget.take()) return;
+    uint8_t body[eldenring::bullet::kRequestBytes] = {};
+    if (!SafeCopy(reinterpret_cast<uintptr_t>(request), body, sizeof(body))) {
+        Log("bullet #%u: the request at %p cannot be read", seq, request);
+        return;
+    }
+    const eldenring::bullet::Fields f = eldenring::bullet::decode(body, sizeof(body));
+    Log("bullet #%u: manager=%p request=%p r9=%p caller RVA 0x%llX tid=%lu -> handle 0x%08X", seq, manager, request, r9,
+        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(ret_addr) - g_img.base), static_cast<unsigned long>(GetCurrentThreadId()), handle);
+    Log("bullet #%u: owner=0x%016llX target=0x%016llX id@+1C=%u flags@+44=0x%X pos=(%.2f %.2f %.2f) fwd=(%.3f %.3f %.3f)", seq,
+        static_cast<unsigned long long>(f.owner), static_cast<unsigned long long>(f.target), f.id_at_1c, f.flags_at_44, f.position[0], f.position[1],
+        f.position[2], f.forward[0], f.forward[1], f.forward[2]);
+    for (const std::string& line : eldenring::bullet::hexDump(body, sizeof(body))) Log("bullet #%u:   %s", seq, line.c_str());
+    uint8_t extra[0x40] = {};
+    if (r9 != nullptr && SafeCopy(reinterpret_cast<uintptr_t>(r9), extra, sizeof(extra))) {
+        for (const std::string& line : eldenring::bullet::hexDump(extra, sizeof(extra))) Log("bullet #%u: r9 %s", seq, line.c_str());
+    }
+}
+
+uint32_t* __fastcall SpawnBulletDetour(void* manager, uint32_t* out_handle, void* request, void* r9) {
+    uint32_t* r = g_spawn_bullet_orig(manager, out_handle, request, r9);
+    uint32_t handle = 0xFFFFFFFFu;
+    if (out_handle != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(out_handle), &handle, sizeof(handle));
+    LogBulletRequest(manager, request, r9, _ReturnAddress(), handle);
+    return r;
+}
+
+void SetupBulletLog() {
+    if (!FileExists(g_game_dir + "mc_er_bulletlog.txt")) return;
+    uintptr_t target = 0;
+    if (!EnsureMinHook()) {
+        Log("bullet: MH_Initialize failed, the request logger is not installed");
+    } else if (!LocateByPrefix(g_img, sigs::kSpawnBullet, target)) {
+        Log("bullet: spawn_bullet signature not unique, the request logger is not installed");
+    } else if (MH_CreateHook(reinterpret_cast<void*>(target), reinterpret_cast<void*>(&SpawnBulletDetour), reinterpret_cast<void**>(&g_spawn_bullet_orig)) != MH_OK ||
+               MH_EnableHook(reinterpret_cast<void*>(target)) != MH_OK) {
+        Log("bullet: hooking spawn_bullet at %p failed", reinterpret_cast<void*>(target));
+    } else {
+        Log("bullet: spawn_bullet request logger at %p (RVA 0x%llX): fire a shot, the first 40 requests are written here (read-only)", reinterpret_cast<void*>(target),
+            static_cast<unsigned long long>(target - g_img.base));
+    }
+}
+
 void SetupDamage() {
     if (!FileExists(g_game_dir + "mc_er_damage.txt")) {
         Log("damage: disabled (no mc_er_damage.txt)");
@@ -3236,6 +3290,7 @@ DWORD WINAPI LoaderThread(LPVOID) {
 
     SetupDamage();
     SetupCreativeProbes();
+    SetupBulletLog();
     SetupOverlay();
     SetupInput();
     CreateThread(nullptr, 0, KeyThread, nullptr, 0, nullptr);

@@ -1140,6 +1140,6 @@ Table 1                     Table 2
 - 部署事故：逆向方把游戏目录的 `dinput8.dll` 换成了他们的构建（`f51050e0...`），我们的版本备份为 `dinput8.dll.bak_pre_lightcap`（哈希 `3c5e812d...`，核对一致）；win 仓库被切到 `feat/lighting-root-cbv-probe`，`overlay_d3d12.cpp` 有未提交改动（每次 `SetGraphicsRootCBV` 加互斥锁，热路径开销大）。**别把这份探针原样合进来**；要用就重写成开关文件控制、无锁、只记录 root 1 的 `0xECBCF0`。
 
 **弩箭：不能用来写代码（第二份回复自己也承认"进游戏射一发才能得到真实 ID"）。**
-- 成立（A/B）：`CSBulletIns` 虚表 `0x142A28EC0`（RTTI 名 `.?AVCSBulletIns@CS@@`，我解了 COL）、`VF[6]=0x140396F00`（但它是不是矩阵读取没有证据）、参数仓库全局 `[0x143D85F58]`（`0x140D3FD1A` 处 rip 相对算出）、`spawn_bullet` 的 `r9` 无参数含义（`0x1403A2D25` 只是 `mov r9d,[rax]; mov [rdi],r9d`）。
+- 成立（A/B）：`CSBulletIns` 虚表 `0x142A28EC0`（RTTI 名 `.?AVCSBulletIns@CS@@`，我解了 COL）、`VF[6]=0x140396F00`（但它是不是矩阵读取没有证据）、参数仓库全局 `[0x143D85F58]`（`0x140D3FD1A` 处 rip 相对算出）、`spawn_bullet` 的 `r9`：**更正**——我之前依据 `0x1403A2D25`（临时寄存器用法）写"无参数含义"是错的；该函数开头 `49 8B D9 = mov rbx,r9`，`r9` 是真实的第 4 个参数（后面作为 `r8` 传给被调用函数），语义未知，只读日志里会记下它的值和前 0x40 字节。
 - 不成立：BulletParam 表号前后矛盾（文档 `0x0A`、聊天 `0x0E`），没有字节证明哪张是 Bullet；`20007000` 等 ID 没有原始转储，五行的 init/max/life（30/40/3.0）完全相同，可能读错了列；请求体字段表与已核字节矛盾（`0x14038E5E4` 是 `mov eax,[rdi+0x0C]; mov [rbx+0x1C],eax`，`+0x0C` 属于源结构，请求体的 ID 在 `+0x1C`、发射者 `+0x00`、目标 `+0x08`）；`0x140480EF0` 是阵营判定、玩家与 team 47 互不伤害没有证据。
 - 下一步（我方）：在 `spawn_bullet`（`0x1403A2CB0`）入口只读记录 `r8` 指向的请求体前 `0xB8` 字节，玩家真实射一发弩/弓，拿到真正的 ID 和字段值。

@@ -94,6 +94,10 @@ inline constexpr const char* kCheckTeamHostile =
     "48 83 EC 28 0F B6 01 45 33 C0 48 6B C8 4F 0F B6 02 48 8D 54 24 30 48 03 C8 66 C7 44 24 30 01 00";
 inline constexpr const char* kCheckTeamFriend =
     "48 83 EC 28 0F B6 01 45 33 C0 48 6B C8 4F 0F B6 02 48 8D 54 24 30 48 03 C8 66 C7 44 24 30 00 01";
+// CSBulletManager::spawn_bullet (0x1403A2CB0): (manager, uint32_t* out_handle, request*, r9 = rbx in the prologue, so a real fourth argument) -> uint32_t*.
+// The prologue up to the stack cookie load; one match in 2.7.1.0 (checked in the exe). Only used by the read-only request logger.
+inline constexpr const char* kSpawnBullet =
+    "40 53 55 56 57 48 81 EC 98 07 00 00 48 C7 44 24 50 FE FF FF FF 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 80 07 00 00";
 // CSChrDataModule::SetMaxHPAndClampHP (0x140438870): a call-free leaf that every character data module runs once per
 // update; on the main thread it runs inside CSChrDataModule::Update. 32 bytes, unique in 2.7.1.0.
 inline constexpr const char* kClampHp =
