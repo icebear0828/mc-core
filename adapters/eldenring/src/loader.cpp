@@ -2677,8 +2677,8 @@ void LogBulletRequest(void* manager, const void* request, const void* r9, void* 
     const eldenring::bullet::Fields f = eldenring::bullet::decode(body, sizeof(body));
     Log("bullet #%u: manager=%p request=%p r9=%p caller RVA 0x%llX tid=%lu -> handle 0x%08X", seq, manager, request, r9,
         static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(ret_addr) - g_img.base), static_cast<unsigned long>(GetCurrentThreadId()), handle);
-    Log("bullet #%u: owner=0x%016llX target=0x%016llX id@+1C=%u flags@+44=0x%X pos=(%.2f %.2f %.2f) fwd=(%.3f %.3f %.3f)", seq,
-        static_cast<unsigned long long>(f.owner), static_cast<unsigned long long>(f.target), f.id_at_1c, f.flags_at_44, f.position[0], f.position[1],
+    Log("bullet #%u: owner=0x%016llX param row (+0x08)=0x%016llX id@+1C=%u flags@+44=0x%X pos=(%.2f %.2f %.2f) fwd=(%.3f %.3f %.3f)", seq,
+        static_cast<unsigned long long>(f.owner), static_cast<unsigned long long>(f.row_id), f.id_at_1c, f.flags_at_44, f.position[0], f.position[1],
         f.position[2], f.forward[0], f.forward[1], f.forward[2]);
     for (const std::string& line : eldenring::bullet::hexDump(body, sizeof(body))) Log("bullet #%u:   %s", seq, line.c_str());
     uint8_t extra[0x40] = {};
