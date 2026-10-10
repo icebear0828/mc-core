@@ -3060,6 +3060,13 @@ uint32_t* __fastcall SpawnBulletDetour(void* manager, uint32_t* out_handle, void
     uint32_t handle = 0xFFFFFFFFu;
     if (out_handle != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(out_handle), &handle, sizeof(handle));
     LogBulletRequest(manager, request, r9, _ReturnAddress(), handle);
+    if (!eldenring::bullet::spawnFailed(handle) && !g_pos_probe.active) { // the player's real shots are probed too: where does the bullet really fly?
+        uint8_t req[eldenring::bullet::kRequestBytes] = {};
+        if (SafeCopy(reinterpret_cast<uintptr_t>(request), req, sizeof(req))) {
+            const eldenring::bullet::Fields f = eldenring::bullet::decode(req, sizeof(req));
+            if (f.valid) PosProbeStart(reinterpret_cast<uint64_t>(manager), handle, f.position, f.forward);
+        }
+    }
     return r;
 }
 
