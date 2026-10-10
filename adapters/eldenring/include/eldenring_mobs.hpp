@@ -71,6 +71,7 @@ public:
             if (just_hurt) e.hurt = kHurtSeconds;
             else if (!just_died) e.hurt = std::max(0.f, e.hurt - dt);
             if (e.dying >= 0.f && !just_died) e.dying += dt;
+            if (e.dying > kDeathSeconds) continue; // the game may keep the corpse for seconds; the body is gone after kDeathSeconds anyway
             out.push_back(draw(s.id, e, dt));
         }
         for (auto it = entries_.begin(); it != entries_.end();) {

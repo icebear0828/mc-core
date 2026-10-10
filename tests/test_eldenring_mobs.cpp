@@ -229,3 +229,29 @@ TEST(EldenRingMobs, TheFallTurnsTheWholeFigureAboutItsFeet) {
     EXPECT_LT(top.y, 0.6f);
     EXPECT_GT(std::fabs(top.x - 5.f) + std::fabs(top.z - 7.f), 1.0f);
 }
+
+TEST(EldenRingMobs, ACorpseTheGameKeepsInTheListIsDrawnForOneSecondOnly) {
+    // 2026-10-10 log: the game keeps a dead summon (hp 0) in the list for about 7.6 s; the body is gone after kDeathSeconds anyway
+    MobRegistry r;
+    r.update(1.f / 60.f, {withHp(1, 100)});
+    int drawn_frames = 0;
+    for (int i = 0; i < 60 * 8; ++i) {
+        const auto d = r.update(1.f / 60.f, {withHp(1, 0)});
+        if (!d.empty()) ++drawn_frames;
+    }
+    EXPECT_NEAR(static_cast<float>(drawn_frames) / 60.f, kDeathSeconds, 0.1f);
+    // the entry is still tracked while the game lists the corpse (so it is not drawn again), and goes with it
+    EXPECT_EQ(r.tracked(), 1u);
+    for (int i = 0; i < 5; ++i) r.update(1.f / 60.f, {});
+    EXPECT_EQ(r.tracked(), 0u);
+}
+
+TEST(EldenRingMobs, AnotherMobIsStillDrawnWhileAnotherCorpseLies) {
+    MobRegistry r;
+    r.update(1.f / 60.f, {withHp(1, 100), withHp(2, 100)});
+    std::vector<MobDraw> d;
+    for (int i = 0; i < 120; ++i) d = r.update(1.f / 60.f, {withHp(1, 0), withHp(2, 100)});
+    ASSERT_EQ(d.size(), 1u); // the corpse of 1 is gone after a second, the living 2 is still there
+    EXPECT_EQ(d[0].id, 2u);
+    EXPECT_FALSE(d[0].dying);
+}
