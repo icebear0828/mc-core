@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "eldenring_steve.hpp"
+#include "mc/entity_model.hpp"
 #include "mc/rig.hpp"
 
 namespace erov {
@@ -93,7 +94,25 @@ public:
               unsigned width, unsigned height, const mc::rig::Mat4& view_proj, const eldenring::render::PartMatrices& parts,
               const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv);
 
+    // A model read from a Bedrock geometry file (mc::model::EntityModel), drawn with the mobs' skin: one mesh per bone built in the game's axes
+    // (feet at the origin, rest pose), one matrix per bone from mc::model::boneMatrices. Returns false when the buffers cannot be created.
+    bool setMobModel(ID3D12Device* device, const mc::model::EntityModel& model);
+    [[nodiscard]] bool mobModelReady() const { return mob_vertices_ != nullptr && !mob_ranges_.empty(); }
+    // Same passes as draw() (own depth buffer, depth test against the scene), without the held item and the calibration histogram.
+    void drawMobModel(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table, unsigned width,
+                      unsigned height, const mc::rig::Mat4& view_proj, const std::vector<mc::rig::Mat4>& bones, const SteveParams& params,
+                      D3D12_CPU_DESCRIPTOR_HANDLE rtv);
+
 private:
+    struct BoneRange {
+        unsigned index_count{0}, first_index{0};
+        int base_vertex{0};
+    };
+    ID3D12Resource* mob_vertices_{nullptr};
+    ID3D12Resource* mob_indices_{nullptr};
+    D3D12_VERTEX_BUFFER_VIEW mob_vbv_{};
+    D3D12_INDEX_BUFFER_VIEW mob_ibv_{};
+    std::vector<BoneRange> mob_ranges_;
     ID3D12RootSignature* root_{nullptr};
     ID3D12PipelineState* pso_{nullptr};
     ID3D12PipelineState* pso_depthview_{nullptr};

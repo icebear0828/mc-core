@@ -109,6 +109,9 @@ mc::rig::RigMesh g_block_mesh;
 std::atomic<bool> g_blocks_dirty{false};
 D3D12_CPU_DESCRIPTOR_HANDLE g_depth_copy2_cpu{}; // slot 8: the scene depth once more, in front of the mob skin (slot 9)
 D3D12_GPU_DESCRIPTOR_HANDLE g_mob_table_gpu{};   // slots 8 and 9: (scene depth, mob skin): the table the mobs are drawn with; ptr 0 = no mob skin
+mc::model::EntityModel g_mob_model;              // the loader's model file; applied when the renderer is created
+bool g_mob_model_given = false;
+bool g_mob_model_gpu = false;                    // the model's meshes are on the GPU: the mobs are drawn bone by bone
 std::vector<uint8_t> g_mob_rgba;                 // decoded by the loader; applied when the renderer is created
 unsigned g_mob_w = 0, g_mob_h = 0;
 D3D12_CPU_DESCRIPTOR_HANDLE g_depth_copy_cpu{}; // slot 6: the same depth view again, in front of the atlas (held item table)
@@ -325,6 +328,12 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             if (!g_steve.setSkin(g_s.device, pixels->data(), sw, sh, skin_cpu)) Logf("overlay: Steve skin upload failed");
             g_depth_copy2_cpu = {}; // a new heap: nothing of the old one is valid
             g_mob_table_gpu = {};
+            g_mob_model_gpu = false;
+            if (g_mob_model_given) {
+                g_mob_model_gpu = g_steve.setMobModel(g_s.device, g_mob_model);
+                Logf(g_mob_model_gpu ? "overlay: mob model ready (Bedrock geometry, one mesh per bone)" : "overlay: mob model upload failed, the mobs use the Steve rig");
+            }
+            g_mob_registry.setModel(g_mob_model_gpu ? &g_mob_model : nullptr);
             if (!g_mob_rgba.empty() && g_mob_w != 0 && g_mob_h != 0) {
                 // slot 8 follows the scene depth (see RenderFrame), slot 9 is the mobs' skin: together the table the mobs are drawn with
                 g_depth_copy2_cpu = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
@@ -982,7 +991,9 @@ void RenderFrame(IDXGISwapChain* sc) {
                 mp.depth_w = static_cast<float>(g_depth_w);
                 mp.depth_h = static_cast<float>(g_depth_h);
                 mp.keep_depth = keep;
-                g_steve.draw(g_s.list, g_s.srv_heap, g_mob_table_gpu.ptr != 0 ? g_mob_table_gpu : g_depth_gpu, g_s.width, g_s.height, vp, d.parts, mp, f.rtv);
+                const D3D12_GPU_DESCRIPTOR_HANDLE table = g_mob_table_gpu.ptr != 0 ? g_mob_table_gpu : g_depth_gpu;
+                if (d.generic) g_steve.drawMobModel(g_s.list, g_s.srv_heap, table, g_s.width, g_s.height, vp, d.bones, mp, f.rtv);
+                else g_steve.draw(g_s.list, g_s.srv_heap, table, g_s.width, g_s.height, vp, d.parts, mp, f.rtv);
                 keep = true; // the next one sorts against this one
             }
             g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
@@ -1231,6 +1242,11 @@ bool ResolveTargets(void*& present, void*& resize, void*& execute, void*& create
 void SetSteveConfig(const SteveConfig& cfg) { g_steve_cfg = cfg; }
 
 void RequestFrameTrace(int frames) { g_trace_left.store(frames); }
+
+void SetMobModel(const mc::model::EntityModel& model) {
+    g_mob_model = model;
+    g_mob_model_given = !model.bones.empty();
+}
 
 void SetMobSkin(const uint8_t* rgba, unsigned width, unsigned height) {
     g_mob_rgba.assign(rgba, rgba + static_cast<size_t>(width) * height * 4);

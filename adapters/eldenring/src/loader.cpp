@@ -2986,6 +2986,18 @@ void SetupOverlay() {
                 Log("skin: %s missing or not 64x64, the figure stays flat grey-brown (extract it with tools/extract_mc_assets.py --export-steve-skin)", skin_path.c_str());
             }
         }
+        {   // the mobs' model: a Bedrock geometry file copied by extract_mc_assets.py --export-entity-models (assets/source/models/entities/zombie.geo.json)
+            std::vector<uint8_t> json;
+            const std::string model_path = g_game_dir + "mods\\mc_adapter\\models\\zombie.geo.json";
+            std::optional<mc::model::EntityModel> model;
+            if (ReadFileAll(model_path, json)) model = mc::model::EntityModel::fromJson(std::string_view(reinterpret_cast<const char*>(json.data()), json.size()));
+            if (model && !model->bones.empty()) {
+                erov::SetMobModel(*model);
+                Log("mobs: model %s: %s, %zu bones", model_path.c_str(), model->identifier.c_str(), model->bones.size());
+            } else {
+                Log("mobs: no model at %s, the mobs use the Steve rig (copy it with tools/extract_mc_assets.py --export-entity-models)", model_path.c_str());
+            }
+        }
         {
             std::vector<uint8_t> zombie;
             unsigned zw = 0, zh = 0;

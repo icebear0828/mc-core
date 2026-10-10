@@ -365,6 +365,9 @@ void SteveRenderer::release() {
     Rel(own_depth_);
     Rel(dsv_heap_);
     own_depth_w_ = own_depth_h_ = 0;
+    Rel(mob_vertices_);
+    Rel(mob_indices_);
+    mob_ranges_.clear();
     Rel(skin_.tex);
     Rel(skin_.upload);
     skin_.pending = false;
@@ -671,6 +674,72 @@ void SteveRenderer::drawDepthView(ID3D12GraphicsCommandList* list, ID3D12Descrip
     const float extra[8] = {gain, 0.f, 0.f, 0.f, depth_w, depth_h, static_cast<float>(width), static_cast<float>(height)};
     list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
     list->DrawInstanced(3, 1, 0, 0);
+}
+
+bool SteveRenderer::setMobModel(ID3D12Device* device, const mc::model::EntityModel& model) {
+    Rel(mob_vertices_);
+    Rel(mob_indices_);
+    mob_ranges_.clear();
+    if (!device || model.bones.empty()) return false;
+    std::vector<mc::rig::RigVertex> vertices;
+    std::vector<uint16_t> indices;
+    for (const mc::model::Bone& bone : model.bones) {
+        const mc::rig::RigMesh mesh = model.buildBoneMesh(bone, eldenring::render::kBasis);
+        BoneRange r;
+        r.base_vertex = static_cast<int>(vertices.size());
+        r.first_index = static_cast<unsigned>(indices.size());
+        r.index_count = static_cast<unsigned>(mesh.indices.size());
+        mob_ranges_.push_back(r);
+        vertices.insert(vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
+        indices.insert(indices.end(), mesh.indices.begin(), mesh.indices.end());
+    }
+    if (vertices.empty() || indices.empty()) {
+        mob_ranges_.clear();
+        return false;
+    }
+    mob_vertices_ = UploadBuffer(device, vertices.data(), vertices.size() * sizeof(mc::rig::RigVertex));
+    mob_indices_ = UploadBuffer(device, indices.data(), indices.size() * sizeof(uint16_t));
+    if (!mob_vertices_ || !mob_indices_) {
+        Rel(mob_vertices_);
+        Rel(mob_indices_);
+        mob_ranges_.clear();
+        return false;
+    }
+    mob_vbv_ = {mob_vertices_->GetGPUVirtualAddress(), static_cast<UINT>(vertices.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
+    mob_ibv_ = {mob_indices_->GetGPUVirtualAddress(), static_cast<UINT>(indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
+    return true;
+}
+
+void SteveRenderer::drawMobModel(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table, unsigned width,
+                                 unsigned height, const mc::rig::Mat4& view_proj, const std::vector<mc::rig::Mat4>& bones, const SteveParams& params,
+                                 D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
+    if (!ready() || !own_depth_ || !dsv_heap_ || !mobModelReady()) return;
+    RecordSkinUpload(list, skin_);
+    RecordSkinUpload(list, mob_skin_);
+    D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
+    D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+    list->RSSetViewports(1, &vp);
+    list->RSSetScissorRects(1, &sc);
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
+    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+    if (!params.keep_depth) list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    list->SetPipelineState(pso_);
+    list->SetGraphicsRootSignature(root_);
+    ID3D12DescriptorHeap* heaps[] = {srv_heap};
+    list->SetDescriptorHeaps(1, heaps);
+    list->SetGraphicsRootDescriptorTable(1, depth_table);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->IASetVertexBuffers(0, 1, &mob_vbv_);
+    list->IASetIndexBuffer(&mob_ibv_);
+    list->SetGraphicsRoot32BitConstants(0, 16, view_proj.m.data(), 0);
+    const float extra[8] = {params.depth_const, params.rel_bias, params.abs_bias, params.mode, params.depth_w, params.depth_h, static_cast<float>(width), static_cast<float>(height)};
+    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
+    list->SetGraphicsRoot32BitConstants(0, 4, params.tint, 40);
+    for (size_t i = 0; i < mob_ranges_.size() && i < bones.size(); ++i) {
+        if (mob_ranges_[i].index_count == 0) continue;
+        list->SetGraphicsRoot32BitConstants(0, 16, bones[i].m.data(), 16);
+        list->DrawIndexedInstanced(mob_ranges_[i].index_count, 1, mob_ranges_[i].first_index, mob_ranges_[i].base_vertex, 0);
+    }
 }
 
 void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table,
