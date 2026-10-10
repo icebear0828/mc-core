@@ -69,3 +69,16 @@ TEST(InventoryLayout, PaletteListsEveryItemOnce) {
     }
     EXPECT_LE(items.size(), static_cast<size_t>(InventoryLayout::kPaletteSlots));
 }
+
+TEST(InventoryLayout, WithoutThePaletteItsSlotsAreOnlyPanel) {
+    const mc::InventoryLayout on(1920.f, 1080.f);
+    const mc::InventoryLayout off(1920.f, 1080.f, false);
+    const mc::HudRect slot = on.paletteSlot(3);
+    const float x = slot.x + slot.w * 0.5f, y = slot.y + slot.h * 0.5f;
+    EXPECT_EQ(on.hitTest(x, y).kind, mc::SlotRef::Kind::Palette);
+    EXPECT_EQ(off.hitTest(x, y).kind, mc::SlotRef::Kind::Panel);
+    // the player's own slots are unaffected
+    const mc::HudRect inv = off.invSlot(12);
+    EXPECT_EQ(off.hitTest(inv.x + 1.f, inv.y + 1.f).kind, mc::SlotRef::Kind::Inventory);
+    EXPECT_EQ(off.hitTest(inv.x + 1.f, inv.y + 1.f).index, 12);
+}

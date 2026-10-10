@@ -34,7 +34,8 @@ public:
     static constexpr int kPaletteSlots = 27;
     static constexpr int kTopHeight = 71; // title bar + 3 rows of palette
 
-    InventoryLayout(float screen_w, float screen_h) {
+    // palette = false (survival): the item palette is not offered, its slots only belong to the panel.
+    InventoryLayout(float screen_w, float screen_h, bool palette = true) : palette_(palette) {
         scale_ = std::max(1, std::min(HudLayout::guiScaleFor(screen_h), static_cast<int>(screen_h * 0.95f) / kPanelH));
         const float s = static_cast<float>(scale_);
         panel_ = {static_cast<float>(static_cast<int>((screen_w - kPanelW * s) / 2.f)),
@@ -56,7 +57,7 @@ public:
 
     [[nodiscard]] SlotRef hitTest(float x, float y) const {
         if (x < panel_.x || y < panel_.y || x >= panel_.x + panel_.w || y >= panel_.y + panel_.h) return {};
-        for (int i = 0; i < kPaletteSlots; ++i) {
+        for (int i = 0; palette_ && i < kPaletteSlots; ++i) {
             if (inside(paletteSlot(i), x, y)) return {SlotRef::Kind::Palette, i};
         }
         for (int i = 0; i < 36; ++i) {
@@ -74,6 +75,7 @@ private:
 
     int scale_{1};
     HudRect panel_{};
+    bool palette_{true};
 };
 
 } // namespace mc

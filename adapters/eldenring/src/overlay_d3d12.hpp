@@ -24,6 +24,8 @@ struct HudState {
     float absorption_mc{0.f}; // golden hearts, in Minecraft hit points (2 per heart)
     float eating{0.f};    // 0..1 progress of the meal being eaten (0 = not eating)
     float totem{0.f};     // 0..1 totem-of-undying pop animation (1 = just popped)
+    bool creative{false}; // F5: creative mode (item palette, no health/hunger/xp bars)
+    float mode_toast{0.f}; // 1 just switched .. 0: the mode name is shown in the top left corner
     int slot_probe{-1};   // >= 0: the F9 part-slot probe is on, this is the only hidden part slot
     // The inventory screen (all 36 slots, hotbar first, the stack on the cursor and the virtual mouse in screen pixels).
     bool inv_open{false};

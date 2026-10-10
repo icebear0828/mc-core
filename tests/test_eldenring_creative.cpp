@@ -91,3 +91,24 @@ TEST(EldenRingCreative, ZeroedFallLineSaysWhatWasReplaced) {
     EXPECT_NE(line.find("25.72"), std::string::npos);
     EXPECT_NE(line.find("0x411324"), std::string::npos);
 }
+
+TEST(EldenRingCreative, GameModeDefaultsToSurvivalAndToggles) {
+    EXPECT_EQ(GameMode{}, GameMode::Survival);
+    EXPECT_EQ(toggled(GameMode::Survival), GameMode::Creative);
+    EXPECT_EQ(toggled(GameMode::Creative), GameMode::Survival);
+    EXPECT_STREQ(modeName(GameMode::Creative), "Creative Mode");
+    EXPECT_STREQ(modeName(GameMode::Survival), "Survival Mode");
+}
+
+TEST(EldenRingCreative, ModePolicyMatchesTheAgreedDifferences) {
+    // Creative: item palette, no fall damage, nothing is used up, no health/hunger bars.
+    EXPECT_TRUE(showsPalette(GameMode::Creative));
+    EXPECT_TRUE(zeroesFall(GameMode::Creative));
+    EXPECT_FALSE(consumesItems(GameMode::Creative));
+    EXPECT_FALSE(showsVitals(GameMode::Creative));
+    // Survival is the vanilla-like mode.
+    EXPECT_FALSE(showsPalette(GameMode::Survival));
+    EXPECT_FALSE(zeroesFall(GameMode::Survival));
+    EXPECT_TRUE(consumesItems(GameMode::Survival));
+    EXPECT_TRUE(showsVitals(GameMode::Survival));
+}

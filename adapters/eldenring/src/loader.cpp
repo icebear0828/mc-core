@@ -235,6 +235,9 @@ bool GameInForeground() {
 
 std::atomic<bool> g_damage_enabled{false};
 std::atomic<bool> g_mc_mode{false};
+std::atomic<uint8_t> g_game_mode{static_cast<uint8_t>(creative::GameMode::Survival)}; // F5: survival (default) or creative, inside MC mode
+std::atomic<uint64_t> g_mode_toast_ms{0};                                              // tick count of the last F5, drives the on-screen name
+creative::GameMode CurrentGameMode() { return static_cast<creative::GameMode>(g_game_mode.load(std::memory_order_relaxed)); }
 std::atomic<bool> g_input_enabled{false};
 std::atomic<bool> g_click_attack{false};
 std::atomic<bool> g_steve_enabled{false};
@@ -458,7 +461,7 @@ void __fastcall KillChrDetour(void* chr) {
     g_kill_orig(chr);
 }
 
-// ---- creative-mode probes (mc_er_creativelog.txt; log-only, nothing here changes the game) -------------------------------------
+// ---- creative-mode hooks: the fall-height hook is always installed (it only acts in creative mode, F5); the other three are log-only probes (mc_er_creativelog.txt) -------------------------------------
 // Which path kills the player after a fall? Every probe calls the original unchanged and only writes a line to mc_er.log.
 using KillWrapperFn = void(__fastcall*)(void* chr);
 using HardLandingFn = void(__fastcall*)(void* fall_module);
@@ -497,17 +500,16 @@ void __fastcall CreativeLandingDetour(void* fall_module) {
 }
 
 std::atomic<bool> g_cr_log{false};    // mc_er_creativelog.txt: log-only probes
-std::atomic<bool> g_cr_nofall{false}; // mc_er_nofall.txt: the player's fall height is 0 while MC mode is on
 
 float __fastcall CreativeFallDetour(void* fall_module) {
     const float metres = g_cr_fall_orig(fall_module);
     const bool interesting = !std::isfinite(metres) || metres >= creative::kFallLogMinMetres;
     if (!interesting) return metres;
-    const bool zero_wanted = g_cr_nofall.load(std::memory_order_relaxed) && g_mc_mode.load(std::memory_order_relaxed);
+    const bool zero_wanted = creative::zeroesFall(CurrentGameMode()) && g_mc_mode.load(std::memory_order_relaxed);
     if (!zero_wanted && !g_cr_log.load(std::memory_order_relaxed)) return metres;
     if (!creative::isPlayer(ModuleOwner(fall_module), PlayerChrPtr())) return metres;
     const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base;
-    const bool zero = creative::shouldZeroFall(g_cr_nofall.load(std::memory_order_relaxed), g_mc_mode.load(std::memory_order_relaxed), true);
+    const bool zero = creative::shouldZeroFall(creative::zeroesFall(CurrentGameMode()), g_mc_mode.load(std::memory_order_relaxed), true);
     if (CreativeShouldLogFall(metres, caller)) {
         Log("%s", (zero ? creative::formatFallZeroed(caller, metres) : creative::formatFall(caller, metres)).c_str());
     }
@@ -1511,7 +1513,7 @@ bool TryPlaceBlock() {
     }
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
-        g_melee.consumeAt(slot);
+        if (creative::consumesItems(CurrentGameMode())) g_melee.consumeAt(slot); // creative: blocks are not used up
         g_melee.startSwing();
     }
     SendBlockMesh();
@@ -1933,7 +1935,7 @@ void InventoryTick(bool fg) {
     g_inv_my.store(my);
     erin::TakeWheelNotches();
 
-    const mc::InventoryLayout lay(w, h);
+    const mc::InventoryLayout lay(w, h, creative::showsPalette(CurrentGameMode()));
     const mc::SlotRef ref = lay.hitTest(mx, my);
     const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
     auto click = [&](mc::Button button) {
@@ -2058,7 +2060,7 @@ DWORD WINAPI KeyThread(LPVOID) {
                             if (e.play_burp_sound) eraudio::Play("entity.player.burp");
                             g_survival.apply(e.effects);
                             g_hunger.eat(meal);
-                            g_melee.consumeAt(g_melee.selectedSlot());
+                            if (creative::consumesItems(CurrentGameMode())) g_melee.consumeAt(g_melee.selectedSlot());
                             Log("SURVIVAL: finished eating: food %d, saturation %.1f (regen/absorption from the item)", g_hunger.food(), g_hunger.saturation());
                         }
                     } else {
@@ -2132,6 +2134,14 @@ DWORD WINAPI KeyThread(LPVOID) {
         const bool d8 = fg && (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
         const bool d6 = fg && (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
         if (d8 && !prev8 && g_damage_enabled.load()) EnqueueNearestHostile();
+        const bool d5 = fg && (GetAsyncKeyState(VK_F5) & 0x8000) != 0;
+        static bool prev5 = false;
+        if (d5 && !prev5) {
+            g_game_mode.store(static_cast<uint8_t>(creative::toggled(CurrentGameMode())));
+            g_mode_toast_ms.store(GetTickCount64());
+            Log("F5: %s", creative::modeName(CurrentGameMode()));
+        }
+        prev5 = d5;
         if (d6 && !prev6) {
             g_mc_mode.store(!g_mc_mode.load());
             Log("F6: MC mode %s", g_mc_mode.load() ? "on" : "off");
@@ -2251,8 +2261,6 @@ bool ReadFileAll(const std::string& path, std::vector<uint8_t>& out) {
 
 void SetupCreativeProbes() {
     g_cr_log.store(FileExists(g_game_dir + "mc_er_creativelog.txt"));
-    g_cr_nofall.store(FileExists(g_game_dir + "mc_er_nofall.txt"));
-    if (!g_cr_log.load() && !g_cr_nofall.load()) return;
     struct Probe {
         const char* name;
         const char* sig;
@@ -2278,7 +2286,7 @@ void SetupCreativeProbes() {
             Log("creative: hooking %s at %p failed", p.name, reinterpret_cast<void*>(target));
         } else {
             Log("creative: %s probe at %p (RVA 0x%llX)%s", p.name, reinterpret_cast<void*>(target), static_cast<unsigned long long>(target - g_img.base),
-                g_cr_nofall.load() && p.orig == reinterpret_cast<void**>(&g_cr_fall_orig) ? ", fall height is 0 for the player in MC mode (mc_er_nofall.txt)" : g_cr_log.load() ? ", log-only" : "");
+                p.orig == reinterpret_cast<void**>(&g_cr_fall_orig) ? ", fall height is 0 for the player in creative mode (F5)" : ", log-only");
         }
     }
 }
@@ -2510,6 +2518,11 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
                             readLoadingState(g_reader, readSingleton(g_reader, g_img.base, g_rva_loading, sigs::kCSNowLoadingHelper), ls) &&
                             readFadeAlpha(g_reader, readSingleton(g_reader, g_img.base, g_rva_fade, sigs::kCSFade), fade);
     out.mc_mode = g_mc_mode.load();
+    out.creative = !creative::showsVitals(CurrentGameMode());
+    {
+        const uint64_t since = GetTickCount64() - g_mode_toast_ms.load(std::memory_order_relaxed);
+        out.mode_toast = g_mode_toast_ms.load(std::memory_order_relaxed) != 0 && since < 2500 ? 1.f - static_cast<float>(since) / 2500.f : 0.f;
+    }
     out.slot_probe = g_slot_probe.load();
     {
         // CSMenuMan+0x654C was a candidate for the game's HUD option, but it reads 0x3D240000 (a float-looking value) and never

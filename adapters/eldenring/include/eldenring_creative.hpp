@@ -21,6 +21,18 @@
 
 namespace eldenring::creative {
 
+// ---- creative / survival (F5, inside MC mode) -----------------------------------------------------------------------------
+// Survival is the default and behaves like vanilla; Creative gets the item palette, no fall damage, items that are not used up and no
+// health/hunger/experience bars. One place decides every difference so the HUD, the inventory and the hooks cannot disagree.
+enum class GameMode : uint8_t { Survival, Creative };
+
+inline GameMode toggled(GameMode m) { return m == GameMode::Survival ? GameMode::Creative : GameMode::Survival; }
+inline const char* modeName(GameMode m) { return m == GameMode::Creative ? "Creative Mode" : "Survival Mode"; }
+inline bool showsPalette(GameMode m) { return m == GameMode::Creative; }
+inline bool zeroesFall(GameMode m) { return m == GameMode::Creative; }
+inline bool consumesItems(GameMode m) { return m == GameMode::Survival; }
+inline bool showsVitals(GameMode m) { return m == GameMode::Survival; }
+
 // The SpEffect the hard-landing function asks about, and the return address of that one call (0x14044E0DF + 5).
 inline constexpr int kLandingSkipSpEffect = 0x8F;
 inline constexpr uintptr_t kLandingSpEffectReturnRva = 0x44E0E4;
