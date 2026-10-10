@@ -81,4 +81,40 @@ private:
     unsigned left_;
 };
 
+
+// ---- firing a bolt of our own from a request the game itself wrote ---------------------------------------------------------------------
+inline constexpr size_t kFullRequestBytes = 0x110; // the constructor's size (0x14038C580); the logger only dumps the first kRequestBytes
+
+struct FireParams {
+    uint64_t owner{0};   // the shooter's entity handle (player ChrIns+0x08)
+    uint64_t target{0xFFFFFFFFFFFFFFFFull};
+    uint32_t flags{0x08}; // +0x44: bit 3 must be set (spawn_bullet returns early otherwise), bit 1 must be clear
+    float right[3]{}, up[3]{}, forward[3]{}, position[3]{}; // row-major world matrix at +0x50
+};
+
+// A copy of a real request (from the logger) with the fields we own replaced; everything else is what the game wrote. +0xB0 (a pointer to a
+// stack object in the real request) is zeroed: copying a dead stack address would be worse than none. Empty when the template is unusable.
+inline std::vector<uint8_t> buildFireRequest(const uint8_t* real, size_t n, const FireParams& p) {
+    if (real == nullptr || n < 0x90) return {};
+    std::vector<uint8_t> out(kFullRequestBytes, 0);
+    std::memcpy(out.data(), real, n < kFullRequestBytes ? n : kFullRequestBytes);
+    std::memcpy(out.data() + 0x00, &p.owner, 8);
+    std::memcpy(out.data() + 0x08, &p.target, 8);
+    std::memcpy(out.data() + 0x44, &p.flags, 4);
+    std::memcpy(out.data() + 0x50, p.right, 12);
+    std::memcpy(out.data() + 0x60, p.up, 12);
+    std::memcpy(out.data() + 0x70, p.forward, 12);
+    std::memcpy(out.data() + 0x80, p.position, 12);
+    const float one = 1.f; // w of the translation row, as in the real request
+    std::memcpy(out.data() + 0x8C, &one, 4);
+    std::memset(out.data() + 0xB0, 0, 8);
+    return out;
+}
+
+inline void muzzle(const float eye[3], const float forward[3], float distance, float out[3]) {
+    for (int i = 0; i < 3; ++i) out[i] = eye[i] + forward[i] * distance;
+}
+
+inline bool spawnFailed(uint32_t handle) { return handle == 0xFFFFFFFFu; }
+
 } // namespace eldenring::bullet

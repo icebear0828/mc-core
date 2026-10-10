@@ -72,3 +72,84 @@ TEST(EldenRingBullet, TheLogBudgetStopsAfterTheLimit) {
     EXPECT_FALSE(budget.take());
     EXPECT_FALSE(budget.take());
 }
+
+namespace {
+FireParams params() {
+    FireParams p;
+    p.owner = 0xFFFFFFFF16F00000ull;
+    p.target = 0xFFFFFFFFFFFFFFFFull;
+    p.flags = 0x08;
+    const float r[3] = {0.f, 0.f, -1.f}, u[3] = {0.f, 1.f, 0.f}, f[3] = {1.f, 0.f, 0.f}, pos[3] = {4.f, 5.f, 6.f};
+    std::memcpy(p.right, r, 12);
+    std::memcpy(p.up, u, 12);
+    std::memcpy(p.forward, f, 12);
+    std::memcpy(p.position, pos, 12);
+    return p;
+}
+std::vector<uint8_t> realTemplate() {
+    std::vector<uint8_t> b(kFullRequestBytes, 0xCD); // a recognisable filler: whatever the real shot had must survive
+    auto put32 = [&](size_t off, uint32_t v) { std::memcpy(b.data() + off, &v, 4); };
+    auto put64 = [&](size_t off, uint64_t v) { std::memcpy(b.data() + off, &v, 8); };
+    put64(0x00, 0xFFFFFFFF16F00000ull);
+    put64(0x08, 0xFFFFFFFF06455A50ull);
+    put32(0x1C, 56u);
+    put32(0x44, 0x09);
+    put64(0xB0, 0x0000007647BEF600ull); // a stack pointer in the real request
+    return b;
+}
+} // namespace
+
+TEST(EldenRingBulletFire, TheRequestKeepsTheRealShotsBodyAndOverwritesOnlyTheFieldsWeOwn) {
+    const auto t = realTemplate();
+    const auto out = buildFireRequest(t.data(), t.size(), params());
+    ASSERT_EQ(out.size(), kFullRequestBytes);
+    const Fields f = decode(out.data(), out.size());
+    EXPECT_EQ(f.owner, 0xFFFFFFFF16F00000ull);
+    EXPECT_EQ(f.target, 0xFFFFFFFFFFFFFFFFull);   // free aim: no target
+    EXPECT_EQ(f.id_at_1c, 56u);                   // the id of the real crossbow bolt survives
+    EXPECT_EQ(f.flags_at_44, 0x08u);
+    EXPECT_FLOAT_EQ(f.forward[0], 1.f);
+    EXPECT_FLOAT_EQ(f.right[2], -1.f);
+    EXPECT_FLOAT_EQ(f.position[0], 4.f);
+    EXPECT_FLOAT_EQ(f.position[2], 6.f);
+    EXPECT_EQ(out[0x30], 0xCD);                   // an untouched field of the template stays as the game wrote it
+    EXPECT_EQ(out[0xA0], 0xCD);
+}
+
+TEST(EldenRingBulletFire, TheStackPointerOfTheTemplateIsNeverCopied) {
+    const auto t = realTemplate();
+    const auto out = buildFireRequest(t.data(), t.size(), params());
+    uint64_t sub = 1;
+    std::memcpy(&sub, out.data() + 0xB0, 8);
+    EXPECT_EQ(sub, 0u);
+}
+
+TEST(EldenRingBulletFire, AnUnusableTemplateGivesNoRequest) {
+    const std::vector<uint8_t> small(0x40, 0);
+    EXPECT_TRUE(buildFireRequest(small.data(), small.size(), params()).empty());
+    EXPECT_TRUE(buildFireRequest(nullptr, 0, params()).empty());
+}
+
+TEST(EldenRingBulletFire, ATemplateShorterThanTheFullBodyIsZeroExtended) {
+    std::vector<uint8_t> t = realTemplate();
+    t.resize(kRequestBytes); // what the logger writes first
+    const auto out = buildFireRequest(t.data(), t.size(), params());
+    ASSERT_EQ(out.size(), kFullRequestBytes);
+    EXPECT_EQ(out[kRequestBytes], 0);
+    EXPECT_EQ(decode(out.data(), out.size()).id_at_1c, 56u);
+}
+
+TEST(EldenRingBulletFire, TheMuzzleIsInFrontOfTheEyeAlongTheAim) {
+    const float eye[3] = {1.f, 2.f, 3.f}, fwd[3] = {0.f, 0.f, 1.f};
+    float out[3];
+    muzzle(eye, fwd, 0.8f, out);
+    EXPECT_FLOAT_EQ(out[0], 1.f);
+    EXPECT_FLOAT_EQ(out[1], 2.f);
+    EXPECT_FLOAT_EQ(out[2], 3.8f);
+}
+
+TEST(EldenRingBulletFire, OnlyAnInvalidHandleCountsAsAFailedSpawn) {
+    EXPECT_TRUE(spawnFailed(0xFFFFFFFFu));
+    EXPECT_FALSE(spawnFailed(0x0000FF00u));
+    EXPECT_FALSE(spawnFailed(0x0003FF00u));
+}

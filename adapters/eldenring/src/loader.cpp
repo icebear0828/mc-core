@@ -295,6 +295,7 @@ mc::ConsumableSystem g_eating;     // right click on food, guarded by g_melee_mu
 std::atomic<float> g_sound_volume{0.8f}; // mc_er_steve.txt: sound_volume
 std::atomic<float> g_walk_speed{0.f}; // horizontal speed of the player (m/s), measured by the key thread
 std::atomic<bool> g_on_ground{true};
+std::atomic<bool> g_bullet_fire_pending{false}; // F3 pressed with mc_er_bulletfire.txt present: call spawn_bullet once on the game thread
 std::atomic<bool> g_summon_pending{false}; // F2 pressed with mc_er_summon.txt present: write one summon request on the game thread
 std::atomic<int> g_heal_pending{0}; // Elden Ring hit points waiting to be given back on the game thread
 using ApplyHpFn = void*(__fastcall*)(void* data_module, int32_t hp, uint8_t flag);
@@ -1327,6 +1328,8 @@ void RunSummonExperiment() {
     LogPlayerPoseForBuddy();
 }
 
+void RunBulletFire(); // defined with the spawn_bullet logger below
+
 void* __fastcall ClampDetour(void* module, int32_t value) {
     void* r = g_clamp_orig(module, value);
     if (g_damage_enabled.load(std::memory_order_relaxed) && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
@@ -1336,6 +1339,10 @@ void* __fastcall ClampDetour(void* module, int32_t value) {
     if (g_summon_pending.load(std::memory_order_relaxed) && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
         g_summon_pending.exchange(false)) {
         RunSummonExperiment();
+    }
+    if (g_bullet_fire_pending.load(std::memory_order_relaxed) && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
+        g_bullet_fire_pending.exchange(false)) {
+        RunBulletFire();
     }
     if (g_heal_pending.load(std::memory_order_relaxed) > 0 && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed)) {
         uint64_t owner = 0;
@@ -2535,6 +2542,10 @@ DWORD WINAPI KeyThread(LPVOID) {
                 }
             }
         }
+        static bool prev_f3 = false;
+        const bool d3 = fg && (GetAsyncKeyState(VK_F3) & 0x8000) != 0;
+        if (d3 && !prev_f3 && QueueBulletFire()) Log("F3: spawn_bullet queued for the game thread");
+        prev_f3 = d3;
         static bool prev_f2 = false;
         const bool d2 = fg && (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
         if (d2 && !prev_f2) {
@@ -2675,8 +2686,115 @@ void LogBulletRequest(void* manager, const void* request, const void* r9, void* 
     }
 }
 
+// The latest request and r9 context of a shot the player fired himself, copied as the game wrote them: F3 fires from these (same session, so the
+// pointers inside r9 are still valid). Only the player's own shots are kept: the owner handle must be ChrIns+0x08 of the player.
+constexpr size_t kBulletCtxBytes = 0x200;
+struct BulletTemplate {
+    bool valid{false};
+    uint8_t request[eldenring::bullet::kFullRequestBytes]{};
+    uint8_t ctx[kBulletCtxBytes]{};
+};
+BulletTemplate g_bullet_template;
+std::mutex g_bullet_mutex;
+std::atomic<bool> g_bullet_fire_enabled{false};
+std::atomic<uint64_t> g_last_bullet_fire_ms{0};
+
+void RecordBulletTemplate(const void* request, const void* r9) {
+    uint8_t req[eldenring::bullet::kFullRequestBytes] = {};
+    uint8_t ctx[kBulletCtxBytes] = {};
+    if (request == nullptr || r9 == nullptr || !SafeCopy(reinterpret_cast<uintptr_t>(request), req, sizeof(req)) ||
+        !SafeCopy(reinterpret_cast<uintptr_t>(r9), ctx, sizeof(ctx))) {
+        return;
+    }
+    const uintptr_t player = PlayerChrPtr();
+    uint64_t handle = 0, owner = 0;
+    std::memcpy(&owner, req, sizeof(owner));
+    if (player == 0 || !SafeCopy(player + 8, &handle, sizeof(handle)) || handle != owner) return;
+    std::lock_guard<std::mutex> g(g_bullet_mutex);
+    std::memcpy(g_bullet_template.request, req, sizeof(req));
+    std::memcpy(g_bullet_template.ctx, ctx, sizeof(ctx));
+    g_bullet_template.valid = true;
+}
+
+// The call itself, in its own function so that the __try has no C++ objects with destructors around it.
+bool SpawnBulletSafe(void* manager, uint32_t* out_handle, void* request, void* ctx) {
+    __try {
+        g_spawn_bullet_orig(manager, out_handle, request, ctx);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// One shot of our own on the game thread: the player's real request with the aim and the origin replaced. First free aim (no target, flags 0x08);
+// when the game refuses that (invalid handle) once more exactly as the real shot was (its target handle and flags).
+void RunBulletFire() {
+    alignas(16) uint8_t real[eldenring::bullet::kFullRequestBytes];
+    alignas(16) uint8_t ctx[kBulletCtxBytes];
+    {
+        std::lock_guard<std::mutex> g(g_bullet_mutex);
+        if (!g_bullet_template.valid) {
+            Log("bullet fire: no template yet, fire one real crossbow bolt first");
+            return;
+        }
+        std::memcpy(real, g_bullet_template.request, sizeof(real));
+        std::memcpy(ctx, g_bullet_template.ctx, sizeof(ctx));
+    }
+    uint64_t manager = 0;
+    const uintptr_t player = PlayerChrPtr();
+    uint64_t handle = 0;
+    CameraPose cam;
+    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    if (!SafeCopy(g_img.base + 0x3D667A8, &manager, sizeof(manager)) || manager == 0 || player == 0 || !SafeCopy(player + 8, &handle, sizeof(handle)) ||
+        world == 0 || !readCamera(g_reader, g_img.base, world, cam)) {
+        Log("bullet fire: the manager, the player or the camera cannot be read");
+        return;
+    }
+    eldenring::bullet::FireParams fp;
+    fp.owner = handle;
+    std::memcpy(fp.right, cam.right, sizeof(fp.right));
+    std::memcpy(fp.up, cam.up, sizeof(fp.up));
+    std::memcpy(fp.forward, cam.forward, sizeof(fp.forward));
+    eldenring::bullet::muzzle(cam.position, cam.forward, 0.8f, fp.position);
+    uint64_t real_target = 0;
+    uint32_t real_flags = 0;
+    std::memcpy(&real_target, real + 8, sizeof(real_target));
+    std::memcpy(&real_flags, real + 0x44, sizeof(real_flags));
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        fp.target = attempt == 0 ? 0xFFFFFFFFFFFFFFFFull : real_target;
+        fp.flags = attempt == 0 ? 0x08u : real_flags;
+        std::vector<uint8_t> built = eldenring::bullet::buildFireRequest(real, sizeof(real), fp);
+        if (built.size() != eldenring::bullet::kFullRequestBytes) {
+            Log("bullet fire: the template is unusable");
+            return;
+        }
+        alignas(16) uint8_t req[eldenring::bullet::kFullRequestBytes];
+        alignas(16) uint8_t ctx_copy[kBulletCtxBytes];
+        std::memcpy(req, built.data(), sizeof(req));
+        std::memcpy(ctx_copy, ctx, sizeof(ctx_copy));
+        uint32_t out = 0xFFFFFFFFu;
+        const bool ok = SpawnBulletSafe(reinterpret_cast<void*>(manager), &out, req, ctx_copy);
+        Log("bullet fire: attempt %d (%s) id=%u target=0x%016llX flags=0x%X from (%.2f %.2f %.2f) along (%.3f %.3f %.3f) tid=%lu -> %s handle 0x%08X", attempt + 1,
+            attempt == 0 ? "free aim" : "as the real shot", *reinterpret_cast<uint32_t*>(req + 0x1C), static_cast<unsigned long long>(fp.target), fp.flags,
+            fp.position[0], fp.position[1], fp.position[2], fp.forward[0], fp.forward[1], fp.forward[2], static_cast<unsigned long>(GetCurrentThreadId()),
+            ok ? "returned" : "FAULTED", out);
+        if (!ok) return;
+        if (!eldenring::bullet::spawnFailed(out)) return;
+    }
+}
+
+bool QueueBulletFire() {
+    if (!g_bullet_fire_enabled.load()) return false;
+    const uint64_t now = GetTickCount64();
+    if (now - g_last_bullet_fire_ms.load(std::memory_order_relaxed) < 400) return false;
+    g_last_bullet_fire_ms.store(now);
+    g_bullet_fire_pending.store(true);
+    return true;
+}
+
 uint32_t* __fastcall SpawnBulletDetour(void* manager, uint32_t* out_handle, void* request, void* r9) {
     uint32_t* r = g_spawn_bullet_orig(manager, out_handle, request, r9);
+    if (g_bullet_fire_enabled.load(std::memory_order_relaxed)) RecordBulletTemplate(request, r9);
     uint32_t handle = 0xFFFFFFFFu;
     if (out_handle != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(out_handle), &handle, sizeof(handle));
     LogBulletRequest(manager, request, r9, _ReturnAddress(), handle);
@@ -2684,7 +2802,8 @@ uint32_t* __fastcall SpawnBulletDetour(void* manager, uint32_t* out_handle, void
 }
 
 void SetupBulletLog() {
-    if (!FileExists(g_game_dir + "mc_er_bulletlog.txt")) return;
+    g_bullet_fire_enabled.store(FileExists(g_game_dir + "mc_er_bulletfire.txt"));
+    if (!g_bullet_fire_enabled.load() && !FileExists(g_game_dir + "mc_er_bulletlog.txt")) return;
     uintptr_t target = 0;
     if (!EnsureMinHook()) {
         Log("bullet: MH_Initialize failed, the request logger is not installed");
@@ -2694,8 +2813,9 @@ void SetupBulletLog() {
                MH_EnableHook(reinterpret_cast<void*>(target)) != MH_OK) {
         Log("bullet: hooking spawn_bullet at %p failed", reinterpret_cast<void*>(target));
     } else {
-        Log("bullet: spawn_bullet request logger at %p (RVA 0x%llX): fire a shot, the first 40 requests are written here (read-only)", reinterpret_cast<void*>(target),
-            static_cast<unsigned long long>(target - g_img.base));
+        Log("bullet: spawn_bullet request logger at %p (RVA 0x%llX): the first 40 requests are written here%s", reinterpret_cast<void*>(target),
+            static_cast<unsigned long long>(target - g_img.base),
+            g_bullet_fire_enabled.load() ? "; mc_er_bulletfire.txt: fire one real crossbow bolt, then F3 shoots one of ours" : " (read-only)");
     }
 }
 
