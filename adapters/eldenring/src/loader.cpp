@@ -1329,6 +1329,7 @@ void RunSummonExperiment() {
 }
 
 void RunBulletFire(); // defined with the spawn_bullet logger below
+bool QueueBulletFire(); // the same: called from the key thread
 
 void* __fastcall ClampDetour(void* module, int32_t value) {
     void* r = g_clamp_orig(module, value);
