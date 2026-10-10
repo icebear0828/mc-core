@@ -167,6 +167,12 @@ inline bool isPlayersBoltHit(uint8_t hit_kind, uint64_t attacker_arg, uint64_t p
 inline int hitHearts(float mc_damage) { return mc_damage > 0.f ? static_cast<int>(mc_damage * 0.5f) : 0; }
 inline bool isCriticalShot(float mc_damage) { return mc_damage >= kCrossbowDamage - 1e-3f; }
 
+// ---- timing of a hit against the flight (diagnostics for "the bolt looks like it has landed but the damage and the sound come later") ----------
+inline constexpr float kBoltSpeedMps = 32.5f; // measured along a straight line (REVERSE 35.8)
+inline float boltFlightMs(float distance_m) { return distance_m > 0.f ? distance_m / kBoltSpeedMps * 1000.f : 0.f; }
+// How long after the straight flight the hit was processed (negative: sooner).
+inline float hitLagMs(float distance_m, float measured_ms) { return measured_ms - boltFlightMs(distance_m); }
+
 inline bool spawnFailed(uint32_t handle) { return handle == 0xFFFFFFFFu; }
 
 } // namespace eldenring::bullet

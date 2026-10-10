@@ -1172,6 +1172,12 @@ std::atomic<float> g_last_shot_damage{eldenring::bullet::kCrossbowDamage}; // th
 std::atomic<float> g_pending_shot_damage{eldenring::bullet::kCrossbowDamage}; // of the shot queued for the game thread
 std::atomic<float> g_bow_power{0.f};             // 0..1 while the bow is drawn (third-person arms), written by the key thread
 std::atomic<float> g_bow_ticks{0.f};             // ticks drawn (first-person pose)
+std::atomic<float> g_last_shot_pos[3];            // where the last shot left (the muzzle) and when: the timing log of a hit compares the flight with the clock
+std::atomic<uint64_t> g_last_shot_ms{0};
+std::atomic<uintptr_t> g_watch_chr{0};            // the victim of the last melee request, and its data module: how often was it updated, and on which thread, while the request waited?
+std::atomic<uintptr_t> g_watch_module{0};
+std::atomic<uint32_t> g_watch_game{0}, g_watch_other{0};
+std::atomic<uint64_t> g_watch_ms{0};
 std::atomic<int> g_bolt_attach_poly{-1};         // mc_er_steve.txt: bolt_attach_poly. Request +0x1C is the shooter's dummy poly id, not a bullet id: >= 0 makes the game take that bone's matrix instead of ours (REVERSE 35.12); -1 keeps ours; 56 is what a real shot sends
 std::atomic<uint64_t> g_last_bullet_tick_ms{0}; // the last spawn_bullet call (the player's real shot or ours): hits within 3 s after it are logged whatever they look like
 
@@ -1224,6 +1230,20 @@ void HandleProjectileHit(void* module, void* attacker, uint8_t* ctx) {
         Log("PROJ-HIT: max_hp=%d kind=%u victim=%p npc=%d team=%u attacker-arg=%p ctx+1D8=%p ctx+1E0=%p player=%p shooter_is_player=%d after_shot=%d engine_dmg=%d tid=%lu", victim_max, kind,
             reinterpret_cast<void*>(victim), npc, static_cast<unsigned>(team), attacker, reinterpret_cast<void*>(ctx_attacker), reinterpret_cast<void*>(ctx_victim),
             reinterpret_cast<void*>(player), mine ? 1 : 0, after_shot ? 1 : 0, engine_damage, static_cast<unsigned long>(GetCurrentThreadId()));
+    }
+    if (mine) {
+        // Timing: how long after the shot was this hit processed, against the straight flight of the measured speed. A lag of hundreds of milliseconds means the
+        // engine registered the hit late; a negative lag means the target was nearer than the straight flight assumed.
+        float vp[3];
+        const uint64_t shot_ms = g_last_shot_ms.load(std::memory_order_relaxed);
+        if (shot_ms != 0 && detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(victim), vp)) {
+            const float dx = vp[0] - g_last_shot_pos[0].load(std::memory_order_relaxed), dy = vp[1] + 1.0f - g_last_shot_pos[1].load(std::memory_order_relaxed),
+                        dz = vp[2] - g_last_shot_pos[2].load(std::memory_order_relaxed);
+            const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+            const float since = static_cast<float>(now - shot_ms);
+            Log("ARROW-TIMING: the hit was processed %.0f ms after the shot; the target was %.1f m from the muzzle (a straight %.1f m/s flight takes %.0f ms) -> %+.0f ms late; average speed %.1f m/s",
+                since, dist, eldenring::bullet::kBoltSpeedMps, eldenring::bullet::boltFlightMs(dist), eldenring::bullet::hitLagMs(dist, since), since > 0.f ? dist / (since / 1000.f) : 0.f);
+        }
     }
     if (mine && g_mc_mode.load(std::memory_order_relaxed)) {
         // Minecraft's feedback for a shot that lands: the arrow's thud, the hit marker, the damage hearts at the victim's chest (and the critical stars for a full draw).
@@ -1334,6 +1354,13 @@ void DrainOnce(uintptr_t updating_data_module) {
     };
     t_hp_after = -1;
     for (const DamageResult& r : g_queue.drain(c)) {
+        if (r.request.victim_chr != 0 && r.request.victim_chr == g_watch_chr.load()) {
+            Log("MELEE-TIMING: the request on chr=%p ended as %s %llu ms after the click; meanwhile its data module was updated %u time(s) on the game thread and %u time(s) on other threads",
+                reinterpret_cast<void*>(r.request.victim_chr), OutcomeName(r.outcome), static_cast<unsigned long long>(GetTickCount64() - g_watch_ms.load()), g_watch_game.load(),
+                g_watch_other.load());
+            g_watch_chr.store(0);
+            g_watch_module.store(0);
+        }
         if (r.outcome == DamageOutcome::Applied) {
             std::lock_guard<std::mutex> g(g_melee_mutex);
             g_feedback.onHit((r.request.tag & 1u) != 0);
@@ -1429,6 +1456,12 @@ bool QueueBulletFire(float mc_damage); // the same: called from the key thread
 void AimCalTick();                      // the same: reads where a shot really flies (mc_er_aimcal.txt)
 
 void* __fastcall ClampDetour(void* module, int32_t value) {
+    {   // diagnostics for a waiting melee request: how often is the victim's data module updated, and on which thread? (REVERSE: why do hits expire?)
+        const uintptr_t w = g_watch_module.load(std::memory_order_relaxed);
+        if (w != 0 && reinterpret_cast<uintptr_t>(module) == w) {
+            (GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) ? g_watch_game : g_watch_other).fetch_add(1, std::memory_order_relaxed);
+        }
+    }
     void* r = g_clamp_orig(module, value);
     if (g_damage_enabled.load(std::memory_order_relaxed) && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
         g_queue.pending() > 0) {
@@ -1528,6 +1561,13 @@ void ClickAttack(float charged) {
     const int dmg = erDamage(intent, e.max_hp);
     const bool ok = dmg > 0 && g_queue.enqueue(e.chr, dmg, NowTick(), (intent.is_critical ? 1u : 0u) | (intent.is_sweeping ? 2u : 0u) | (charged > 0.848f ? 4u : 0u) |
                                                           (static_cast<uint32_t>(std::min(255.f, std::floor(intent.damage))) << 8));
+    if (ok) {
+        g_watch_game.store(0);
+        g_watch_other.store(0);
+        g_watch_ms.store(GetTickCount64());
+        g_watch_chr.store(e.chr);
+        g_watch_module.store(DataModuleOfChr(e.chr));
+    }
     Log("click: item=%d charged=%.2f falling=%d crit=%d sweep=%d mc_dmg=%.2f -> %d on chr=%p npc=%d hp=%d/%d (%s)", static_cast<int>(held),
         charged, falling ? 1 : 0, intent.is_critical ? 1 : 0, intent.is_sweeping ? 1 : 0, intent.damage, dmg,
         reinterpret_cast<void*>(e.chr), e.npc_id, e.hp, e.max_hp, ok ? "ok" : "not queued");
@@ -3051,6 +3091,8 @@ void RunBulletFire() {
     g_last_shot_damage.store(shot_damage, std::memory_order_relaxed);
     g_last_bullet_id.store(eldenring::bullet::kBoltBulletId, std::memory_order_relaxed); // our crossbow bolt: the marker for the hit handler, whatever +0x1C holds
     g_last_bullet_tick_ms.store(GetTickCount64(), std::memory_order_relaxed);
+    for (int i = 0; i < 3; ++i) g_last_shot_pos[i].store(fp.position[i], std::memory_order_relaxed);
+    g_last_shot_ms.store(GetTickCount64(), std::memory_order_relaxed);
     const bool ok = SpawnBulletSafe(reinterpret_cast<void*>(manager), &out, req, status);
     uint32_t code = 0;
     std::memcpy(&code, status, sizeof(code));
@@ -3083,6 +3125,13 @@ uint32_t* __fastcall SpawnBulletDetour(void* manager, uint32_t* out_handle, void
         if (request != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(request) + 0x1C, &id, sizeof(id));
         g_last_bullet_id.store(id, std::memory_order_relaxed);
         g_last_shot_damage.store(eldenring::bullet::kCrossbowDamage, std::memory_order_relaxed);
+        {   // the player's own shots: the muzzle of the request (row 3 of the matrix) and the time, for the timing log of the hit
+            float pos[3];
+            if (request != nullptr && SafeCopy(reinterpret_cast<uintptr_t>(request) + 0x80, pos, sizeof(pos))) {
+                for (int i = 0; i < 3; ++i) g_last_shot_pos[i].store(pos[i], std::memory_order_relaxed);
+                g_last_shot_ms.store(GetTickCount64(), std::memory_order_relaxed);
+            }
+        }
         g_last_bullet_tick_ms.store(GetTickCount64(), std::memory_order_relaxed);
     }
     if (g_bullet_fire_enabled.load(std::memory_order_relaxed)) RecordBulletTemplate(request);
