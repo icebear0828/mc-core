@@ -3,6 +3,8 @@
 #include "eldenring_mobs.hpp"
 
 #include <cmath>
+#include <fstream>
+#include <sstream>
 
 using namespace eldenring::mobs;
 
@@ -62,4 +64,77 @@ TEST(EldenRingMobs, AnEntryNotSeenForAWhileIsDropped) {
     EXPECT_EQ(r.tracked(), 1u);
     r.clear();
     EXPECT_EQ(r.tracked(), 0u);
+}
+
+namespace {
+mc::model::EntityModel loadZombie() {
+    std::ifstream file(std::string(MC_ASSET_DIR) + "/models/entities/zombie.geo.json");
+    std::stringstream ss;
+    ss << file.rdbuf();
+    const auto m = mc::model::EntityModel::fromJson(ss.str());
+    EXPECT_TRUE(m.has_value());
+    return m.value_or(mc::model::EntityModel{});
+}
+size_t boneIx(const mc::model::EntityModel& m, const char* name) {
+    for (size_t i = 0; i < m.bones.size(); ++i) {
+        if (m.bones[i].name == name) return i;
+    }
+    ADD_FAILURE() << name;
+    return 0;
+}
+} // namespace
+
+TEST(EldenRingMobs, WithAModelFileEachMobGetsOneMatrixPerBone) {
+    const auto zombie = loadZombie();
+    MobRegistry r;
+    r.setModel(&zombie);
+    const auto draws = r.update(1.f / 60.f, {at(7, 2.f, 3.f)});
+    ASSERT_EQ(draws.size(), 1u);
+    EXPECT_TRUE(draws[0].generic);
+    EXPECT_EQ(draws[0].bones.size(), zombie.bones.size());
+}
+
+TEST(EldenRingMobs, TheZombieHoldsItsArmsOutInFrontOfItsHeading) {
+    const auto zombie = loadZombie();
+    MobRegistry r;
+    r.setModel(&zombie);
+    for (const float yaw : {0.f, 1.5707963f}) {
+        MobSnapshot s = at(1, 0.f, 0.f);
+        s.yaw = yaw;
+        std::vector<MobDraw> d;
+        for (int i = 0; i < 3; ++i) d = r.update(1.f / 60.f, {s});
+        const size_t arm = boneIx(zombie, "right_arm");
+        const mc::Vec3 pivot = mc::model::bonePivotHost(zombie.bones[arm], eldenring::render::kBasis);
+        const mc::Vec3 hand_rest = eldenring::render::kBasis.fromCanonical({0.f, -6.f * mc::rig::kCmPerModelPixel, 12.f * mc::rig::kCmPerModelPixel});
+        const mc::Vec3 pivot_now = mc::rig::transformPoint(d[0].bones[arm], pivot);
+        const mc::Vec3 hand = mc::rig::transformPoint(d[0].bones[arm], hand_rest);
+        const mc::Vec3 dir = (hand - pivot_now).normalized();
+        // the game's forward for a heading yaw is (sin yaw, 0, cos yaw)
+        EXPECT_GT(dir.x * std::sin(yaw) + dir.z * std::cos(yaw), 0.9f) << yaw;
+    }
+}
+
+TEST(EldenRingMobs, ZombieLegsSwingWhenItWalksAndTheArmsStayOut) {
+    const auto zombie = loadZombie();
+    MobRegistry r;
+    r.setModel(&zombie);
+    float x = 0.f;
+    std::vector<MobDraw> d;
+    const size_t leg = boneIx(zombie, "right_leg");
+    const size_t arm = boneIx(zombie, "right_arm");
+    float leg_travel = 0.f;
+    mc::Vec3 foot_rest = eldenring::render::kBasis.fromCanonical({0.f, -2.f * mc::rig::kCmPerModelPixel, 0.f});
+    for (int i = 0; i < 60; ++i) {
+        x += 4.f / 60.f;
+        d = r.update(1.f / 60.f, {at(1, 0.f, x)});
+        // the foot moves back and forth along the walking direction (+Z) relative to the body
+        const mc::Vec3 foot = mc::rig::transformPoint(d[0].bones[leg], foot_rest);
+        leg_travel = std::max(leg_travel, std::fabs(foot.z - (foot_rest.z + x)));
+    }
+    EXPECT_GT(leg_travel, 0.15f);
+    // the arm still points forward after a second of walking (no stride swing on top of the rest rotation)
+    const mc::Vec3 pivot = mc::model::bonePivotHost(zombie.bones[arm], eldenring::render::kBasis);
+    const mc::Vec3 hand_rest = eldenring::render::kBasis.fromCanonical({0.f, -6.f * mc::rig::kCmPerModelPixel, 12.f * mc::rig::kCmPerModelPixel});
+    const mc::Vec3 dir = (mc::rig::transformPoint(d[0].bones[arm], hand_rest) - mc::rig::transformPoint(d[0].bones[arm], pivot)).normalized();
+    EXPECT_GT(dir.z, 0.9f);
 }

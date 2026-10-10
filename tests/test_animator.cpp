@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 #include "mc/animator.hpp"
+#include <algorithm>
+#include <cmath>
 
 TEST(SteveAnimatorTest, IdleTransformsAreFinite) {
     mc::SteveAnimator animator;
@@ -70,4 +72,28 @@ TEST(SteveAnimatorTest, ZombieArmsPointStraightForwardAndKeepSwayingWhileWalking
     const auto rl = zombie.getTransforms()[static_cast<size_t>(mc::StevePart::RightLeg)].rot.y;
     const auto ll = zombie.getTransforms()[static_cast<size_t>(mc::StevePart::LeftLeg)].rot.y;
     EXPECT_LT(rl * ll, 0.f);
+}
+
+TEST(SteveAnimatorTest, SwayOnlyArmsDoNotSwingWithTheStrideAndStayNearTheirRestRotation) {
+    // for models whose file already holds the arms out (the zombie's rest rotation): the animator only adds a slow sway on top of it
+    mc::SteveAnimator animator;
+    mc::SteveAnimInput in{};
+    in.forward_speed = 4.317f;
+    in.arms_sway_only = true;
+    float widest = 0.f;
+    for (int i = 0; i < 40; ++i) {
+        animator.update(0.05f, in);
+        const auto& t = animator.getTransforms();
+        widest = std::max(widest, std::fabs(t[static_cast<size_t>(mc::StevePart::RightArm)].rot.y));
+        widest = std::max(widest, std::fabs(t[static_cast<size_t>(mc::StevePart::LeftArm)].rot.y));
+    }
+    EXPECT_LT(widest, 0.06f); // a walking player's arm swing reaches ~0.4 here (sin of half 0.8 rad)
+    // the legs still walk
+    bool legs_move = false;
+    mc::SteveAnimator w2;
+    for (int i = 0; i < 12; ++i) {
+        w2.update(0.05f, in);
+        legs_move = legs_move || std::fabs(w2.getTransforms()[static_cast<size_t>(mc::StevePart::RightLeg)].rot.y) > 0.1f;
+    }
+    EXPECT_TRUE(legs_move);
 }

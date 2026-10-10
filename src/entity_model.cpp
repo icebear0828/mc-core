@@ -262,6 +262,7 @@ Vec3 cross(const Vec3& a, const Vec3& b) {
 struct FaceDef {
     Vec3 corners[4]; // in model pixels
     float u, v, w, h;
+    bool flip_u{false}; // a mirrored cube: the face's texture runs the other way
 };
 
 std::array<FaceDef, 6> cubeFaces(const Cube& c) {
@@ -273,19 +274,22 @@ std::array<FaceDef, 6> cubeFaces(const Cube& c) {
     const float u_west = c.mirror ? (u + d + w) : u;
     const float u_east = c.mirror ? u : (u + d + w);
 
+    // A mirrored cube (Minecraft's ModelPart.mirror): every face's texture is flipped horizontally AND the west and east faces take each
+    // other's rectangle. The left arm and leg of the humanoids are the right ones mirrored this way.
+    const bool m = c.mirror;
     return {{
         // North / Front (-Z)
-        {{{x0, y0, z0}, {x1, y0, z0}, {x1, y1, z0}, {x0, y1, z0}}, u + d, v + d, w, h},
+        {{{x0, y0, z0}, {x1, y0, z0}, {x1, y1, z0}, {x0, y1, z0}}, u + d, v + d, w, h, m},
         // South / Back (+Z)
-        {{{x1, y0, z1}, {x0, y0, z1}, {x0, y1, z1}, {x1, y1, z1}}, u + d + w + d, v + d, w, h},
+        {{{x1, y0, z1}, {x0, y0, z1}, {x0, y1, z1}, {x1, y1, z1}}, u + d + w + d, v + d, w, h, m},
         // West (-X)
-        {{{x0, y0, z1}, {x0, y0, z0}, {x0, y1, z0}, {x0, y1, z1}}, u_west, v + d, d, h},
+        {{{x0, y0, z1}, {x0, y0, z0}, {x0, y1, z0}, {x0, y1, z1}}, u_west, v + d, d, h, m},
         // East (+X)
-        {{{x1, y0, z0}, {x1, y0, z1}, {x1, y1, z1}, {x1, y1, z0}}, u_east, v + d, d, h},
+        {{{x1, y0, z0}, {x1, y0, z1}, {x1, y1, z1}, {x1, y1, z0}}, u_east, v + d, d, h, m},
         // Top (+Y)
-        {{{x0, y1, z0}, {x1, y1, z0}, {x1, y1, z1}, {x0, y1, z1}}, u + d, v, w, d},
+        {{{x0, y1, z0}, {x1, y1, z0}, {x1, y1, z1}, {x0, y1, z1}}, u + d, v, w, d, m},
         // Bottom (-Y)
-        {{{x0, y0, z1}, {x1, y0, z1}, {x1, y0, z0}, {x0, y0, z0}}, u + d + w, v, w, d},
+        {{{x0, y0, z1}, {x1, y0, z1}, {x1, y0, z0}, {x0, y0, z0}}, u + d + w, v, w, d, m},
     }};
 }
 
@@ -314,9 +318,10 @@ void appendCubeMesh(const Cube& cube, const rig::HostBasis& basis, float tex_w, 
 
         for (size_t c = 0; c < 4; ++c) {
             const Vec3 p = positions[fi * 4 + c];
+            const float s = f.flip_u ? 1.0f - s_of[c] : s_of[c];
             mesh.vertices.push_back({
                 p.x, p.y, p.z,
-                (f.u + s_of[c] * f.w) * inv_w,
+                (f.u + s * f.w) * inv_w,
                 (f.v + t_of[c] * f.h) * inv_h,
             });
         }
@@ -373,6 +378,73 @@ rig::RigMesh EntityModel::buildCombinedMesh(const rig::HostBasis& basis) const {
         }
     }
     return mesh;
+}
+
+Vec3 bonePivotHost(const Bone& bone, const rig::HostBasis& basis) {
+    return basis.fromCanonical(bedrockToCanonicalCm(bone.pivot.x, bone.pivot.y, bone.pivot.z));
+}
+
+rig::Mat4 boneRestRotation(const Bone& bone, const rig::HostBasis& basis) {
+    constexpr float kDegToRad = 3.14159265358979f / 180.0f;
+    // The Bedrock axes as canonical directions (the same linear map as bedrockToCanonicalCm), then as host directions.
+    const Vec3 axes[3] = {basis.fromCanonical({0.f, 1.f, 0.f}) * (1.0f / basis.units_per_cm), basis.fromCanonical({0.f, 0.f, 1.f}) * (1.0f / basis.units_per_cm),
+                          basis.fromCanonical({-1.f, 0.f, 0.f}) * (1.0f / basis.units_per_cm)};
+    const float angles[3] = {bone.rotation.x * kDegToRad, bone.rotation.y * kDegToRad, bone.rotation.z * kDegToRad};
+    rig::Mat4 m; // identity
+    for (int i = 0; i < 3; ++i) {
+        if (angles[i] == 0.0f) continue;
+        // A reflecting host turns the same canonical rotation the other way (see rig::yawMatrix).
+        m = m * rig::rotationAboutAxis(axes[i], basis.isReflection() ? -angles[i] : angles[i]);
+    }
+    return m;
+}
+
+std::vector<rig::Mat4> boneMatrices(const EntityModel& model, const std::vector<Quat>& extra, const Vec3& root, float host_yaw,
+                                    const rig::HostBasis& basis) {
+    const size_t n = model.bones.size();
+    std::vector<rig::Mat4> local(n);
+    for (size_t i = 0; i < n; ++i) {
+        const Bone& b = model.bones[i];
+        const Vec3 pivot = bonePivotHost(b, basis);
+        const Quat q = i < extra.size() ? extra[i] : Quat{0.f, 0.f, 0.f, 1.f};
+        local[i] = rig::translation(pivot * -1.0f) * boneRestRotation(b, basis) * rig::rotationFromQuat(q) * rig::translation(pivot);
+    }
+    // parent chains (a missing or cyclic parent ends the chain)
+    std::vector<rig::Mat4> world(n);
+    const rig::Mat4 figure = rig::rotationAboutAxis(basis.up, host_yaw) * rig::translation(root);
+    for (size_t i = 0; i < n; ++i) {
+        rig::Mat4 m = local[i];
+        size_t cur = i;
+        for (size_t depth = 0; depth < n && !model.bones[cur].parent.empty(); ++depth) {
+            size_t parent = n;
+            for (size_t j = 0; j < n; ++j) {
+                if (j != cur && model.bones[j].name == model.bones[cur].parent) {
+                    parent = j;
+                    break;
+                }
+            }
+            if (parent == n) break;
+            m = m * local[parent];
+            cur = parent;
+        }
+        world[i] = m * figure;
+    }
+    return world;
+}
+
+std::optional<StevePart> humanoidPartForBone(std::string_view name) {
+    static const std::pair<std::string_view, StevePart> kMap[] = {
+        {"head", StevePart::Head},           {"hat", StevePart::Hat},
+        {"body", StevePart::Body},           {"jacket", StevePart::Jacket},
+        {"right_arm", StevePart::RightArm},  {"left_arm", StevePart::LeftArm},
+        {"right_leg", StevePart::RightLeg},  {"left_leg", StevePart::LeftLeg},
+        {"right_sleeve", StevePart::RightSleeve}, {"left_sleeve", StevePart::LeftSleeve},
+        {"right_pants", StevePart::RightPants},   {"left_pants", StevePart::LeftPants},
+    };
+    for (const auto& [n, part] : kMap) {
+        if (n == name) return part;
+    }
+    return std::nullopt;
 }
 
 std::optional<EntityModel> EntityModel::fromJson(std::string_view json_str, std::string_view target_id) {

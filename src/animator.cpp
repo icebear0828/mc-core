@@ -126,7 +126,9 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                 case StevePart::RightArm:
                 case StevePart::RightSleeve: {
                     pitch = std::cos(stride_ * 0.6662f + kPi) * amplitude;
-                    if (input.arms_forward) {
+                    if (input.arms_sway_only) {
+                        pitch = std::sin(age_ * 0.067f) * 0.05f;
+                    } else if (input.arms_forward) {
                         pitch = -kPi * 0.5f + std::sin(age_ * 0.067f) * 0.05f; // Minecraft's zombie: arms out in front, a slow sway
                     } else if (input.is_blocking) {
                         pitch = pitch * 0.5f - kPi * 0.3f + head_pitch;
@@ -154,7 +156,9 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                 case StevePart::LeftArm:
                 case StevePart::LeftSleeve: {
                     pitch = std::cos(stride_ * 0.6662f) * amplitude;
-                    if (input.arms_forward) {
+                    if (input.arms_sway_only) {
+                        pitch = -std::sin(age_ * 0.067f) * 0.05f;
+                    } else if (input.arms_forward) {
                         pitch = -kPi * 0.5f - std::sin(age_ * 0.067f) * 0.05f;
                     } else if (input.is_blocking) {
                         pitch = pitch * 0.5f - kPi * 0.3f + head_pitch;

@@ -32,7 +32,8 @@ struct SteveAnimInput {
     float bow_charge{0.f};    // [0, 1]
     float trident_charge{0.f};// [0, 1]
     float eating_progress{0.f}; // [0, 1] 0 = not eating, >0 = chewing vibration
-    bool arms_forward{false}; // zombie: both arms held straight out in front
+    bool arms_forward{false}; // zombie on the Steve rig: both arms held straight out in front
+    bool arms_sway_only{false}; // zombie from a model file whose rest rotation already holds the arms out: only a slow sway on top
     bool is_gliding{false};
     float roll_angle{0.f};    // radians (banking roll when turning during flight)
 };
