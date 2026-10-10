@@ -109,3 +109,14 @@ TEST(EldenRingChrScan, LineShowsOffsetAddressAndClassIndentedByDepth) {
     EXPECT_NE(line.find("CSChrAsmModelIns"), std::string::npos);
     EXPECT_NE(line.find("chrscan:   +0x648"), std::string::npos); // two spaces for depth 1
 }
+
+TEST(EldenRingChrScan, DumpsDwordsOfAnObjectAsOneHexLine) {
+    Mem m;
+    const uintptr_t obj = 0x7ff600009000ull;
+    m.region(obj, 0x40);
+    m.put<uint32_t>(obj + 0x20, 0x000100A1u);
+    m.put<uint32_t>(obj + 0x24, 0x00000001u);
+    const std::string line = dumpDwords(m, obj, 0x20, 0x28);
+    EXPECT_EQ(line, "+0x20: 000100A1 00000001");
+    EXPECT_EQ(dumpDwords(m, 0x7ff600010000ull, 0, 8), "+0x0: ??? ???"); // unreadable memory shows as ???
+}

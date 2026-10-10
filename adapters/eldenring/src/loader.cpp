@@ -947,15 +947,22 @@ void LogPlayerHit(void* module, void* attacker, const uint8_t* ctx, uint8_t bloc
 
 // Read-only (mc_er_chrscan.txt, after F2): the classes behind the pointers of a summoned character, and inside the model-like ones where a dword
 // equal to the live "drawn" display flags (0x000100A1) sits. Finds where a monster model keeps what the player's CSModelDispEntity keeps.
+unsigned g_chrscan_count = 0; // reset by every F2
 void LogChrScan(uintptr_t chr, size_t index) {
-    static unsigned scanned = 0;
+    unsigned& scanned = g_chrscan_count;
     if (++scanned > 3) return; // three wolves, one is enough to learn the layout
+    if (scanned == 1) { // the player's own parts, for comparison: the flags there are known to read 0x000100A1 while drawn
+        const std::vector<uintptr_t> player_flags = collectDispFlagAddresses(g_reader, g_img.base, PlayerChrPtr());
+        Log("chrscan: the player has %zu drawn parts; first dumps (disp_flags1 sits at +0x20 of the entity)", player_flags.size());
+        for (size_t i = 0; i < player_flags.size() && i < 3; ++i) Log("chrscan:   player part %zu %s", i, dumpDwords(g_reader, player_flags[i] - 0x20, 0x10, 0x50).c_str());
+    }
     Log("chrscan: entity #%zu chr=%p", index, reinterpret_cast<void*>(chr));
     for (const ScanHit& h : scanForClasses(g_reader, g_img.base, chr, 0, 0xA00)) {
         Log("%s", formatScanHit(h, 0).c_str());
         if (!looksLikeModelClass(h.cls)) continue;
         for (const ScanHit& h2 : scanForClasses(g_reader, g_img.base, h.object, 0, 0x300, 40)) {
             Log("%s", formatScanHit(h2, 1).c_str());
+            if (h2.cls.find("CSModelDispEntity") != std::string::npos) Log("chrscan:     dump %s", dumpDwords(g_reader, h2.object, 0x10, 0x50).c_str());
             if (!looksLikeModelClass(h2.cls)) continue;
             for (const uintptr_t at : findDwordOffsets(g_reader, h2.object, 0, 0x100, 0x000100A1u)) {
                 Log("chrscan:     display flags 0x000100A1 at +0x%llX of %p (chr+0x%llX -> +0x%llX)", static_cast<unsigned long long>(at), reinterpret_cast<void*>(h2.object),
@@ -2369,6 +2376,7 @@ DWORD WINAPI KeyThread(LPVOID) {
                 }
                 summon_watch.t0_ms = GetTickCount64();
                 summon_watch.reports_left = 2;
+                g_chrscan_count = 0;
                 g_summon_pending.store(true);
                 Log("F2: summon experiment queued for the game thread (%zu entities in the baseline)", summon_watch.baseline.size());
             } else {

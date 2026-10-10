@@ -44,6 +44,21 @@ inline std::vector<uintptr_t> findDwordOffsets(const IMemoryReader& reader, uint
     return out;
 }
 
+// The dwords of [from, to) as one line ("+0x20: 000100A1 00000001"); unreadable ones show as ???. For comparing two objects of the same class.
+inline std::string dumpDwords(const IMemoryReader& reader, uintptr_t object, uintptr_t from, uintptr_t to) {
+    char head[32];
+    std::snprintf(head, sizeof(head), "+0x%llX:", static_cast<unsigned long long>(from));
+    std::string out = head;
+    for (uintptr_t off = from; off + sizeof(uint32_t) <= to; off += sizeof(uint32_t)) {
+        uint32_t v = 0;
+        char word[16];
+        if (object != 0 && reader.read(object + off, &v, sizeof(v))) std::snprintf(word, sizeof(word), " %08X", v);
+        else std::snprintf(word, sizeof(word), " ???");
+        out += word;
+    }
+    return out;
+}
+
 // Classes worth looking inside: the model and display objects.
 inline bool looksLikeModelClass(const std::string& cls) {
     return cls.find("Model") != std::string::npos || cls.find("Disp") != std::string::npos || cls.find("Mesh") != std::string::npos ||
