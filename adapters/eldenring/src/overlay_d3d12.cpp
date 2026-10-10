@@ -1047,7 +1047,9 @@ void RenderFrame(IDXGISwapChain* sc) {
         g_walk_bob += (bob_target - g_walk_bob) * (1.f - std::pow(0.6f, dt * 20.f));
         const fp::M4 base = fp::mul(fp::walkBob(g_walk_dist, g_walk_bob), fp::handSway(d_pitch, d_yaw));
         const float equipped = g_hand.equipped();
-        const fp::M4 item_pose = steve.eating > 0.f ? fp::eatPose(steve.eating, equipped) : fp::itemPose(steve.swing, equipped);
+        const bool drawing_bow = steve.bow_ticks > 0.f && g_hand.shownItem() == mc::ItemId::Bow;
+        const fp::M4 item_pose = drawing_bow ? fp::bowPose(steve.bow_ticks, equipped)
+                                 : steve.eating > 0.f ? fp::eatPose(steve.eating, equipped) : fp::itemPose(steve.swing, equipped);
         const bool held_block = eldenring::blocks::blockForItem(static_cast<mc::ItemId>(g_hand.shownItem())) != mc::BlockId::Air;
         const fp::M4 item_world = fp::mul(fp::mul(base, item_pose), held_block ? fp::blockDisplay() : fp::itemDisplay());
         const fp::M4 arm_world = fp::mul(base, fp::bareArmPose(steve.swing, equipped));

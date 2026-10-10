@@ -175,3 +175,51 @@ TEST(EldenRingBowProbe, MoversIgnoreNonFiniteAndHugeJumps) {
     std::memcpy(b.data(), y, 12);
     EXPECT_TRUE(findMovers(a.data(), b.data(), 12, aim, 0.5f, 100.f, 0.9f).empty());
 }
+
+TEST(EldenRingBow, TheDrawnTicksAreExposedForTheFirstPersonPose) {
+    BowController c;
+    EXPECT_FLOAT_EQ(c.ticks(), 0.f);
+    c.update(0.05f, true, true);              // press
+    c.update(0.5f, true, true);               // 10 ticks
+    EXPECT_NEAR(c.ticks(), 10.f, 1e-4f);
+    c.update(0.05f, false, true);             // release: reset
+    EXPECT_FLOAT_EQ(c.ticks(), 0.f);
+}
+
+TEST(EldenRingBowAim, TheForwardOfAQuaternionIsRotatedZ) {
+    const float identity[4] = {0.f, 0.f, 0.f, 1.f};
+    float f[3];
+    quatForward(identity, f);
+    EXPECT_NEAR(f[0], 0.f, 1e-6f);
+    EXPECT_NEAR(f[1], 0.f, 1e-6f);
+    EXPECT_NEAR(f[2], 1.f, 1e-6f);
+    // 90 degrees about +Y turns +z towards +x
+    const float s = std::sqrt(0.5f);
+    const float turn[4] = {0.f, s, 0.f, s};
+    quatForward(turn, f);
+    EXPECT_NEAR(f[0], 1.f, 1e-5f);
+    EXPECT_NEAR(f[2], 0.f, 1e-5f);
+    // the measured bolt (REVERSE 35.8): q = (-0.113, 0.447, 0.057, 0.885) flies along (0.778, 0.251, 0.575)
+    const float bolt[4] = {-0.113f, 0.447f, 0.057f, 0.885f};
+    quatForward(bolt, f);
+    EXPECT_NEAR(f[0], 0.778f, 2e-3f);
+    EXPECT_NEAR(f[1], 0.251f, 2e-3f);
+    EXPECT_NEAR(f[2], 0.575f, 2e-3f);
+}
+
+TEST(EldenRingBowAim, TheErrorIsTheYawAndPitchTheFlightIsOffTheAim) {
+    const float aim[3] = {0.f, 0.f, 1.f};
+    const float flight[3] = {std::sin(10.f * 3.14159265f / 180.f), std::sin(5.f * 3.14159265f / 180.f), 1.f};
+    const AimError e = aimError(aim, flight);
+    EXPECT_NEAR(e.yaw_deg, 10.f, 0.3f);    // to the +x side
+    EXPECT_NEAR(e.pitch_deg, 5.f, 0.3f);   // upwards
+    const AimError none = aimError(aim, aim);
+    EXPECT_NEAR(none.yaw_deg, 0.f, 1e-4f);
+    EXPECT_NEAR(none.pitch_deg, 0.f, 1e-4f);
+}
+
+TEST(EldenRingBowAim, TheYawErrorWrapsAroundTheBackOfTheCircle) {
+    const float aim[3] = {-0.05f, 0.f, -1.f};   // pointing almost -z (yaw about 177 or -177 degrees)
+    const float flight[3] = {0.05f, 0.f, -1.f};
+    EXPECT_LT(std::fabs(aimError(aim, flight).yaw_deg), 10.f);
+}

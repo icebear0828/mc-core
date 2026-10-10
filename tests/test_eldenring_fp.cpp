@@ -150,3 +150,38 @@ TEST(EldenRingFp, SwayFollowsTheViewWithALag) {
     s.update(0.05f, 0.f, 359.f, dp, dy);                // yaw wraps: 30 -> 359 is a small turn the other way... not a jump of 329
     EXPECT_LT(std::fabs(dy), 180.f);
 }
+
+TEST(EldenRingFp, TheBowRestsLowerAndFurtherInTowardsTheMiddleThanTheSwordAndPullsBackWhileDrawn) {
+    const mc::Vec3 rest = apply(bowPose(0.f, 0.f), origin());
+    // translate(0.56, -0.52, -0.72) then translate(-0.2785682, 0.18344387, 0.15731531), both applied to the origin
+    EXPECT_NEAR(rest.x, 0.56f - 0.2785682f, 1e-4f);
+    EXPECT_NEAR(rest.y, -0.52f + 0.18344387f, 1e-4f);
+    EXPECT_NEAR(rest.z, -0.72f + 0.15731531f, 1e-4f);
+    // a full draw pulls the bow back 0.04 along its own (rotated) z: a small, but measurable, move
+    const mc::Vec3 full = apply(bowPose(20.f, 0.f), origin());
+    const float d = std::sqrt((full.x - rest.x) * (full.x - rest.x) + (full.y - rest.y) * (full.y - rest.y) + (full.z - rest.z) * (full.z - rest.z));
+    EXPECT_GT(d, 0.03f);
+    EXPECT_LT(d, 0.06f);
+}
+
+TEST(EldenRingFp, TheBowStretchesAlongItsDepthAsItIsDrawn) {
+    // The stretch (scale 1, 1, 1 + 0.2 * power) is applied before the last turn of 45 degrees about Y, so the axis it stretches is the local one that this
+    // turn maps onto z: (sin 45, 0, cos 45) in the item's own coordinates (this code's rotY turns +z towards +x).
+    const float s45 = std::sin(45.f * kDeg), c45 = std::cos(45.f * kDeg);
+    auto depth = [&](float ticks) {
+        const M4 p = bowPose(ticks, 0.f);
+        const mc::Vec3 a = apply(p, origin()), b = apply(p, mc::Vec3{s45, 0.f, c45});
+        return std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y) + (b.z - a.z) * (b.z - a.z));
+    };
+    EXPECT_NEAR(depth(0.f), 1.f, 1e-4f);
+    EXPECT_NEAR(depth(20.f), 1.2f, 1e-3f);   // power 1: 1 + 0.2
+    EXPECT_NEAR(depth(60.f), 1.2f, 1e-3f);   // capped like the power
+    EXPECT_GT(depth(10.f), 1.f);
+    EXPECT_LT(depth(10.f), depth(20.f));
+}
+
+TEST(EldenRingFp, TheBowFollowsTheHandWhenItIsLowered) {
+    const mc::Vec3 up = apply(bowPose(5.f, 0.f), origin());
+    const mc::Vec3 down = apply(bowPose(5.f, 1.f), origin());
+    EXPECT_NEAR(up.y - down.y, 0.6f, 1e-4f);
+}

@@ -66,6 +66,8 @@ public:
     }
 
     [[nodiscard]] bool drawing() const { return drawing_; }
+    // Ticks the bow has been drawn (0 when not drawing): the first-person pose animates with it.
+    [[nodiscard]] float ticks() const { return drawing_ ? ticks_ : 0.f; }
     // 0 when not drawing; for the pose of the arms and the sound.
     [[nodiscard]] float power() const { return drawing_ ? powerForTicks(ticks_) : 0.f; }
 
@@ -143,6 +145,36 @@ inline std::vector<Mover> findMovers(const uint8_t* a, const uint8_t* b, size_t 
         out.push_back(m);
     }
     return out;
+}
+
+
+// ---- aim calibration: where does a bolt really fly compared with the aim we gave? ---------------------------------------------------------------------
+// The forward (+z) of a unit quaternion (x, y, z, w): the bullet's CSBulletIns keeps its flight direction there (REVERSE 35.8).
+inline void quatForward(const float q[4], float out[3]) {
+    const float x = q[0], y = q[1], z = q[2], w = q[3];
+    out[0] = 2.f * (x * z + w * y);
+    out[1] = 2.f * (y * z - w * x);
+    out[2] = 1.f - 2.f * (x * x + y * y);
+}
+
+struct AimError {
+    float yaw_deg{0.f};   // + = the flight is turned towards +x (about +y), -180..180
+    float pitch_deg{0.f}; // + = the flight is above the aim
+};
+
+inline AimError aimError(const float aim[3], const float flight[3]) {
+    auto yawPitch = [](const float v[3], float& yaw, float& pitch) {
+        const float n = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        yaw = std::atan2(v[0], v[2]) * 180.f / 3.14159265f;
+        pitch = n > 1e-6f ? std::asin(std::max(-1.f, std::min(1.f, v[1] / n))) * 180.f / 3.14159265f : 0.f;
+    };
+    float ay, ap, fy, fp;
+    yawPitch(aim, ay, ap);
+    yawPitch(flight, fy, fp);
+    float dy = fy - ay;
+    while (dy > 180.f) dy -= 360.f;
+    while (dy < -180.f) dy += 360.f;
+    return {dy, fp - ap};
 }
 
 } // namespace eldenring::bow

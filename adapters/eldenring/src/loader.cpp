@@ -1172,6 +1172,7 @@ std::atomic<uint32_t> g_last_bullet_id{0};      // request +0x1C of that call
 std::atomic<float> g_last_shot_damage{eldenring::bullet::kCrossbowDamage}; // the MC damage of that shot (9 for a crossbow bolt, 6 * power + crit for a bow arrow)
 std::atomic<float> g_pending_shot_damage{eldenring::bullet::kCrossbowDamage}; // of the shot queued for the game thread
 std::atomic<float> g_bow_power{0.f};             // 0..1 while the bow is drawn (third-person arms), written by the key thread
+std::atomic<float> g_bow_ticks{0.f};             // ticks drawn (first-person pose)
 std::atomic<uint64_t> g_last_bullet_tick_ms{0}; // the last spawn_bullet call (the player's real shot or ours): hits within 3 s after it are logged whatever they look like
 
 void HandleProjectileHit(void* module, void* attacker, uint8_t* ctx) {
@@ -2550,6 +2551,7 @@ DWORD WINAPI KeyThread(LPVOID) {
             usable = usable && g_bullet_fire_enabled.load() && g_mc_mode.load() && fg && WantSuppress() && !inv_open && g_input_enabled.load() && !PlayerDead();
             const eldenring::bow::Update u = s_bow.update(dt, g_input_enabled.load() && erin::RightHeld(), usable);
             g_bow_power.store(s_bow.power(), std::memory_order_relaxed);
+            g_bow_ticks.store(s_bow.ticks(), std::memory_order_relaxed);
             if (u.started) Log("bow: draw started");
             if (u.cancelled) Log("bow: draw cancelled (too short or the bow was lost)");
             if (u.released) {
@@ -2885,6 +2887,9 @@ struct PosProbe {
     float p0[3]{}, aim[3]{};
     uint64_t t0_ms{0};
     int samples{0};
+    bool isolated{true};              // no other shot in the 4 s before this one: [mgr+0x0] can only be this bullet
+    bool have2{false};
+    float pos2[3]{}, q2[4]{};         // the bullet object at sample 2 (500 ms)
     std::vector<ProbeBlock> baseline; // the first snapshot (slot, manager and what their pointers lead to): later ones are compared with it
 };
 PosProbe g_pos_probe;
@@ -2904,6 +2909,9 @@ void PosProbeStart(uint64_t manager, uint32_t handle, const float p0[3], const f
     std::memcpy(g_pos_probe.p0, p0, sizeof(g_pos_probe.p0));
     std::memcpy(g_pos_probe.aim, dir, sizeof(g_pos_probe.aim));
     g_pos_probe.t0_ms = GetTickCount64();
+    static uint64_t s_prev_start_ms = 0;
+    g_pos_probe.isolated = g_pos_probe.t0_ms - s_prev_start_ms > 4000;
+    s_prev_start_ms = g_pos_probe.t0_ms;
     g_pos_probe.active = true;
     uint32_t first = 0;
     SafeCopy(g_pos_probe.entry, &first, sizeof(first));
@@ -3086,6 +3094,28 @@ void PosProbeTick() {
             if (logged > 24) break;
         }
         Log("bullet pos: sample %d: %d mover(s) logged", g_pos_probe.samples, std::min(logged, 24));
+    }
+    {   // Aim calibration: the flight direction (from the bullet's position change between 500 and 1000 ms, and from its quaternion) against the aim we gave.
+        auto read_bullet = [&](float pos[3], float q[4]) {
+            uint64_t obj = 0;
+            return SafeCopy(g_pos_probe.manager, &obj, sizeof(obj)) && obj != 0 && SafeCopy(static_cast<uintptr_t>(obj) + 0x10, pos, 12) &&
+                   SafeCopy(static_cast<uintptr_t>(obj) + 0x20, q, 16);
+        };
+        if (g_pos_probe.samples == 2) g_pos_probe.have2 = read_bullet(g_pos_probe.pos2, g_pos_probe.q2);
+        if (g_pos_probe.samples == 4 && g_pos_probe.have2) {
+            float pos4[3], q4[4];
+            if (read_bullet(pos4, q4)) {
+                const float flight[3] = {pos4[0] - g_pos_probe.pos2[0], pos4[1] - g_pos_probe.pos2[1], pos4[2] - g_pos_probe.pos2[2]};
+                const float moved = std::sqrt(flight[0] * flight[0] + flight[1] * flight[1] + flight[2] * flight[2]);
+                float qf[3];
+                eldenring::bow::quatForward(q4, qf);
+                const eldenring::bow::AimError by_motion = eldenring::bow::aimError(g_pos_probe.aim, flight);
+                const eldenring::bow::AimError by_quat = eldenring::bow::aimError(g_pos_probe.aim, qf);
+                Log("AIMCAL: %s aim=(%.3f %.3f %.3f); moved %.1f m in 0.5 s; flight by motion: yaw %+.1f pitch %+.1f deg off the aim; by quaternion: yaw %+.1f pitch %+.1f deg",
+                    g_pos_probe.isolated ? "ISOLATED" : "overlapping (do not trust)", g_pos_probe.aim[0], g_pos_probe.aim[1], g_pos_probe.aim[2], moved, by_motion.yaw_deg, by_motion.pitch_deg,
+                    by_quat.yaw_deg, by_quat.pitch_deg);
+            }
+        }
     }
     if (g_pos_probe.samples == 2 && FileExists(g_game_dir + "mc_er_bulletscan.txt")) {
         static uint64_t s_scan_id = 0;
@@ -3482,6 +3512,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.cooldown = g_melee.cooldown();
         steve.eating = steve_dead_now ? 0.f : g_eating.getProgress();
         steve.bow_charge = steve_dead_now ? 0.f : g_bow_power.load(std::memory_order_relaxed);
+        steve.bow_ticks = steve_dead_now ? 0.f : g_bow_ticks.load(std::memory_order_relaxed);
         out.totem = g_feedback.totem();
         steve.swing = steve_dead_now ? 0.f : g_melee.swingProgress();
         out.hit = g_feedback.hit();
