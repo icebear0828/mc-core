@@ -159,6 +159,12 @@ TEST(EldenRingChrScan, NothingToCollectForAnObjectWithoutAModel) {
     EXPECT_TRUE(collectChrDispFlagAddresses(m, kBase, 0).empty());
 }
 
+TEST(EldenRingChrScan, ShowingAgainSetsOnlyTheBitWeCleared) {
+    EXPECT_EQ(showDrawnBit(0x000000A6u), 0x000000A7u);
+    EXPECT_EQ(showDrawnBit(hideDrawnBit(0x000100A1u)), 0x000100A1u); // hide then show gives the original
+    EXPECT_EQ(showDrawnBit(0x000000A7u), 0x000000A7u);
+}
+
 TEST(EldenRingChrScan, TheDrawnBitIsTheLowestBitOnly) {
     EXPECT_EQ(hideDrawnBit(0x000000A7u), 0x000000A6u);
     EXPECT_EQ(hideDrawnBit(0x000100A1u), 0x000100A0u);

@@ -32,6 +32,7 @@ add_executable(mc_tests
     test_eldenring_world.cpp
     test_eldenring_buddy.cpp
     test_eldenring_creative.cpp
+    test_eldenring_mobs.cpp
     test_eldenring_chrscan.cpp
     test_eldenring_flight.cpp
     test_eldenring_state.cpp

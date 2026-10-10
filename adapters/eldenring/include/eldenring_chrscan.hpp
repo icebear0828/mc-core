@@ -74,6 +74,7 @@ inline constexpr uintptr_t kModelScanEnd = 0x300;     // their CSModelDispEntity
 } // namespace summon
 
 inline uint32_t hideDrawnBit(uint32_t flags) { return flags & ~summon::kDrawnBit; }
+inline uint32_t showDrawnBit(uint32_t flags) { return flags | summon::kDrawnBit; }
 inline bool needsHiding(uint32_t flags) { return (flags & summon::kDrawnBit) != 0; }
 
 // The addresses of the disp_flags1 word of every CSModelDispEntity behind every CSChrModelIns of a character (a wolf has one or two models

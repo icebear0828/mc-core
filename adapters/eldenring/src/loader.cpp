@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -40,6 +41,7 @@
 #include "eldenring_blocks.hpp"
 #include "eldenring_buddy.hpp"
 #include "eldenring_chrscan.hpp"
+#include "eldenring_mobs.hpp"
 #include "eldenring_creative.hpp"
 #include "eldenring_flight.hpp"
 #include "eldenring_los.hpp"
@@ -659,22 +661,59 @@ bool WriteBytesSafe(uintptr_t address, const void* src, size_t n) {
 // frame before the draw, the way the player's parts are hidden. mc_er_summonhide.txt turns it on. Everything is looked up afresh each frame (no
 // cached pointers: a summon that disappears meanwhile is simply not enumerated any more).
 std::atomic<bool> g_summon_hide{false};
+std::mutex g_summon_mutex;
+std::vector<eldenring::mobs::MobSnapshot> g_summon_list; // the team 47 summons seen by the last HideSummonModels (render thread), read by the HUD provider
+float g_mob_yaw_offset = 3.14159265f;                   // like the player's: the orientation quaternion faces opposite to the model (mob_yaw_offset_deg)
+
+std::set<uintptr_t> g_hidden_flag_addresses; // the disp_flags words whose drawn bit we cleared (render thread only), to put it back
 
 void HideSummonModels() {
     if (!g_summon_hide.load(std::memory_order_relaxed)) return;
+    const bool mc_on = g_mc_mode.load(std::memory_order_relaxed);
+    if (!mc_on && g_hidden_flag_addresses.empty()) {
+        std::lock_guard<std::mutex> g(g_summon_mutex);
+        g_summon_list.clear();
+        return;
+    }
     std::vector<EnemyInfo> list;
-    if (!enumerateEnemies(g_reader, g_img.base, list, 4000)) return;
+    std::vector<eldenring::mobs::MobSnapshot> seen;
+    if (!enumerateEnemies(g_reader, g_img.base, list, 4000)) {
+        std::lock_guard<std::mutex> g(g_summon_mutex);
+        g_summon_list.clear();
+        return;
+    }
     static unsigned logged = 0;
     for (const EnemyInfo& e : list) {
         if (e.team != eldenring::live::summon::kTeam) continue;
+        {   // where it stands and which way it faces, for the figure drawn over it
+            eldenring::mobs::MobSnapshot snap;
+            float q[4];
+            snap.id = e.chr;
+            if (detail::readPhysicsPosition(g_reader, g_img.base, e.chr, snap.feet) && detail::readPhysicsOrientation(g_reader, g_img.base, e.chr, q)) {
+                snap.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) + g_mob_yaw_offset;
+                seen.push_back(snap);
+            }
+        }
         for (const uintptr_t at : collectChrDispFlagAddresses(g_reader, g_img.base, e.chr)) {
             uint32_t flags = 0;
-            if (!SafeCopy(at, &flags, sizeof(flags)) || !needsHiding(flags)) continue;
+            if (!SafeCopy(at, &flags, sizeof(flags))) continue;
+            if (!mc_on) { // MC mode is off: put the drawn bit back where we cleared it, the wolves are drawn by the game again
+                if (g_hidden_flag_addresses.count(at) != 0 && !needsHiding(flags)) {
+                    const uint32_t shown = showDrawnBit(flags);
+                    if (WriteBytesSafe(at, &shown, sizeof(shown)) && ++logged <= 24) Log("summon hide: MC mode off, restored flags at %p 0x%X -> 0x%X", reinterpret_cast<void*>(at), flags, shown);
+                }
+                continue;
+            }
+            if (!needsHiding(flags)) continue;
             const uint32_t hidden = hideDrawnBit(flags);
             const bool ok = WriteBytesSafe(at, &hidden, sizeof(hidden));
+            if (ok) g_hidden_flag_addresses.insert(at);
             if (++logged <= 12) Log("summon hide: chr=%p npc=%d flags at %p 0x%X -> 0x%X (%s)", reinterpret_cast<void*>(e.chr), e.npc_id, reinterpret_cast<void*>(at), flags, hidden, ok ? "ok" : "write failed");
         }
     }
+    if (!mc_on) g_hidden_flag_addresses.clear(); // the ones left belong to summons that are gone: nothing to put back
+    std::lock_guard<std::mutex> g(g_summon_mutex);
+    g_summon_list = mc_on ? seen : std::vector<eldenring::mobs::MobSnapshot>{};
 }
 
 bool ChrCamPosAddress(uintptr_t& addr) {
@@ -2727,6 +2766,14 @@ void UpdateNativeModel(uintptr_t player, bool hide) {
 }
 
 bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
+    {   // the mobs over the summons (mc_er_summonhide.txt): only while MC mode is on, otherwise the wolves are not drawn at all and nothing replaces them
+        std::vector<eldenring::mobs::MobSnapshot> mobs;
+        if (g_summon_hide.load(std::memory_order_relaxed) && g_mc_mode.load(std::memory_order_relaxed)) {
+            std::lock_guard<std::mutex> g(g_summon_mutex);
+            mobs = g_summon_list;
+        }
+        erov::SetMobs(mobs);
+    }
     const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
     if (world == 0) return false;
     uint64_t player = 0;
@@ -2881,6 +2928,7 @@ void SetupOverlay() {
                 else if (key == "abs_bias") cfg.abs_bias = value;
                 else if (key == "scene_height") cfg.scene_height = value;
                 else if (key == "yaw_offset_deg") g_steve_yaw_offset = value * 3.14159265f / 180.f;
+                else if (key == "mob_yaw_offset_deg") g_mob_yaw_offset = value * 3.14159265f / 180.f;
                 else if (key == "hide_native") g_hide_native.store(value != 0.f);
                 else if (key == "fp_persist") g_fp_persist.store(value != 0.f);
                 else if (key == "sound_volume") g_sound_volume.store(value);

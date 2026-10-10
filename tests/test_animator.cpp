@@ -45,3 +45,29 @@ TEST(SteveAnimatorTest, HeadFollowsLookAngles) {
     EXPECT_NE(head.rot.y, 0.0f); // pitch
     EXPECT_NE(head.rot.z, 0.0f); // yaw
 }
+
+TEST(SteveAnimatorTest, ZombieArmsPointStraightForwardAndKeepSwayingWhileWalking) {
+    mc::SteveAnimator plain, zombie;
+    mc::SteveAnimInput in{};
+    in.forward_speed = 4.317f;
+    mc::SteveAnimInput zin = in;
+    zin.arms_forward = true;
+    for (int i = 0; i < 10; ++i) {
+        plain.update(0.05f, in);
+        zombie.update(0.05f, zin);
+    }
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm), la = static_cast<size_t>(mc::StevePart::LeftArm);
+    const size_t rs = static_cast<size_t>(mc::StevePart::RightSleeve);
+    // the arms are rotated far from the plain walking swing (about -90 degrees of pitch: w = cos(45 deg) at most)
+    EXPECT_LT(zombie.getTransforms()[ra].rot.w, 0.75f);
+    EXPECT_LT(zombie.getTransforms()[la].rot.w, 0.75f);
+    EXPECT_GT(plain.getTransforms()[ra].rot.w, 0.85f);
+    // both arms the same pitch (they do not swing against each other like a walking player's)
+    EXPECT_NEAR(zombie.getTransforms()[ra].rot.y, zombie.getTransforms()[la].rot.y, 0.05f); // pitch is the y component
+    // the sleeve follows its arm
+    EXPECT_NEAR(zombie.getTransforms()[rs].rot.y, zombie.getTransforms()[ra].rot.y, 1e-5f);
+    // the legs still walk
+    const auto rl = zombie.getTransforms()[static_cast<size_t>(mc::StevePart::RightLeg)].rot.y;
+    const auto ll = zombie.getTransforms()[static_cast<size_t>(mc::StevePart::LeftLeg)].rot.y;
+    EXPECT_LT(rl * ll, 0.f);
+}

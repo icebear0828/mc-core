@@ -90,6 +90,9 @@ SteveRenderer g_steve;
 mc::SteveAnimator g_anim;
 eldenring::render::SteveMotion g_motion;
 eldenring::render::HeadTracker g_head;
+std::mutex g_mob_mutex;
+std::vector<eldenring::mobs::MobSnapshot> g_mob_snapshot; // the list the loader gave last
+eldenring::mobs::MobRegistry g_mob_registry;              // render thread only
 float g_death_seconds = 0.f; // how long the figure has been dying (0 = alive)
 std::mutex g_depth_mutex;
 ID3D12Resource* g_depth_res = nullptr; // AddRef'd scene depth in use (R32G8X24_TYPELESS), guarded by g_depth_mutex
@@ -934,6 +937,35 @@ void RenderFrame(IDXGISwapChain* sc) {
             }
         }
     }
+    // The mobs over the summons: the same rig, one pose per summoned character. They sort against the scene (and the blocks) like Steve.
+    if (steve.cam_valid && g_steve.ready() && g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
+        std::vector<eldenring::mobs::MobSnapshot> snapshot;
+        {
+            std::lock_guard<std::mutex> g(g_mob_mutex);
+            snapshot = g_mob_snapshot;
+        }
+        const auto draws = g_mob_registry.update(dt, snapshot);
+        if (!draws.empty()) {
+            const float scene_h = g_steve_cfg.scene_height > 0.f ? g_steve_cfg.scene_height : static_cast<float>(g_s.height);
+            const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
+            bool keep = blocks_drawn || steve.draw; // the blocks and Steve left their depth in the figure's buffer
+            for (const auto& d : draws) {
+                SteveParams mp;
+                mp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.occlusion ? 1.f : 0.f);
+                mp.depth_const = g_steve_cfg.depth_const;
+                mp.rel_bias = g_steve_cfg.rel_bias;
+                mp.abs_bias = g_steve_cfg.abs_bias;
+                mp.depth_w = static_cast<float>(g_depth_w);
+                mp.depth_h = static_cast<float>(g_depth_h);
+                mp.keep_depth = keep;
+                g_steve.draw(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, d.parts, mp, f.rtv);
+                keep = true; // the next one sorts against this one
+            }
+            g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
+        }
+    } else {
+        g_mob_registry.clear();
+    }
     if (steve.first_person && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
         g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
         namespace fp = eldenring::fp;
@@ -1175,6 +1207,11 @@ bool ResolveTargets(void*& present, void*& resize, void*& execute, void*& create
 void SetSteveConfig(const SteveConfig& cfg) { g_steve_cfg = cfg; }
 
 void RequestFrameTrace(int frames) { g_trace_left.store(frames); }
+
+void SetMobs(const std::vector<eldenring::mobs::MobSnapshot>& mobs) {
+    std::lock_guard<std::mutex> g(g_mob_mutex);
+    g_mob_snapshot = mobs;
+}
 
 void SpawnFx(FxKind kind, const float world_pos[3], int count) {
     FxEvent e{kind, {world_pos[0], world_pos[1], world_pos[2]}, count};

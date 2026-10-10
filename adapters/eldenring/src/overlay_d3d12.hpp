@@ -6,7 +6,10 @@
 //   IDXGISwapChain::Present                 - records and submits our command list on that queue,
 //   IDXGISwapChain::ResizeBuffers           - drops our resources so they are rebuilt after the resize.
 
+#include "eldenring_mobs.hpp"
 #include "mc/rig.hpp"
+
+#include <vector>
 
 namespace erov {
 
@@ -79,6 +82,9 @@ void SetSteveSkin(const uint8_t* rgba, unsigned width, unsigned height);
 void SetHudAtlas(const uint8_t* rgba, unsigned width, unsigned height);
 // Writes `frames` lines of per-frame figure and camera positions to the log (diagnosing jitter).
 void RequestFrameTrace(int frames);
+
+// The mobs drawn over the game's summons this frame (positions and headings in game metres/radians). Thread safe, replaces the last list.
+void SetMobs(const std::vector<eldenring::mobs::MobSnapshot>& mobs);
 
 // Combat particles (Minecraft's critical hit stars, damage hearts, sweep arc) at a world position (game metres); `count` is the
 // number of hearts for Damage. Thread safe; the overlay projects and draws them.
