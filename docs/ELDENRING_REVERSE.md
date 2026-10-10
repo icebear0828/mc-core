@@ -1182,3 +1182,8 @@ Table 1                     Table 2
 - **`r9` 只是错误码输出指针**：`0x1403A5A20` 里 `mov dword [r14], 3 / 4 / 0` 往它写状态码（`r14=r8` 即 `spawn_bullet` 的 `r9`）。**不需要上下文模板**，零缓冲就行。
 - `0x06455A50`（和上一次运行的 `0x06453B10`）是弩/弩箭的行 ID，与装备有关，不是会话相关句柄。我们据此让请求体模板存盘（`mc_er_bullet.bin`，0x110 字节），下次会话直接用。
 **对 §23/§24/§34 的纠正**：逆向方说的"`+0x08` 发射者、`+0x0C` BulletParam ID"错；"目标句柄"也错；`+0x1C = [this+0x44]` 是请求体里的子弹 ID（弩箭 56），与此前核对的字节一致。
+
+### 35.4 F3 不需要先真射一发（实机，`feat/bullet-log` c0f03a7，2026-10-10，A）
+- 会话 A：真射 1 发 → `bullet: template saved to ...\mc_er_bullet.bin (param row 0x06455A50, bullet id 56)`，文件 272 字节（0x110）。
+- 会话 B（重启游戏，**没有射击**）：`bullet: template loaded ... F3 works without a real shot`；F3 两次：`bullet fire: param row 0x06455A50 id=56 flags=0x8 ... tid=19852 -> returned handle 0x0000FF00 status 0 -> spawned`、`... handle 0x0000FF01 status 0 -> spawned`。`status 0` 就是 `0x1403A5A20` 写进 `r9` 的成功码，验证了"`r9` 只是状态码指针，零缓冲足够"。
+- 结论：弩箭发射所需的只有：请求体模板（行 ID `0x06455A50`、子弹 ID 56，来自装备的弩和弩箭，跨会话不变）、玩家句柄、相机朝向、零缓冲 `r9`。不需要手持弩，不需要真射。
