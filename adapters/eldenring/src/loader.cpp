@@ -473,6 +473,8 @@ KillWrapperFn g_cr_kill_orig = nullptr;
 HardLandingFn g_cr_land_orig = nullptr;
 FallHeightFn g_cr_fall_orig = nullptr;
 HasSpEffectFn g_cr_sp_orig = nullptr;
+using ChrEventFn = uint64_t(__fastcall*)(void* self, void* event);
+ChrEventFn g_cr_event_orig = nullptr;
 std::mutex g_cr_mutex;
 creative::FallLogState g_cr_fall_state;
 
@@ -525,6 +527,28 @@ float __fastcall CreativeFallDetour(void* fall_module) {
         Log("%s", (zero ? creative::formatFallZeroed(caller, metres) : creative::formatFall(caller, metres)).c_str());
     }
     return zero ? 0.f : metres;
+}
+
+// 0x140428DE0 (log only): the character event dispatcher. self+0x18 is the character, event+8 the payload (type at +0, required SpEffect word at +0xE),
+// event+0x18 a flag byte. Logged for the player and the death-related types only.
+uint64_t __fastcall CreativeEventDetour(void* self, void* event) {
+    uint64_t chr = 0, payload = 0;
+    uint32_t type = 0;
+    if (SafeCopy(reinterpret_cast<uintptr_t>(self) + 0x18, &chr, sizeof(chr)) && SafeCopy(reinterpret_cast<uintptr_t>(event) + 8, &payload, sizeof(payload)) &&
+        payload != 0 && SafeCopy(static_cast<uintptr_t>(payload), &type, sizeof(type)) && creative::isDeathEventType(type) &&
+        creative::isPlayer(static_cast<uintptr_t>(chr), PlayerChrPtr())) {
+        static std::atomic<unsigned> logged{0};
+        if (++logged <= 40) {
+            unsigned char raw[16] = {};
+            uint16_t cond = 0;
+            uint8_t flag = 0;
+            SafeCopy(static_cast<uintptr_t>(payload), raw, sizeof(raw));
+            SafeCopy(static_cast<uintptr_t>(payload) + 0xE, &cond, sizeof(cond));
+            SafeCopy(reinterpret_cast<uintptr_t>(event) + 0x18, &flag, sizeof(flag));
+            Log("%s", creative::formatChrEvent(type, cond, flag != 0, raw, reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base).c_str());
+        }
+    }
+    return g_cr_event_orig(self, event);
 }
 
 bool __fastcall CreativeSpEffectDetour(void* container, int sp_effect) {
@@ -2385,6 +2409,7 @@ void SetupCreativeProbes() {
         {"hard landing", sigs::kHardLanding, reinterpret_cast<void*>(&CreativeLandingDetour), reinterpret_cast<void**>(&g_cr_land_orig)},
         {"fall height", sigs::kFallHeight, reinterpret_cast<void*>(&CreativeFallDetour), reinterpret_cast<void**>(&g_cr_fall_orig)},
         {"sp effect query", sigs::kHasSpEffect, reinterpret_cast<void*>(&CreativeSpEffectDetour), reinterpret_cast<void**>(&g_cr_sp_orig)},
+        {"chr event dispatch", sigs::kChrEventDispatch, reinterpret_cast<void*>(&CreativeEventDetour), reinterpret_cast<void**>(&g_cr_event_orig)},
     };
     if (!EnsureMinHook()) {
         Log("creative: MH_Initialize failed, probes not installed");

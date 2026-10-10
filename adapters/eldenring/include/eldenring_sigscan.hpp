@@ -151,6 +151,10 @@ inline constexpr const char* kFallHeight =
 inline constexpr const char* kHasSpEffect =
     "44 0F B7 D2 48 B8 89 88 88 88 88 88 88 88 66 45 85 D2 4C 8B D9 45 8B C2 41 0F 95 C1 49 F7 E2 48 C1 EA 03 48 6B C2 0F BA 0F 00 00 00 4C 2B C0 "
     "43 8D 04 08 C0 E0 02 0F B6 C8 48 D3 E2 49 85 53 28 74 34 49 8B 43 08";
+// Character event dispatcher 0x140428DE0 (this, event*): switches on the event type; types 12/47 call the kill wrappers, 46 sets a state bit,
+// 48/126 clean up or tear down. 45 bytes, no wildcard needed, one match in 2.7.1.0.
+inline constexpr const char* kChrEventDispatch =
+    "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B 72 08 33 C0 0F B6 7A 18 48 8B 59 18 0F B7 56 0E 66 3B C2 73 14 48 8B 8B 78 01 00 00";
 inline constexpr const char* kGetEffectiveTeamType = "48 89 5C 24 10 57 48 83 EC 20 0F B6 41 6C 48 8B F9 88 02";
 } // namespace sigs
 

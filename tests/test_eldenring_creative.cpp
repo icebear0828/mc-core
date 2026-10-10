@@ -65,6 +65,7 @@ TEST(EldenRingCreative, ProbeSignaturesParseToTheDocumentedLengths) {
     EXPECT_EQ(Signature::parse(live::sigs::kHardLanding)->size(), 39u);
     EXPECT_EQ(Signature::parse(live::sigs::kFallHeight)->size(), 38u);
     EXPECT_EQ(Signature::parse(live::sigs::kHasSpEffect)->size(), 70u);
+    EXPECT_EQ(Signature::parse(live::sigs::kChrEventDispatch)->size(), 45u);
 }
 
 TEST(EldenRingCreative, FallProtectionNeverSkipsTheKillOfAPlayerWhoAlreadyHasNoHitPoints) {
@@ -120,4 +121,22 @@ TEST(EldenRingCreative, CreativeModeBlocksTheWholeKillWrapperWhileTheHitPointsLa
     EXPECT_FALSE(shouldBlockPlayerKill(GameMode::Creative, true, 0));  // the hit points are gone: a real death must go through
     EXPECT_FALSE(shouldBlockPlayerKill(GameMode::Creative, false, 316)); // MC mode off: vanilla
     EXPECT_FALSE(shouldBlockPlayerKill(GameMode::Survival, true, 316)); // survival keeps the old behaviour
+}
+
+TEST(EldenRingCreative, OnlyTheDeathRelatedEventTypesOfTheDispatcherAreLogged) {
+    // 0x140428DE0 switches on the event type: 12 and 47 reach the kill wrappers, 46 sets a state bit on the character, 48 is the clean-up
+    // after a death, 126 (0x7E) tears the character down.
+    for (uint32_t t : {12u, 46u, 47u, 48u, 126u}) EXPECT_TRUE(isDeathEventType(t)) << t;
+    for (uint32_t t : {0u, 1u, 11u, 13u, 45u, 49u, 125u}) EXPECT_FALSE(isDeathEventType(t)) << t;
+}
+
+TEST(EldenRingCreative, EventLineHasTypeConditionFlagBytesAndCaller) {
+    const unsigned char raw[16] = {0x0C, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0xAA, 0xBB, 0xCC};
+    const std::string line = formatChrEvent(12, 0x01F4, true, raw, 0x428EF0);
+    EXPECT_NE(line.find("event 12"), std::string::npos);
+    EXPECT_NE(line.find("needs SpEffect 500"), std::string::npos);
+    EXPECT_NE(line.find("flag=1"), std::string::npos);
+    EXPECT_NE(line.find("0C 00 00 00 01 02"), std::string::npos);
+    EXPECT_NE(line.find("AA BB CC"), std::string::npos);
+    EXPECT_NE(line.find("0x428EF0"), std::string::npos);
 }

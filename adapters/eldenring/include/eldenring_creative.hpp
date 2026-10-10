@@ -115,6 +115,18 @@ inline std::string formatFallZeroed(uintptr_t caller_rva, float original_metres)
     return buf;
 }
 
+// 0x140428DE0 dispatches character events by type ([[event+8]] = type, word [+0xE] = the SpEffect the event requires, byte [event+0x18] = flag).
+// Types that end in a death or a tear-down of the character; everything else (attacks, sounds...) is far too frequent to log.
+inline bool isDeathEventType(uint32_t type) { return type == 12 || type == 46 || type == 47 || type == 48 || type == 126; }
+
+inline std::string formatChrEvent(uint32_t type, unsigned required_sp_effect, bool flag, const unsigned char raw[16], uintptr_t caller_rva) {
+    char buf[320];
+    int n = std::snprintf(buf, sizeof(buf), "creative: chr event %u (needs SpEffect %u) flag=%d caller RVA 0x%llX raw:", type, required_sp_effect, flag ? 1 : 0,
+                          static_cast<unsigned long long>(caller_rva));
+    for (int i = 0; i < 16 && n > 0 && static_cast<size_t>(n) + 4 < sizeof(buf); ++i) n += std::snprintf(buf + n, sizeof(buf) - static_cast<size_t>(n), " %02X", raw[i]);
+    return buf;
+}
+
 inline std::string formatSpEffect(bool answer) {
     char buf[96];
     std::snprintf(buf, sizeof(buf), "creative: landing asked for SpEffect 0x8F, the game returned %d", answer ? 1 : 0);
