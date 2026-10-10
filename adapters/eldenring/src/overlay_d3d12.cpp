@@ -19,6 +19,7 @@
 #include <mutex>
 #include <vector>
 
+#include "eldenring_bow.hpp"
 #include "eldenring_fp.hpp"
 #include "eldenring_hudtex.hpp"
 #include "eldenring_particles.hpp"
@@ -358,7 +359,9 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             // The first-person arm and the sprites of the default hotbar items.
             std::vector<SteveRenderer::FpItemCell> cells;
             const float aw = static_cast<float>(g_atlas_w), ah = static_cast<float>(g_atlas_h);
-            for (mc::ItemId id : mc::paletteItems()) {
+            std::vector<mc::ItemId> sprite_items = mc::paletteItems();
+            for (mc::ItemId id : {mc::ItemId::BowPulling0, mc::ItemId::BowPulling1, mc::ItemId::BowPulling2}) sprite_items.push_back(id); // the drawn bow, never in a slot
+            for (mc::ItemId id : sprite_items) {
                 if (const mc::hud::HudUV* uv = eldenring::render::uvForItem(id)) {
                     cells.push_back({static_cast<uint16_t>(id), static_cast<int>(std::lround(uv->u0 * aw)), static_cast<int>(std::lround(uv->v0 * ah)),
                                      static_cast<int>(std::lround((uv->u1 - uv->u0) * aw)), static_cast<int>(std::lround((uv->v1 - uv->v0) * ah))});
@@ -955,7 +958,7 @@ void RenderFrame(IDXGISwapChain* sc) {
         sp.tint[1] = sp.tint[2] = 0.f;
         sp.tint[3] = 0.4f * std::min(1.f, steve.hurt * 4.f);
         sp.keep_depth = blocks_drawn; // the blocks left their depth in the figure's buffer: the figure sorts against them
-        sp.held_item = steve.held_item;
+        sp.held_item = static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.held_item), steve.bow_charge));
         sp.held_table = g_atlas_ready ? g_held_table_gpu : D3D12_GPU_DESCRIPTOR_HANDLE{};
         if (g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
             g_steve.draw(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, parts, sp, f.rtv);
@@ -1053,7 +1056,7 @@ void RenderFrame(IDXGISwapChain* sc) {
         const bool held_block = eldenring::blocks::blockForItem(static_cast<mc::ItemId>(g_hand.shownItem())) != mc::BlockId::Air;
         const fp::M4 item_world = fp::mul(fp::mul(base, item_pose), held_block ? fp::blockDisplay() : fp::itemDisplay());
         const fp::M4 arm_world = fp::mul(base, fp::bareArmPose(steve.swing, equipped));
-        const mc::ItemId shown = g_hand.shownItem();
+        const mc::ItemId shown = eldenring::bow::shownBow(g_hand.shownItem(), drawing_bow ? steve.bow_charge : 0.f); // the bow with the arrow nocked while it is drawn
         const mc::rig::Mat4 proj = mc::rig::perspectiveLH(70.f * fp::kDeg, static_cast<float>(g_s.width) / static_cast<float>(g_s.height), 0.05f, 20.f);
         D3D12_GPU_DESCRIPTOR_HANDLE skin_table = g_depth_gpu; // slots 1 and 2: depth, skin
         g_steve.drawFirstPerson(g_s.list, g_s.srv_heap, skin_table, g_item_table_gpu, g_s.width, g_s.height, proj, fp::toHost(arm_world),

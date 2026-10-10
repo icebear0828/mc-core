@@ -76,7 +76,10 @@ bool isHeldAsFlatSprite(ItemId item) {
         case ItemId::CookedBeef:
         case ItemId::TotemOfUndying:
         case ItemId::FireworkRocket:
-        case ItemId::ZombieSpawnEgg: return true;
+        case ItemId::ZombieSpawnEgg:
+        case ItemId::BowPulling0:
+        case ItemId::BowPulling1:
+        case ItemId::BowPulling2: return true;
         default: return false; // None, blocks, elytra
     }
 }

@@ -85,7 +85,11 @@ enum class ItemId : uint16_t {
     BlockDirt,
     BlockStone,
     BlockTnt,
-    ZombieSpawnEgg // appended: the ids above stay as they are
+    ZombieSpawnEgg, // appended: the ids above stay as they are
+    // The bow as it looks while it is drawn (the arrow nocked): view-model sprites chosen by the draw power, never an inventory item.
+    BowPulling0,
+    BowPulling1,
+    BowPulling2
 };
 
 enum class EffectType : uint8_t {

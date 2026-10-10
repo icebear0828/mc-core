@@ -125,3 +125,9 @@ TEST(HudEngineTest, HungerDrumsticksCalculation) {
     EXPECT_EQ(f17.has_half_drumstick, true);
     EXPECT_EQ(f17.empty_drumsticks, 1);
 }
+
+TEST(HudEngineTest, TheDrawnBowSpritesAreNamedLikeTheBow) {
+    EXPECT_STREQ(HudEngine::getItemDisplayName(ItemId::BowPulling0), "Bow");
+    EXPECT_STREQ(HudEngine::getItemDisplayName(ItemId::BowPulling1), "Bow");
+    EXPECT_STREQ(HudEngine::getItemDisplayName(ItemId::BowPulling2), "Bow");
+}

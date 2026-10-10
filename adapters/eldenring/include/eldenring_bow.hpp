@@ -1,8 +1,10 @@
 #pragma once
 
 // Minecraft's bow: hold the right button to draw, release to shoot. Pure logic (no game, no clock): the caller says every frame whether the button is
-// down and whether the bow can be used right now (in hand, arrows or creative, no screen open, alive). Also the pure helper that finds a float triple
-// near a point in a block of memory, used by the read-only probe that looks for where the game keeps a bullet's position.
+// down and whether the bow can be used right now (in hand, arrows or creative, no screen open, alive). Also the aim calibration helpers (quaternion forward,
+// yaw / pitch error) and the request-matrix basis.
+
+#include "mc/types.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -81,72 +83,6 @@ private:
     float ticks_{0.f};
 };
 
-// Byte offsets (4-aligned) in `data` where three consecutive floats are all finite and within `radius` of `center` on every axis.
-inline std::vector<int> findTriples(const uint8_t* data, size_t size, const float center[3], float radius) {
-    std::vector<int> out;
-    for (size_t at = 0; at + 12 <= size; at += 4) {
-        float v[3];
-        std::memcpy(v, data + at, 12);
-        bool ok = true;
-        for (int i = 0; i < 3; ++i) ok = ok && std::isfinite(v[i]) && std::fabs(v[i] - center[i]) <= radius;
-        if (ok) out.push_back(static_cast<int>(at));
-    }
-    return out;
-}
-
-
-// Byte offsets (4-aligned) of float triples that lie ahead of `p0` along `aim`: finite, `min_d`..`max_d` metres from p0, and the angle between
-// (triple - p0) and `aim` has a cosine of at least `min_cos`. A moving bolt that has not dropped far matches; the spawn point (distance 0) and anything
-// behind or beside the muzzle does not.
-inline std::vector<int> findAlongAim(const uint8_t* data, size_t size, const float p0[3], const float aim[3], float min_d, float max_d, float min_cos) {
-    std::vector<int> out;
-    const float an = std::sqrt(aim[0] * aim[0] + aim[1] * aim[1] + aim[2] * aim[2]);
-    if (!(an > 1e-6f)) return out;
-    for (size_t at = 0; at + 12 <= size; at += 4) {
-        float v[3];
-        std::memcpy(v, data + at, 12);
-        if (!(std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]))) continue;
-        const float d[3] = {v[0] - p0[0], v[1] - p0[1], v[2] - p0[2]};
-        const float dist = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-        if (dist < min_d || dist > max_d) continue;
-        const float cosine = (d[0] * aim[0] + d[1] * aim[1] + d[2] * aim[2]) / (dist * an);
-        if (cosine >= min_cos) out.push_back(static_cast<int>(at));
-    }
-    return out;
-}
-
-
-// A float triple that moved between two snapshots of the same block of memory, along the aim: finds the position of a flying bullet whatever the
-// coordinate frame it is stored in (the snapshots are taken a few hundred milliseconds apart).
-struct Mover {
-    int offset{0};
-    float v1[3]{}, v2[3]{};
-    float moved{0.f};
-};
-
-inline std::vector<Mover> findMovers(const uint8_t* a, const uint8_t* b, size_t size, const float aim[3], float min_move, float max_move, float min_cos) {
-    std::vector<Mover> out;
-    const float an = std::sqrt(aim[0] * aim[0] + aim[1] * aim[1] + aim[2] * aim[2]);
-    if (!(an > 1e-6f)) return out;
-    for (size_t at = 0; at + 12 <= size; at += 4) {
-        float p[3], q[3];
-        std::memcpy(p, a + at, 12);
-        std::memcpy(q, b + at, 12);
-        if (!(std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]) && std::isfinite(q[0]) && std::isfinite(q[1]) && std::isfinite(q[2]))) continue;
-        const float d[3] = {q[0] - p[0], q[1] - p[1], q[2] - p[2]};
-        const float moved = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-        if (moved < min_move || moved > max_move) continue;
-        if ((d[0] * aim[0] + d[1] * aim[1] + d[2] * aim[2]) / (moved * an) < min_cos) continue;
-        Mover m;
-        m.offset = static_cast<int>(at);
-        std::memcpy(m.v1, p, 12);
-        std::memcpy(m.v2, q, 12);
-        m.moved = moved;
-        out.push_back(m);
-    }
-    return out;
-}
-
 
 // ---- aim calibration: where does a bolt really fly compared with the aim we gave? ---------------------------------------------------------------------
 // The forward (+z) of a unit quaternion (x, y, z, w): the bullet's CSBulletIns keeps its flight direction there (REVERSE 35.8).
@@ -178,20 +114,20 @@ inline AimError aimError(const float aim[3], const float flight[3]) {
 }
 
 
-// The game turns the flight of a bolt we spawn from a replayed request by this much about the vertical axis (6 shots measured: +32.0, +30.6, +28.9 isolated,
-// +32.9, +30.5, +29.7 overlapping; REVERSE 35.9). We give the aim turned by the opposite angle. mc_er_steve.txt: bolt_yaw_offset_deg.
-inline constexpr float kBoltYawOffsetDeg = 31.f;
-
-// Turns `v` about the vertical (+y) axis so that its yaw (atan2(x, z)) grows by `deg`; the height and the length do not change.
-inline void rotateYaw(const float v[3], float deg, float out[3]) {
-    const float r = deg * 3.14159265f / 180.f;
-    const float c = std::cos(r), s = std::sin(r);
-    const float x = v[0], y = v[1], z = v[2];
-    out[0] = x * c + z * s;
-    out[1] = y;
-    out[2] = z * c - x * s;
+// Which of the three drawn-bow sprites to show for a draw power (Minecraft's item properties: pull > 0 -> bow_pulling_0, >= 0.65 -> _1, >= 0.9 -> _2); -1 = the plain bow.
+inline int pullingStage(float power) {
+    if (power >= 0.9f) return 2;
+    if (power >= 0.65f) return 1;
+    if (power > 0.f) return 0;
+    return -1;
 }
 
+// The item to draw in the hand: the drawn-bow sprite for the bow being drawn, the item itself otherwise.
+inline mc::ItemId shownBow(mc::ItemId item, float power) {
+    if (item != mc::ItemId::Bow) return item;
+    const int stage = pullingStage(power);
+    return stage < 0 ? item : static_cast<mc::ItemId>(static_cast<int>(mc::ItemId::BowPulling0) + stage);
+}
 
 // determinant of the rows (right, up, forward): +1 for a proper rotation in which right x up = forward (a real request's matrix), -1 when one axis is mirrored.
 inline float determinant(const float r[3], const float u[3], const float f[3]) {

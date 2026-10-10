@@ -558,6 +558,15 @@ def create_canonical_sprite(name: str) -> Image.Image:
         for b in range(9):
             img.putpixel((12 - abs(b - 4), 3 + b), c_wd)
             img.putpixel((8, 3 + b), c_st)
+    elif name.startswith("item_bow_pulling_"):  # the bow with an arrow nocked, the string drawn back further at each of the three stages
+        stage = int(name[-1])
+        c_wd, c_st, c_ar = (139, 90, 43, 255), (230, 230, 230, 255), (200, 200, 200, 255)
+        for b in range(9):
+            img.putpixel((12 - abs(b - 4), 3 + b), c_wd)
+        for b in range(9):  # the string, bent back by the draw
+            img.putpixel((8 - min(stage + 1, 3) * (4 - abs(b - 4)) // 4, 3 + b), c_st)
+        for x in range(5 - stage, 13):  # the arrow
+            img.putpixel((x, 7), c_ar)
     elif name == "item_elytra":
         c_w1, c_w2 = (108, 98, 117, 255), (76, 68, 84, 255)
         for e in range(10):
@@ -641,6 +650,10 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("xp_bar_progress", (182, 5)),
     # the spawn egg of the first mob (appended: the sprites above keep their places)
     ("item_zombie_spawn_egg", (16, 16)),
+    # the bow as it looks while it is drawn (the arrow nocked, the string drawn back further in each of the three stages)
+    ("item_bow_pulling_0", (16, 16)),
+    ("item_bow_pulling_1", (16, 16)),
+    ("item_bow_pulling_2", (16, 16)),
 ]
 
 _JAR_HUD_SPRITES = {
@@ -657,6 +670,9 @@ _JAR_HUD_SPRITES = {
     "item_diamond_pickaxe": "item/diamond_pickaxe.png",
     "item_golden_apple": "item/golden_apple.png",
     "item_bow": "item/bow.png",
+    "item_bow_pulling_0": "item/bow_pulling_0.png",
+    "item_bow_pulling_1": "item/bow_pulling_1.png",
+    "item_bow_pulling_2": "item/bow_pulling_2.png",
     "item_elytra": "item/elytra.png",
     "item_totem_of_undying": "item/totem_of_undying.png",
     "heart_absorb_full": "gui/sprites/hud/heart/absorbing_full.png",

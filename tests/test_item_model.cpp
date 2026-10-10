@@ -237,3 +237,10 @@ TEST(ItemModelTest, HeldBlockIsSmallAndNearTheRightHand) {
     for (int i = 0; i < 3; ++i) EXPECT_LT(hi[i] - lo[i], 0.7f);
     EXPECT_GT(hi[0] - lo[0], 0.2f);
 }
+
+TEST(ItemModel, TheDrawnBowSpritesAreHeldAsFlatSpritesLikeTheBow) {
+    EXPECT_TRUE(isHeldAsFlatSprite(ItemId::Bow));
+    EXPECT_TRUE(isHeldAsFlatSprite(ItemId::BowPulling0));
+    EXPECT_TRUE(isHeldAsFlatSprite(ItemId::BowPulling1));
+    EXPECT_TRUE(isHeldAsFlatSprite(ItemId::BowPulling2));
+}

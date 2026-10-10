@@ -87,14 +87,11 @@ private:
 // ---- firing a bolt of our own from a request the game itself wrote ---------------------------------------------------------------------
 inline constexpr size_t kFullRequestBytes = 0x110; // the constructor's size (0x14038C580); the logger only dumps the first kRequestBytes
 
-inline constexpr int64_t kKeepTemplate = INT64_MIN;
-
 struct FireParams {
     uint64_t owner{0};   // the shooter's entity handle (player ChrIns+0x08)
     uint64_t row_id{0xFFFFFFFFFFFFFFFFull}; // +0x08: a param row id the game can resolve (the real shot's value)
     uint32_t flags{0x08}; // +0x44: bit 3 must be set (spawn_bullet returns early otherwise), bit 1 must be clear
     float right[3]{}, up[3]{}, forward[3]{}, position[3]{}; // row-major world matrix at +0x50
-    int64_t dummy_poly{kKeepTemplate}; // +0x10 (an attachment point on the shooter's model, REVERSE 35.11): kKeepTemplate leaves the template's value
 };
 
 // A copy of a real request (from the logger) with the fields we own replaced; everything else is what the game wrote. +0xB0 (a pointer to a
@@ -113,10 +110,6 @@ inline std::vector<uint8_t> buildFireRequest(const uint8_t* real, size_t n, cons
     const float one = 1.f; // w of the translation row, as in the real request
     std::memcpy(out.data() + 0x8C, &one, 4);
     std::memset(out.data() + 0xB0, 0, 8);
-    if (p.dummy_poly != kKeepTemplate) {
-        const int32_t poly = static_cast<int32_t>(p.dummy_poly);
-        std::memcpy(out.data() + 0x10, &poly, 4);
-    }
     return out;
 }
 
@@ -161,6 +154,11 @@ inline constexpr uint32_t kBoltBulletId = 56; // request +0x1C of a crossbow sho
 inline bool isPlayersBoltHit(uint8_t hit_kind, uint64_t attacker_arg, uint64_t player, uint64_t victim, uint32_t last_bullet_id, uint64_t ms_since_shot) {
     return hit_kind == 2 && player != 0 && attacker_arg == player && victim != 0 && victim != player && last_bullet_id == kBoltBulletId && ms_since_shot < 4000;
 }
+
+// The feedback of a hit by the player's bolt, as for the melee hits: Minecraft shows floor(damage / 2) damage hearts at the victim, and a critical shot
+// (a full draw, or a crossbow bolt: both 9) also shows the critical stars and the critical hit marker.
+inline int hitHearts(float mc_damage) { return mc_damage > 0.f ? static_cast<int>(mc_damage * 0.5f) : 0; }
+inline bool isCriticalShot(float mc_damage) { return mc_damage >= kCrossbowDamage - 1e-3f; }
 
 inline bool spawnFailed(uint32_t handle) { return handle == 0xFFFFFFFFu; }
 
