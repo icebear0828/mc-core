@@ -2927,41 +2927,67 @@ size_t ScanRegionForQword(uintptr_t base, size_t size, uint64_t value, uintptr_t
     return out_count;
 }
 
-DWORD WINAPI BulletHeapScanThread(LPVOID param) {
-    const uint64_t shot_id = reinterpret_cast<uintptr_t>(param);
-    const uint64_t vtable = g_img.base + kBulletInsVtableRva;
-    uintptr_t hits[64];
-    size_t count = 0;
-    const uint64_t t0 = GetTickCount64();
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    uintptr_t addr = reinterpret_cast<uintptr_t>(si.lpMinimumApplicationAddress);
-    const uintptr_t top = reinterpret_cast<uintptr_t>(si.lpMaximumApplicationAddress);
-    size_t scanned_mb = 0;
-    bool timed_out = false;
+struct HeapScanJob {
+    uint64_t shot_id;
+    uintptr_t manager;
+};
+
+// One pass over the private committed memory between [lo, hi), appending to `hits`. Stops at the deadline.
+void HeapScanRange(uintptr_t lo, uintptr_t hi, uint64_t vtable, uintptr_t* hits, size_t max_hits, size_t& count, size_t& scanned_mb, uint64_t deadline_ms, bool& timed_out) {
+    uintptr_t addr = lo;
     MEMORY_BASIC_INFORMATION mbi;
-    while (addr < top && count < 64) {
-        if (GetTickCount64() - t0 > 4000) {
+    while (addr < hi && count < max_hits) {
+        if (GetTickCount64() > deadline_ms) {
             timed_out = true;
-            break;
+            return;
         }
-        if (VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) == 0) break;
+        if (VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) == 0) return;
         const uintptr_t region = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+        const uintptr_t begin = std::max(region, lo);
+        const uintptr_t end = std::min(region + mbi.RegionSize, hi);
         const bool readable = mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE && (mbi.Protect & (PAGE_READWRITE | PAGE_READONLY | PAGE_WRITECOPY)) != 0 &&
                               (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) == 0;
-        if (readable && mbi.RegionSize <= (512u << 20)) {
-            count = ScanRegionForQword(region, mbi.RegionSize, vtable, hits, 64, count);
-            scanned_mb += mbi.RegionSize >> 20;
+        if (readable && end > begin) {
+            count = ScanRegionForQword(begin, end - begin, vtable, hits, max_hits, count);
+            scanned_mb += (end - begin) >> 20;
         }
         addr = region + mbi.RegionSize;
     }
-    Log("bullet scan #%llu: %zu CSBulletIns object(s) (vtable %p), %zu MB scanned in %llu ms%s", static_cast<unsigned long long>(shot_id), count, reinterpret_cast<void*>(vtable), scanned_mb,
-        static_cast<unsigned long long>(GetTickCount64() - t0), timed_out ? " (time budget reached)" : "");
+}
+
+DWORD WINAPI BulletHeapScanThread(LPVOID param) {
+    const HeapScanJob job = *static_cast<HeapScanJob*>(param);
+    delete static_cast<HeapScanJob*>(param);
+    const uint64_t vtable = g_img.base + kBulletInsVtableRva;
+    uintptr_t hits[64];
+    size_t count = 0, scanned_mb = 0;
+    bool timed_out = false;
+    const uint64_t t0 = GetTickCount64();
+    const uint64_t deadline = t0 + 6000;
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    const uintptr_t min_addr = reinterpret_cast<uintptr_t>(si.lpMinimumApplicationAddress);
+    const uintptr_t max_addr = reinterpret_cast<uintptr_t>(si.lpMaximumApplicationAddress);
+    constexpr uintptr_t kWindow = 256u << 20;
+    // The live bullets are near the manager (the one that followed a bullet was 10 MB from it): that window first, then the rest.
+    const uintptr_t win_lo = job.manager > min_addr + kWindow ? job.manager - kWindow : min_addr;
+    const uintptr_t win_hi = job.manager < max_addr - kWindow ? job.manager + kWindow : max_addr;
+    HeapScanRange(win_lo, win_hi, vtable, hits, 64, count, scanned_mb, deadline, timed_out);
+    const size_t near_count = count;
+    const size_t near_mb = scanned_mb;
+    if (!timed_out) {
+        HeapScanRange(min_addr, win_lo, vtable, hits, 64, count, scanned_mb, deadline, timed_out);
+        if (!timed_out) HeapScanRange(win_hi, max_addr, vtable, hits, 64, count, scanned_mb, deadline, timed_out);
+    }
+    Log("bullet scan #%llu: %zu CSBulletIns object(s) (vtable %p); %zu near the manager %p (%zu MB), %zu MB scanned in all in %llu ms%s", static_cast<unsigned long long>(job.shot_id), count,
+        reinterpret_cast<void*>(vtable), near_count, reinterpret_cast<void*>(job.manager), near_mb, scanned_mb, static_cast<unsigned long long>(GetTickCount64() - t0),
+        timed_out ? " (time budget reached)" : "");
     for (size_t i = 0; i < count; ++i) {
         float body[12] = {};
         SafeCopy(hits[i], body, sizeof(body));
-        Log("bullet scan #%llu:   object %p: position (%.3f %.3f %.3f %.3f) quaternion (%.3f %.3f %.3f %.3f)", static_cast<unsigned long long>(shot_id), reinterpret_cast<void*>(hits[i]),
-            body[4], body[5], body[6], body[7], body[8], body[9], body[10], body[11]);
+        const bool near_it = i < near_count;
+        Log("bullet scan #%llu:   %s object %p: position (%.3f %.3f %.3f %.3f) quaternion (%.3f %.3f %.3f %.3f)", static_cast<unsigned long long>(job.shot_id), near_it ? "NEAR" : "far ",
+            reinterpret_cast<void*>(hits[i]), body[4], body[5], body[6], body[7], body[8], body[9], body[10], body[11]);
     }
     return 0;
 }
@@ -3063,8 +3089,10 @@ void PosProbeTick() {
     }
     if (g_pos_probe.samples == 2 && FileExists(g_game_dir + "mc_er_bulletscan.txt")) {
         static uint64_t s_scan_id = 0;
-        HANDLE th = CreateThread(nullptr, 0, BulletHeapScanThread, reinterpret_cast<LPVOID>(static_cast<uintptr_t>(++s_scan_id)), 0, nullptr);
+        HeapScanJob* job = new HeapScanJob{++s_scan_id, g_pos_probe.manager};
+        HANDLE th = CreateThread(nullptr, 0, BulletHeapScanThread, job, 0, nullptr);
         if (th != nullptr) CloseHandle(th);
+        else delete job;
     }
     if (g_pos_probe.samples == 4) PosProbeDumpStructure("sample 4");
     if (g_pos_probe.samples >= 4) g_pos_probe.active = false;
