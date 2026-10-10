@@ -47,6 +47,7 @@
 #include "eldenring_flight.hpp"
 #include "eldenring_los.hpp"
 #include "eldenring_bullet.hpp"
+#include "eldenring_handlescan.hpp"
 #include "eldenring_shadow.hpp"
 #include "eldenring_survival.hpp"
 #include "eldenring_xp.hpp"
@@ -2700,6 +2701,8 @@ std::mutex g_bullet_mutex;
 std::atomic<bool> g_bullet_fire_enabled{false};
 std::atomic<uint64_t> g_last_bullet_fire_ms{0};
 
+void* g_bullet_manager_seen = nullptr; // the manager of the last spawn_bullet call, for the handle scan
+
 void RecordBulletTemplate(const void* request, const void* r9) {
     uint8_t req[eldenring::bullet::kFullRequestBytes] = {};
     uint8_t ctx[kBulletCtxBytes] = {};
@@ -2711,6 +2714,21 @@ void RecordBulletTemplate(const void* request, const void* r9) {
     uint64_t handle = 0, owner = 0;
     std::memcpy(&owner, req, sizeof(owner));
     if (player == 0 || !SafeCopy(player + 8, &handle, sizeof(handle)) || handle != owner) return;
+    {   // Where does the game keep the handle in request+0x08? Searched on the first two real shots only (read-only, a few hundred KB).
+        static unsigned s_scans = 0;
+        if (s_scans < 2) {
+            ++s_scans;
+            uint32_t wanted = 0;
+            std::memcpy(&wanted, req + 8, sizeof(wanted));
+            uint64_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+            const std::vector<eldenring::handlescan::Root> roots = {
+                {"chr", player, 0x1000}, {"manager", reinterpret_cast<uintptr_t>(g_bullet_manager_seen), 0x800},
+                {"r9", reinterpret_cast<uintptr_t>(r9), 0x200}, {"world", static_cast<uintptr_t>(world), 0x400}};
+            const std::vector<std::string> hits = eldenring::handlescan::findValue(g_reader, roots, wanted);
+            Log("handle scan #%u: 0x%08X found %zu time(s)%s", s_scans, wanted, hits.size(), hits.empty() ? " (not in the player, the bullet manager, r9 or the world manager, one pointer level down)" : ":");
+            for (const std::string& h : hits) Log("handle scan #%u:   %s", s_scans, h.c_str());
+        }
+    }
     std::lock_guard<std::mutex> g(g_bullet_mutex);
     std::memcpy(g_bullet_template.request, req, sizeof(req));
     std::memcpy(g_bullet_template.ctx, ctx, sizeof(ctx));
@@ -2794,6 +2812,7 @@ bool QueueBulletFire() {
 
 uint32_t* __fastcall SpawnBulletDetour(void* manager, uint32_t* out_handle, void* request, void* r9) {
     uint32_t* r = g_spawn_bullet_orig(manager, out_handle, request, r9);
+    g_bullet_manager_seen = manager;
     if (g_bullet_fire_enabled.load(std::memory_order_relaxed)) RecordBulletTemplate(request, r9);
     uint32_t handle = 0xFFFFFFFFu;
     if (out_handle != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(out_handle), &handle, sizeof(handle));
