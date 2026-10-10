@@ -1874,6 +1874,7 @@ void McJumpStep() {
 std::atomic<bool> g_flying{false};
 std::atomic<float> g_fly_h_speed{flight::kHorizontalSpeed};
 std::atomic<float> g_fly_v_speed{flight::kVerticalSpeed};
+bool g_fly_have_written = false; // game thread only: last_written below is valid
 std::atomic<bool> g_fly_sync{true}; // fly_sync=0: do not ask the engine to move the Havok proxies (diagnostic)
 
 void FlightStep() {
@@ -1889,6 +1890,7 @@ void FlightStep() {
                          !g_inv_open.load(std::memory_order_relaxed) && GameInForeground() && !PlayerDead();
     if (!allowed) {
         tap.reset();
+        g_fly_have_written = false;
         if (g_flying.exchange(false)) Log("flight: stopped (creative mode, MC mode, focus, inventory or death changed)");
         return;
     }
@@ -1896,6 +1898,7 @@ void FlightStep() {
     if (tap.update((GetAsyncKeyState(VK_SPACE) & 0x8000) != 0, now_ms)) {
         const bool on = !g_flying.load();
         g_flying.store(on);
+        g_fly_have_written = false;
         Log("flight: %s", on ? "started" : "stopped");
     }
     if (!g_flying.load(std::memory_order_relaxed)) return;
@@ -1903,6 +1906,18 @@ void FlightStep() {
     const uintptr_t module = player != 0 ? detail::readPhysicsModule(g_reader, g_img.base, player) : 0;
     float pos[3];
     if (module == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, pos)) return;
+    // Diagnostic (read only): did something else move the player since our last write? Logs what it was set to and the vectors around it.
+    static float last_written[3] = {};
+    static unsigned overwrites = 0;
+    if (g_fly_have_written && flight::positionOverwritten(last_written, pos, 0.5f) && ++overwrites <= 40) {
+        float prev_pos[3] = {}, takeoff[4] = {}, tail[8] = {};
+        SafeCopy(module + layout::kPhysicsPosition + 0x10, prev_pos, sizeof(prev_pos));
+        SafeCopy(module + 0x150, takeoff, sizeof(takeoff));
+        SafeCopy(module + 0x120, tail, sizeof(tail)); // linear velocity and its neighbours
+        Log("flight: OVERWRITTEN wrote=(%.2f %.2f %.2f) now=(%.2f %.2f %.2f) delta=(%.2f %.2f %.2f) +0x80=(%.2f %.2f %.2f) +0x150=(%.2f %.2f %.2f %.2f) +0x120=(%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f)",
+            last_written[0], last_written[1], last_written[2], pos[0], pos[1], pos[2], pos[0] - last_written[0], pos[1] - last_written[1], pos[2] - last_written[2], prev_pos[0],
+            prev_pos[1], prev_pos[2], takeoff[0], takeoff[1], takeoff[2], takeoff[3], tail[0], tail[1], tail[2], tail[3], tail[4], tail[5], tail[6], tail[7]);
+    }
     flight::Keys keys;
     keys.forward = (GetAsyncKeyState('W') & 0x8000) != 0;
     keys.back = (GetAsyncKeyState('S') & 0x8000) != 0;
@@ -1929,6 +1944,8 @@ void FlightStep() {
         const uint8_t one = 1;
         WriteBytesSafe(module + layout::kPhysicsProxySyncRequest, &one, 1);
     }
+    std::memcpy(last_written, pos, sizeof(last_written));
+    g_fly_have_written = true;
     if (now_ms - last_log_ms >= 1000) {
         last_log_ms = now_ms;
         Log("flight: pos=(%.2f %.2f %.2f) sync91_before=%u keys[%d%d%d%d up=%d down=%d] dt=%.4f", pos[0], pos[1], pos[2], static_cast<unsigned>(sync_before), keys.forward ? 1 : 0, keys.back ? 1 : 0,

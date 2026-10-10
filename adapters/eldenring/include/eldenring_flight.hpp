@@ -89,6 +89,14 @@ inline bool step(float pos[3], const Keys& k, const Heading& h, float dt, float 
     return moved;
 }
 
+// True when the position read back differs from what we wrote last frame by more than tol on any axis: something else moved the player.
+inline bool positionOverwritten(const float wrote[3], const float read[3], float tol) {
+    for (int i = 0; i < 3; ++i) {
+        if (std::fabs(read[i] - wrote[i]) > tol) return true;
+    }
+    return false;
+}
+
 // DirectInput scan codes the game must not see while flying: movement, jump/roll, crouch/sprint.
 inline constexpr int kHiddenKeys[] = {0x11 /*W*/, 0x1E /*A*/, 0x1F /*S*/, 0x20 /*D*/, 0x39 /*Space*/, 0x2A /*LShift*/, 0x36 /*RShift*/, 0x1D /*LCtrl*/};
 

@@ -120,3 +120,15 @@ TEST(EldenRingFlight, ThePhysicsPositionIsSyncedToTheProxiesThroughTheRequestByt
     EXPECT_EQ(eldenring::live::layout::kPhysicsProxySyncRequest, 0x91u);
     EXPECT_NE(eldenring::live::layout::kPhysicsProxySyncRequest, eldenring::live::layout::kStandingOnGroundInPhysics); // not the ground flag
 }
+
+TEST(EldenRingFlight, OverwrittenPositionIsDetectedAgainstWhatWeWroteLastFrame) {
+    const float wrote[3] = {30.f, 5.f, 2.f};
+    const float same[3] = {30.f, 5.f, 2.f};
+    const float tiny[3] = {30.05f, 5.f, 2.f};
+    const float snapped[3] = {2.f, 5.f, 2.f};
+    EXPECT_FALSE(positionOverwritten(wrote, same, 0.5f));
+    EXPECT_FALSE(positionOverwritten(wrote, tiny, 0.5f)); // the game may move the player a little
+    EXPECT_TRUE(positionOverwritten(wrote, snapped, 0.5f));
+    const float high[3] = {30.f, 25.f, 2.f};
+    EXPECT_TRUE(positionOverwritten(wrote, high, 0.5f)); // any axis
+}
