@@ -148,3 +148,17 @@ TEST(McJump, CeilingCollisionStopsAscentAndBeginsDescent) {
     EXPECT_LT(controller.currentY(), 0.5f);
 }
 
+TEST(McJump, LandingOnBlockPreservesAirborneFlagForHorizontalVelocityDrive) {
+    const auto flags = computeLandingFlags(true);
+    EXPECT_TRUE(flags.on_ground_flag);
+    EXPECT_TRUE(flags.airborne_flag);
+    EXPECT_TRUE(flags.support_flag);
+}
+
+TEST(McJump, LandingOnTerrainClearsAirborneFlagForNativeRootMotion) {
+    const auto flags = computeLandingFlags(false);
+    EXPECT_TRUE(flags.on_ground_flag);
+    EXPECT_FALSE(flags.airborne_flag);
+    EXPECT_TRUE(flags.support_flag);
+}
+

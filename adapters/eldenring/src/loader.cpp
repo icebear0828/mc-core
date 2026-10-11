@@ -2214,6 +2214,7 @@ void BlocksCollisionStep() {
             const uint8_t one = 1;
             WriteBytesSafe(module + 0x92, &one, sizeof(one));
             WriteBytesSafe(module + 0x1D1, &one, sizeof(one));
+            WriteBytesSafe(module + 0x1D0, &one, sizeof(one)); // Keep airborne state active on blocks so Havok consumes +0x120 velocity!
         }
         const float zero = 0.f;
         WriteBytesSafe(module + 0x120 + 4, &zero, sizeof(zero));
@@ -2376,6 +2377,7 @@ void McJumpStep() {
     float ny = res.y;
     float pos[3] = {feet[0], ny, feet[2]};
     bool landed = false;
+    bool landed_on_block = false;
 
     // Block collision & ceiling resolution:
     {
@@ -2388,6 +2390,7 @@ void McJumpStep() {
                 controller.hitCeiling(r.feet[1]);
             } else if (res.vy <= 0.f && blocks::supportedByBlock(g_blocks, pos)) {
                 landed = true;
+                landed_on_block = true;
             } else if (res.vy <= 0.f) {
                 const float prev_pos[3] = {feet[0], controller.currentY() - res.vy * dt, feet[2]};
                 const blocks::Resolve sw = blocks::resolvePlayerSwept(g_blocks, prev_pos, pos);
@@ -2395,6 +2398,7 @@ void McJumpStep() {
                     pos[1] = sw.feet[1];
                     ny = sw.feet[1];
                     landed = true;
+                    landed_on_block = true;
                 }
             }
         }
@@ -2411,6 +2415,7 @@ void McJumpStep() {
                 pos[1] = ground_y;
                 ny = ground_y;
                 landed = true;
+                landed_on_block = false;
             }
         } else if (ny < controller.startY() - 3.0f) { // no ground within reach: fall hands over to native Havok
             Log("mcjump: no ground under the arc, native game takes over");
@@ -2443,13 +2448,18 @@ void McJumpStep() {
 
     if (landed) {
         controller.land(ny);
-        WriteBytesSafe(module + 0x92, &one, 1);
-        WriteBytesSafe(module + 0x1D1, &one, 1);
-        WriteBytesSafe(module + 0x1D0, &zero, 1);
+        const auto flags = eldenring::jump::computeLandingFlags(landed_on_block);
+        const uint8_t ground_byte = flags.on_ground_flag ? 1 : 0;
+        const uint8_t air_byte = flags.airborne_flag ? 1 : 0;
+        const uint8_t supp_byte = flags.support_flag ? 1 : 0;
+        WriteBytesSafe(module + 0x92, &ground_byte, 1);
+        WriteBytesSafe(module + 0x1D1, &supp_byte, 1);
+        WriteBytesSafe(module + 0x1D0, &air_byte, 1);
         const float zero_f = 0.f;
         WriteBytesSafe(module + 0x1B8, &zero_f, sizeof(zero_f));
-        Log("mcjump: landed, peak %.2f m, %.2f s in the air, fall timer was %.2f",
-            controller.peak(), static_cast<float>(GetTickCount64() - start_ms) / 1000.f, FallTimer(player));
+        Log("mcjump: landed %s, peak %.2f m, %.2f s in the air, fall timer was %.2f",
+            landed_on_block ? "on block" : "on terrain", controller.peak(),
+            static_cast<float>(GetTickCount64() - start_ms) / 1000.f, FallTimer(player));
         LandFallTimer(player);
         UnlockAirMovement(player);
     } else {
