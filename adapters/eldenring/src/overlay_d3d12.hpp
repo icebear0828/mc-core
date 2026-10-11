@@ -85,6 +85,7 @@ struct SteveConfig {
     float rel_bias{0.08f};
     float abs_bias{0.05f};
     float scene_height{0.f}; // 0: use the back buffer height for the projection aspect
+    bool depth_probe{false}; // record how the game uses its depth textures for three frames (depth_probe_d3d12.hpp); mc_er_depthprobe.txt switches it on
 };
 void SetSteveConfig(const SteveConfig& cfg);
 // The Steve skin (RGBA8, 64x64) the loader decoded; call before the overlay is created. Without it the figure is flat grey-brown.

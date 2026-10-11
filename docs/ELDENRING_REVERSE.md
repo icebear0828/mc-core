@@ -1383,3 +1383,18 @@ Table 1                     Table 2
 **根因**：`CreateDsvDetour`（`overlay_d3d12.cpp`）对每一个 `R32G8X24_TYPELESS`、宽度 ≥ 1024 的深度视图都把 `g_depth_res` **直接换成最新的**。重生后游戏先创建新的 1920×1080 主深度（`126.688`），随后又创建两个 **1024×512** 的深度图（`133.829`，阴影类的 pass），最后一个顶掉了主深度；Steve、方块、阴影的遮挡测试（`sp.mode = 1`，用 `depth_w/depth_h` 把屏幕坐标映射到深度图）就拿一张错误尺寸的深度图比较，整个人被判成被场景遮住。会话开头的两次 1024×512 抓取（`43.156`、`52.359`，上一轮会话）之后同样出现了消失。
 **修复**：`eldenring_depth.hpp::isSceneDepth`：场景深度的宽度必须等于后备缓冲的宽度（引擎可能把高度向上取整）；后备缓冲尚未确定（`g_s.width == 0`）时不排除。被忽略的深度图在日志里写一行 `overlay: ignored depth WxH (the back buffer is WxH): not the scene's`（最多 10 行）。
 **仍未验证**：死亡重生后新创建的 1920×1080 深度图是否一定在 1024×512 之前/之后被抓到——修复后无论顺序如何，1024×512 都不会再被接受；需要实机确认 Steve 不再消失。
+
+## 44. 审计：逆向方第七份回复（为什么生物遮挡不了我们的东西：深度纹理清单、帧内 pass、清除点、拷贝点、模板）（2026-10-11，我方逐字节核对）
+
+**现象（用户实机）**：原版敌人、玩家、召唤物都不能遮挡我们画的方块、Steve、MC 僵尸；地形可以；紧贴、远离都一样；F7 轮换两张 1920×1080 候选都不行。
+
+**字节一致**
+- `0x141E86721` 附近：`movss xmm3,[rip+0x141B226]`（该常数 = **1.0f**，已读出）、`mov r8b,1`、`mov rdx,[rbx+0x20]`、`mov byte [rsp+0x20],0`、`call 0x141E8CD60`；封装函数 `0x141E8CD60` 最后 `call [r9+0x178]`——`0x178 / 8 = 47`，正是 `ID3D12GraphicsCommandList::ClearDepthStencilView`。所以"某处把某张深度图清成 1.0（深度）、模板 0"属实。
+
+**回复里不成立或证据不足**
+- **模板表（1 = 地形、2 = 生物）不成立**：引用的两个 `OMSetStencilRef`（vtable `+0xC0` = 第 24 项）调用点 `0x141E9BC6E` 和 `0x1424BBAF9` 都带有多个参数（前者 `edx=1`、`r8`、`r9`、栈上参数；后者 `edx=2`、`r8d=rdx-1=1`、`r9`），`OMSetStencilRef(this, UINT)` 只有一个参数，所以它们是别的 COM 方法。回复说的"`lea edx,[rdx-1]` 传入 edx=2"字节上是 `r8d=1`。生物的模板值没有依据。
+- **"安全拷贝点 `0x1419E433F` / `0x1419E51D6`"只是"可能"**：`0x1419E51D6` 的参数形状（`edx` 数量、`r8` 指针数组）像 `ResourceBarrier(this, n, barriers)` 的封装，但没有字节证据证明其中有深度图的 `DEPTH_WRITE → SRV` 转换；`0x1419E433F` 的 `rcx = [[rbx]+8]` 是个封装对象，不一定是命令列表，回复说"`rcx` 是 `ID3D12GraphicsCommandList*`"没有依据。
+- **叙述自相矛盾**：说生物在 G-buffer 角色 pass 里写进了主深度图，又说 Present 时主深度图"残留 Pre-Z"；说清除值是 `1.0`（反向 Z 里是**最近**），按此我们的遮挡测试会判成"全部被遮挡"，而实机现象是"全部不遮挡"。
+- **未核**：深度纹理创建点（`0x0213073C` 等）、SSAO 线性深度图的生成函数（`0x00759C48`、`0x001A5B87`）、Pre-Z 不画生物的说法。
+
+**结论**：不照着回复的地址拦截。改用动态取证：`depth_probe_d3d12.hpp`（`mc_er_depthprobe.txt` 开关）在命令列表的 vtable 上钩 `OMSetRenderTargets`(46)、`DrawInstanced`(12)、`DrawIndexedInstanced`(13)、`ClearDepthStencilView`(47)、`ResourceBarrier`(26)、`CopyResource`(17)、`CopyTextureRegion`(16)，并在 `CreateDepthStencilView` 里记录**每一个**深度纹理（不限尺寸和格式），录三帧（启动后 20 秒，之后每隔 12 秒），日志 `DEPTHPROBE:` 给出：各深度纹理的尺寸/格式、命令列表的提交顺序、每个列表里"绑定哪张深度图、在其中做了多少次绘制、清除（标志/深度值/模板值）、拷贝、状态转换（before → after）"。

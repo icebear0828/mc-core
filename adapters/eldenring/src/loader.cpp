@@ -3924,6 +3924,7 @@ void SetupOverlay() {
                 else if (key == "hide_mask2") g_hide_mask2.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));
             }
         }
+        cfg.depth_probe = FileExists(g_game_dir + "mc_er_depthprobe.txt");
         erov::SetSteveConfig(cfg);
         eraudio::Init((g_game_dir + "mods\\mc_adapter\\sounds\\").c_str(), g_sound_volume.load(), &Log);
         {

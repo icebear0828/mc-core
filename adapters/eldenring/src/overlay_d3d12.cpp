@@ -23,6 +23,7 @@
 #include "eldenring_fp.hpp"
 #include "eldenring_hudtex.hpp"
 #include "eldenring_depth.hpp"
+#include "depth_probe_d3d12.hpp"
 #include "eldenring_pixel.hpp"
 #include "eldenring_particles.hpp"
 #include "eldenring_blockicon.hpp"
@@ -383,6 +384,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
              g_s.width, g_s.height, static_cast<int>(g_s.format), static_cast<void*>(queue),
              static_cast<unsigned>(std::max(0, FindQueueOffsetInSwapChain(sc, queue))));
     Logf(msg);
+    if (g_steve_cfg.depth_probe) probe::Install(g_s.list, g_log);
     return true;
 }
 
@@ -1223,6 +1225,7 @@ void STDMETHODCALLTYPE CreateDsvDetour(ID3D12Device* d, ID3D12Resource* res, con
                                        D3D12_CPU_DESCRIPTOR_HANDLE handle) {
     g_create_dsv_orig(d, res, desc, handle);
     if (res == nullptr) return;
+    if (g_steve_cfg.depth_probe) probe::NoteDsv(handle.ptr, res); // every depth texture, whatever its size
     const D3D12_RESOURCE_DESC rd = res->GetDesc();
     if (rd.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || rd.Format != DXGI_FORMAT_R32G8X24_TYPELESS || rd.Width < 1024 ||
         rd.DepthOrArraySize != 1) {
@@ -1266,10 +1269,12 @@ void STDMETHODCALLTYPE ExecuteDetour(ID3D12CommandQueue* q, UINT n, ID3D12Comman
         const D3D12_COMMAND_QUEUE_DESC d = q->GetDesc();
         if (d.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) g_queue.store(q);
     }
+    if (g_steve_cfg.depth_probe) probe::NoteExecute(n, lists);
     g_execute_orig(q, n, lists);
 }
 
 HRESULT STDMETHODCALLTYPE PresentDetour(IDXGISwapChain* sc, UINT sync, UINT flags) {
+    if (g_steve_cfg.depth_probe) probe::OnPresent();
     if (!g_s.failed) {
         ID3D12CommandQueue* q = g_queue.load();
         if (!g_s.ready && q != nullptr) {
