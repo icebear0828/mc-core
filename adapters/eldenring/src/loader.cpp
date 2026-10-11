@@ -2623,7 +2623,7 @@ DWORD WINAPI KeyThread(LPVOID) {
             bool usable = false;
             {
                 std::lock_guard<std::mutex> g(g_melee_mutex);
-                usable = g_melee.heldItem() == mc::ItemId::Bow && g_melee.countAt(g_melee.selectedSlot()) > 0 &&
+                usable = eldenring::bow::bowHandUsable(g_melee.heldItem(), g_melee.countAt(g_melee.selectedSlot()), g_melee.offhandItem(), g_melee.offhandCount()) &&
                          (!creative::consumesItems(CurrentGameMode()) || g_melee.has(mc::ItemId::Arrow));
             }
             usable = usable && g_bullet_fire_enabled.load() && g_mc_mode.load() && fg && WantSuppress() && !inv_open && g_input_enabled.load() && !PlayerDead();

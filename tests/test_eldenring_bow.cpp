@@ -200,3 +200,21 @@ TEST(EldenRingBow, TheBowInHandShowsTheDrawnSpriteOnlyWhileItIsBeingDrawn) {
     EXPECT_EQ(shownBow(mc::ItemId::DiamondSword, 1.f), mc::ItemId::DiamondSword);   // another item is never swapped
     EXPECT_EQ(shownBow(mc::ItemId::None, 0.5f), mc::ItemId::None);
 }
+
+TEST(EldenRingBow, ABowInTheOffhandDrawsWhenTheMainHandDoesNotClaimTheRightButton) {
+    using mc::ItemId;
+    // main hand bow, empty main hand and a sword in the main hand all leave the right button to the bow
+    EXPECT_TRUE(eldenring::bow::bowHandUsable(ItemId::Bow, 1, ItemId::None, 0));
+    EXPECT_TRUE(eldenring::bow::bowHandUsable(ItemId::None, 0, ItemId::Bow, 1));
+    EXPECT_TRUE(eldenring::bow::bowHandUsable(ItemId::DiamondSword, 1, ItemId::Bow, 1));
+    // an emptied slot does not claim anything, even if it still names the item
+    EXPECT_TRUE(eldenring::bow::bowHandUsable(ItemId::Shield, 0, ItemId::Bow, 1));
+    // main hand items with a right-click action of their own win: shield, food, blocks, the spawn egg, a bow
+    EXPECT_FALSE(eldenring::bow::bowHandUsable(ItemId::Shield, 1, ItemId::Bow, 1));
+    EXPECT_FALSE(eldenring::bow::bowHandUsable(ItemId::Bread, 1, ItemId::Bow, 1));
+    EXPECT_FALSE(eldenring::bow::bowHandUsable(ItemId::BlockDirt, 1, ItemId::Bow, 1));
+    EXPECT_FALSE(eldenring::bow::bowHandUsable(ItemId::ZombieSpawnEgg, 1, ItemId::Bow, 1));
+    // no bow in either hand
+    EXPECT_FALSE(eldenring::bow::bowHandUsable(ItemId::DiamondSword, 1, ItemId::Arrow, 64));
+    EXPECT_FALSE(eldenring::bow::bowHandUsable(ItemId::None, 0, ItemId::Bow, 0));
+}

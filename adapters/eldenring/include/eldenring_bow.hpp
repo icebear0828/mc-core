@@ -129,6 +129,31 @@ inline mc::ItemId shownBow(mc::ItemId item, float power) {
     return stage < 0 ? item : static_cast<mc::ItemId>(static_cast<int>(mc::ItemId::BowPulling0) + stage);
 }
 
+// Items in the main hand that use the right button themselves (the shield, food, blocks, the spawn egg, a bow): as in Minecraft, the main hand
+// goes first, so a bow in the offhand only draws when the main hand has no right-click action.
+inline bool mainHandClaimsRightClick(mc::ItemId item) {
+    switch (item) {
+        case mc::ItemId::Bow:
+        case mc::ItemId::Shield:
+        case mc::ItemId::GoldenApple:
+        case mc::ItemId::EnchantedGoldenApple:
+        case mc::ItemId::Bread:
+        case mc::ItemId::CookedBeef:
+        case mc::ItemId::BlockDirt:
+        case mc::ItemId::BlockStone:
+        case mc::ItemId::BlockTnt:
+        case mc::ItemId::ZombieSpawnEgg: return true;
+        default: return false;
+    }
+}
+
+// True when a bow in the main hand, or in the offhand with nothing in the main hand that claims the right button, can be drawn.
+inline bool bowHandUsable(mc::ItemId main_item, uint32_t main_count, mc::ItemId offhand_item, uint32_t offhand_count) {
+    if (main_count > 0 && main_item == mc::ItemId::Bow) return true;
+    if (main_count > 0 && mainHandClaimsRightClick(main_item)) return false;
+    return offhand_count > 0 && offhand_item == mc::ItemId::Bow;
+}
+
 // determinant of the rows (right, up, forward): +1 for a proper rotation in which right x up = forward (a real request's matrix), -1 when one axis is mirrored.
 inline float determinant(const float r[3], const float u[3], const float f[3]) {
     return r[0] * (u[1] * f[2] - u[2] * f[1]) - r[1] * (u[0] * f[2] - u[2] * f[0]) + r[2] * (u[0] * f[1] - u[1] * f[0]);
