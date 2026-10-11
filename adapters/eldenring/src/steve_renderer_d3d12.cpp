@@ -620,6 +620,38 @@ void SteveRenderer::drawFirstPerson(ID3D12GraphicsCommandList* list, ID3D12Descr
     }
 }
 
+void SteveRenderer::drawFirstPersonItem(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
+                                        D3D12_GPU_DESCRIPTOR_HANDLE atlas_table, unsigned width, unsigned height,
+                                        const mc::rig::Mat4& projection, const mc::rig::Mat4& item_world, uint16_t item,
+                                        D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
+    if (!ready() || !fp_vertices_ || !own_depth_ || !dsv_heap_) return;
+    const auto it = fp_items_.find(item);
+    if (item == 0 || it == fp_items_.end()) return;
+    D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
+    D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+    list->RSSetViewports(1, &vp);
+    list->RSSetScissorRects(1, &sc);
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
+    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+    // Preserves depth buffer so offhand and mainhand items depth-test against each other correctly
+    list->SetPipelineState(pso_);
+    list->SetGraphicsRootSignature(root_);
+    ID3D12DescriptorHeap* heaps[] = {srv_heap};
+    list->SetDescriptorHeaps(1, heaps);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->IASetVertexBuffers(0, 1, &fp_vbv_);
+    list->IASetIndexBuffer(&fp_ibv_);
+    list->SetGraphicsRoot32BitConstants(0, 16, projection.m.data(), 0);
+    const float extra[8] = {1.f, 0.f, 0.f, 0.f, 1.f, 1.f, static_cast<float>(width), static_cast<float>(height)};
+    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
+    const float no_tint[4] = {0.f, 0.f, 0.f, 0.f};
+    list->SetGraphicsRoot32BitConstants(0, 4, no_tint, 40);
+    list->SetGraphicsRootDescriptorTable(1, atlas_table);
+    list->SetGraphicsRoot32BitConstants(0, 16, item_world.m.data(), 16);
+    const FpDraw& d = it->second;
+    list->DrawIndexedInstanced(d.index_count, 1, d.first_index, d.base_vertex, 0);
+}
+
 bool SteveRenderer::ensureDepth(ID3D12Device* device, unsigned width, unsigned height) {
     if (own_depth_ && own_depth_w_ == width && own_depth_h_ == height) return true;
     Rel(own_depth_);

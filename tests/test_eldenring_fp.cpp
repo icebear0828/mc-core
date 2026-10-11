@@ -185,3 +185,27 @@ TEST(EldenRingFp, TheBowFollowsTheHandWhenItIsLowered) {
     const mc::Vec3 down = apply(bowPose(5.f, 1.f), origin());
     EXPECT_NEAR(up.y - down.y, 0.6f, 1e-4f);
 }
+
+TEST(EldenRingFp, OffhandNormalItemMirrorsMainHandX) {
+    const mc::Vec3 main_pos = apply(itemPose(0.f, 0.f), origin());
+    const mc::Vec3 off_pos = apply(offhandItemPose(0.f), origin());
+    EXPECT_NEAR(off_pos.x, -main_pos.x, 1e-4f);
+    EXPECT_NEAR(off_pos.y, main_pos.y, 1e-4f);
+    EXPECT_NEAR(off_pos.z, main_pos.z, 1e-4f);
+}
+
+TEST(EldenRingFp, OffhandShieldSitsLowerLeftWhenIdle) {
+    const mc::Vec3 idle = apply(shieldFpPose(false, 0.f, true), origin());
+    EXPECT_LT(idle.x, -0.3f) << "Idle offhand shield sits on the left side of view";
+    EXPECT_LT(idle.y, -0.3f) << "Idle offhand shield sits low in view";
+    EXPECT_LT(idle.z, -0.3f) << "Idle offhand shield is in front of camera";
+}
+
+TEST(EldenRingFp, OffhandShieldRaisesToCenterWhenBlocking) {
+    const mc::Vec3 idle = apply(shieldFpPose(false, 0.f, true), origin());
+    const mc::Vec3 blocking = apply(shieldFpPose(true, 0.f, true), origin());
+    EXPECT_GT(blocking.y, idle.y + 0.15f) << "Blocking raises the shield upwards in view";
+    EXPECT_GT(blocking.x, idle.x + 0.15f) << "Blocking moves the shield towards screen center";
+    EXPECT_GT(blocking.z, idle.z) << "Blocking brings shield closer to defend eye level";
+}
+

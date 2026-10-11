@@ -49,11 +49,19 @@ def main() -> int:
 
     mods_dir.mkdir(parents=True, exist_ok=True)
 
-    # Backup existing dll if present
+    # Backup existing dll if present via rename (handles Windows file locking gracefully)
     if dst_dll.exists():
-        backup_dll = game_dir / "dinput8.dll.bak"
-        shutil.copy2(dst_dll, backup_dll)
-        print(f"[Backup] {backup_dll} saved.")
+        backup_dll = game_dir / "dinput8.dll.old"
+        if backup_dll.exists():
+            try:
+                backup_dll.unlink()
+            except Exception:
+                pass
+        try:
+            dst_dll.rename(backup_dll)
+            print(f"[Rename] Existing {dst_dll.name} renamed to {backup_dll.name} to bypass file lock.")
+        except Exception:
+            pass
 
     # 3. Copy files
     shutil.copy2(src_dll, dst_dll)

@@ -77,6 +77,9 @@ public:
     void drawFirstPerson(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE skin_table,
                          D3D12_GPU_DESCRIPTOR_HANDLE atlas_table, unsigned width, unsigned height, const mc::rig::Mat4& projection,
                          const mc::rig::Mat4& arm_world, const mc::rig::Mat4& item_world, uint16_t item, D3D12_CPU_DESCRIPTOR_HANDLE rtv);
+    void drawFirstPersonItem(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
+                             D3D12_GPU_DESCRIPTOR_HANDLE atlas_table, unsigned width, unsigned height, const mc::rig::Mat4& projection,
+                             const mc::rig::Mat4& item_world, uint16_t item, D3D12_CPU_DESCRIPTOR_HANDLE rtv);
     [[nodiscard]] bool firstPersonReady() const { return fp_vertices_ != nullptr; }
 
     // Third person: the held item as Minecraft draws it (a flat sprite extruded one pixel, ItemInHandLayer transform), built from the

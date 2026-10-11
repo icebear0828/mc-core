@@ -157,6 +157,37 @@ inline M4 itemDisplay() {
     return mul(p, scale(0.68f));
 }
 
+// The display transform of a shield held in first person: flat face oriented toward the view
+inline M4 shieldDisplay() {
+    M4 p = translate(0.f, 0.f, 0.f);
+    p = mul(p, rotY(180.f));
+    return mul(p, scale(0.85f));
+}
+
+// The left-hand (offhand) item pose before display transform (ItemInHandRenderer.renderArmWithItem, left hand).
+inline M4 offhandItemPose(float equipped) {
+    return translate(-0.56f, -0.52f + equipped * -0.6f, -0.72f);
+}
+
+// Shield pose in first person (UseAnim.BLOCK / idle offhand shield)
+inline M4 shieldFpPose(bool is_blocking, float equipped, bool is_left_hand = true) {
+    const float sign = is_left_hand ? -1.f : 1.f;
+    if (is_blocking) {
+        // Raised defensive shield blocking pose in front of camera
+        M4 p = translate(sign * 0.18f, -0.15f + equipped * -0.6f, -0.48f);
+        p = mul(p, rotY(sign * -15.f));
+        p = mul(p, rotX(5.f));
+        p = mul(p, rotZ(sign * 5.f));
+        return mul(p, scale(1.0f));
+    }
+    // Idle shield resting at lower corner of view
+    M4 p = translate(sign * 0.54f, -0.45f + equipped * -0.6f, -0.65f);
+    p = mul(p, rotY(sign * -40.f));
+    p = mul(p, rotZ(sign * 25.f));
+    p = mul(p, rotX(-10.f));
+    return mul(p, scale(0.85f));
+}
+
 // The display transform of a block held in the first-person right hand (block/block: rotation (0, 45, 0), no translation, scale 0.4),
 // applied to the unit cube centred on the origin.
 inline M4 blockDisplay() { return mul(rotY(45.f), scale(0.4f)); }

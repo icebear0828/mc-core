@@ -1088,16 +1088,29 @@ void RenderFrame(IDXGISwapChain* sc) {
         const fp::M4 base = fp::mul(fp::walkBob(g_walk_dist, g_walk_bob), fp::handSway(d_pitch, d_yaw));
         const float equipped = g_hand.equipped();
         const bool drawing_bow = steve.bow_ticks > 0.f && g_hand.shownItem() == mc::ItemId::Bow;
+        const bool main_is_shield = g_hand.shownItem() == mc::ItemId::Shield;
         const fp::M4 item_pose = drawing_bow ? fp::bowPose(steve.bow_ticks, equipped)
+                                 : main_is_shield ? fp::shieldFpPose(steve.blocking, equipped, false)
                                  : steve.eating > 0.f ? fp::eatPose(steve.eating, equipped) : fp::itemPose(steve.swing, equipped);
         const bool held_block = eldenring::blocks::blockForItem(static_cast<mc::ItemId>(g_hand.shownItem())) != mc::BlockId::Air;
-        const fp::M4 item_world = fp::mul(fp::mul(base, item_pose), held_block ? fp::blockDisplay() : fp::itemDisplay());
+        const fp::M4 item_disp = main_is_shield ? fp::shieldDisplay() : (held_block ? fp::blockDisplay() : fp::itemDisplay());
+        const fp::M4 item_world = fp::mul(fp::mul(base, item_pose), item_disp);
         const fp::M4 arm_world = fp::mul(base, fp::bareArmPose(steve.swing, equipped));
         const mc::ItemId shown = eldenring::bow::shownBow(g_hand.shownItem(), drawing_bow ? steve.bow_charge : 0.f); // the bow with the arrow nocked while it is drawn
         const mc::rig::Mat4 proj = mc::rig::perspectiveLH(70.f * fp::kDeg, static_cast<float>(g_s.width) / static_cast<float>(g_s.height), 0.05f, 20.f);
         D3D12_GPU_DESCRIPTOR_HANDLE skin_table = g_depth_gpu; // slots 1 and 2: depth, skin
         g_steve.drawFirstPerson(g_s.list, g_s.srv_heap, skin_table, g_item_table_gpu, g_s.width, g_s.height, proj, fp::toHost(arm_world),
                                 fp::toHost(item_world), static_cast<uint16_t>(shown), f.rtv);
+        // Offhand item in first person (e.g. shield in offhand, torch, etc.)
+        if (steve.offhand_item != 0) {
+            const bool off_is_shield = static_cast<mc::ItemId>(steve.offhand_item) == mc::ItemId::Shield;
+            const bool off_block = eldenring::blocks::blockForItem(static_cast<mc::ItemId>(steve.offhand_item)) != mc::BlockId::Air;
+            const fp::M4 off_pose = off_is_shield ? fp::shieldFpPose(steve.blocking, 0.f, true) : fp::offhandItemPose(0.f);
+            const fp::M4 off_disp = off_is_shield ? fp::shieldDisplay() : (off_block ? fp::blockDisplay() : fp::itemDisplay());
+            const fp::M4 off_world = fp::mul(fp::mul(base, off_pose), off_disp);
+            g_steve.drawFirstPersonItem(g_s.list, g_s.srv_heap, g_item_table_gpu, g_s.width, g_s.height, proj, fp::toHost(off_world),
+                                        steve.offhand_item, f.rtv);
+        }
         g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr); // ImGui draws without a depth view
     }
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_s.list);
