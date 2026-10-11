@@ -53,6 +53,7 @@
 #include "eldenring_xp.hpp"
 #include "eldenring_hunger.hpp"
 #include "eldenring_jump.hpp"
+#include "eldenring_orientation.hpp"
 #include "mc/consumables.hpp"
 #include "mc/inventory_layout.hpp"
 #include "mc/hud_atlas.hpp"
@@ -274,6 +275,8 @@ std::atomic<float> g_kb_force{-1.f}; // mc_er_steve.txt: kb_force (>= 0 override
 std::atomic<uint32_t> g_hide_slots{0xFFFFFFFFu}; // bit n = part slot n of the native model (mc_er_steve.txt: hide_slots)
 std::atomic<uint32_t> g_hide_mask2{1};         // bits cleared in disp_flags2 (+0x24)
 float g_steve_yaw_offset = 3.14159265f; // the orientation quaternion at PhysicsModule+0x50 faces opposite to the model forward (user verified live, 180 deg)
+std::atomic<bool> g_instant_turn{true};  // mc_er_steve.txt: instant_turn=1 (snap to movement heading with zero delay)
+std::atomic<float> g_turn_speed{15.0f};  // mc_er_steve.txt: turn_speed=<rad/s> (used when instant_turn=0 for smooth turn clamp)
 std::atomic<bool> g_require_victim_updating{true};
 DamageQueue g_queue;
 
@@ -1894,16 +1897,42 @@ void DriveVelocityFromKeys(uintptr_t module, bool force_zero) {
         const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
         const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
         CameraPose cam;
-        if ((fwd_key != 0.f || right_key != 0.f) && world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
-            float fx = cam.forward[0], fz = cam.forward[2], rx = cam.right[0], rz = cam.right[2];
-            const float fl = std::sqrt(fx * fx + fz * fz), rl = std::sqrt(rx * rx + rz * rz);
-            if (fl > 1e-3f && rl > 1e-3f) {
-                fx /= fl; fz /= fl; rx /= rl; rz /= rl;
-                const float wx = fwd_key * fx + right_key * rx, wz = fwd_key * fz + right_key * rz;
-                const float wl = std::sqrt(wx * wx + wz * wz);
-                if (wl > 1e-3f) {
-                    vx = wx / wl * g_block_walk_speed.load();
-                    vz = wz / wl * g_block_walk_speed.load();
+        if (world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
+            float dir[2] = {0.f, 0.f};
+            const bool moving = eldenring::motion::computeInputDirection(fwd_key, right_key, cam.forward, cam.right, dir);
+            if (moving) {
+                vx = dir[0] * g_block_walk_speed.load();
+                vz = dir[1] * g_block_walk_speed.load();
+
+                // Compute target orientation from movement direction
+                float target_yaw = std::atan2(dir[0], dir[1]);
+                if (g_first_person.load(std::memory_order_relaxed)) {
+                    // In first-person mode, character always faces camera forward
+                    float fx = cam.forward[0], fz = cam.forward[2];
+                    if (fx * fx + fz * fz > 1e-4f) target_yaw = std::atan2(fx, fz);
+                }
+
+                // Update orientation quaternion at PhysicsModule + 0x50 (M2 reverse finding)
+                const bool instant = g_instant_turn.load(std::memory_order_relaxed);
+                float final_yaw = target_yaw;
+                if (!instant) {
+                    float curr_q[4] = {};
+                    if (SafeCopy(module + layout::kPhysicsOrientation, curr_q, sizeof(curr_q))) {
+                        const float curr_yaw = eldenring::render::yawFromQuat(curr_q[0], curr_q[1], curr_q[2], curr_q[3]);
+                        final_yaw = eldenring::motion::stepYaw(curr_yaw, target_yaw, 0.0166667f, g_turn_speed.load(), false);
+                    }
+                }
+                const auto out_q = eldenring::motion::OrientationQuat::fromYaw(final_yaw);
+                const float q_raw[4] = {out_q.x, out_q.y, out_q.z, out_q.w};
+                WriteBytesSafe(module + layout::kPhysicsOrientation, q_raw, sizeof(q_raw));
+            } else if (g_first_person.load(std::memory_order_relaxed)) {
+                // In first person even while stationary, track camera yaw
+                float fx = cam.forward[0], fz = cam.forward[2];
+                if (fx * fx + fz * fz > 1e-4f) {
+                    const float target_yaw = std::atan2(fx, fz);
+                    const auto out_q = eldenring::motion::OrientationQuat::fromYaw(target_yaw);
+                    const float q_raw[4] = {out_q.x, out_q.y, out_q.z, out_q.w};
+                    WriteBytesSafe(module + layout::kPhysicsOrientation, q_raw, sizeof(q_raw));
                 }
             }
         }
@@ -2304,7 +2333,13 @@ void FlightStep() {
     if (!have_heading) keys.forward = keys.back = keys.left = keys.right = false; // no heading this frame: vertical only
     g_movement_layer_ms.store(now_ms, std::memory_order_relaxed);
     flight::step(own, keys, heading, dt, g_fly_h_speed.load(std::memory_order_relaxed), g_fly_v_speed.load(std::memory_order_relaxed));
-    if (have_heading) g_fly_yaw.store(flight::bodyYaw(heading), std::memory_order_relaxed);
+    if (have_heading) {
+        const float fly_yaw = flight::bodyYaw(heading);
+        g_fly_yaw.store(fly_yaw, std::memory_order_relaxed);
+        const auto out_q = eldenring::motion::OrientationQuat::fromYaw(fly_yaw);
+        const float q_raw[4] = {out_q.x, out_q.y, out_q.z, out_q.w};
+        WriteBytesSafe(module + layout::kPhysicsOrientation, q_raw, sizeof(q_raw));
+    }
     // Written every frame, also when standing still in the air: the game's gravity must not pull the player down between frames.
     WriteBytesSafe(module + layout::kPhysicsPosition, own, sizeof(own));
     WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, own, sizeof(own));
@@ -3524,6 +3559,8 @@ void SetupOverlay() {
                 else if (key == "mc_jump_speed") g_mc_jump_speed.store(std::clamp(value, 1.f, 20.f));
                 else if (key == "blocks") g_blocks_enabled.store(value != 0.f);
                 else if (key == "block_drive") g_block_drive.store(value != 0.f);
+                else if (key == "instant_turn") g_instant_turn.store(value != 0.f);
+                else if (key == "turn_speed") g_turn_speed.store(std::clamp(value, 0.5f, 50.f));
                 else if (key == "block_speed") g_block_walk_speed.store(std::clamp(value, 0.5f, 12.f));
                 else if (key == "block_anchor") g_block_anchor.store(value != 0.f);
                 else if (key == "block_ground") g_block_ground.store(value != 0.f);
