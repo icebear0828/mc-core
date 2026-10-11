@@ -1719,6 +1719,7 @@ std::atomic<bool> g_block_drive{true};         // block_drive=0: leave the game'
 std::atomic<bool> g_block_anchor{true};        // block_anchor=0: do not pin the player in place on a block while no movement key is down
 std::atomic<bool> g_block_ground{true};        // block_ground=0: do not fake "on the ground" while standing on a block
 std::atomic<bool> g_block_collision{true};     // block_collision=0: the player walks through the blocks
+std::atomic<bool> g_block_supported{false};     // true when player's feet are supported by placed voxel blocks
 std::atomic<float> g_reach{4.5f};              // reach, metres (Minecraft survival)
 unsigned g_blocks_sent_version = ~0u;
 
@@ -2087,12 +2088,14 @@ void BlocksCollisionStep() {
     static unsigned pushes = 0;
     if (!g_block_collision.load(std::memory_order_relaxed) || !g_mc_mode.load(std::memory_order_relaxed)) {
         have_prev = false;
+        g_block_supported.store(false, std::memory_order_relaxed);
         return;
     }
     {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         if (g_blocks.count() == 0) {
             have_prev = false;
+            g_block_supported.store(false, std::memory_order_relaxed);
             return;
         }
     }
@@ -2100,6 +2103,7 @@ void BlocksCollisionStep() {
     float feet[3];
     if (player == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) {
         have_prev = false;
+        g_block_supported.store(false, std::memory_order_relaxed);
         return;
     }
     float dx = 0.f, dy = 0.f, dz = 0.f;
@@ -2120,6 +2124,7 @@ void BlocksCollisionStep() {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         supported = blocks::supportedByBlock(g_blocks, final_feet);
     }
+    g_block_supported.store(supported, std::memory_order_relaxed);
     const uintptr_t module = detail::readPhysicsModule(g_reader, g_img.base, player);
     if (module != 0 && r.moved) {
         // +0x70 is the position, +0x80 the previous frame's: both move, so the push is not seen as speed
@@ -2259,20 +2264,19 @@ void BlocksTick() {
 }
 
 // ---- MC jump (mc_jump=1) ------------------------------------------------------------------------------------------------------
-// The game's jump has a 0.7-0.8 s wind-up and is low, and its vertical speed cannot be written (the first experiment wrote 8.95 m/s and
-// read 0.84 back: +0x124 is only a read-out). So the whole arc is ours: the jump key is hidden from the game (DirectInput), on the press
-// (on the ground or on a block) the height is integrated here with Minecraft's numbers and written into the physics position every frame,
-// the "on the ground" flag is kept cleared so the game does not snap the player back, and the keys drive the horizontal speed. The landing
-// is the game's ground (a static ray down) or the top of a placed block. Game thread (camera update).
+// The game's jump has a 0.7-0.8 s wind-up and is low, and its vertical speed cannot be written (+0x124 is only a read-out).
+// So the whole arc is ours: the jump key is hidden from the game (DirectInput), on the press (on the ground or on a block)
+// the height is integrated using Minecraft kinematics (MinecraftJumpController: 8.4 m/s initial, 32 m/s^2 gravity, 0.98 drag, ~1.25m peak)
+// and written into the physics position every frame. Horizontal velocity carries momentum with sprint boost (1.15x) and air steering authority.
+// The landing is the game's ground (a static ray down) or the top of a placed block. Game thread (camera update).
 std::atomic<bool> g_mc_jump{false};
 std::atomic<int> g_mc_jump_vk{VK_SPACE};
-std::atomic<float> g_mc_jump_speed{8.944f};  // m/s: with 32 m/s^2 gravity the peak is 1.25 m, Minecraft's jump
-std::atomic<float> g_mc_gravity{32.f};
+std::atomic<float> g_mc_jump_speed{eldenring::jump::kMcJumpInitialVelocity};
+std::atomic<float> g_mc_gravity{eldenring::jump::kMcJumpGravity};
 
 void McJumpStep() {
     static bool prev_key = false;
-    static bool active = false;
-    static float y = 0.f, vy = 0.f, start_y = 0.f, peak = 0.f;
+    static eldenring::jump::MinecraftJumpController controller;
     static LARGE_INTEGER last_qpc{};
     static uint64_t start_ms = 0;
     LARGE_INTEGER now_qpc, freq;
@@ -2283,7 +2287,7 @@ void McJumpStep() {
     dt = std::clamp(dt, 0.f, 0.05f);
     if (!g_mc_jump.load(std::memory_order_relaxed) || !g_mc_mode.load(std::memory_order_relaxed) || g_inv_open.load(std::memory_order_relaxed) || !GameInForeground()) {
         prev_key = false;
-        active = false;
+        controller.cancel();
         return;
     }
     const uintptr_t player = PlayerChrPtr();
@@ -2298,37 +2302,94 @@ void McJumpStep() {
     SafeCopy(module + 0x92, &ground, 1);
     const uint8_t zero = 0, one = 1;
 
-    if (!active) {
-        if (edge && ground == 1 && !PlayerDead()) {
-            active = true;
-            y = start_y = feet[1];
-            vy = g_mc_jump_speed.load();
-            peak = 0.f;
+    if (!controller.isActive()) {
+        bool supported_by_block = false;
+        {
+            std::lock_guard<std::mutex> g(g_blocks_mutex);
+            if (g_blocks.count() != 0) {
+                supported_by_block = blocks::supportedByBlock(g_blocks, feet);
+            }
+        }
+        if (!supported_by_block) {
+            supported_by_block = g_block_supported.load(std::memory_order_relaxed);
+        }
+
+        const bool can_jump = eldenring::jump::canTakeOff(
+            ground == 1,
+            supported_by_block,
+            g_on_ground.load(std::memory_order_relaxed),
+            PlayerDead());
+
+        if (edge && can_jump) {
+            // Read input and camera direction to initialize horizontal momentum
+            const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
+            const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
+            const bool sneaking = (GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0;
+            const bool sprinting = !sneaking && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            const float target_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
+                                      : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
+                                      : g_block_walk_speed.load(std::memory_order_relaxed);
+
+            float init_vx = 0.f, init_vz = 0.f;
+            const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+            CameraPose cam;
+            if (world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
+                float dir[2] = {0.f, 0.f};
+                if (eldenring::motion::computeInputDirection(fwd_key, right_key, cam.forward, cam.right, dir)) {
+                    init_vx = dir[0] * target_speed;
+                    init_vz = dir[1] * target_speed;
+                }
+            }
+
+            controller.start(feet[1], init_vx, init_vz, sprinting, g_mc_jump_speed.load());
             start_ms = GetTickCount64();
-            Log("mcjump: start at y=%.3f, v=%.2f m/s, g=%.1f", y, vy, g_mc_gravity.load());
+            Log("mcjump: start at y=%.3f, v=%.2f m/s, sprint=%d, h_speed=%.2f m/s",
+                feet[1], controller.vy(), sprinting ? 1 : 0,
+                std::sqrt(controller.vx() * controller.vx() + controller.vz() * controller.vz()));
         } else {
             return;
         }
     }
 
     g_movement_layer_ms.store(GetTickCount64(), std::memory_order_relaxed);
-    // integrate (semi-implicit Euler)
-    vy -= g_mc_gravity.load() * dt;
-    float ny = y + vy * dt;
+    UnlockAirMovement(player);
+    ResetFallTimer(player);
+
+    // Compute input for air steering:
+    const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
+    const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
+    const bool sneaking = (GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0;
+    const bool sprinting = !sneaking && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    const float steer_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
+                            : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
+                            : g_block_walk_speed.load(std::memory_order_relaxed);
+
+    float dir[2] = {0.f, 0.f};
+    bool has_steer = false;
+    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    CameraPose cam;
+    if (world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
+        has_steer = eldenring::motion::computeInputDirection(fwd_key, right_key, cam.forward, cam.right, dir);
+    }
+
+    const auto res = controller.update(dt, dir[0], dir[1], steer_speed, has_steer);
+    float ny = res.y;
     float pos[3] = {feet[0], ny, feet[2]};
     bool landed = false;
-    {   // a block above: the head stops the rise
+
+    // Block collision & ceiling resolution:
+    {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         if (g_blocks.count() != 0) {
             const blocks::Resolve r = blocks::resolvePlayer(g_blocks, pos);
             if (r.moved && r.feet[1] < ny - 1e-4f) { // pushed down by a ceiling
                 pos[1] = r.feet[1];
                 ny = r.feet[1];
-                if (vy > 0.f) vy = 0.f;
-            } else if (vy <= 0.f && blocks::supportedByBlock(g_blocks, pos)) {
+                controller.hitCeiling(r.feet[1]);
+            } else if (res.vy <= 0.f && blocks::supportedByBlock(g_blocks, pos)) {
                 landed = true;
-            } else if (vy <= 0.f) {
-                const float prev_pos[3] = {feet[0], y, feet[2]};
+            } else if (res.vy <= 0.f) {
+                const float prev_pos[3] = {feet[0], controller.currentY() - res.vy * dt, feet[2]};
                 const blocks::Resolve sw = blocks::resolvePlayerSwept(g_blocks, prev_pos, pos);
                 if (sw.moved && sw.standing) {
                     pos[1] = sw.feet[1];
@@ -2338,9 +2399,10 @@ void McJumpStep() {
             }
         }
     }
-    if (!landed && vy <= 0.f && g_los_enabled.load()) { // the game's ground: a ray down from just above the feet
+
+    if (!landed && res.vy <= 0.f && g_los_enabled.load()) { // the game's ground: a ray down from just above the feet
         const float from[3] = {feet[0], ny + 0.5f, feet[2]};
-        const float drop = std::max(2.0f, (y - start_y) + 2.5f);
+        const float drop = std::max(2.0f, (controller.currentY() - controller.startY()) + 2.5f);
         const float disp[3] = {0.f, -drop, 0.f};
         const RayResult r = CastStaticRay(from, disp);
         if (r.ok && r.hit) {
@@ -2350,26 +2412,44 @@ void McJumpStep() {
                 ny = ground_y;
                 landed = true;
             }
-        } else if (ny < start_y - 3.0f) { // no ground within reach (a cliff): hand the fall back to the game
-            Log("mcjump: no ground under the arc, the game takes over");
-            active = false;
+        } else if (ny < controller.startY() - 3.0f) { // no ground within reach: fall hands over to native Havok
+            Log("mcjump: no ground under the arc, native game takes over");
+            controller.cancel();
             WriteBytesSafe(module + 0x92, &zero, 1);
             return;
         }
     }
-    peak = std::max(peak, ny - start_y);
-    y = ny;
+
     WriteBytesSafe(module + layout::kPhysicsPosition, pos, sizeof(pos));
-    WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, pos, sizeof(pos)); // the previous position follows: no speed from the jump itself
-    DriveVelocityFromKeys(module, false);
+    WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, pos, sizeof(pos));
+
+    // Drive horizontal velocity from controller momentum:
+    float vx = res.vx;
+    float vz = res.vz;
+    WriteBytesSafe(module + 0x120, &vx, sizeof(vx));
+    WriteBytesSafe(module + 0x120 + 8, &vz, sizeof(vz));
+
+    // Update orientation if steering in air
+    if (has_steer) {
+        float target_yaw = std::atan2(dir[0], dir[1]);
+        if (g_first_person.load(std::memory_order_relaxed)) {
+            float fx = cam.forward[0], fz = cam.forward[2];
+            if (fx * fx + fz * fz > 1e-4f) target_yaw = std::atan2(fx, fz);
+        }
+        const auto out_q = eldenring::motion::characterQuatFromHeading(target_yaw);
+        const float q_raw[4] = {out_q.x, out_q.y, out_q.z, out_q.w};
+        WriteBytesSafe(module + layout::kPhysicsOrientation, q_raw, sizeof(q_raw));
+    }
+
     if (landed) {
+        controller.land(ny);
         WriteBytesSafe(module + 0x92, &one, 1);
         WriteBytesSafe(module + 0x1D1, &one, 1);
         WriteBytesSafe(module + 0x1D0, &zero, 1);
         const float zero_f = 0.f;
         WriteBytesSafe(module + 0x1B8, &zero_f, sizeof(zero_f));
-        active = false;
-        Log("mcjump: landed, peak %.2f m, %.2f s in the air, fall timer was %.2f", peak, static_cast<float>(GetTickCount64() - start_ms) / 1000.f, FallTimer(player));
+        Log("mcjump: landed, peak %.2f m, %.2f s in the air, fall timer was %.2f",
+            controller.peak(), static_cast<float>(GetTickCount64() - start_ms) / 1000.f, FallTimer(player));
         LandFallTimer(player);
         UnlockAirMovement(player);
     } else {
