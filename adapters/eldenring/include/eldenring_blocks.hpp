@@ -149,10 +149,14 @@ inline constexpr float kPlayerHalfWidth = 0.3f;
 inline constexpr float kPlayerHeight = 1.8f;
 inline constexpr float kOverlapEps = 1e-4f;
 
+inline bool cellTouchesBox(const Cell& c, const float feet[3], float half_width, float height) {
+    return static_cast<float>(c.x + 1) > feet[0] - half_width + kOverlapEps && static_cast<float>(c.x) < feet[0] + half_width - kOverlapEps &&
+           static_cast<float>(c.z + 1) > feet[2] - half_width + kOverlapEps && static_cast<float>(c.z) < feet[2] + half_width - kOverlapEps &&
+           static_cast<float>(c.y + 1) > feet[1] + kOverlapEps && static_cast<float>(c.y) < feet[1] + height - kOverlapEps;
+}
+
 inline bool cellTouchesPlayer(const Cell& c, const float feet[3]) {
-    return static_cast<float>(c.x + 1) > feet[0] - kPlayerHalfWidth + kOverlapEps && static_cast<float>(c.x) < feet[0] + kPlayerHalfWidth - kOverlapEps &&
-           static_cast<float>(c.z + 1) > feet[2] - kPlayerHalfWidth + kOverlapEps && static_cast<float>(c.z) < feet[2] + kPlayerHalfWidth - kOverlapEps &&
-           static_cast<float>(c.y + 1) > feet[1] + kOverlapEps && static_cast<float>(c.y) < feet[1] + kPlayerHeight - kOverlapEps;
+    return cellTouchesBox(c, feet, kPlayerHalfWidth, kPlayerHeight);
 }
 
 struct Resolve {
@@ -161,17 +165,17 @@ struct Resolve {
     bool standing{false}; // lifted onto the top of a block
 };
 
-// Pushes the player out of any blocks it overlaps along the axis that needs the least movement. Gives up (and changes nothing)
-// when that would move the player more than `max_push` in total: a teleport guard, so a bad state never throws the player around.
-inline Resolve resolvePlayer(const BlockGrid& grid, const float feet_in[3], float max_push = 1.0f) {
+// Pushes an axis-aligned entity bounding box out of any blocks it overlaps along the axis that needs the least movement.
+// Gives up (and changes nothing) when that would move the entity more than `max_push` in total (teleport guard).
+inline Resolve resolveBox(const BlockGrid& grid, const float feet_in[3], float half_width = kPlayerHalfWidth, float height = kPlayerHeight, float max_push = 1.0f) {
     Resolve r;
     for (int i = 0; i < 3; ++i) r.feet[i] = feet_in[i];
     if (grid.count() == 0) return r;
     bool standing = false;
     for (int iter = 0; iter < 6; ++iter) {
-        const int x0 = static_cast<int>(std::floor(r.feet[0] - kPlayerHalfWidth)), x1 = static_cast<int>(std::floor(r.feet[0] + kPlayerHalfWidth));
-        const int y0 = static_cast<int>(std::floor(r.feet[1])), y1 = static_cast<int>(std::floor(r.feet[1] + kPlayerHeight));
-        const int z0 = static_cast<int>(std::floor(r.feet[2] - kPlayerHalfWidth)), z1 = static_cast<int>(std::floor(r.feet[2] + kPlayerHalfWidth));
+        const int x0 = static_cast<int>(std::floor(r.feet[0] - half_width)), x1 = static_cast<int>(std::floor(r.feet[0] + half_width));
+        const int y0 = static_cast<int>(std::floor(r.feet[1])), y1 = static_cast<int>(std::floor(r.feet[1] + height));
+        const int z0 = static_cast<int>(std::floor(r.feet[2] - half_width)), z1 = static_cast<int>(std::floor(r.feet[2] + half_width));
         float best = 1e9f;
         float best_delta[3] = {0.f, 0.f, 0.f};
         bool best_up = false;
@@ -180,7 +184,7 @@ inline Resolve resolvePlayer(const BlockGrid& grid, const float feet_in[3], floa
             for (int y = y0; y <= y1; ++y) {
                 for (int z = z0; z <= z1; ++z) {
                     const Cell c{x, y, z};
-                    if (grid.get(c) == mc::BlockId::Air || !cellTouchesPlayer(c, r.feet)) continue;
+                    if (grid.get(c) == mc::BlockId::Air || !cellTouchesBox(c, r.feet, half_width, height)) continue;
                     any = true;
                     struct Option {
                         float amount;
@@ -188,10 +192,10 @@ inline Resolve resolvePlayer(const BlockGrid& grid, const float feet_in[3], floa
                         float signed_delta;
                         bool up;
                     } options[5] = {
-                        {static_cast<float>(c.x + 1) - (r.feet[0] - kPlayerHalfWidth), 0, static_cast<float>(c.x + 1) - (r.feet[0] - kPlayerHalfWidth), false},
-                        {(r.feet[0] + kPlayerHalfWidth) - static_cast<float>(c.x), 0, -((r.feet[0] + kPlayerHalfWidth) - static_cast<float>(c.x)), false},
-                        {static_cast<float>(c.z + 1) - (r.feet[2] - kPlayerHalfWidth), 2, static_cast<float>(c.z + 1) - (r.feet[2] - kPlayerHalfWidth), false},
-                        {(r.feet[2] + kPlayerHalfWidth) - static_cast<float>(c.z), 2, -((r.feet[2] + kPlayerHalfWidth) - static_cast<float>(c.z)), false},
+                        {static_cast<float>(c.x + 1) - (r.feet[0] - half_width), 0, static_cast<float>(c.x + 1) - (r.feet[0] - half_width), false},
+                        {(r.feet[0] + half_width) - static_cast<float>(c.x), 0, -((r.feet[0] + half_width) - static_cast<float>(c.x)), false},
+                        {static_cast<float>(c.z + 1) - (r.feet[2] - half_width), 2, static_cast<float>(c.z + 1) - (r.feet[2] - half_width), false},
+                        {(r.feet[2] + half_width) - static_cast<float>(c.z), 2, -((r.feet[2] + half_width) - static_cast<float>(c.z)), false},
                         {static_cast<float>(c.y + 1) - r.feet[1], 1, static_cast<float>(c.y + 1) - r.feet[1], true},
                     };
                     for (const Option& o : options) {
@@ -203,7 +207,7 @@ inline Resolve resolvePlayer(const BlockGrid& grid, const float feet_in[3], floa
                         }
                     }
                     // the head against an underside
-                    const float down = (r.feet[1] + kPlayerHeight) - static_cast<float>(c.y);
+                    const float down = (r.feet[1] + height) - static_cast<float>(c.y);
                     if (down < best) {
                         best = down;
                         best_delta[0] = best_delta[2] = 0.f;
@@ -222,12 +226,12 @@ inline Resolve resolvePlayer(const BlockGrid& grid, const float feet_in[3], floa
     // still overlapping after the iterations, or pushed too far: do nothing
     bool overlapping = false;
     if (r.moved) {
-        const int x0 = static_cast<int>(std::floor(r.feet[0] - kPlayerHalfWidth)), x1 = static_cast<int>(std::floor(r.feet[0] + kPlayerHalfWidth));
-        const int y0 = static_cast<int>(std::floor(r.feet[1])), y1 = static_cast<int>(std::floor(r.feet[1] + kPlayerHeight));
-        const int z0 = static_cast<int>(std::floor(r.feet[2] - kPlayerHalfWidth)), z1 = static_cast<int>(std::floor(r.feet[2] + kPlayerHalfWidth));
+        const int x0 = static_cast<int>(std::floor(r.feet[0] - half_width)), x1 = static_cast<int>(std::floor(r.feet[0] + half_width));
+        const int y0 = static_cast<int>(std::floor(r.feet[1])), y1 = static_cast<int>(std::floor(r.feet[1] + height));
+        const int z0 = static_cast<int>(std::floor(r.feet[2] - half_width)), z1 = static_cast<int>(std::floor(r.feet[2] + half_width));
         for (int x = x0; x <= x1 && !overlapping; ++x)
             for (int y = y0; y <= y1 && !overlapping; ++y)
-                for (int z = z0; z <= z1 && !overlapping; ++z) overlapping = grid.get({x, y, z}) != mc::BlockId::Air && cellTouchesPlayer({x, y, z}, r.feet);
+                for (int z = z0; z <= z1 && !overlapping; ++z) overlapping = grid.get({x, y, z}) != mc::BlockId::Air && cellTouchesBox({x, y, z}, r.feet, half_width, height);
     }
     if (r.moved && (overlapping || std::sqrt(dx * dx + dy * dy + dz * dz) > max_push)) {
         Resolve none;
@@ -238,15 +242,23 @@ inline Resolve resolvePlayer(const BlockGrid& grid, const float feet_in[3], floa
     return r;
 }
 
-inline bool playerOverlapsBlocks(const BlockGrid& grid, const float feet[3]) {
-    const int x0 = static_cast<int>(std::floor(feet[0] - kPlayerHalfWidth)), x1 = static_cast<int>(std::floor(feet[0] + kPlayerHalfWidth));
-    const int y0 = static_cast<int>(std::floor(feet[1])), y1 = static_cast<int>(std::floor(feet[1] + kPlayerHeight));
-    const int z0 = static_cast<int>(std::floor(feet[2] - kPlayerHalfWidth)), z1 = static_cast<int>(std::floor(feet[2] + kPlayerHalfWidth));
+inline Resolve resolvePlayer(const BlockGrid& grid, const float feet_in[3], float max_push = 1.0f) {
+    return resolveBox(grid, feet_in, kPlayerHalfWidth, kPlayerHeight, max_push);
+}
+
+inline bool boxOverlapsBlocks(const BlockGrid& grid, const float feet[3], float half_width = kPlayerHalfWidth, float height = kPlayerHeight) {
+    const int x0 = static_cast<int>(std::floor(feet[0] - half_width)), x1 = static_cast<int>(std::floor(feet[0] + half_width));
+    const int y0 = static_cast<int>(std::floor(feet[1])), y1 = static_cast<int>(std::floor(feet[1] + height));
+    const int z0 = static_cast<int>(std::floor(feet[2] - half_width)), z1 = static_cast<int>(std::floor(feet[2] + half_width));
     for (int x = x0; x <= x1; ++x)
         for (int y = y0; y <= y1; ++y)
             for (int z = z0; z <= z1; ++z)
-                if (grid.get({x, y, z}) != mc::BlockId::Air && cellTouchesPlayer({x, y, z}, feet)) return true;
+                if (grid.get({x, y, z}) != mc::BlockId::Air && cellTouchesBox({x, y, z}, feet, half_width, height)) return true;
     return false;
+}
+
+inline bool playerOverlapsBlocks(const BlockGrid& grid, const float feet[3]) {
+    return boxOverlapsBlocks(grid, feet, kPlayerHalfWidth, kPlayerHeight);
 }
 
 // True when the feet rest on the top of a block: a block top within 6 cm below to 1 mm above the feet, under the footprint. (The
@@ -264,14 +276,14 @@ inline bool supportedByBlock(const BlockGrid& grid, const float feet[3]) {
     return false;
 }
 
-// Like resolvePlayer, but a fall that crossed the top of a block between two frames is caught: the player ends up standing on the
+// Like resolveBox, but a fall that crossed the top of a block between two frames is caught: the entity ends up standing on the
 // highest block top it passed through (a frame hitch or a high falling speed would otherwise take it through a thin block).
-inline Resolve resolvePlayerSwept(const BlockGrid& grid, const float prev[3], const float cur[3], float max_push = 1.0f) {
+inline Resolve resolveBoxSwept(const BlockGrid& grid, const float prev[3], const float cur[3], float half_width = kPlayerHalfWidth, float height = kPlayerHeight, float max_push = 1.0f) {
     if (grid.count() != 0 && cur[1] < prev[1] - 1e-4f && prev[1] - cur[1] < 64.f) {
-        const int x0 = static_cast<int>(std::floor(cur[0] - kPlayerHalfWidth + kOverlapEps)), x1 = static_cast<int>(std::floor(cur[0] + kPlayerHalfWidth - kOverlapEps));
-        const int z0 = static_cast<int>(std::floor(cur[2] - kPlayerHalfWidth + kOverlapEps)), z1 = static_cast<int>(std::floor(cur[2] + kPlayerHalfWidth - kOverlapEps));
+        const int x0 = static_cast<int>(std::floor(cur[0] - half_width + kOverlapEps)), x1 = static_cast<int>(std::floor(cur[0] + half_width - kOverlapEps));
+        const int z0 = static_cast<int>(std::floor(cur[2] - half_width + kOverlapEps)), z1 = static_cast<int>(std::floor(cur[2] + half_width - kOverlapEps));
         const int y_top = static_cast<int>(std::floor(prev[1] + kOverlapEps)), y_low = static_cast<int>(std::floor(cur[1]));
-        for (int y = y_top; y >= y_low; --y) { // from the highest block top the player passed
+        for (int y = y_top; y >= y_low; --y) { // from the highest block top the entity passed
             bool found = false;
             for (int x = x0; x <= x1 && !found; ++x)
                 for (int z = z0; z <= z1 && !found; ++z) found = grid.get({x, y, z}) != mc::BlockId::Air;
@@ -282,14 +294,18 @@ inline Resolve resolvePlayerSwept(const BlockGrid& grid, const float prev[3], co
             r.feet[0] = cur[0];
             r.feet[1] = top;
             r.feet[2] = cur[2];
-            // standing there must not leave the player inside another block (a ceiling right above the block)
-            if (playerOverlapsBlocks(grid, r.feet)) continue;
+            // standing there must not leave the entity inside another block (a ceiling right above the block)
+            if (boxOverlapsBlocks(grid, r.feet, half_width, height)) continue;
             r.moved = true;
             r.standing = true;
             return r;
         }
     }
-    return resolvePlayer(grid, cur, max_push);
+    return resolveBox(grid, cur, half_width, height, max_push);
+}
+
+inline Resolve resolvePlayerSwept(const BlockGrid& grid, const float prev[3], const float cur[3], float max_push = 1.0f) {
+    return resolveBoxSwept(grid, prev, cur, kPlayerHalfWidth, kPlayerHeight, max_push);
 }
 
 } // namespace eldenring::blocks
