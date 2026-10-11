@@ -1256,3 +1256,74 @@ Table 1                     Table 2
 - **请求过期（需要逆向）**：我们的近战请求只在受害者自己的 `SetMaxHPAndClampHP` 恰好在**游戏线程**上执行时才应用（`eldenring_damage.hpp` 的 `require_victim_updating`，为了不和 worker 线程竞争），否则 `Deferred`；超过 300 tick（≈5 s）`Expired`。日志：`DAMAGE: request chr=… -> Expired` 37 次，对比成功 85 次，即被接受的请求里约 30% 过期。
 **(2) 近战延迟**：挥击到伤害生效，71 次配对的延迟中位数 0.08 s，p90 0.41 s，7 次 >0.5 s、6 次 >1 s（含少数配对噪声）。同一原因（等受害者的模块轮到游戏线程）。
 **(3) 箭射中后伤害/声响延迟**：F3/拉弓发射到 `ARROW:`（命中处理）的间隔 0.8~1.5 s（真射 0.83~0.98 s），但当时没记目标距离，不能判断是命中处理晚还是目标本来就远。已知弩箭直线飞行 32.5 m/s（每 250 ms 约 8 m），10 m 约 0.3 s。我们的命中音、命中标记、伤害替换都在 `ProcessDamageContext` 钩子里，所以是"引擎处理这次命中的时刻"，不是我们额外延迟的（我们没有排队）。用户的感觉是"MC 箭飞得太快，视觉上已经射中了，伤害和声音要过一会"，也可能是游戏弩箭的特效（`GXFfxSceneCtrl`）和物理子弹速度不同步。
+
+
+## 37. 艾尔登法环深度缓冲区与相机投影数学还原（2026-10-11，A 级实机，彻底解决方块穿透建筑物）
+
+### 37.1 现象与历史成因
+用户反馈："放置的方块永远显示，无论隔着多厚的建筑物或地形都直接穿透"。
+此前校准模式（Mode 2）下，方块自始至终显示为过远纯蓝色（比值 $r > 2.0$），未能正确识别建筑物遮挡。
+历史配置中 `depth_const` 被设置为 `0.00456`，误将统计测量得到的 $K \approx 0.00395$ 当作近平面常数。
+
+### 37.2 核心突破：ChrCam 内存实测相机参数（A 级实机证据）
+在运行中的游戏实例中，通过直接读取 `WorldChrMan -> ChrCam`（基址 `+0x50`..`+0x68`）的浮点数，测得游戏引擎原生相机核心投影参数：
+```text
+camera memory: fov=0.838 (+0x54)=1.777778 (+0x58)=0.050067 (+0x5C)=10000.000000
+```
+- `+0x50`：`fov_y = 0.838` rad（约 48.0° 垂直视场角）
+- `+0x54`：`aspect = 1.777778`（16:9 宽高比）
+- `+0x58`：**`near_plane = 0.050067` m（近平面 5.0067 cm）**
+- `+0x5C`：**`far_plane = 10000.0` m（远平面 10.0 km）**
+
+在 Reverse-Z 投影矩阵下，硬件深度值 $gd$ 与视空间物距 $z$ 的精确解析关系为：
+$$gd(z) = \frac{n \cdot f}{(f - n) \cdot z} - \frac{n}{f - n} \approx \frac{n}{z} = \frac{0.050067}{z}$$
+反推实际场景深度距离：
+$$z_{scene} \approx \frac{0.050067}{gd}$$
+
+### 37.3 为什么旧代码测出 $K \approx 0.00395$（根本 BUG 揭秘）
+在 DirectX 11/12 HLSL 规范中，Pixel Shader 的输入语义 `SV_POSITION.w` **已经是插值后的视空间物距 $z$（米）**，而不是 OpenGL/Vulkan GLSL 的 $1/z$！
+然而旧着色器中存在致命代码：
+```hlsl
+float steve_z = rcp(i.pos.w);
+```
+将物距再次倒数，导致实际算出的 `steve_z = 1 / z`！
+- 当第三人称相机与方块距离 $z = 4.0$ 米时，着色器内部 `steve_z` 变成了 $1 / 4.0 = 0.25$ 米！
+- 统计缓冲区测量的 $K = gd \cdot steve\_z$ 实际上是：
+  $$K = \left(\frac{n}{z}\right) \cdot \left(\frac{1}{z}\right) = \frac{n}{z^2} = \frac{0.050067}{z^2}$$
+  在第三人称视距 $z \approx 4.5$ 米处：
+  $$K = \frac{0.050067}{4.5^2} \approx 0.00247 \sim 0.00395$$
+- 遮挡丢弃判定为：
+  `scene.x / gd < steve_z * (1.0 - scene.y) - scene.z`
+  代入错误数值后相当于判断：$z_{scene} < 0.25$ 米！
+  除非建筑物离镜头距离小于 25 厘米，否则遮挡判定恒为 `false`，导致方块在建筑物后方永远无法剔除。
+
+### 37.4 修复方案与验证
+1. `steve_renderer_d3d12.cpp`：移除 `rcp(i.pos.w)`，直接读取 `float steve_z = i.pos.w;`（`PSMain` 与 `PSShadow` 同步修复）。
+2. `mc_er_steve.txt`：配置 `depth_const=0.050067`，`occlusion=1`，`debug=0`。
+3. `test_eldenring_depth.cpp`：添加 5 项投影测试，317 个单元测试 100% 通过。
+4. 用户实机确认：建筑物遮挡完全正常。
+
+
+## 38. 放置方块对敌人物理阻挡与动态碰撞（2026-10-11，A 级实机）
+
+### 38.1 敌人物理穿透的根因
+建筑物遮挡修复后，用户反馈："建筑物没问题了，但是敌人还是直接传（穿）过去的"。
+查阅 `adapters/eldenring/src/loader.cpp:1748`，原版注释明确记录：
+```cpp
+// the player is kept out of them by writing the physics position (soft collision); enemies and arrows ignore them.
+```
+原始碰撞步进 `BlocksCollisionStep()` 仅对玩家 `PlayerChrPtr()` 执行了 AABB 推挤，敌人没有做任何碰撞解算，因此走动与攻击时会像幽灵一样穿过方块。
+
+### 38.2 解决方案与实现
+1. **通用实体 AABB 碰撞器（`eldenring_blocks.hpp`）**：
+   - 提取并泛化 `resolveBox(grid, feet, half_width, height, max_push)` 与 `resolveBoxSwept`，支持任意半径与高度的实体解算。
+2. **活跃敌人实时物理拦截（`loader.cpp:EnemiesBlockCollisionStep`）**：
+   - 在每帧相机步进中，调用 `enumerateEnemies` 枚举玩家 50 米内的所有活跃敌人（过滤已死目标）；
+   - 读取敌人当前 Havok 物理位置（`PhysicsModule+0x70`）；
+   - 使用 `resolveBox` / `resolveBoxSwept`（`half_width=0.35m, height=1.8m`）解算与放置方块的侵入；
+   - 若发生侵入，将推离后的安全坐标直接写入敌人的 `PhysicsModule + 0x70` 及 `+ 0x80`，形成坚实的物理阻挡墙。
+3. **配置与测试**：
+   - 支持 `enemy_block_collision=1` 动态开关（默认开启）；
+   - 在 `test_eldenring_blocks.cpp` 中新增 `EntityWalkingIntoAWallIsPushedBack`、`LargeEntityCollidesWithBlocks`、`EntityStandingOnABlockIsLiftedToTop` 单元测试，全部通过；
+   - 用户实机确认：敌人无法穿透方块，阻挡与物理防护完全生效。
+

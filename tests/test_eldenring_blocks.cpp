@@ -238,3 +238,42 @@ TEST(Blocks, StandingOnABlockTopCountsAsSupported) {
     EXPECT_FALSE(supportedByBlock(g, beside));
     EXPECT_FALSE(supportedByBlock(g, inside)); // sunk: the push handles this, it is not "standing"
 }
+
+TEST(Blocks, EntityWalkingIntoAWallIsPushedBack) {
+    BlockGrid g;
+    // Build a stone wall at x = 2
+    for (int y = 0; y < 3; ++y) g.place({2, y, 0}, mc::BlockId::Stone);
+    
+    // Enemy with half-width 0.35m at x = 1.75 (reaches x = 2.1, 10cm into the wall)
+    float feet[3] = {1.75f, 0.0f, 0.5f};
+    const Resolve r = resolveBox(g, feet, 0.35f, 1.8f);
+    EXPECT_TRUE(r.moved);
+    EXPECT_FALSE(r.standing);
+    EXPECT_NEAR(r.feet[0], 1.65f, 1e-3f);
+    EXPECT_NEAR(r.feet[1], 0.0f, 1e-4f);
+}
+
+TEST(Blocks, LargeEntityCollidesWithBlocks) {
+    BlockGrid g;
+    // Build a stone wall at z = 5
+    for (int x = 0; x < 3; ++x)
+        for (int y = 0; y < 3; ++y) g.place({x, y, 5}, mc::BlockId::Stone);
+
+    // Large troll/boss with half-width 0.8m, height 3.5m walking towards z = 5
+    // Feet at z = 4.5 (reaches z = 5.3, penetrating wall)
+    float feet[3] = {1.0f, 0.0f, 4.5f};
+    const Resolve r = resolveBox(g, feet, 0.8f, 3.5f);
+    EXPECT_TRUE(r.moved);
+    EXPECT_NEAR(r.feet[2], 4.2f, 1e-3f);
+}
+
+TEST(Blocks, EntityStandingOnABlockIsLiftedToTop) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::Stone); // top at y = 1
+    float feet[3] = {0.5f, 0.85f, 0.5f};   // sunk 15 cm into the block
+    const Resolve r = resolveBox(g, feet, 0.35f, 1.8f);
+    EXPECT_TRUE(r.moved);
+    EXPECT_TRUE(r.standing);
+    EXPECT_NEAR(r.feet[1], 1.0f, 1e-4f);
+}
+

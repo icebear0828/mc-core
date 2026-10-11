@@ -652,6 +652,7 @@ struct CamKeep {
 CamKeep g_cam_keep;
 std::atomic<bool> g_camstep_installed{false}; // the camera update hook (game thread, every frame) is in place
 void BlocksCollisionStep(); // defined with the placed blocks below
+void EnemiesBlockCollisionStep(const float player_feet[3]);
 void ShadowGroundStep();    // the same
 void McJumpStep();          // defined after them
 void FlightStep();          // defined after them
@@ -1706,6 +1707,7 @@ std::atomic<bool> g_block_drive{true};         // block_drive=0: leave the game'
 std::atomic<bool> g_block_anchor{true};        // block_anchor=0: do not pin the player in place on a block while no movement key is down
 std::atomic<bool> g_block_ground{true};        // block_ground=0: do not fake "on the ground" while standing on a block
 std::atomic<bool> g_block_collision{true};     // block_collision=0: the player walks through the blocks
+std::atomic<bool> g_enemy_block_collision{true}; // enemy_block_collision=0: enemies walk through the blocks
 std::atomic<float> g_reach{4.5f};              // reach, metres (Minecraft survival)
 unsigned g_blocks_sent_version = ~0u;
 
@@ -2095,6 +2097,68 @@ void BlocksCollisionStep() {
         Log("blocks: standing diag: feet=(%.2f %.2f %.2f) cam=(%.2f %.2f %.2f) first_person=%d 92=%u 93=%u vel=(%.2f %.2f %.2f) pinned=%d fall_t_before=%.2f fall_t_now=%.2f", final_feet[0], final_feet[1],
             final_feet[2], have_cam ? cam.position[0] : 0.f, have_cam ? cam.position[1] : 0.f, have_cam ? cam.position[2] : 0.f, g_first_person.load() ? 1 : 0, flags[0],
             flags[1], vel[0], vel[1], vel[2], pinned ? 1 : 0, g_pre_fall_t.load(), FallTimer(player));
+    }
+
+    EnemiesBlockCollisionStep(final_feet);
+}
+
+void EnemiesBlockCollisionStep(const float player_feet[3]) {
+    if (!g_enemy_block_collision.load(std::memory_order_relaxed) || !g_mc_mode.load(std::memory_order_relaxed)) return;
+    {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        if (g_blocks.count() == 0) return;
+    }
+    std::vector<EnemyInfo> enemies;
+    if (!enumerateEnemies(g_reader, g_img.base, enemies, 128)) return;
+
+    static unsigned enemy_pushes = 0;
+    static std::unordered_map<uintptr_t, std::array<float, 3>> prev_enemy_feet;
+
+    if (prev_enemy_feet.size() > 256) prev_enemy_feet.clear();
+
+    for (const EnemyInfo& e : enemies) {
+        if (e.chr == 0 || e.hp <= 0) continue;
+        float e_feet[3];
+        if (!detail::readPhysicsPosition(g_reader, g_img.base, e.chr, e_feet)) continue;
+
+        // Skip enemies far from the player
+        const float dx = e_feet[0] - player_feet[0];
+        const float dy = e_feet[1] - player_feet[1];
+        const float dz = e_feet[2] - player_feet[2];
+        if (dx * dx + dy * dy + dz * dz > 50.f * 50.f) continue;
+
+        blocks::Resolve er;
+        {
+            std::lock_guard<std::mutex> g(g_blocks_mutex);
+            if (g_blocks.count() == 0) return;
+            auto it = prev_enemy_feet.find(e.chr);
+            if (it != prev_enemy_feet.end()) {
+                const auto& prev = it->second;
+                const float mx = e_feet[0] - prev[0], my = e_feet[1] - prev[1], mz = e_feet[2] - prev[2];
+                if (mx * mx + my * my + mz * mz < 25.f) {
+                    er = blocks::resolveBoxSwept(g_blocks, prev.data(), e_feet, 0.35f, 1.8f);
+                } else {
+                    er = blocks::resolveBox(g_blocks, e_feet, 0.35f, 1.8f);
+                }
+            } else {
+                er = blocks::resolveBox(g_blocks, e_feet, 0.35f, 1.8f);
+            }
+        }
+        float final_e_feet[3] = {er.moved ? er.feet[0] : e_feet[0], er.moved ? er.feet[1] : e_feet[1], er.moved ? er.feet[2] : e_feet[2]};
+        prev_enemy_feet[e.chr] = {final_e_feet[0], final_e_feet[1], final_e_feet[2]};
+
+        if (er.moved) {
+            const uintptr_t emodule = detail::readPhysicsModule(g_reader, g_img.base, e.chr);
+            if (emodule != 0) {
+                WriteBytesSafe(emodule + layout::kPhysicsPosition, er.feet, sizeof(er.feet));
+                WriteBytesSafe(emodule + layout::kPhysicsPosition + 0x10, er.feet, sizeof(er.feet));
+                if (++enemy_pushes <= 10 || enemy_pushes % 100 == 0) {
+                    Log("blocks: pushed enemy %p out (%.2f %.2f %.2f) -> (%.2f %.2f %.2f)%s, %u total",
+                        reinterpret_cast<void*>(e.chr), e_feet[0], e_feet[1], e_feet[2], er.feet[0], er.feet[1], er.feet[2],
+                        er.standing ? " standing" : "", enemy_pushes);
+                }
+            }
+        }
     }
 }
 
@@ -3528,6 +3592,7 @@ void SetupOverlay() {
                 else if (key == "block_anchor") g_block_anchor.store(value != 0.f);
                 else if (key == "block_ground") g_block_ground.store(value != 0.f);
                 else if (key == "block_collision") g_block_collision.store(value != 0.f);
+                else if (key == "enemy_block_collision" || key == "enemy_collision") g_enemy_block_collision.store(value != 0.f);
                 else if (key == "reach") g_reach.store(std::clamp(value, 1.f, 8.f));
                 else if (key == "no_stagger") g_no_stagger.store(value != 0.f);
                 else if (key == "inv_key") g_inv_vk.store(static_cast<int>(value));
