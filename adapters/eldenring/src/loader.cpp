@@ -3778,6 +3778,17 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     steve.speed_mps = g_walk_speed.load();
     steve.on_ground = g_on_ground.load();
     if (g_slot_probe.load() >= 0 || g_first_person.load()) steve.draw = false; // slot probing: show only the native model, with the one slot missing
+    {   // why Steve is or is not drawn, logged when any of the inputs changes
+        struct Seen { bool draw, enabled, first_person, show, mc, cam_ok; int slot_probe; bool valid; };
+        static Seen last{};
+        const Seen now{steve.draw, g_steve_enabled.load(), g_first_person.load(), out.show, out.mc_mode, steve.cam_valid, g_slot_probe.load(), true};
+        if (!last.valid || now.draw != last.draw || now.enabled != last.enabled || now.first_person != last.first_person || now.show != last.show ||
+            now.mc != last.mc || now.cam_ok != last.cam_ok || now.slot_probe != last.slot_probe) {
+            Log("STEVE-STATE: draw=%d enabled=%d cam_valid=%d first_person=%d slot_probe=%d show=%d mc_mode=%d dead=%d", now.draw ? 1 : 0, now.enabled ? 1 : 0,
+                now.cam_ok ? 1 : 0, now.first_person ? 1 : 0, now.slot_probe, now.show ? 1 : 0, now.mc ? 1 : 0, steve.dead ? 1 : 0);
+            last = now;
+        }
+    }
     return true;
 }
 

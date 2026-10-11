@@ -22,6 +22,7 @@
 #include "eldenring_bow.hpp"
 #include "eldenring_fp.hpp"
 #include "eldenring_hudtex.hpp"
+#include "eldenring_pixel.hpp"
 #include "eldenring_particles.hpp"
 #include "eldenring_blockicon.hpp"
 #include "eldenring_heart_anim.hpp"
@@ -1183,13 +1184,21 @@ void RenderFrame(IDXGISwapChain* sc) {
         D3D12_RANGE range{0, shot_fp.Footprint.RowPitch * shot_rows};
         const bool rgba = rd.Format == DXGI_FORMAT_R8G8B8A8_UNORM || rd.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
         const bool bgra = rd.Format == DXGI_FORMAT_B8G8R8A8_UNORM || rd.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
-        if ((rgba || bgra) && SUCCEEDED(shot_buf->Map(0, &range, &mapped))) {
+        const bool r10 = rd.Format == DXGI_FORMAT_R10G10B10A2_UNORM; // the game's own back buffer (format 24)
+        if ((rgba || bgra || r10) && SUCCEEDED(shot_buf->Map(0, &range, &mapped))) {
             const unsigned w = static_cast<unsigned>(rd.Width), h = rd.Height;
             std::vector<uint8_t> out(static_cast<size_t>(w) * h * 4);
             for (unsigned y = 0; y < h; ++y) {
                 const uint8_t* srow = static_cast<const uint8_t*>(mapped) + static_cast<size_t>(y) * shot_fp.Footprint.RowPitch;
                 uint8_t* drow = out.data() + static_cast<size_t>(y) * w * 4;
                 for (unsigned x = 0; x < w; ++x) {
+                    if (r10) {
+                        uint32_t packed;
+                        std::memcpy(&packed, srow + x * 4, sizeof(packed));
+                        eldenring::pixel::unpackR10G10B10A2(packed, drow + x * 4);
+                        drow[x * 4 + 3] = 255;
+                        continue;
+                    }
                     drow[x * 4 + 0] = srow[x * 4 + (bgra ? 2 : 0)];
                     drow[x * 4 + 1] = srow[x * 4 + 1];
                     drow[x * 4 + 2] = srow[x * 4 + (bgra ? 0 : 2)];

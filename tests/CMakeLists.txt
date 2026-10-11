@@ -57,6 +57,7 @@ add_executable(mc_tests
     test_entity_model.cpp
     test_eldenring_shield.cpp
     test_eldenring_flags.cpp
+    test_eldenring_pixel.cpp
 )
 
 target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source")
