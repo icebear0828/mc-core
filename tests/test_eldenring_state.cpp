@@ -426,12 +426,31 @@ TEST(EldenRingPick, NothingUnderTheCrosshairMeansNoTarget) {
     EXPECT_EQ(pickTarget(cam, dir, list), -1);
 }
 
-TEST(EldenRingPick, SkipsNeutralOutOfReachAndBehindTheCamera) {
+TEST(EldenRingPick, CanTargetNeutralEntitiesAndAnimalsUnderCrosshair) {
+    // Minecraft allows hitting neutral/passive mobs (sheep, deer, neutral NPCs)
     const float cam[3] = {0.f, 1.5f, -3.f}, dir[3] = {0.f, 0.f, 1.f};
-    EXPECT_EQ(pickTarget(cam, dir, {enemyAt(0.f, 0.f, 2.f, false)}), -1);          // not hostile
-    EXPECT_EQ(pickTarget(cam, dir, {enemyAt(0.f, 0.f, 6.f)}), -1);                 // beyond melee reach
+    const std::vector<EnemyInfo> list = {enemyAt(0.f, 0.f, 2.f, false)}; // hostile = false
+    EXPECT_EQ(pickTarget(cam, dir, list), 0);
+}
+
+TEST(EldenRingPick, PrioritizesHostileEnemyOverNeutralAnimalWhenBothAreUnderCrosshair) {
+    // When both a neutral sheep and a hostile mob are under crosshair reach, prefer the hostile mob
+    const float cam[3] = {0.f, 1.5f, -3.f}, dir[3] = {0.f, 0.f, 1.f};
+    const std::vector<EnemyInfo> list = {
+        enemyAt(0.f, 0.f, 2.0f, false), // neutral animal at 2.0m
+        enemyAt(0.f, 0.f, 2.5f, true)   // hostile mob at 2.5m
+    };
+    EXPECT_EQ(pickTarget(cam, dir, list), 1); // should pick index 1 (hostile)
+}
+
+TEST(EldenRingPick, SkipsOutOfReachAndBehindTheCamera) {
+    const float cam[3] = {0.f, 1.5f, -3.f}, dir[3] = {0.f, 0.f, 1.f};
+    // 4.2m is within relaxed reach (4.5m)
+    EXPECT_EQ(pickTarget(cam, dir, {enemyAt(0.f, 0.f, 4.2f)}), 0);
+    // 4.8m is beyond relaxed reach
+    EXPECT_EQ(pickTarget(cam, dir, {enemyAt(0.f, 0.f, 4.8f)}), -1);
     const float back[3] = {0.f, 0.f, -1.f};
-    EXPECT_EQ(pickTarget(cam, back, {enemyAt(0.f, 0.f, 2.f)}), -1);               // looking away from it
+    EXPECT_EQ(pickTarget(cam, back, {enemyAt(0.f, 0.f, 2.f)}), -1); // looking away from it
 }
 
 TEST(EldenRingPick, TakesTheNearestAlongTheRayWhenTwoOverlap) {
@@ -440,9 +459,18 @@ TEST(EldenRingPick, TakesTheNearestAlongTheRayWhenTwoOverlap) {
     EXPECT_EQ(pickTarget(cam, dir, list), 1);
 }
 
+TEST(EldenRingPick, ToleratesModerateOffRayForLargeTargetsOrSlightAimOffsets) {
+    // Enemy at 2m forward, offset by 1.1m off ray (e.g. broad torso or running pursuit)
+    const float cam[3] = {0.f, 1.5f, -3.f}, dir[3] = {0.f, 0.f, 1.f};
+    // 1.1m offset should be picked under new default tolerance (1.3m)
+    EXPECT_EQ(pickTarget(cam, dir, {enemyAt(1.1f, 0.f, 2.f)}), 0);
+    // 1.8m offset is too far and should miss
+    EXPECT_EQ(pickTarget(cam, dir, {enemyAt(1.8f, 0.f, 2.f)}), -1);
+}
+
 TEST(EldenRingPick, HonoursTheTorsoSphereVertically) {
     const float cam[3] = {0.f, 1.5f, -3.f}, dir[3] = {0.f, 0.f, 1.f};
     PickParams p;
-    EXPECT_EQ(pickTarget(cam, dir, {enemyAt(0.f, 0.f, 2.f)}, p), 0);               // ray 0.5 m above the torso centre
-    EXPECT_EQ(pickTarget(cam, dir, {enemyAt(0.f, -2.f, 2.f)}, p), -1);             // enemy far below the ray
+    EXPECT_EQ(pickTarget(cam, dir, {enemyAt(0.f, 0.f, 2.f)}, p), 0);   // ray near torso centre
+    EXPECT_EQ(pickTarget(cam, dir, {enemyAt(0.f, -2.5f, 2.f)}, p), -1); // enemy far below ray
 }
