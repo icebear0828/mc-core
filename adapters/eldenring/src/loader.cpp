@@ -59,6 +59,7 @@
 #include "mc/inventory.hpp"
 #include "eldenring_melee.hpp"
 #include "eldenring_shield.hpp"
+#include "eldenring_flags.hpp"
 #include "eldenring_particles.hpp"
 #include "eldenring_model.hpp"
 #include "eldenring_pick.hpp"
@@ -2611,6 +2612,61 @@ void InventoryTick(bool fg) {
     }
 }
 
+// Holds the game's own flag bytes while the MC mode is on and gives them back when it is off (eldenring_flags.hpp, REVERSE 40/41): no stamina cost,
+// no native HUD, and in creative the "cannot die" bit. Re-forced every tick because the game rewrites the byte itself. mc_er_noflags.txt switches it off.
+void McFlagsStep() {
+    using namespace eldenring::flags;
+    static ByteFlagHold stamina_hold, death_hold;
+    static ByteValueHold hud_hold;
+    static uintptr_t held_data = 0, held_menu = 0;
+    static bool logged_stamina = false, logged_death = false, logged_hud = false;
+    static uint64_t last_status_ms = 0;
+    static const bool enabled = !FileExists(g_game_dir + "mc_er_noflags.txt");
+    const FlagPolicy policy = policyFor(g_mc_mode.load(std::memory_order_relaxed), CurrentGameMode() == creative::GameMode::Creative, enabled);
+
+    const uintptr_t player = PlayerChrPtr();
+    const uintptr_t data = player != 0 ? DataModuleOfChr(player) : 0;
+    if (data != held_data) { // another module (a load, a respawn): the old one is gone, start fresh
+        stamina_hold = ByteFlagHold{};
+        death_hold = ByteFlagHold{};
+        held_data = data;
+    }
+    if (data != 0) {
+        uint8_t b = 0;
+        if (SafeCopy(data + kDataFlagsByte, &b, 1)) {
+            if (const auto w = stamina_hold.step(b, policy.no_stamina, kNoStaminaBit)) { SafeWrite8(data + kDataFlagsByte, *w); b = *w; }
+            if (const auto w = death_hold.step(b, policy.cannot_die, kCannotDieBit)) { SafeWrite8(data + kDataFlagsByte, *w); b = *w; }
+        }
+    }
+    const uintptr_t menu = readSingleton(g_reader, g_img.base, g_rva_menu, sigs::kCSMenuMan);
+    if (menu != held_menu) {
+        hud_hold = ByteValueHold{};
+        held_menu = menu;
+    }
+    if (menu != 0) {
+        uint8_t b = 0;
+        if (SafeCopy(menu + kMenuHudSettingByte, &b, 1)) {
+            if (const auto w = hud_hold.step(b, policy.hide_hud, 0)) SafeWrite8(menu + kMenuHudSettingByte, *w);
+        }
+    }
+    if (stamina_hold.active() != logged_stamina) { logged_stamina = stamina_hold.active(); Log("flags: no-stamina bit %s", logged_stamina ? "held" : "released"); }
+    if (death_hold.active() != logged_death) { logged_death = death_hold.active(); Log("flags: cannot-die bit %s", logged_death ? "held" : "released"); }
+    if (hud_hold.active() != logged_hud) { logged_hud = hud_hold.active(); Log("flags: native HUD setting byte %s", logged_hud ? "forced to 0" : "restored"); }
+    const uint64_t now = GetTickCount64();
+    if ((stamina_hold.active() || death_hold.active() || hud_hold.active()) && now - last_status_ms > 3000) {
+        last_status_ms = now;
+        uint8_t fb = 0, hb = 0;
+        int32_t sp = -1, sp_max = -1;
+        if (data != 0) {
+            SafeCopy(data + kDataFlagsByte, &fb, 1);
+            SafeCopy(data + kDataStamina, &sp, sizeof(sp));
+            SafeCopy(data + kDataMaxStamina, &sp_max, sizeof(sp_max));
+        }
+        if (menu != 0) SafeCopy(menu + kMenuHudSettingByte, &hb, 1);
+        Log("FLAGS: data+0x19A=0x%02X stamina=%d/%d hud_setting=%u", fb, sp, sp_max, hb);
+    }
+}
+
 DWORD WINAPI KeyThread(LPVOID) {
     bool prev8 = false, prev6 = false, prev7 = false;
     bool prev_digit[MeleeController::kSlots] = {};
@@ -2721,6 +2777,7 @@ DWORD WINAPI KeyThread(LPVOID) {
         }
         InventoryTick(fg);
         BlocksTick();
+        McFlagsStep();
         {
             int hidden[16];
             size_t n_hidden = 0;
