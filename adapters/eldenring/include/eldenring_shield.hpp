@@ -36,6 +36,13 @@ inline bool isAttackBlocked(const float player_pos[3], float player_yaw, const f
     return dot >= kBlockMinDot;
 }
 
+// The decision made for a hit the player's raised shield may stop. Only a hit with a known attacker (not fall, fire or poison)
+// and known positions can be blocked; when the positions cannot be read the hit goes through instead of being blocked for free.
+// `player_yaw` is the yaw the model faces (the same yaw the body is drawn with).
+inline bool shieldBlocksHit(bool has_attacker, bool has_positions, const float player_pos[3], float player_yaw, const float attacker_pos[3]) {
+    return has_attacker && has_positions && isAttackBlocked(player_pos, player_yaw, attacker_pos);
+}
+
 class ShieldController {
 public:
     // Updates shield blocking state.

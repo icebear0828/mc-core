@@ -71,3 +71,16 @@ TEST(EldenRingShield, TotemInOffhandTriggersClamp) {
     // Check if player holds totem either in main hand OR offhand
     EXPECT_TRUE(inv.holdsOrOffhand(mc::ItemId::TotemOfUndying, 0)); // slot 0 empty, but offhand has it!
 }
+
+TEST(EldenRingShield, ShieldBlocksOnlyFrontHitsWithKnownAttackerAndPositions) {
+    const float player_pos[3] = {0.f, 0.f, 0.f};
+    const float front[3] = {0.f, 0.f, 10.f};
+    const float behind[3] = {0.f, 0.f, -10.f};
+    // facing +Z: front is blocked, behind is not
+    EXPECT_TRUE(shieldBlocksHit(true, true, player_pos, 0.f, front));
+    EXPECT_FALSE(shieldBlocksHit(true, true, player_pos, 0.f, behind));
+    // environmental damage (no attacker) is never blocked: Minecraft's shield does not stop falls, fire or poison
+    EXPECT_FALSE(shieldBlocksHit(false, true, player_pos, 0.f, front));
+    // unreadable positions must not turn into invulnerability
+    EXPECT_FALSE(shieldBlocksHit(true, false, player_pos, 0.f, front));
+}

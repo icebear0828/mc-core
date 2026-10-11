@@ -1138,11 +1138,13 @@ bool PlayerHitSurvival(void* module, void* attacker, uint8_t* ctx, uint8_t block
     // the damage is completely blocked (reduced to 0), play shield block sound, and skip hurt camera/exhaustion.
     if (g_shield_blocking.load(std::memory_order_relaxed)) {
         float pp[3], ap[3], q[4];
-        bool has_pos = (attacker != nullptr && detail::readPhysicsPosition(g_reader, g_img.base, player, pp) &&
-                        detail::readPhysicsPosition(g_reader, g_img.base, reinterpret_cast<uintptr_t>(attacker), ap) &&
-                        detail::readPhysicsOrientation(g_reader, g_img.base, player, q));
-        const float yaw = has_pos ? eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) : 0.f;
-        if (!has_pos || eldenring::shield::isAttackBlocked(pp, yaw, ap)) {
+        const bool has_pos = (attacker != nullptr && detail::readPhysicsPosition(g_reader, g_img.base, player, pp) &&
+                              detail::readPhysicsPosition(g_reader, g_img.base, reinterpret_cast<uintptr_t>(attacker), ap) &&
+                              detail::readPhysicsOrientation(g_reader, g_img.base, player, q));
+        // The body is drawn with yawFromQuat + g_steve_yaw_offset (the quaternion faces opposite to the model, 180 deg, live-verified):
+        // the front arc must use the same yaw, or the shield guards the back.
+        const float yaw = has_pos ? eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) + g_steve_yaw_offset : 0.f;
+        if (eldenring::shield::shieldBlocksHit(attacker != nullptr, has_pos, pp, yaw, ap)) {
             eraudio::Play("item.shield.block");
             SafeWrite32(reinterpret_cast<uintptr_t>(ctx) + layout::kHitDamage, 0);
             Log("SHIELD: blocked hit from %p (dmg %d -> 0)", attacker, dmg);
