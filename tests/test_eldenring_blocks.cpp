@@ -238,3 +238,68 @@ TEST(Blocks, StandingOnABlockTopCountsAsSupported) {
     EXPECT_FALSE(supportedByBlock(g, beside));
     EXPECT_FALSE(supportedByBlock(g, inside)); // sunk: the push handles this, it is not "standing"
 }
+
+TEST(Blocks, SneakEdgeProtectionAllowsMovementWhenFullySupported) {
+    BlockGrid g;
+    // 3x3 platform at y = 0 (top at y = 1)
+    for (int x = -1; x <= 1; ++x) {
+        for (int z = -1; z <= 1; ++z) {
+            g.place({x, 0, z}, mc::BlockId::Stone);
+        }
+    }
+    const float feet[3] = {0.f, 1.0f, 0.f};
+    const auto res = clampSneakEdgeMovement(g, feet, 0.1f, 0.1f);
+    EXPECT_FALSE(res.clamped_x);
+    EXPECT_FALSE(res.clamped_z);
+    EXPECT_NEAR(res.dx, 0.1f, 1e-4f);
+    EXPECT_NEAR(res.dz, 0.1f, 1e-4f);
+}
+
+TEST(Blocks, SneakEdgeProtectionStopsPlayerAtBlockEdge) {
+    BlockGrid g;
+    // Single block at (0, 0, 0), top at y = 1
+    g.place({0, 0, 0}, mc::BlockId::Stone);
+    const float feet[3] = {0.5f, 1.0f, 0.5f};
+    // Trying to walk +1.0m in X towards the void
+    const auto res = clampSneakEdgeMovement(g, feet, 1.0f, 0.f);
+    EXPECT_TRUE(res.clamped_x);
+    EXPECT_FALSE(res.clamped_z);
+    EXPECT_LT(res.dx, 1.0f);
+    EXPECT_GT(res.dx, 0.f);
+    // The resulting position must still be supported on the block ledge!
+    const float new_feet[3] = {feet[0] + res.dx, feet[1], feet[2] + res.dz};
+    EXPECT_TRUE(supportedByBlock(g, new_feet));
+    // And advancing even 2cm further would fall off
+    const float over_edge[3] = {new_feet[0] + 0.05f, new_feet[1], new_feet[2]};
+    EXPECT_FALSE(supportedByBlock(g, over_edge));
+}
+
+TEST(Blocks, SneakEdgeProtectionSlidesAlongEdgeWhenMovingDiagonally) {
+    BlockGrid g;
+    // 1-block wide bridge along Z: (0, 0, 0), (0, 0, 1), (0, 0, 2)
+    g.place({0, 0, 0}, mc::BlockId::Stone);
+    g.place({0, 0, 1}, mc::BlockId::Stone);
+    g.place({0, 0, 2}, mc::BlockId::Stone);
+
+    const float feet[3] = {0.5f, 1.0f, 0.5f};
+    // Trying to move diagonally (+0.8 in X towards void, +0.3 in Z along bridge)
+    const auto res = clampSneakEdgeMovement(g, feet, 0.8f, 0.3f);
+    EXPECT_TRUE(res.clamped_x);
+    EXPECT_FALSE(res.clamped_z); // Z is unhindered along the bridge
+    EXPECT_NEAR(res.dz, 0.3f, 1e-4f);
+    const float new_feet[3] = {feet[0] + res.dx, feet[1], feet[2] + res.dz};
+    EXPECT_TRUE(supportedByBlock(g, new_feet));
+}
+
+TEST(Blocks, SneakEdgeProtectionDoesNotClampWhenAlreadyInAir) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::Stone);
+    // Player is 5m in the air above the block
+    const float feet[3] = {0.5f, 5.0f, 0.5f};
+    const auto res = clampSneakEdgeMovement(g, feet, 0.5f, -0.5f);
+    EXPECT_FALSE(res.clamped_x);
+    EXPECT_FALSE(res.clamped_z);
+    EXPECT_FLOAT_EQ(res.dx, 0.5f);
+    EXPECT_FLOAT_EQ(res.dz, -0.5f);
+}
+

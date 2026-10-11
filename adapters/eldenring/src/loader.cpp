@@ -1705,7 +1705,13 @@ void CycleHiddenSlot(int& cursor) {
 blocks::BlockGrid g_blocks;
 std::mutex g_blocks_mutex;
 std::atomic<bool> g_blocks_enabled{true};      // mc_er_steve.txt: blocks=0 turns placing and breaking off
-std::atomic<float> g_block_walk_speed{3.9f};   // m/s on a block (measured ground speed of the run)
+std::atomic<float> g_block_walk_speed{4.317f}; // Minecraft walk speed: 4.317 m/s
+std::atomic<float> g_sneak_speed{1.295f};      // Minecraft sneak speed: 1.295 m/s (~1.3 m/s)
+std::atomic<float> g_sprint_speed{5.612f};     // Minecraft sprint speed: 5.612 m/s (~5.6 m/s)
+std::atomic<int> g_sneak_vk{VK_SHIFT};         // Sneak key: default Shift
+std::atomic<bool> g_sneak_active{false};
+std::atomic<bool> g_sneak_clamped_x{false};
+std::atomic<bool> g_sneak_clamped_z{false};
 std::atomic<bool> g_block_drive{true};         // block_drive=0: leave the game's own (stale) velocity alone on a block
 std::atomic<bool> g_block_anchor{true};        // block_anchor=0: do not pin the player in place on a block while no movement key is down
 std::atomic<bool> g_block_ground{true};        // block_ground=0: do not fake "on the ground" while standing on a block
@@ -1896,14 +1902,26 @@ void DriveVelocityFromKeys(uintptr_t module, bool force_zero) {
     if (!force_zero && GameInForeground()) {
         const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
         const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
+        const bool sneaking = (GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0;
+        const bool sprinting = !sneaking && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        g_sneak_active.store(sneaking, std::memory_order_relaxed);
+
+        const float target_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
+                                  : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
+                                  : g_block_walk_speed.load(std::memory_order_relaxed);
+
         const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
         CameraPose cam;
         if (world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
             float dir[2] = {0.f, 0.f};
             const bool moving = eldenring::motion::computeInputDirection(fwd_key, right_key, cam.forward, cam.right, dir);
             if (moving) {
-                vx = dir[0] * g_block_walk_speed.load();
-                vz = dir[1] * g_block_walk_speed.load();
+                vx = dir[0] * target_speed;
+                vz = dir[1] * target_speed;
+                if (sneaking) {
+                    if (g_sneak_clamped_x.load(std::memory_order_relaxed)) vx = 0.f;
+                    if (g_sneak_clamped_z.load(std::memory_order_relaxed)) vz = 0.f;
+                }
 
                 // Compute target orientation from movement direction
                 float target_yaw = std::atan2(dir[0], dir[1]);
@@ -2095,13 +2113,24 @@ void BlocksCollisionStep() {
         WriteBytesSafe(module + layout::kPhysicsPosition, r.feet, sizeof(r.feet));
         WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, r.feet, sizeof(r.feet));
     }
+    const bool fg = GameInForeground();
+    const bool sneaking = fg && ((GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0);
+    g_sneak_active.store(sneaking, std::memory_order_relaxed);
+
+    // Smooth first-person eye height transition: normal 1.65m <-> sneak 1.27m
+    if (g_first_person.load(std::memory_order_relaxed)) {
+        const float target_eye = sneaking ? 1.27f : 1.65f;
+        float cur_eye = g_eye_height.load(std::memory_order_relaxed);
+        cur_eye += (target_eye - cur_eye) * 0.25f;
+        g_eye_height.store(cur_eye, std::memory_order_relaxed);
+    }
+
     // On a block the game has no ground, so the horizontal speed it carries from the air never fades: the player slid forward at a
     // constant speed with no key down. While no movement key (WASD, Space) is held, the player is pinned to where it stopped.
     static bool anchored = false;
     static float anchor[2] = {};
     bool pinned = false;
     if (supported && g_block_anchor.load(std::memory_order_relaxed)) {
-        const bool fg = GameInForeground();
         const bool keys = fg && ((GetAsyncKeyState('W') | GetAsyncKeyState('A') | GetAsyncKeyState('S') | GetAsyncKeyState('D') | GetAsyncKeyState(VK_SPACE)) & 0x8000) != 0;
         if (keys) {
             anchored = false;
@@ -2118,7 +2147,30 @@ void BlocksCollisionStep() {
     } else {
         anchored = false;
     }
-    if (module != 0 && pinned) {
+
+    // Sneak edge protection: if supported on blocks and sneaking, prevent stepping off any ledge into empty space
+    bool sneak_clamped = false;
+    if (sneaking && supported && have_prev && !jumped && !pinned) {
+        const float desired_dx = final_feet[0] - prev[0];
+        const float desired_dz = final_feet[2] - prev[2];
+        blocks::SneakMoveResult sneak_res;
+        {
+            std::lock_guard<std::mutex> g(g_blocks_mutex);
+            sneak_res = blocks::clampSneakEdgeMovement(g_blocks, prev, desired_dx, desired_dz);
+        }
+        g_sneak_clamped_x.store(sneak_res.clamped_x, std::memory_order_relaxed);
+        g_sneak_clamped_z.store(sneak_res.clamped_z, std::memory_order_relaxed);
+        if (sneak_res.clamped_x || sneak_res.clamped_z) {
+            final_feet[0] = prev[0] + sneak_res.dx;
+            final_feet[2] = prev[2] + sneak_res.dz;
+            sneak_clamped = true;
+        }
+    } else if (!sneaking) {
+        g_sneak_clamped_x.store(false, std::memory_order_relaxed);
+        g_sneak_clamped_z.store(false, std::memory_order_relaxed);
+    }
+
+    if (module != 0 && (pinned || sneak_clamped)) {
         WriteBytesSafe(module + layout::kPhysicsPosition, final_feet, sizeof(final_feet));
         WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, final_feet, sizeof(final_feet));
     }
@@ -3610,7 +3662,10 @@ void SetupOverlay() {
                 else if (key == "block_drive") g_block_drive.store(value != 0.f);
                 else if (key == "instant_turn") g_instant_turn.store(value != 0.f);
                 else if (key == "turn_speed") g_turn_speed.store(std::clamp(value, 0.5f, 50.f));
-                else if (key == "block_speed") g_block_walk_speed.store(std::clamp(value, 0.5f, 12.f));
+                else if (key == "block_speed" || key == "walk_speed") g_block_walk_speed.store(std::clamp(value, 0.5f, 15.f));
+                else if (key == "sneak_speed") g_sneak_speed.store(std::clamp(value, 0.2f, 10.f));
+                else if (key == "sprint_speed") g_sprint_speed.store(std::clamp(value, 0.5f, 20.f));
+                else if (key == "sneak_key") g_sneak_vk.store(static_cast<int>(value));
                 else if (key == "block_anchor") g_block_anchor.store(value != 0.f);
                 else if (key == "block_ground") g_block_ground.store(value != 0.f);
                 else if (key == "block_collision") g_block_collision.store(value != 0.f);

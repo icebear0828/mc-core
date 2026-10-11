@@ -292,4 +292,64 @@ inline Resolve resolvePlayerSwept(const BlockGrid& grid, const float prev[3], co
     return resolvePlayer(grid, cur, max_push);
 }
 
+struct SneakMoveResult {
+    float dx{0.f};
+    float dz{0.f};
+    bool clamped_x{false};
+    bool clamped_z{false};
+};
+
+// Clamps horizontal movement (dx, dz) while sneaking so the player cannot step off a supporting block into the void.
+// Follows Minecraft's authentic sneak edge protection: checks support under feet, binary searches safe step if an edge is reached.
+inline SneakMoveResult clampSneakEdgeMovement(
+    const BlockGrid& grid,
+    const float feet[3],
+    float desired_dx,
+    float desired_dz) {
+    SneakMoveResult res{desired_dx, desired_dz, false, false};
+    if (desired_dx == 0.f && desired_dz == 0.f) return res;
+    if (!supportedByBlock(grid, feet)) return res; // sneak protection only applies when grounded
+
+    // 1. Check X-axis movement
+    if (desired_dx != 0.f) {
+        const float test_x[3] = {feet[0] + desired_dx, feet[1], feet[2]};
+        if (supportedByBlock(grid, test_x)) {
+            res.dx = desired_dx;
+        } else {
+            // Binary search the furthest safe step along X
+            float low = 0.f, high = desired_dx;
+            for (int it = 0; it < 8; ++it) {
+                const float mid = (low + high) * 0.5f;
+                const float probe[3] = {feet[0] + mid, feet[1], feet[2]};
+                if (supportedByBlock(grid, probe)) low = mid;
+                else high = mid;
+            }
+            res.dx = low;
+            res.clamped_x = true;
+        }
+    }
+
+    // 2. Check Z-axis movement (combined with safe X)
+    if (desired_dz != 0.f) {
+        const float test_z[3] = {feet[0] + res.dx, feet[1], feet[2] + desired_dz};
+        if (supportedByBlock(grid, test_z)) {
+            res.dz = desired_dz;
+        } else {
+            // Binary search the furthest safe step along Z
+            float low = 0.f, high = desired_dz;
+            for (int it = 0; it < 8; ++it) {
+                const float mid = (low + high) * 0.5f;
+                const float probe[3] = {feet[0] + res.dx, feet[1], feet[2] + mid};
+                if (supportedByBlock(grid, probe)) low = mid;
+                else high = mid;
+            }
+            res.dz = low;
+            res.clamped_z = true;
+        }
+    }
+
+    return res;
+}
+
 } // namespace eldenring::blocks
+
