@@ -1376,3 +1376,10 @@ Table 1                     Table 2
 - 结论：**不盲改**。先用只读探针记录 `CSMenuMan+0x6530/0x6534/0x6538/0x6548`、`+0x6540/0x6541/0x6542/0x654C`、`+0x841C`（`HUDPROBE:`，值变化时才写一行，只在 MC 模式开着时），请用户在战斗里复现"HUD 冒出来"，对比出现前后的值，再决定写哪一组状态或拦哪个检查。
 
 **本次实现（`fix/shield-live`）**：钩 `0x140449520`（`kBreakTest`，59 字节，2.7.1.0 唯一）：先调原函数；受害者是玩家、MC 模式开着、没有 `mc_er_noknockdownfix.txt` 时，返回 0 并清 `[[module+0xA0]+0x34]`（float 0）和 `[[module+0xA0]+0x38]`（0）；原本答"是"时（限频 0.5 s）写一行 `KNOCKDOWN:`（含 `ctx+0xDA`）。
+
+## 43. 实机：死亡重生后 Steve 不见了——场景深度被 1024×512 的深度图顶掉（2026-10-11，`STEVE-STATE` 与 `scene depth captured` 日志）
+
+**现象**：死一次（`kill: the game kills the player`，`dead=1`，加载，`native: part set changed: 17 parts, 17 new address(es)`）之后，`STEVE-STATE` 一直是 `draw=1 enabled=1 cam_valid=1 dead=0 show=1`，我们在画 Steve，但画面上没有。上一次"Steve 不见"（F4 那次）的会话里也有同样的前兆。
+**根因**：`CreateDsvDetour`（`overlay_d3d12.cpp`）对每一个 `R32G8X24_TYPELESS`、宽度 ≥ 1024 的深度视图都把 `g_depth_res` **直接换成最新的**。重生后游戏先创建新的 1920×1080 主深度（`126.688`），随后又创建两个 **1024×512** 的深度图（`133.829`，阴影类的 pass），最后一个顶掉了主深度；Steve、方块、阴影的遮挡测试（`sp.mode = 1`，用 `depth_w/depth_h` 把屏幕坐标映射到深度图）就拿一张错误尺寸的深度图比较，整个人被判成被场景遮住。会话开头的两次 1024×512 抓取（`43.156`、`52.359`，上一轮会话）之后同样出现了消失。
+**修复**：`eldenring_depth.hpp::isSceneDepth`：场景深度的宽度必须等于后备缓冲的宽度（引擎可能把高度向上取整）；后备缓冲尚未确定（`g_s.width == 0`）时不排除。被忽略的深度图在日志里写一行 `overlay: ignored depth WxH (the back buffer is WxH): not the scene's`（最多 10 行）。
+**仍未验证**：死亡重生后新创建的 1920×1080 深度图是否一定在 1024×512 之前/之后被抓到——修复后无论顺序如何，1024×512 都不会再被接受；需要实机确认 Steve 不再消失。

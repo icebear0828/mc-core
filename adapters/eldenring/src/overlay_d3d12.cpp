@@ -22,6 +22,7 @@
 #include "eldenring_bow.hpp"
 #include "eldenring_fp.hpp"
 #include "eldenring_hudtex.hpp"
+#include "eldenring_depth.hpp"
 #include "eldenring_pixel.hpp"
 #include "eldenring_particles.hpp"
 #include "eldenring_blockicon.hpp"
@@ -1225,6 +1226,11 @@ void STDMETHODCALLTYPE CreateDsvDetour(ID3D12Device* d, ID3D12Resource* res, con
     const D3D12_RESOURCE_DESC rd = res->GetDesc();
     if (rd.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || rd.Format != DXGI_FORMAT_R32G8X24_TYPELESS || rd.Width < 1024 ||
         rd.DepthOrArraySize != 1) {
+        return;
+    }
+    if (!eldenring::depth::isSceneDepth(rd.Width, rd.Height, g_s.width, g_s.height)) {
+        static int ignored_logged = 0;
+        if (ignored_logged++ < 10 && g_log) g_log("overlay: ignored depth %llux%u (the back buffer is %ux%u): not the scene's", static_cast<unsigned long long>(rd.Width), rd.Height, g_s.width, g_s.height);
         return;
     }
     {
