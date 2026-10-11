@@ -280,7 +280,7 @@ float g_steve_yaw_offset = 3.14159265f; // the orientation quaternion at Physics
 std::atomic<bool> g_instant_turn{true};  // mc_er_steve.txt: instant_turn=1 (snap to movement heading with zero delay)
 std::atomic<float> g_turn_speed{15.0f};  // mc_er_steve.txt: turn_speed=<rad/s> (used when instant_turn=0 for smooth turn clamp)
 std::atomic<bool> g_disable_vanilla_roll{true}; // mc_er_steve.txt: disable_vanilla_roll=1 (also disable_roll=1)
-std::atomic<int> g_roll_vk{VK_SPACE};            // mc_er_steve.txt: roll_key=<virtual key code>
+std::atomic<int> g_roll_vk{VK_SHIFT};            // mc_er_steve.txt: roll_key=<virtual key code> (default Shift)
 std::atomic<bool> g_require_victim_updating{true};
 DamageQueue g_queue;
 
@@ -2485,7 +2485,7 @@ void InventoryTick(bool fg) {
     static bool prev_digit[mc::Inventory::kHotbar] = {};
     const bool want = fg && WantSuppress() && g_mc_mode.load() && !PlayerDead();
     bool open = g_inv_open.load();
-    const bool key = fg && (GetAsyncKeyState(g_inv_vk.load()) & 0x8000) != 0;
+    const bool key = fg && ((GetAsyncKeyState(g_inv_vk.load()) | GetAsyncKeyState('E')) & 0x8000) != 0;
     const bool esc = fg && (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
     auto closeIt = [&](const char* why) {
         {
@@ -2693,11 +2693,8 @@ DWORD WINAPI KeyThread(LPVOID) {
                 hidden[n_hidden++] = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(g_mc_jump_vk.load()), MAPVK_VK_TO_VSC));
             }
             if (g_disable_vanilla_roll.load() && g_mc_mode.load() && fg && !g_inv_open.load()) {
-                int roll_sc = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(g_roll_vk.load()), MAPVK_VK_TO_VSC));
-                if (roll_sc <= 0 && g_roll_vk.load() == VK_SPACE) roll_sc = eldenring::roll::kDefaultRollDik;
-                if (roll_sc > 0) {
-                    n_hidden = eldenring::roll::mergeMaskedKeys(hidden, sizeof(hidden) / sizeof(hidden[0]), n_hidden, &roll_sc, 1);
-                }
+                const auto roll_mask = eldenring::roll::computeRollMask(true, true, g_roll_vk.load());
+                n_hidden = eldenring::roll::mergeMaskedKeys(hidden, sizeof(hidden) / sizeof(hidden[0]), n_hidden, roll_mask.scancodes, roll_mask.count);
             }
             if (g_flying.load()) { // while flying the game never sees the movement keys: the position is ours
                 n_hidden = eldenring::roll::mergeMaskedKeys(hidden, sizeof(hidden) / sizeof(hidden[0]), n_hidden, flight::kHiddenKeys, sizeof(flight::kHiddenKeys) / sizeof(flight::kHiddenKeys[0]));
