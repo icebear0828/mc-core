@@ -300,3 +300,121 @@ TEST(ItemModelTest, LeftHandShieldFitsArmForearmWith3DExtrusion) {
     // Height coverage (Z) should cover forearm (~15-35 cm above ground in rest pose)
     EXPECT_GT(max_z - min_z, 20.f) << "Shield must be tall enough to cover the arm";
 }
+
+namespace {
+
+float signedVolume(const RigMesh& m) {
+    float vol = 0.f;
+    for (size_t i = 0; i + 2 < m.indices.size(); i += 3) {
+        const RigVertex &a = m.vertices[m.indices[i]], &b = m.vertices[m.indices[i + 1]], &c = m.vertices[m.indices[i + 2]];
+        vol += (a.x * (b.y * c.z - b.z * c.y) - a.y * (b.x * c.z - b.z * c.x) + a.z * (b.x * c.y - b.y * c.x)) / 6.f;
+    }
+    return vol;
+}
+
+// Does some face of the mesh cover exactly this texel rectangle of the 64x64 sheet (which fills the whole atlas in these tests)?
+bool hasFaceCovering(const RigMesh& m, float u0, float v0, float u1, float v1) {
+    for (size_t q = 0; q + 3 < m.vertices.size(); q += 4) {
+        float lo_u = 2.f, hi_u = -1.f, lo_v = 2.f, hi_v = -1.f;
+        for (size_t k = 0; k < 4; ++k) {
+            lo_u = std::min(lo_u, m.vertices[q + k].u); hi_u = std::max(hi_u, m.vertices[q + k].u);
+            lo_v = std::min(lo_v, m.vertices[q + k].v); hi_v = std::max(hi_v, m.vertices[q + k].v);
+        }
+        if (std::abs(lo_u - u0 / 64.f) < 1e-5f && std::abs(hi_u - u1 / 64.f) < 1e-5f && std::abs(lo_v - v0 / 64.f) < 1e-5f && std::abs(hi_v - v1 / 64.f) < 1e-5f) return true;
+    }
+    return false;
+}
+
+const UvRect kWholeSheet{0.f, 0.f, 1.f, 1.f};
+
+} // namespace
+
+TEST(ShieldModel, IsAPlateAndAHandleMappedOntoTheEntityTextureLikeTheGame) {
+    const RigMesh m = buildShieldMesh(kWholeSheet, kCanonical, Hand::Left);
+    EXPECT_EQ(m.vertices.size(), 48u); // two boxes, six faces each
+    EXPECT_EQ(m.indices.size(), 72u);
+    // plate box texOffs (0, 0), 12x22x1: the front (rivets) at (1, 1), the back at (14, 1), the edge strips around them
+    EXPECT_TRUE(hasFaceCovering(m, 1, 1, 13, 23));
+    EXPECT_TRUE(hasFaceCovering(m, 14, 1, 26, 23));
+    EXPECT_TRUE(hasFaceCovering(m, 1, 0, 13, 1));   // top strip
+    EXPECT_TRUE(hasFaceCovering(m, 13, 0, 25, 1));  // bottom strip
+    EXPECT_TRUE(hasFaceCovering(m, 0, 1, 1, 23));   // one side
+    EXPECT_TRUE(hasFaceCovering(m, 13, 1, 14, 23)); // the other side
+    // handle box texOffs (26, 0), 2x6x6: front/back 2x6 at (32, 6) and (40, 6), sides 6x6 at (26, 6) and (34, 6), top/bottom 2x6
+    EXPECT_TRUE(hasFaceCovering(m, 32, 6, 34, 12));
+    EXPECT_TRUE(hasFaceCovering(m, 40, 6, 42, 12));
+    EXPECT_TRUE(hasFaceCovering(m, 26, 6, 32, 12));
+    EXPECT_TRUE(hasFaceCovering(m, 34, 6, 40, 12));
+    EXPECT_TRUE(hasFaceCovering(m, 32, 0, 34, 6));
+    EXPECT_TRUE(hasFaceCovering(m, 34, 0, 36, 6));
+}
+
+TEST(ShieldModel, UvsAddressTheGivenCellOfTheAtlas) {
+    const UvRect cell{0.25f, 0.5f, 0.375f, 0.625f};
+    const RigMesh m = buildShieldMesh(cell, kCanonical, Hand::Right);
+    ASSERT_FALSE(m.vertices.empty());
+    for (const RigVertex& v : m.vertices) {
+        EXPECT_GE(v.u, cell.u0 - 1e-6f); EXPECT_LE(v.u, cell.u1 + 1e-6f);
+        EXPECT_GE(v.v, cell.v0 - 1e-6f); EXPECT_LE(v.v, cell.v1 + 1e-6f);
+    }
+}
+
+TEST(ShieldModel, EveryFaceIsWoundOutwardForBothHandsAndBothHostHandednesses) {
+    for (const Hand hand : {Hand::Left, Hand::Right}) {
+        const RigMesh m = buildShieldMesh(kWholeSheet, kCanonical, hand);
+        const float k = kCmPerModelPixel * kShieldModelScale;
+        EXPECT_NEAR(signedVolume(m), (12.f * 22.f * 1.f + 2.f * 6.f * 6.f) * k * k * k, 1e-3f * (12.f * 22.f + 72.f) * k * k * k);
+    }
+    // a reflecting host (Sekiro's): the rule is "the cross product of the host coordinates points outward", so the volume is positive there too
+    const RigMesh s = buildShieldMesh(kWholeSheet, kSekiro, Hand::Left);
+    const float expected = (12.f * 22.f + 72.f) * std::pow(kCmPerModelPixel * kShieldModelScale * 0.01f, 3.f);
+    EXPECT_NEAR(signedVolume(s), expected, 0.01f * expected);
+}
+
+TEST(ShieldModel, TheLeftAndRightShieldsSitOnOppositeSidesOfTheBody) {
+    auto centreY = [](const RigMesh& m) { float y = 0.f; for (const RigVertex& v : m.vertices) y += v.y; return y / static_cast<float>(m.vertices.size()); };
+    // canonical host: +Y is the character's left
+    EXPECT_GT(centreY(buildShieldMesh(kWholeSheet, kCanonical, Hand::Left)), 0.f);
+    EXPECT_LT(centreY(buildShieldMesh(kWholeSheet, kCanonical, Hand::Right)), 0.f);
+}
+
+TEST(ShieldModel, TheFrontOfThePlateLooksForwardAndTheHandleSitsBehindIt) {
+    // canonical host: +X is forward. The front face (rivets) must be the most forward part, the handle reaches back towards the arm.
+    const RigMesh m = buildShieldMesh(kWholeSheet, kCanonical, Hand::Left);
+    float front_x = 0.f, handle_back_x = 1e9f;
+    for (size_t q = 0; q + 3 < m.vertices.size(); q += 4) {
+        float cx = 0.f;
+        for (size_t k = 0; k < 4; ++k) cx += m.vertices[q + k].x / 4.f;
+        if (hasFaceCovering(RigMesh{{m.vertices[q], m.vertices[q + 1], m.vertices[q + 2], m.vertices[q + 3]}, {}}, 1, 1, 13, 23)) front_x = cx;
+    }
+    for (const RigVertex& v : m.vertices) handle_back_x = std::min(handle_back_x, v.x);
+    for (const RigVertex& v : m.vertices) EXPECT_LE(v.x, front_x + 1e-4f);
+    EXPECT_LT(handle_back_x, front_x - 3.f); // the handle is several pixels behind the front face
+}
+
+TEST(ShieldModel, FirstPersonMeshIsOneBlockTallWithTheFrontTowardsTheViewer) {
+    const RigMesh m = buildShieldFirstPersonMesh(kWholeSheet);
+    EXPECT_EQ(m.vertices.size(), 48u);
+    float min_x = 1e9f, max_x = -1e9f, min_y = 1e9f, max_y = -1e9f, min_z = 1e9f, max_z = -1e9f;
+    for (const RigVertex& v : m.vertices) {
+        min_x = std::min(min_x, v.x); max_x = std::max(max_x, v.x);
+        min_y = std::min(min_y, v.y); max_y = std::max(max_y, v.y);
+        min_z = std::min(min_z, v.z); max_z = std::max(max_z, v.z);
+    }
+    EXPECT_NEAR(max_y - min_y, 1.f, 1e-5f);          // the 22 px plate is scaled to one block
+    EXPECT_NEAR(max_x - min_x, 12.f / 22.f, 1e-5f);
+    EXPECT_NEAR(max_z, 0.5f / 22.f, 1e-5f);           // the front face, toward the viewer
+    EXPECT_NEAR(min_z, -6.5f / 22.f, 1e-5f);          // the handle's end, behind the plate
+    EXPECT_TRUE(hasFaceCovering(m, 1, 1, 13, 23));
+    EXPECT_GT(signedVolume(m), 0.f);                  // right-handed, counter-clockwise from outside
+    // the front face is on the +Z side and mapped upright: its upper-right texel corner is at the upper-right of the mesh
+    for (size_t q = 0; q + 3 < m.vertices.size(); q += 4) {
+        const RigMesh face{{m.vertices[q], m.vertices[q + 1], m.vertices[q + 2], m.vertices[q + 3]}, {}};
+        if (!hasFaceCovering(face, 1, 1, 13, 23)) continue;
+        for (const RigVertex& v : face.vertices) {
+            EXPECT_NEAR(v.z, 0.5f / 22.f, 1e-5f);
+            if (std::abs(v.u - 13.f / 64.f) < 1e-5f) EXPECT_GT(v.x, 0.f);   // larger u = to the right
+            if (std::abs(v.v - 1.f / 64.f) < 1e-5f) EXPECT_GT(v.y, 0.f);    // smaller v = up
+        }
+    }
+}

@@ -63,6 +63,7 @@ using ::mc::hud::kUV_ITEM_BOW_PULLING_1;
 using ::mc::hud::kUV_ITEM_BOW_PULLING_2;
 using ::mc::hud::kUV_HOTBAR_OFFHAND_LEFT;
 using ::mc::hud::kUV_ITEM_SHIELD;
+using ::mc::hud::kUV_ENTITY_SHIELD;
 using ::mc::hud::kUV_ITEMS;
 using ::mc::hud::kHudAtlasWidth;
 using ::mc::hud::kHudAtlasHeight;

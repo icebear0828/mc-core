@@ -261,13 +261,13 @@ HUD_KEYS = [
     "block_dirt", "block_stone", "block_tnt_top", "block_tnt_side", "block_tnt_bottom",
     "heart_container_blinking", "heart_full_blinking", "heart_half_blinking", "xp_bar_background", "xp_bar_progress",
     "item_zombie_spawn_egg", "item_bow_pulling_0", "item_bow_pulling_1", "item_bow_pulling_2",
-    "hotbar_offhand_left", "item_shield",
+    "hotbar_offhand_left", "item_shield", "entity_shield",
 ]
 HUD_SIZES = {
     "heart_absorb_full": (9, 9), "heart_absorb_half": (9, 9), "particle_crit": (8, 8), "particle_damage": (8, 8),
     **{f"particle_sweep_{i}": (32, 32) for i in range(8)},
     "crosshair": (15, 15), "hotbar": (182, 22), "hotbar_selection": (24, 23),
-    "hotbar_offhand_left": (29, 24),
+    "hotbar_offhand_left": (29, 24), "entity_shield": (64, 64),
     "heart_container": (9, 9), "heart_full": (9, 9), "heart_half": (9, 9),
     "hunger_container": (9, 9), "hunger_full": (9, 9), "hunger_half": (9, 9),
     "container_top": (176, 71), "container_bottom": (176, 96),
@@ -811,3 +811,31 @@ def test_shield_icon_falls_back_to_the_placeholder_when_the_jar_has_no_shield_te
 
     atlas, uv = build_hud_atlas(_hud_jar(tmp_path / "client.jar"))
     assert _hud_region(atlas, uv["item_shield"]).tobytes() == create_canonical_sprite("item_shield").tobytes()
+
+
+def test_atlas_holds_the_whole_shield_entity_texture_unchanged_for_the_3d_model(tmp_path):
+    import zipfile
+    from extract_mc_assets import build_hud_atlas
+
+    jar = _hud_jar(tmp_path / "client.jar")
+    sheet = _shield_entity_texture()
+    with zipfile.ZipFile(jar, "a") as z:
+        z.writestr("assets/minecraft/textures/entity/shield_base_nopattern.png", _png(sheet))
+    atlas, uv = build_hud_atlas(jar)
+    region = _hud_region(atlas, uv["entity_shield"])
+    assert region.size == (64, 64)
+    assert region.tobytes() == sheet.tobytes()  # every texel where the model's box layout expects it
+
+
+def test_shield_entity_placeholder_has_a_riveted_front_a_plain_back_and_a_handle():
+    from extract_mc_assets import create_canonical_sprite
+
+    sheet = create_canonical_sprite("entity_shield")
+    assert sheet.size == (64, 64)
+    front = sheet.crop((1, 1, 13, 23))   # the plate's front face of the model: 12x22 at (1, 1)
+    back = sheet.crop((14, 1, 26, 23))   # the back face: 12x22 at (14, 1)
+    assert all(front.getpixel((x, y))[3] == 255 for x in range(12) for y in range(22))
+    assert all(back.getpixel((x, y))[3] == 255 for x in range(12) for y in range(22))
+    assert front.tobytes() != back.tobytes(), "the two faces of the shield must not look the same"
+    handle = sheet.crop((26, 0, 38, 12))  # the handle box texOffs (26, 0): 2x6x6
+    assert any(handle.getpixel((x, y))[3] == 255 for x in range(12) for y in range(12))

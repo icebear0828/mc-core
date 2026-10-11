@@ -367,6 +367,29 @@ _PLACEHOLDER_ITEM_COLORS = {
 
 def create_canonical_sprite(name: str) -> Image.Image:
     """Generate canonical pixel sprite when extracting without an official client.jar."""
+    if name == "entity_shield":
+        # Placeholder with the real texture's layout (ShieldModel: plate box at texOffs (0, 0), 12x22x1; handle box at (26, 0), 2x6x6):
+        # a riveted front at (1, 1), a plain back at (14, 1), iron edges around them and a dark handle.
+        sheet = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        iron, iron_dk = (150, 150, 155, 255), (95, 95, 100, 255)
+        wood, wood_dk, rivet = (140, 95, 50, 255), (112, 74, 36, 255), (200, 200, 205, 255)
+        for x in range(0, 27):  # the top and bottom edge strips and the side strips of the plate
+            for y in range(0, 24):
+                if y in (0, 23) or x in (0, 13, 26):
+                    sheet.putpixel((x, y), iron if (x + y) % 2 == 0 else iron_dk)
+        for face_x in (1, 14):
+            for dx in range(12):
+                for dy in range(22):
+                    rim = dx in (0, 11) or dy in (0, 21)
+                    col = iron if rim else (wood if dx % 3 else wood_dk)
+                    if face_x == 1 and not rim and dx in (2, 9) and dy % 4 == 2:
+                        col = rivet  # the front has rivets, the back does not
+                    sheet.putpixel((face_x + dx, 1 + dy), col)
+        for x in range(26, 42):  # the handle's six faces
+            for y in range(0, 12):
+                sheet.putpixel((x, y), iron_dk if (x + y) % 3 else wood_dk)
+        return sheet
+
     if name == "crosshair":
         img = Image.new("RGBA", (15, 15), (0, 0, 0, 0))
         for i in range(4, 11):  # a plain white plus; the real sprite replaces it when a client.jar is given
@@ -709,9 +732,12 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     # the offhand hotbar slot and the shield item icon
     ("hotbar_offhand_left", (29, 24)),
     ("item_shield", (16, 16)),
+    # the whole 64x64 shield entity texture: the 3D shield model (plate 12x22x1 and handle 2x6x6) is mapped onto it like the game does
+    ("entity_shield", (64, 64)),
 ]
 
 _JAR_HUD_SPRITES = {
+    "entity_shield": "entity/shield_base_nopattern.png",
     "crosshair": "gui/sprites/hud/crosshair.png",
     "heart_container": "gui/sprites/hud/heart/container.png",
     "heart_full": "gui/sprites/hud/heart/full.png",

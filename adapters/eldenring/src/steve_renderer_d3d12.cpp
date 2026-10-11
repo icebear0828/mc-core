@@ -9,10 +9,18 @@
 
 #include "eldenring_blockmesh.hpp"
 #include "eldenring_shadow.hpp"
+#include "mc/hud_atlas.hpp"
 #include "mc/item_model.hpp"
 #include "steve_renderer_d3d12.hpp"
 
 namespace erov {
+namespace {
+// The whole 64x64 shield entity texture inside the HUD atlas: the 3D shield is mapped onto it like the game does.
+mc::rig::UvRect ShieldSheet() {
+    return {mc::hud::kUV_ENTITY_SHIELD.u0, mc::hud::kUV_ENTITY_SHIELD.v0, mc::hud::kUV_ENTITY_SHIELD.u1, mc::hud::kUV_ENTITY_SHIELD.v1};
+}
+} // namespace
+
 namespace {
 
 constexpr char kShader[] = R"hlsl(
@@ -488,6 +496,8 @@ bool SteveRenderer::initFirstPerson(ID3D12Device* device, const uint8_t* atlas_r
             mc::rig::RigMesh mesh;
             if (block != mc::BlockId::Air) {
                 mesh = eldenring::blocks::buildCubeMesh(block); // blocks are held as textured cubes, not as their GUI icon
+            } else if (static_cast<mc::ItemId>(cell.item) == mc::ItemId::Shield) {
+                mesh = mc::rig::buildShieldFirstPersonMesh(ShieldSheet()); // the real model, not the sprite pushed out one pixel
             } else {
                 const mc::rig::ItemSprite sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
                 mesh = mc::rig::buildFlatItemMesh(sprite);
@@ -524,7 +534,8 @@ bool SteveRenderer::initHeldItems(ID3D12Device* device, const uint8_t* atlas_rgb
         } else {
             if (!mc::rig::isHeldAsFlatSprite(item)) continue;
             const mc::rig::ItemSprite sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
-            mesh = mc::rig::buildHeldItemMesh(sprite, mc::rig::heldItemStyle(item), eldenring::render::kBasis);
+            mesh = item == mc::ItemId::Shield ? mc::rig::buildShieldMesh(ShieldSheet(), eldenring::render::kBasis, mc::rig::Hand::Right)
+                                              : mc::rig::buildHeldItemMesh(sprite, mc::rig::heldItemStyle(item), eldenring::render::kBasis);
         }
         if (mesh.vertices.empty()) continue;
         FpDraw d;
@@ -561,7 +572,8 @@ bool SteveRenderer::initHeldItems(ID3D12Device* device, const uint8_t* atlas_rgb
         } else {
             if (!mc::rig::isHeldAsFlatSprite(item)) continue;
             const mc::rig::ItemSprite sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
-            mesh = mc::rig::buildHeldItemMesh(sprite, mc::rig::heldItemStyle(item), eldenring::render::kBasis, mc::rig::Hand::Left);
+            mesh = item == mc::ItemId::Shield ? mc::rig::buildShieldMesh(ShieldSheet(), eldenring::render::kBasis, mc::rig::Hand::Left)
+                                              : mc::rig::buildHeldItemMesh(sprite, mc::rig::heldItemStyle(item), eldenring::render::kBasis, mc::rig::Hand::Left);
         }
         if (mesh.vertices.empty()) continue;
         FpDraw d;

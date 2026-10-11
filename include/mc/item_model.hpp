@@ -52,4 +52,15 @@ RigMesh buildHeldBlockMesh(const UvRect& top, const UvRect& side, const UvRect& 
 // of each source pixel. Empty for an unusable sprite.
 RigMesh buildFlatItemMesh(const ItemSprite& sprite);
 
+// The vanilla shield (ShieldModel): a plate box 12x22x1 (texOffs (0, 0)) and a handle box 2x6x6 (texOffs (26, 0)) mapped onto the 64x64
+// entity texture like the game does, so the front has the rivets, the back is plain wood and the handle sits behind the plate. `sheet` is
+// the cell of the atlas that holds the whole 64x64 texture. Third person: held on the forearm of `hand`, in the same space as
+// buildHeldItemMesh. The plate faces forward, the handle reaches back to the arm.
+inline constexpr float kShieldModelScale = 0.7f; // the 22 px plate is about as tall as the old 16 px sprite was
+RigMesh buildShieldMesh(const UvRect& sheet, const HostBasis& basis, Hand hand);
+
+// First person: the same model centred on the plate, x right, y up, z towards the viewer, 1 unit = 1 block, the plate (22 px) one block tall.
+// The front (rivets) faces the viewer and the handle is behind it.
+RigMesh buildShieldFirstPersonMesh(const UvRect& sheet);
+
 } // namespace mc::rig
