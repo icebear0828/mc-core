@@ -26,6 +26,10 @@ inline float frontDot(const float player_pos[3], float player_yaw, const float a
     return dx * inv_dist * std::sin(player_yaw) + dz * inv_dist * std::cos(player_yaw);
 }
 
+// The yaw (rotation about +Y) whose forward vector (sin(yaw), 0, cos(yaw)) points along the horizontal part (fx, fz) of a view direction.
+// The shield guards where the player LOOKS (the camera), not where ER's body happens to point: the body only turns when the character moves.
+inline float yawFromForward(float fx, float fz) { return std::atan2(fx, fz); }
+
 // Checks whether an attack coming from attacker_pos is blocked by a player at player_pos facing player_yaw.
 inline bool isAttackBlocked(const float player_pos[3], float player_yaw, const float attacker_pos[3]) {
     return frontDot(player_pos, player_yaw, attacker_pos) >= kBlockMinDot;

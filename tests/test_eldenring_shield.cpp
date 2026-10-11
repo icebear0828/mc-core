@@ -147,3 +147,18 @@ TEST(EldenRingShield, LiveMeasuredHitsFromTheFrontAreBlockedWithTheRawOrientatio
     EXPECT_FALSE(shieldBlocksHit(true, true, pp1, 0.970f + pi, ap1));
     EXPECT_FALSE(shieldBlocksHit(true, true, pp2, 0.835f + pi, ap2));
 }
+
+TEST(EldenRingShield, YawFromForwardIsTheInverseOfTheForwardVectorTheArcUses) {
+    for (const float yaw : {0.f, 0.5f, 1.2f, 2.9f, -0.7f, -2.3f}) {
+        EXPECT_NEAR(yawFromForward(std::sin(yaw), std::cos(yaw)), yaw, 1e-5f);
+        // a camera that looks along that forward blocks an attacker straight ahead and not one straight behind
+        const float pos[3] = {0.f, 0.f, 0.f};
+        const float ahead[3] = {10.f * std::sin(yaw), 0.f, 10.f * std::cos(yaw)};
+        const float behind[3] = {-10.f * std::sin(yaw), 0.f, -10.f * std::cos(yaw)};
+        EXPECT_TRUE(isAttackBlocked(pos, yawFromForward(std::sin(yaw), std::cos(yaw)), ahead));
+        EXPECT_FALSE(isAttackBlocked(pos, yawFromForward(std::sin(yaw), std::cos(yaw)), behind));
+    }
+    // the vertical part of a camera forward does not matter: only x and z are given
+    EXPECT_NEAR(yawFromForward(0.f, 1.f), 0.f, 1e-6f);
+    EXPECT_NEAR(yawFromForward(1.f, 0.f), 1.5707963f, 1e-5f);
+}
