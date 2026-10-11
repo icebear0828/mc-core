@@ -92,4 +92,18 @@ inline float stepYaw(float current_yaw, float target_yaw, float dt, float turn_s
     return normalizeAngle(current_yaw + (diff > 0.f ? max_step : -max_step));
 }
 
+// Standard offset between Dantelion native Havok orientation quaternion and Steve/character model front (180 deg / pi).
+inline constexpr float kSteveYawOffset = 3.14159265358979323846f;
+
+// Encodes a desired character heading (where character model faces) into the native PhysicsModule+0x50 quaternion.
+// In Elden Ring, the native orientation quaternion's forward is opposite to the character model forward (+180 deg / pi offset).
+inline OrientationQuat characterQuatFromHeading(float desired_heading_rad, float offset_rad = kSteveYawOffset) {
+    return OrientationQuat::fromYaw(normalizeAngle(desired_heading_rad - offset_rad));
+}
+
+// Decodes character heading from raw PhysicsModule+0x50 quaternion.
+inline float headingFromCharacterQuat(const OrientationQuat& q, float offset_rad = kSteveYawOffset) {
+    return normalizeAngle(q.toYaw() + offset_rad);
+}
+
 } // namespace eldenring::motion

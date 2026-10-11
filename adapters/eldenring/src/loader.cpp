@@ -1919,21 +1919,32 @@ void DriveVelocityFromKeys(uintptr_t module, bool force_zero) {
                 if (!instant) {
                     float curr_q[4] = {};
                     if (SafeCopy(module + layout::kPhysicsOrientation, curr_q, sizeof(curr_q))) {
-                        const float curr_yaw = eldenring::render::yawFromQuat(curr_q[0], curr_q[1], curr_q[2], curr_q[3]);
+                        const float curr_yaw = eldenring::motion::headingFromCharacterQuat(
+                            eldenring::motion::OrientationQuat{curr_q[0], curr_q[1], curr_q[2], curr_q[3]});
                         final_yaw = eldenring::motion::stepYaw(curr_yaw, target_yaw, 0.0166667f, g_turn_speed.load(), false);
                     }
                 }
-                const auto out_q = eldenring::motion::OrientationQuat::fromYaw(final_yaw);
+                const auto out_q = eldenring::motion::characterQuatFromHeading(final_yaw);
                 const float q_raw[4] = {out_q.x, out_q.y, out_q.z, out_q.w};
                 WriteBytesSafe(module + layout::kPhysicsOrientation, q_raw, sizeof(q_raw));
             } else if (g_first_person.load(std::memory_order_relaxed)) {
-                // In first person even while stationary, track camera yaw
+                // In first person even while stationary, track camera yaw with deadzone to avoid redundant Havok contact recalculation
                 float fx = cam.forward[0], fz = cam.forward[2];
                 if (fx * fx + fz * fz > 1e-4f) {
                     const float target_yaw = std::atan2(fx, fz);
-                    const auto out_q = eldenring::motion::OrientationQuat::fromYaw(target_yaw);
-                    const float q_raw[4] = {out_q.x, out_q.y, out_q.z, out_q.w};
-                    WriteBytesSafe(module + layout::kPhysicsOrientation, q_raw, sizeof(q_raw));
+                    float curr_q[4] = {};
+                    bool should_update = true;
+                    if (SafeCopy(module + layout::kPhysicsOrientation, curr_q, sizeof(curr_q))) {
+                        const float curr_yaw = eldenring::motion::headingFromCharacterQuat(
+                            eldenring::motion::OrientationQuat{curr_q[0], curr_q[1], curr_q[2], curr_q[3]});
+                        const float diff = std::abs(eldenring::motion::normalizeAngle(target_yaw - curr_yaw));
+                        if (diff < 0.02f) should_update = false; // deadzone: avoid redundant per-frame writes when still
+                    }
+                    if (should_update) {
+                        const auto out_q = eldenring::motion::characterQuatFromHeading(target_yaw);
+                        const float q_raw[4] = {out_q.x, out_q.y, out_q.z, out_q.w};
+                        WriteBytesSafe(module + layout::kPhysicsOrientation, q_raw, sizeof(q_raw));
+                    }
                 }
             }
         }
@@ -2368,7 +2379,7 @@ void FlightStep() {
     if (have_heading) {
         const float fly_yaw = flight::bodyYaw(heading);
         g_fly_yaw.store(fly_yaw, std::memory_order_relaxed);
-        const auto out_q = eldenring::motion::OrientationQuat::fromYaw(fly_yaw);
+        const auto out_q = eldenring::motion::characterQuatFromHeading(fly_yaw);
         const float q_raw[4] = {out_q.x, out_q.y, out_q.z, out_q.w};
         WriteBytesSafe(module + layout::kPhysicsOrientation, q_raw, sizeof(q_raw));
     }
@@ -3512,7 +3523,11 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.cam.right = {cam.right[0], cam.right[1], cam.right[2]};
         steve.cam.up = {cam.up[0], cam.up[1], cam.up[2]};
         steve.cam.forward = {cam.forward[0], cam.forward[1], cam.forward[2]};
-        steve.cam.position = {cam.position[0], cam.position[1], cam.position[2]};
+        if (g_first_person.load(std::memory_order_relaxed)) {
+            steve.cam.position = {feet[0], feet[1] + g_eye_height.load(std::memory_order_relaxed), feet[2]};
+        } else {
+            steve.cam.position = {cam.position[0], cam.position[1], cam.position[2]};
+        }
         steve.fov_y = cam.fov_y;
         steve.feet[0] = feet[0];
         steve.feet[1] = feet[1];

@@ -110,4 +110,29 @@ TEST(EldenRingOrientation, SmoothTurnClampsAngularStepAndWrapsShortestPath) {
     EXPECT_NEAR(yaw, target, kEps);
 }
 
+TEST(EldenRingOrientation, CharacterQuatEncodesWith180DegreeOffset) {
+    // Model facing forward (0 rad): Havok native quat should be offset by -pi (or +pi, 180 deg)
+    const auto q_fwd = characterQuatFromHeading(0.f);
+    EXPECT_NEAR(std::abs(q_fwd.toYaw()), kPi, kEps);
+    EXPECT_NEAR(headingFromCharacterQuat(q_fwd), 0.f, kEps);
+
+    // Model facing right (+pi/2 rad): Havok native quat should face -pi/2
+    const auto q_right = characterQuatFromHeading(kPi * 0.5f);
+    EXPECT_NEAR(q_right.toYaw(), -kPi * 0.5f, kEps);
+    EXPECT_NEAR(headingFromCharacterQuat(q_right), kPi * 0.5f, kEps);
+
+    // Model facing backward (+pi rad): Havok native quat should face 0
+    const auto q_back = characterQuatFromHeading(kPi);
+    EXPECT_NEAR(q_back.toYaw(), 0.f, kEps);
+    EXPECT_NEAR(std::abs(headingFromCharacterQuat(q_back)), kPi, kEps);
+
+    // Round-trip across various angles
+    const float angles[] = {-2.5f, -1.0f, 0.3f, 1.8f, 3.1f};
+    for (float a : angles) {
+        const auto q = characterQuatFromHeading(a);
+        const float decoded = headingFromCharacterQuat(q);
+        EXPECT_NEAR(decoded, normalizeAngle(a), kEps);
+    }
+}
+
 } // namespace

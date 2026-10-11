@@ -144,11 +144,14 @@ TEST(EldenRingFp, SwayFollowsTheViewWithALag) {
     EXPECT_FLOAT_EQ(dp, 0.f);
     s.update(0.05f, 10.f, 30.f, dp, dy); // the view turned: the hand is behind it
     EXPECT_GT(dp, 0.f);
+    EXPECT_LE(dp, SwayFilter::kMaxSwayDeg);
     EXPECT_GT(dy, 0.f);
+    EXPECT_LE(dy, SwayFilter::kMaxSwayDeg);
     for (int i = 0; i < 40; ++i) s.update(0.05f, 10.f, 30.f, dp, dy);
     EXPECT_NEAR(dp, 0.f, 0.05f);                        // it catches up
     s.update(0.05f, 0.f, 359.f, dp, dy);                // yaw wraps: 30 -> 359 is a small turn the other way... not a jump of 329
     EXPECT_LT(std::fabs(dy), 180.f);
+    EXPECT_LE(std::fabs(dy), SwayFilter::kMaxSwayDeg);
 }
 
 TEST(EldenRingFp, TheBowRestsLowerAndFurtherInTowardsTheMiddleThanTheSwordAndPullsBackWhileDrawn) {
