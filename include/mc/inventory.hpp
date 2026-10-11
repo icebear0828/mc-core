@@ -203,6 +203,55 @@ public:
         std::swap(slots_[static_cast<size_t>(i)], slots_[static_cast<size_t>(hotbar)]);
     }
 
+    // Swap offhand with selected main hand hotbar slot (standard Minecraft 'F' key swap)
+    void swapMainAndOffhand(int hotbar_slot) {
+        if (hotbar_slot < 0 || hotbar_slot >= kHotbar) return;
+        std::swap(slots_[static_cast<size_t>(hotbar_slot)], offhand_);
+    }
+
+    void clickOffhand(Button button, bool shift = false) {
+        if (shift) {
+            if (!offhand_.empty()) {
+                const uint32_t left = add(offhand_);
+                offhand_.count = left;
+                if (left == 0) offhand_ = {};
+            }
+            return;
+        }
+        if (button == Button::Left) {
+            if (cursor_.empty()) {
+                cursor_ = offhand_;
+                offhand_ = {};
+            } else if (offhand_.empty()) {
+                offhand_ = cursor_;
+                cursor_ = {};
+            } else if (offhand_.item == cursor_.item) {
+                const uint32_t cap = maxStackSize(offhand_.item);
+                const uint32_t move = std::min(cap > offhand_.count ? cap - offhand_.count : 0, cursor_.count);
+                offhand_.count += move;
+                cursor_.count -= move;
+                if (cursor_.count == 0) cursor_ = {};
+            } else {
+                std::swap(offhand_, cursor_);
+            }
+            return;
+        }
+        // Right button
+        if (cursor_.empty()) {
+            if (offhand_.empty()) return;
+            const uint32_t take = (offhand_.count + 1) / 2;
+            cursor_ = {offhand_.item, take};
+            offhand_.count -= take;
+            if (offhand_.count == 0) offhand_ = {};
+        } else if (offhand_.empty() || (offhand_.item == cursor_.item && offhand_.count < maxStackSize(offhand_.item))) {
+            if (offhand_.empty()) offhand_ = {cursor_.item, 0};
+            ++offhand_.count;
+            if (--cursor_.count == 0) cursor_ = {};
+        } else {
+            std::swap(offhand_, cursor_);
+        }
+    }
+
 private:
     void shiftMove(int i) {
         ItemStack& src = slots_[static_cast<size_t>(i)];

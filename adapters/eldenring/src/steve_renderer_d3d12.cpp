@@ -886,6 +886,16 @@ void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* 
             list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
         }
     }
+    if (params.offhand_item != 0 && held_vertices_ && params.held_table.ptr != 0) {
+        const auto it = held_items_.find(params.offhand_item);
+        if (it != held_items_.end()) {
+            list->SetGraphicsRootDescriptorTable(1, params.held_table);
+            list->IASetVertexBuffers(0, 1, &held_vbv_);
+            list->IASetIndexBuffer(&held_ibv_);
+            list->SetGraphicsRoot32BitConstants(0, 16, parts[static_cast<size_t>(mc::StevePart::LeftArm)].m.data(), 16);
+            list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
+        }
+    }
     if (measure) {
         D3D12_RESOURCE_BARRIER b{};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;

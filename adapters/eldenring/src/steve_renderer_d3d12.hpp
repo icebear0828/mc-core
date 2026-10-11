@@ -33,6 +33,7 @@ struct SteveParams {
     float depth_w{0.f}, depth_h{0.f}; // size of the depth texture, to map back buffer pixels onto it
     float tint[4]{0.f, 0.f, 0.f, 0.f}; // rgb + amount: mixed over the lit skin (hurt flash)
     uint16_t held_item{0};             // mc::ItemId in the right hand (0 or an item without a sprite: nothing is drawn)
+    uint16_t offhand_item{0};          // mc::ItemId in the left hand / offhand (0 = nothing)
     D3D12_GPU_DESCRIPTOR_HANDLE held_table{}; // descriptor table (scene depth, atlas) the held item is drawn with
     bool keep_depth{false};            // the blocks were drawn just before: do not clear the figure's depth buffer
 };

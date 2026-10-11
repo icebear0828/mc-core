@@ -2452,6 +2452,7 @@ void InventoryTick(bool fg) {
         mc::Inventory& inv = g_melee.inventory();
         switch (ref.kind) {
             case mc::SlotRef::Kind::Inventory: inv.click(ref.index, button, shift); break;
+            case mc::SlotRef::Kind::Offhand: inv.clickOffhand(button, shift); break;
             case mc::SlotRef::Kind::Palette:
                 if (static_cast<size_t>(ref.index) < mc::paletteItems().size()) inv.clickPalette(mc::paletteItems()[static_cast<size_t>(ref.index)], button, shift);
                 break;
@@ -2461,6 +2462,13 @@ void InventoryTick(bool fg) {
     };
     if (erin::TakeLeftClick()) click(mc::Button::Left);
     if (erin::TakeRightClick()) click(mc::Button::Right);
+    static bool prev_f = false;
+    const bool f_down = (GetAsyncKeyState('F') & 0x8000) != 0;
+    if (f_down && !prev_f) {
+        std::lock_guard<std::mutex> g(g_melee_mutex);
+        g_melee.inventory().swapMainAndOffhand(g_melee.selectedSlot());
+    }
+    prev_f = f_down;
     for (int i = 0; i < mc::Inventory::kHotbar; ++i) {
         const bool d = (GetAsyncKeyState('1' + i) & 0x8000) != 0;
         if (d && !prev_digit[i] && ref.kind == mc::SlotRef::Kind::Inventory) {
@@ -3467,6 +3475,8 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         out.absorption_mc = g_survival.absorptionMc();
         out.eating = g_eating.getProgress();
         steve.held_item = static_cast<uint16_t>(g_melee.heldItem());
+        steve.offhand_item = static_cast<uint16_t>(g_melee.inventory().offhand().item);
+        steve.blocking = steve_dead_now ? false : g_shield_blocking.load(std::memory_order_relaxed);
         steve.cooldown = g_melee.cooldown();
         steve.eating = steve_dead_now ? 0.f : g_eating.getProgress();
         steve.bow_charge = steve_dead_now ? 0.f : g_bow_power.load(std::memory_order_relaxed);

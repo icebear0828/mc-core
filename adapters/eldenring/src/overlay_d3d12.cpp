@@ -593,6 +593,23 @@ void DrawInventory(const HudState& hud, float w, float h) {
         icon(lay.invSlot(i), item);
         stackCount(lay.invSlot(i), hud.inv_count[i]);
     }
+    // Offhand slot in inventory: slot border, vanilla shield watermark if empty, and item icon
+    const mc::HudRect off = lay.offhandSlot();
+    dl->AddRectFilled({off.x - 1.f * gs, off.y - 1.f * gs}, {off.x + off.w + 1.f * gs, off.y + off.h + 1.f * gs}, IM_COL32(139, 139, 139, 255));
+    dl->AddRectFilled({off.x, off.y}, {off.x + off.w, off.y + off.h}, IM_COL32(198, 198, 198, 255));
+    dl->AddRect({off.x, off.y}, {off.x + off.w, off.y + off.h}, IM_COL32(55, 55, 55, 255), 0.f, 0, gs);
+    dl->AddText(ImGui::GetFont(), fs, {off.x - 2.f * gs, off.y - 10.f * gs}, IM_COL32(255, 255, 255, 230), "Offhand");
+    const mc::HudRect off_item{off.x + 1.f * gs, off.y + 1.f * gs, 16.f * gs, 16.f * gs};
+    if (hud.offhand_item == 0) {
+        if (g_atlas_ready) {
+            const mc::hud::HudUV& suv = mc::hud::kUV_ITEM_SHIELD;
+            dl->AddImage(atlas, {off_item.x, off_item.y}, {off_item.x + off_item.w, off_item.y + off_item.h},
+                         {suv.u0, suv.v0}, {suv.u1, suv.v1}, IM_COL32(255, 255, 255, 90));
+        }
+    } else {
+        icon(off_item, static_cast<mc::ItemId>(hud.offhand_item));
+        stackCount(off_item, hud.offhand_count);
+    }
     // hover: the vanilla slot highlight and the item name
     const mc::SlotRef hover = lay.hitTest(hud.mouse_x, hud.mouse_y);
     mc::ItemId hovered = mc::ItemId::None;
@@ -600,9 +617,12 @@ void DrawInventory(const HudState& hud, float w, float h) {
         hovered = palette[static_cast<size_t>(hover.index)];
     } else if (hover.kind == mc::SlotRef::Kind::Inventory) {
         hovered = static_cast<mc::ItemId>(hud.inv_item[hover.index]);
+    } else if (hover.kind == mc::SlotRef::Kind::Offhand) {
+        hovered = static_cast<mc::ItemId>(hud.offhand_item);
     }
-    if (hover.kind == mc::SlotRef::Kind::Palette || hover.kind == mc::SlotRef::Kind::Inventory) {
-        const mc::HudRect r = hover.kind == mc::SlotRef::Kind::Palette ? lay.paletteSlot(hover.index) : lay.invSlot(hover.index);
+    if (hover.kind == mc::SlotRef::Kind::Palette || hover.kind == mc::SlotRef::Kind::Inventory || hover.kind == mc::SlotRef::Kind::Offhand) {
+        const mc::HudRect r = hover.kind == mc::SlotRef::Kind::Palette ? lay.paletteSlot(hover.index) :
+                              (hover.kind == mc::SlotRef::Kind::Inventory ? lay.invSlot(hover.index) : lay.offhandSlot());
         dl->AddRectFilled({r.x, r.y}, {r.x + r.w, r.y + r.h}, IM_COL32(255, 255, 255, 128));
     }
     // the stack on the cursor is drawn centred on the pointer, above everything
@@ -931,6 +951,7 @@ void RenderFrame(IDXGISwapChain* sc) {
         mc::SteveAnimInput anim_in = g_motion.update(dt, steve.feet, steve.yaw);
         anim_in.swing_progress = steve.swing;
         anim_in.bow_charge = steve.bow_charge;
+        anim_in.is_blocking = steve.blocking;
         g_head.update(steve.cam.forward.x, steve.cam.forward.y, steve.cam.forward.z, steve.yaw, anim_in);
         g_anim.update(dt, anim_in);
         if (g_trace_left.load() > 0) {
@@ -974,6 +995,7 @@ void RenderFrame(IDXGISwapChain* sc) {
         sp.tint[3] = 0.4f * std::min(1.f, steve.hurt * 4.f);
         sp.keep_depth = blocks_drawn; // the blocks left their depth in the figure's buffer: the figure sorts against them
         sp.held_item = static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.held_item), steve.bow_charge));
+        sp.offhand_item = steve.offhand_item;
         sp.held_table = g_atlas_ready ? g_held_table_gpu : D3D12_GPU_DESCRIPTOR_HANDLE{};
         if (g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
             g_steve.draw(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, parts, sp, f.rtv);

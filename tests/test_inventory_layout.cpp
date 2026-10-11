@@ -59,9 +59,25 @@ TEST(InventoryLayout, HitTestFindsSlotsAndMissesTheGaps) {
     EXPECT_EQ(l.hitTest(p.x + p.w + 10.f, p.y).kind, SlotRef::Kind::None);
 }
 
+TEST(InventoryLayout, OffhandSlotPositionAndHitTest) {
+    InventoryLayout l(1920.f, 1080.f);
+    const HudRect off = l.offhandSlot();
+    const HudRect p = l.panel();
+    const float s = static_cast<float>(l.scale());
+
+    // Positioned to the left of the hotbar / panel (22x22 GUI px area)
+    EXPECT_FLOAT_EQ(off.w, 18.f * s);
+    EXPECT_FLOAT_EQ(off.h, 18.f * s);
+
+    // Hit test recognizes Offhand slot
+    SlotRef r = l.hitTest(off.x + 5.f, off.y + 5.f);
+    EXPECT_EQ(r.kind, SlotRef::Kind::Offhand);
+    EXPECT_EQ(r.index, 0);
+}
+
 TEST(InventoryLayout, PaletteListsEveryItemOnce) {
     const auto& items = paletteItems();
-    EXPECT_EQ(items.size(), 18u); // 17 + the zombie spawn egg
+    EXPECT_EQ(items.size(), 19u); // 18 + shield
     EXPECT_EQ(items.front(), ItemId::DiamondSword);
     for (size_t i = 0; i < items.size(); ++i) {
         EXPECT_NE(items[i], ItemId::None);

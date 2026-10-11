@@ -159,6 +159,7 @@ TEST(ItemModelTest, WhichItemsAreHeldAsFlatSpritesAndWithWhatStyle) {
     EXPECT_TRUE(isHeldAsFlatSprite(ItemId::Bow));
     EXPECT_TRUE(isHeldAsFlatSprite(ItemId::GoldenApple));
     EXPECT_TRUE(isHeldAsFlatSprite(ItemId::TotemOfUndying));
+    EXPECT_TRUE(isHeldAsFlatSprite(ItemId::Shield));
     EXPECT_FALSE(isHeldAsFlatSprite(ItemId::None));
     EXPECT_FALSE(isHeldAsFlatSprite(ItemId::BlockDirt)) << "block icons in the atlas are isometric renders, not sprites";
     EXPECT_FALSE(isHeldAsFlatSprite(ItemId::BlockTnt));

@@ -60,6 +60,8 @@ struct SteveState {
     float hurt{0.f};  // 1 just hurt .. 0: the figure flashes red
     bool first_person{false};   // draw the view model (bare arm or held item) instead of the figure
     uint16_t held_item{0};      // mc::ItemId the hotbar wants in the hand (0 = bare hand)
+    uint16_t offhand_item{0};   // mc::ItemId in offhand (0 = none)
+    bool blocking{false};       // shield raise / blocking pose
     float cooldown{1.f};        // attack strength 0..1
     float eating{0.f};          // 0..1 progress of the meal in the hand (0 = not eating)
     float bow_charge{0.f};      // 0..1 how far the bow is drawn (0 = not drawing): the third-person arms aim
