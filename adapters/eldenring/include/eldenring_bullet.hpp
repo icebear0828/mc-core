@@ -159,7 +159,8 @@ inline constexpr uint32_t kBoltBulletId = 56; // request +0x1C of a crossbow sho
 // bullet object, not the shooter. A spell or another projectile of the player has the same kind, so the last spawn_bullet call (id, time) must be a bolt
 // shot less than 4 s ago (a bolt lives 3 s at most).
 inline bool isPlayersBoltHit(uint8_t hit_kind, uint64_t attacker_arg, uint64_t player, uint64_t victim, uint32_t last_bullet_id, uint64_t ms_since_shot) {
-    return hit_kind == 2 && player != 0 && attacker_arg == player && victim != 0 && victim != player && last_bullet_id == kBoltBulletId && ms_since_shot < 4000;
+    const bool bolt_match = (last_bullet_id == kBoltBulletId || last_bullet_id == 0xFFFFFFFFu);
+    return hit_kind == 2 && player != 0 && attacker_arg == player && victim != 0 && victim != player && bolt_match && ms_since_shot < 4000;
 }
 
 // The feedback of a hit by the player's bolt, as for the melee hits: Minecraft shows floor(damage / 2) damage hearts at the victim, and a critical shot

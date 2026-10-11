@@ -793,7 +793,13 @@ void AfterCameraStep(bool have_before, uintptr_t addr, const float before[3]) {
     }
 }
 
+void RunBulletFire();
+
 uint64_t __fastcall CameraStepDetour(uint64_t self, float dt, uint64_t chr, uint64_t flag) {
+    if (g_bullet_fire_pending.load(std::memory_order_relaxed) && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
+        g_bullet_fire_pending.exchange(false)) {
+        RunBulletFire();
+    }
     FlightStep();
     BlocksCollisionStep();
     McJumpStep();
@@ -1174,6 +1180,11 @@ std::atomic<float> g_bow_power{0.f};             // 0..1 while the bow is drawn 
 std::atomic<float> g_bow_ticks{0.f};             // ticks drawn (first-person pose)
 std::atomic<int> g_bolt_attach_poly{-1};         // mc_er_steve.txt: bolt_attach_poly. Request +0x1C is the shooter's dummy poly id, not a bullet id: >= 0 makes the game take that bone's matrix instead of ours (REVERSE 35.12); -1 keeps ours; 56 is what a real shot sends
 std::atomic<uint64_t> g_last_bullet_tick_ms{0}; // the last spawn_bullet call (the player's real shot or ours): hits within 3 s after it are logged whatever they look like
+std::atomic<uint64_t> g_last_shot_ms{0};        // exact timestamp when our shot was spawned
+std::atomic<float> g_last_shot_pos[3]{};        // muzzle position of our shot
+thread_local bool t_our_bullet_fire{false};     // true while our own RunBulletFire invokes SpawnBulletSafe
+
+void RunBulletFire(); // forward declaration for CameraStepDetour
 
 void HandleProjectileHit(void* module, void* attacker, uint8_t* ctx) {
     // Statistics first, before anything can return: does this hook see hits on enemies at all, and of which kind?
@@ -1224,6 +1235,19 @@ void HandleProjectileHit(void* module, void* attacker, uint8_t* ctx) {
         Log("PROJ-HIT: max_hp=%d kind=%u victim=%p npc=%d team=%u attacker-arg=%p ctx+1D8=%p ctx+1E0=%p player=%p shooter_is_player=%d after_shot=%d engine_dmg=%d tid=%lu", victim_max, kind,
             reinterpret_cast<void*>(victim), npc, static_cast<unsigned>(team), attacker, reinterpret_cast<void*>(ctx_attacker), reinterpret_cast<void*>(ctx_victim),
             reinterpret_cast<void*>(player), mine ? 1 : 0, after_shot ? 1 : 0, engine_damage, static_cast<unsigned long>(GetCurrentThreadId()));
+    }
+    if (mine) {
+        float vp[3];
+        const uint64_t shot_ms = g_last_shot_ms.load(std::memory_order_relaxed);
+        if (shot_ms != 0 && detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(victim), vp)) {
+            const float dx = vp[0] - g_last_shot_pos[0].load(std::memory_order_relaxed),
+                        dy = vp[1] + 1.0f - g_last_shot_pos[1].load(std::memory_order_relaxed),
+                        dz = vp[2] - g_last_shot_pos[2].load(std::memory_order_relaxed);
+            const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+            const float since = static_cast<float>(now - shot_ms);
+            Log("ARROW-TIMING: the hit was processed %.0f ms after the shot; target dist=%.1f m; avg speed=%.1f m/s",
+                since, dist, since > 0.f ? dist / (since / 1000.f) : 0.f);
+        }
     }
     if (mine && g_mc_mode.load(std::memory_order_relaxed)) {
         // Minecraft's feedback for a shot that lands: the arrow's thud, the hit marker, the damage hearts at the victim's chest (and the critical stars for a full draw).
@@ -3052,8 +3076,13 @@ void RunBulletFire() {
     const float shot_damage = g_pending_shot_damage.load();
     g_last_shot_damage.store(shot_damage, std::memory_order_relaxed);
     g_last_bullet_id.store(eldenring::bullet::kBoltBulletId, std::memory_order_relaxed); // our crossbow bolt: the marker for the hit handler, whatever +0x1C holds
-    g_last_bullet_tick_ms.store(GetTickCount64(), std::memory_order_relaxed);
+    const uint64_t shot_now = GetTickCount64();
+    g_last_bullet_tick_ms.store(shot_now, std::memory_order_relaxed);
+    g_last_shot_ms.store(shot_now, std::memory_order_relaxed);
+    for (int i = 0; i < 3; ++i) g_last_shot_pos[i].store(fp.position[i], std::memory_order_relaxed);
+    t_our_bullet_fire = true;
     const bool ok = SpawnBulletSafe(reinterpret_cast<void*>(manager), &out, req, status);
+    t_our_bullet_fire = false;
     uint32_t code = 0;
     std::memcpy(&code, status, sizeof(code));
     Log("bullet fire: MC damage %.1f param row 0x%08X +0x1C(dummy poly)=%d flags=0x%X from (%.2f %.2f %.2f) along (%.3f %.3f %.3f) tid=%lu -> %s handle 0x%08X status %u -> %s", shot_damage, *reinterpret_cast<uint32_t*>(req + 8),
@@ -3080,12 +3109,18 @@ bool QueueBulletFire(float mc_damage) {
 }
 
 uint32_t* __fastcall SpawnBulletDetour(void* manager, uint32_t* out_handle, void* request, void* r9) {
-    {
+    if (!t_our_bullet_fire) {
         uint32_t id = 0;
         if (request != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(request) + 0x1C, &id, sizeof(id));
         g_last_bullet_id.store(id, std::memory_order_relaxed);
         g_last_shot_damage.store(eldenring::bullet::kCrossbowDamage, std::memory_order_relaxed);
-        g_last_bullet_tick_ms.store(GetTickCount64(), std::memory_order_relaxed);
+        const uint64_t shot_now = GetTickCount64();
+        g_last_bullet_tick_ms.store(shot_now, std::memory_order_relaxed);
+        g_last_shot_ms.store(shot_now, std::memory_order_relaxed);
+        float pos[3];
+        if (request != nullptr && SafeCopy(reinterpret_cast<uintptr_t>(request) + 0x80, pos, sizeof(pos))) {
+            for (int i = 0; i < 3; ++i) g_last_shot_pos[i].store(pos[i], std::memory_order_relaxed);
+        }
     }
     if (g_bullet_fire_enabled.load(std::memory_order_relaxed)) RecordBulletTemplate(request);
     uint32_t* r = g_spawn_bullet_orig(manager, out_handle, request, r9);
