@@ -36,3 +36,4 @@ Testing/
 *.gcda
 *.gcno
 *.gcov
+*.log

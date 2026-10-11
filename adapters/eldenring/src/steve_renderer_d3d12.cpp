@@ -433,6 +433,12 @@ void SteveRenderer::release() {
     Rel(root_);
     Rel(vertices_);
     Rel(indices_);
+    Rel(held_vertices_);
+    Rel(held_indices_);
+    held_items_.clear();
+    Rel(offhand_vertices_);
+    Rel(offhand_indices_);
+    offhand_items_.clear();
 }
 
 bool SteveRenderer::readStats(uint32_t out[64]) {
@@ -539,6 +545,41 @@ bool SteveRenderer::initHeldItems(ID3D12Device* device, const uint8_t* atlas_rgb
     }
     held_vbv_ = {held_vertices_->GetGPUVirtualAddress(), static_cast<UINT>(vertices.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
     held_ibv_ = {held_indices_->GetGPUVirtualAddress(), static_cast<UINT>(indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
+
+    // Offhand items (Left arm, mirrored or forearm-mounted shield)
+    Rel(offhand_vertices_);
+    Rel(offhand_indices_);
+    offhand_items_.clear();
+    std::vector<mc::rig::RigVertex> off_vertices;
+    std::vector<uint16_t> off_indices;
+    for (const FpItemCell& cell : cells) {
+        const mc::ItemId item = static_cast<mc::ItemId>(cell.item);
+        const mc::BlockId block = eldenring::blocks::blockForItem(item);
+        mc::rig::RigMesh mesh;
+        if (block != mc::BlockId::Air) {
+            mesh = eldenring::blocks::buildHeldCubeMesh(block, eldenring::render::kBasis);
+        } else {
+            if (!mc::rig::isHeldAsFlatSprite(item)) continue;
+            const mc::rig::ItemSprite sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
+            mesh = mc::rig::buildHeldItemMesh(sprite, mc::rig::heldItemStyle(item), eldenring::render::kBasis, mc::rig::Hand::Left);
+        }
+        if (mesh.vertices.empty()) continue;
+        FpDraw d;
+        d.base_vertex = static_cast<int>(off_vertices.size());
+        d.first_index = static_cast<unsigned>(off_indices.size());
+        d.index_count = static_cast<unsigned>(mesh.indices.size());
+        off_vertices.insert(off_vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
+        off_indices.insert(off_indices.end(), mesh.indices.begin(), mesh.indices.end());
+        offhand_items_[cell.item] = d;
+    }
+    if (!off_vertices.empty()) {
+        offhand_vertices_ = UploadBuffer(device, off_vertices.data(), off_vertices.size() * sizeof(mc::rig::RigVertex));
+        offhand_indices_ = UploadBuffer(device, off_indices.data(), off_indices.size() * sizeof(uint16_t));
+        if (offhand_vertices_ && offhand_indices_) {
+            offhand_vbv_ = {offhand_vertices_->GetGPUVirtualAddress(), static_cast<UINT>(off_vertices.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
+            offhand_ibv_ = {offhand_indices_->GetGPUVirtualAddress(), static_cast<UINT>(off_indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
+        }
+    }
     return true;
 }
 
@@ -886,12 +927,12 @@ void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* 
             list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
         }
     }
-    if (params.offhand_item != 0 && held_vertices_ && params.held_table.ptr != 0) {
-        const auto it = held_items_.find(params.offhand_item);
-        if (it != held_items_.end()) {
+    if (params.offhand_item != 0 && offhand_vertices_ && params.held_table.ptr != 0) {
+        const auto it = offhand_items_.find(params.offhand_item);
+        if (it != offhand_items_.end()) {
             list->SetGraphicsRootDescriptorTable(1, params.held_table);
-            list->IASetVertexBuffers(0, 1, &held_vbv_);
-            list->IASetIndexBuffer(&held_ibv_);
+            list->IASetVertexBuffers(0, 1, &offhand_vbv_);
+            list->IASetIndexBuffer(&offhand_ibv_);
             list->SetGraphicsRoot32BitConstants(0, 16, parts[static_cast<size_t>(mc::StevePart::LeftArm)].m.data(), 16);
             list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
         }

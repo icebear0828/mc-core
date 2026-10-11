@@ -20,6 +20,7 @@ Display displayFor(HeldItemStyle s) {
     switch (s) {
         case HeldItemStyle::Handheld: return {{0, -90, 55}, {0, 4, 0.5f}, 0.85f};
         case HeldItemStyle::Bow: return {{-80, 260, -40}, {-1, -2, 2.5f}, 0.9f};
+        case HeldItemStyle::Shield: return {{0, 0, 0}, {0, 0, 0}, 0.95f};
         case HeldItemStyle::Generated: break;
     }
     return {{0, 0, 0}, {0, 3, 1}, 0.55f};
@@ -46,15 +47,34 @@ Vec3 apply(const M3& r, const Vec3& v) {
             r.m[2][0] * v.x + r.m[2][1] * v.y + r.m[2][2] * v.z};
 }
 
-// Model space (x = character's left, y = down, z = back), pixels, rest pose of the right arm.
+// Model space (x = character's left, y = down, z = back), pixels, rest pose of the given arm.
 // Sprite space: x right, y up, z toward the viewer, 16 pixels = 1 block, centred on the sprite.
-Vec3 spriteToModel(const Vec3& p, const Display& d) {
+Vec3 spriteToModel(const Vec3& p, const Display& d, HeldItemStyle style, Hand hand) {
+    if (style == HeldItemStyle::Shield) {
+        const float s = d.scale;
+        if (hand == Hand::Left) {
+            // Left forearm: outer side is +X, forward is -Z, upward is -Y
+            const Vec3 q{p.x * s + 2.0f, -p.y * s + 7.0f, -p.z * s - 1.5f};
+            return q + Vec3{5.0f, 2.0f, 0.0f};
+        } else {
+            // Right forearm: outer side is -X, forward is -Z, upward is -Y
+            const Vec3 q{-p.x * s - 2.0f, -p.y * s + 7.0f, -p.z * s - 1.5f};
+            return q + Vec3{-5.0f, 2.0f, 0.0f};
+        }
+    }
+
     // display transform: translate * (rotX * rotY * rotZ) * scale   (the model is centred before it)
     const M3 r = mul(mul(rotX(d.rot[0] * kDeg), rotY(d.rot[1] * kDeg)), rotZ(d.rot[2] * kDeg));
     Vec3 q = apply(r, p * d.scale) + Vec3{d.trans[0], d.trans[1], d.trans[2]};
     // ItemInHandLayer: rotX(-90), rotY(180), translate(1/16, 0.125, -0.625) blocks = (1, 2, -10) pixels
     q = q + Vec3{1.0f, 2.0f, -10.0f};
     q = apply(mul(rotX(-90.0f * kDeg), rotY(180.0f * kDeg)), q);
+
+    if (hand == Hand::Left) {
+        // Mirrored across character's sagittal plane, relative to left arm pivot {+5, 2, 0}
+        q.x = -q.x;
+        return q + Vec3{5.0f, 2.0f, 0.0f};
+    }
     // the right arm's pivot in model pixels
     return q + Vec3{-5.0f, 2.0f, 0.0f};
 }
@@ -90,11 +110,12 @@ HeldItemStyle heldItemStyle(ItemId item) {
         case ItemId::DiamondSword:
         case ItemId::DiamondPickaxe: return HeldItemStyle::Handheld;
         case ItemId::Bow: return HeldItemStyle::Bow;
+        case ItemId::Shield: return HeldItemStyle::Shield;
         default: return HeldItemStyle::Generated;
     }
 }
 
-RigMesh buildHeldItemMesh(const ItemSprite& s, HeldItemStyle style, const HostBasis& basis) {
+RigMesh buildHeldItemMesh(const ItemSprite& s, HeldItemStyle style, const HostBasis& basis, Hand hand) {
     RigMesh mesh;
     if (!s.rgba || s.w <= 0 || s.h <= 0 || s.x < 0 || s.y < 0 || s.x + s.w > s.atlas_w || s.y + s.h > s.atlas_h) return mesh;
 
@@ -117,15 +138,15 @@ RigMesh buildHeldItemMesh(const ItemSprite& s, HeldItemStyle style, const HostBa
         Vec3 host[4];
         for (int k = 0; k < 4; ++k) {
             host[k] = basis.fromCanonical([&] {
-                const Vec3 model = spriteToModel(c[k], display);
+                const Vec3 model = spriteToModel(c[k], display, style, hand);
                 return Vec3{-model.z * kCmPerModelPixel, model.x * kCmPerModelPixel, (24.0f - model.y) * kCmPerModelPixel};
             }());
             mesh.vertices.push_back({host[k].x, host[k].y, host[k].z, u, v});
         }
         // Outward in host space: the sprite-space normal carried through the same transform.
         const Vec3 p0 = c[0];
-        const Vec3 tip = spriteToModel(p0 + outward_sprite, display);
-        const Vec3 root = spriteToModel(p0, display);
+        const Vec3 tip = spriteToModel(p0 + outward_sprite, display, style, hand);
+        const Vec3 root = spriteToModel(p0, display, style, hand);
         const Vec3 model_out = tip - root;
         const Vec3 out = basis.fromCanonical({-model_out.z, model_out.x, -model_out.y});
         const Vec3 e1 = host[1] - host[0], e2 = host[2] - host[0];
@@ -194,7 +215,7 @@ RigMesh buildHeldBlockMesh(const UvRect& top, const UvRect& side, const UvRect& 
         const uint16_t base = static_cast<uint16_t>(mesh.vertices.size());
         for (int k = 0; k < 4; ++k) {
             // sprite space is 16 pixels per block
-            const Vec3 model = spriteToModel(Vec3{f.c[k][0] * 16.f, f.c[k][1] * 16.f, f.c[k][2] * 16.f}, display);
+            const Vec3 model = spriteToModel(Vec3{f.c[k][0] * 16.f, f.c[k][1] * 16.f, f.c[k][2] * 16.f}, display, HeldItemStyle::Handheld, Hand::Right);
             const Vec3 host = basis.fromCanonical(Vec3{-model.z * kCmPerModelPixel, model.x * kCmPerModelPixel, (24.0f - model.y) * kCmPerModelPixel});
             mesh.vertices.push_back({host.x, host.y, host.z, us[k], vs[k]});
         }

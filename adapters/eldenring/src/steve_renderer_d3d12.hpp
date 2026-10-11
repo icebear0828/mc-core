@@ -150,6 +150,11 @@ private:
     D3D12_VERTEX_BUFFER_VIEW held_vbv_{};
     D3D12_INDEX_BUFFER_VIEW held_ibv_{};
     std::map<uint16_t, FpDraw> held_items_;
+    ID3D12Resource* offhand_vertices_{nullptr};
+    ID3D12Resource* offhand_indices_{nullptr};
+    D3D12_VERTEX_BUFFER_VIEW offhand_vbv_{};
+    D3D12_INDEX_BUFFER_VIEW offhand_ibv_{};
+    std::map<uint16_t, FpDraw> offhand_items_;
     struct BlockSlot {
         ID3D12Resource* vb{nullptr};
         ID3D12Resource* ib{nullptr};

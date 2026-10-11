@@ -245,3 +245,58 @@ TEST(ItemModel, TheDrawnBowSpritesAreHeldAsFlatSpritesLikeTheBow) {
     EXPECT_TRUE(isHeldAsFlatSprite(ItemId::BowPulling1));
     EXPECT_TRUE(isHeldAsFlatSprite(ItemId::BowPulling2));
 }
+
+TEST(ItemModelTest, ShieldItemStyleIsShield) {
+    EXPECT_EQ(heldItemStyle(ItemId::Shield), HeldItemStyle::Shield);
+}
+
+TEST(ItemModelTest, LeftHandItemsMirrorAcrossTheBody) {
+    Atlas a(16, 16);
+    for (int y = 2; y < 14; ++y) {
+        for (int x = 2; x < 14; ++x) a.set(x, y);
+    }
+    const RigMesh right = buildHeldItemMesh(a.sprite(0, 0, 16, 16), HeldItemStyle::Generated, kCanonical, Hand::Right);
+    const RigMesh left = buildHeldItemMesh(a.sprite(0, 0, 16, 16), HeldItemStyle::Generated, kCanonical, Hand::Left);
+    ASSERT_FALSE(right.vertices.empty());
+    ASSERT_FALSE(left.vertices.empty());
+    ASSERT_EQ(right.vertices.size(), left.vertices.size());
+
+    // In canonical frame (X forward, Y left, Z up):
+    // Right arm is at negative Y (around -20 cm); Left arm is at positive Y (around +20 cm).
+    float r_y_sum = 0.f, l_y_sum = 0.f;
+    for (const auto& v : right.vertices) r_y_sum += v.y;
+    for (const auto& v : left.vertices) l_y_sum += v.y;
+    const float r_y_avg = r_y_sum / static_cast<float>(right.vertices.size());
+    const float l_y_avg = l_y_sum / static_cast<float>(left.vertices.size());
+    EXPECT_LT(r_y_avg, -10.f) << "Right hand item should be on character's right side (negative Y)";
+    EXPECT_GT(l_y_avg, 10.f) << "Left hand item should be on character's left side (positive Y)";
+    EXPECT_NEAR(r_y_avg, -l_y_avg, 1.0f) << "Left and right hands should be symmetrical across Y = 0";
+}
+
+TEST(ItemModelTest, LeftHandShieldFitsArmForearmWith3DExtrusion) {
+    Atlas a(16, 16);
+    // Draw solid shield sprite with rim
+    for (int y = 2; y < 14; ++y) {
+        for (int x = 3; x < 13; ++x) a.set(x, y);
+    }
+    const RigMesh shield = buildHeldItemMesh(a.sprite(0, 0, 16, 16), HeldItemStyle::Shield, kCanonical, Hand::Left);
+    ASSERT_FALSE(shield.vertices.empty());
+    EXPECT_GE(shield.indices.size(), 36u);
+
+    // Verify 3D bounding box
+    float min_x = 1e9f, max_x = -1e9f;
+    float min_y = 1e9f, max_y = -1e9f;
+    float min_z = 1e9f, max_z = -1e9f;
+    for (const auto& v : shield.vertices) {
+        min_x = std::min(min_x, v.x); max_x = std::max(max_x, v.x);
+        min_y = std::min(min_y, v.y); max_y = std::max(max_y, v.y);
+        min_z = std::min(min_z, v.z); max_z = std::max(max_z, v.z);
+    }
+
+    // Shield should have realistic 3D thickness (non-zero depth along normal)
+    EXPECT_GT(max_x - min_x, 0.5f) << "Shield must have 3D extruded depth";
+    // Should be on character's left side (+Y in canonical)
+    EXPECT_GT(min_y, 10.f) << "Shield must sit on the left forearm";
+    // Height coverage (Z) should cover forearm (~15-35 cm above ground in rest pose)
+    EXPECT_GT(max_z - min_z, 20.f) << "Shield must be tall enough to cover the arm";
+}

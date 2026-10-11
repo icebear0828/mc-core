@@ -589,12 +589,47 @@ def create_canonical_sprite(name: str) -> Image.Image:
                 img.putpixel((x, y), c_gld)
         img.putpixel((6, 5), c_emr); img.putpixel((9, 5), c_emr)
     elif name == "item_shield":
-        c_iron, c_wood = (180, 180, 180, 255), (140, 95, 50, 255)
-        for y in range(2, 14):
-            for x in range(3, 13):
-                if y <= 9 or (x - 7.5)**2 + (y - 9)**2 <= 18:
-                    edge = (x in (3, 12) or y == 2)
-                    img.putpixel((x, y), c_iron if edge else c_wood)
+        # Full 16x16 canonical Minecraft shield with iron rim, wood planks, and iron boss/rivet
+        c_ir_hi = (220, 220, 225, 255) # iron highlight
+        c_ir_md = (180, 180, 185, 255) # iron midtone
+        c_ir_dk = (120, 120, 125, 255) # iron shadow
+        c_ir_ol = (60, 60, 65, 255)    # iron outline edge
+        c_wd_hi = (170, 120, 70, 255)  # wood light grain
+        c_wd_md = (145, 95, 50, 255)   # wood base
+        c_wd_dk = (115, 75, 35, 255)   # wood seam
+
+        # Shield shape: row ranges [x_start, x_end] (inclusive)
+        shield_rows = {
+            1: (3, 12),
+            2: (2, 13), 3: (2, 13), 4: (2, 13), 5: (2, 13),
+            6: (2, 13), 7: (2, 13), 8: (2, 13),
+            9: (3, 12), 10: (3, 12),
+            11: (4, 11), 12: (4, 11),
+            13: (5, 10),
+            14: (6, 9),
+        }
+        for y, (x_min, x_max) in shield_rows.items():
+            for x in range(x_min, x_max + 1):
+                is_rim = (y == 1 or y == 14 or x == x_min or x == x_max)
+                if is_rim:
+                    if y == 1 or x == x_min:
+                        col = c_ir_hi if (x + y) % 2 == 0 else c_ir_md
+                    elif x == x_max or y >= 13:
+                        col = c_ir_dk if (x + y) % 2 == 0 else c_ir_ol
+                    else:
+                        col = c_ir_md
+                elif y in (6, 7) and x in (7, 8):
+                    # Central iron boss / rivet
+                    col = c_ir_hi if (x == 7 and y == 6) else (c_ir_dk if (x == 8 and y == 7) else c_ir_md)
+                else:
+                    # Wood planks with vertical grain pattern
+                    if x in (4, 8, 11):
+                        col = c_wd_dk
+                    elif (x + y) % 3 == 0:
+                        col = c_wd_hi
+                    else:
+                        col = c_wd_md
+                img.putpixel((x, y), col)
     elif name.startswith("block_") and name in _PLACEHOLDER_ITEM_COLORS:  # a flat coloured square
         img = Image.new("RGBA", (16, 16), _PLACEHOLDER_ITEM_COLORS[name] + (255,))
     elif name in _PLACEHOLDER_ITEM_COLORS:  # a plain coloured disc; the real icon replaces it when a client.jar is given
@@ -687,7 +722,7 @@ _JAR_HUD_SPRITES = {
     "hotbar": "gui/sprites/hud/hotbar.png",
     "hotbar_selection": "gui/sprites/hud/hotbar_selection.png",
     "hotbar_offhand_left": "gui/sprites/hud/hotbar_offhand_left.png",
-    "item_shield": "gui/sprites/container/slot/shield.png",
+    "item_shield": "item/shield.png",
     "item_diamond_sword": "item/diamond_sword.png",
     "item_diamond_pickaxe": "item/diamond_pickaxe.png",
     "item_golden_apple": "item/golden_apple.png",

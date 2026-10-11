@@ -20,10 +20,16 @@ struct ItemSprite {
     int x{0}, y{0}, w{0}, h{0}; // the sprite's cell inside the atlas, pixels
 };
 
+enum class Hand {
+    Right,
+    Left
+};
+
 enum class HeldItemStyle {
     Handheld,  // swords, tools: item/handheld, rotation (0,-90,55), translation (0,4,0.5), scale 0.85
     Generated, // plain items: rotation (0,0,0), translation (0,3,1), scale 0.55
     Bow,       // rotation (-80,260,-40), translation (-1,-2,2.5), scale 0.9
+    Shield     // shield: attached to the forearm, scale 0.95
 };
 
 // False for blocks (the atlas holds isometric icons, not sprites) and for the elytra (worn, not held).
@@ -32,7 +38,7 @@ enum class HeldItemStyle {
 
 // Empty mesh for an unusable sprite. Vertices are in `basis` host units, UVs address the atlas (0..1) at the
 // centre of each source pixel, so point sampling returns the sprite's colours.
-RigMesh buildHeldItemMesh(const ItemSprite& sprite, HeldItemStyle style, const HostBasis& basis);
+RigMesh buildHeldItemMesh(const ItemSprite& sprite, HeldItemStyle style, const HostBasis& basis, Hand hand = Hand::Right);
 
 // A block held in the hand in third person (block/block display: rotation (75, 45, 0), translation (0, 2.5, 0), scale 0.375): a
 // textured cube in the same space as buildHeldItemMesh. The faces are cells of an atlas, given as UV rectangles.

@@ -323,6 +323,7 @@ def _sprite_colors():
         "gui/sprites/hud/experience_bar_progress.png": _solid((182, 5), (73, 74, 75, 255)),
         "gui/sprites/hud/hotbar_offhand_left.png": _solid((29, 24), (80, 81, 82, 255)),
         "gui/sprites/container/slot/shield.png": _solid((16, 16), (83, 84, 85, 255)),
+        "item/shield.png": _solid((16, 16), (83, 84, 85, 255)),
     }
 
 
@@ -524,6 +525,48 @@ def test_offhand_slot_and_shield_icon_copied(tmp_path):
     shield = _hud_region(atlas, uv["item_shield"])
     assert shield.size == (16, 16)
     assert {shield.getpixel((x, y)) for x in range(16) for y in range(16)} == {(83, 84, 85, 255)}
+
+
+def test_canonical_item_shield_is_solid_with_iron_rim_and_wood_planks():
+    from extract_mc_assets import create_canonical_sprite
+
+    shield = create_canonical_sprite("item_shield")
+    assert shield.size == (16, 16)
+    # 1. No semi-transparent pixels (all pixels must be either completely transparent 0 or completely solid 255)
+    alphas = [shield.getpixel((x, y))[3] for x in range(16) for y in range(16)]
+    assert all(a in (0, 255) for a in alphas), "Shield must have zero translucent pixels"
+
+    # 2. Substantial coverage for 3D extrusion (at least 70 opaque pixels)
+    solid_pixels = [(x, y) for x in range(16) for y in range(16) if shield.getpixel((x, y))[3] == 255]
+    assert len(solid_pixels) >= 70, f"Shield has too few solid pixels: {len(solid_pixels)}"
+
+    # 3. Must contain iron rim colors (high silver/grey) and wood colors
+    colors = [shield.getpixel(pos)[:3] for pos in solid_pixels]
+    has_iron = any(r > 150 and g > 150 and b > 150 and abs(r - g) < 20 and abs(g - b) < 20 for r, g, b in colors)
+    has_wood = any(r > 100 and g > 60 and b < 80 for r, g, b in colors)
+    assert has_iron, "Shield must have distinct metallic iron rim"
+    assert has_wood, "Shield must have distinct wood plank body"
+
+
+def test_hud_atlas_with_jar_having_only_slot_shield_does_not_make_item_transparent(tmp_path):
+    import zipfile
+    from extract_mc_assets import build_hud_atlas
+
+    # Simulate real vanilla client.jar:
+    # Vanilla Java Edition ONLY has gui/sprites/container/slot/shield.png (which is translucent 30% alpha for empty slot).
+    # It does NOT have item/shield.png.
+    jar_path = tmp_path / "real_style_client.jar"
+    with zipfile.ZipFile(jar_path, "w") as z:
+        # Create a semi-transparent slot watermark (alpha 70) like Mojang's slot/shield.png
+        slot_img = Image.new("RGBA", (16, 16), (255, 255, 255, 70))
+        z.writestr("assets/minecraft/textures/gui/sprites/container/slot/shield.png", _png(slot_img))
+
+    atlas, uv = build_hud_atlas(jar_path)
+    shield = _hud_region(atlas, uv["item_shield"])
+    # The shield item MUST be solid (not polluted by the translucent slot watermark)
+    solid_pixels = [shield.getpixel((x, y)) for x in range(16) for y in range(16) if shield.getpixel((x, y))[3] > 0]
+    assert len(solid_pixels) >= 70
+    assert all(p[3] == 255 for p in solid_pixels), "item_shield must not take translucent pixels from slot/shield.png"
 
 
 def test_committed_generated_headers_match_the_tool_output(tmp_path):

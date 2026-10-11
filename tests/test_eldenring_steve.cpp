@@ -186,6 +186,37 @@ TEST(EldenRingSteve, HeldItemSitsAtTheRightHandWithTheErBasis) {
     EXPECT_LT(max_horizontal, 1.2f);
 }
 
+TEST(EldenRingSteve, OffhandShieldSitsAtTheLeftForearmWithTheErBasis) {
+    std::vector<uint8_t> atlas(16 * 16 * 4, 0);
+    for (int y = 2; y < 14; ++y) {
+        for (int x = 3; x < 13; ++x) atlas[(static_cast<size_t>(y) * 16 + x) * 4 + 3] = 255;
+    }
+    const mc::rig::ItemSprite sprite{atlas.data(), 16, 16, 0, 0, 16, 16};
+    const mc::rig::RigMesh mesh = mc::rig::buildHeldItemMesh(sprite, mc::rig::HeldItemStyle::Shield, eldenring::render::kBasis, mc::rig::Hand::Left);
+    ASSERT_FALSE(mesh.vertices.empty());
+
+    // Standing pose with feet at origin, yaw = 0
+    const mc::rig::Mat4 arm = mc::rig::partMatrix(mc::StevePart::LeftArm, mc::Quat{0.f, 0.f, 0.f, 1.f}, {0.f, 0.f, 0.f}, 0.f, eldenring::render::kBasis);
+    float lo_y = 1e9f, hi_y = -1e9f;
+    float min_x = 1e9f, max_x = -1e9f;
+    float max_horizontal = 0.f;
+    for (const mc::rig::RigVertex& v : mesh.vertices) {
+        const mc::Vec3 p = mc::rig::transformPoint(arm, {v.x, v.y, v.z});
+        lo_y = std::min(lo_y, p.y);
+        hi_y = std::max(hi_y, p.y);
+        min_x = std::min(min_x, p.x);
+        max_x = std::max(max_x, p.x);
+        max_horizontal = std::max(max_horizontal, std::sqrt(p.x * p.x + p.z * p.z));
+    }
+    // Height of shield should align with forearm (~0.4m to ~1.4m above ground)
+    EXPECT_GT(lo_y, 0.3f);
+    EXPECT_LT(hi_y, 1.5f);
+    // In Dantelion coordinates (+X right, -X left), the left arm is at negative X
+    EXPECT_LT(min_x, -0.1f) << "Left hand shield sits on the left side of the body (-X)";
+    EXPECT_LT(max_horizontal, 0.7f) << "Shield is closely fitted to the forearm, not floating in mid-air";
+}
+
+
 // ---- head tracking: the third-person head follows the camera -------------------------------------------------
 
 namespace {
