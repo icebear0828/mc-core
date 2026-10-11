@@ -271,11 +271,9 @@ private:
             return DamageOutcome::VictimGone;
         }
         const TeamRelation rel = readTeamRelation(rd, base, player_team, victim_team);
-        if (rel != TeamRelation::Hostile) {
-            if (!ctx.allow_neutral || rel == TeamRelation::Friend) {
-                return DamageOutcome::NotHostile;
-            }
-        }
+        // Unknown (unreadable matrix entry, team out of range), Friend and All are never attacked, whatever allow_neutral says.
+        const bool attackable = rel == TeamRelation::Hostile || (ctx.allow_neutral && rel == TeamRelation::Neutral);
+        if (!attackable) return DamageOutcome::NotHostile;
 
         float pos[3];
         if (!detail::readPhysicsPosition(rd, base, victim, pos)) return DamageOutcome::VictimGone;
