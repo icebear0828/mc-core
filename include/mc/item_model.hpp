@@ -54,13 +54,17 @@ RigMesh buildFlatItemMesh(const ItemSprite& sprite);
 
 // The vanilla shield (ShieldModel): a plate box 12x22x1 (texOffs (0, 0)) and a handle box 2x6x6 (texOffs (26, 0)) mapped onto the 64x64
 // entity texture like the game does, so the front has the rivets, the back is plain wood and the handle sits behind the plate. `sheet` is
-// the cell of the atlas that holds the whole 64x64 texture. Third person: held on the forearm of `hand`, in the same space as
-// buildHeldItemMesh. The plate faces forward, the handle reaches back to the arm.
-inline constexpr float kShieldModelScale = 0.7f; // the 22 px plate is about as tall as the old 16 px sprite was
-RigMesh buildShieldMesh(const UvRect& sheet, const HostBasis& basis, Hand hand);
+// the cell of the atlas that holds the whole 64x64 texture.
+//
+// Third person: the game's own chain, not an approximation: the shield renderer's scale(1, -1, -1) and translate(-0.5), the display transform
+// of models/item/shield.json (`blocking` = shield_blocking.json, the arm raised) for that hand (the left hand mirrors the y/z rotation and the x
+// translation, ItemTransform.apply), then ItemInHandLayer (rotX(-90), rotY(180), translate(+-1/16, 0.125, -0.625)) on the rest pose of the arm.
+// Same space as buildHeldItemMesh, so it is drawn with the arm's matrix.
+RigMesh buildShieldMesh(const UvRect& sheet, const HostBasis& basis, Hand hand, bool blocking = false);
 
-// First person: the same model centred on the plate, x right, y up, z towards the viewer, 1 unit = 1 block, the plate (22 px) one block tall.
-// The front (rivets) faces the viewer and the handle is behind it.
+// First person: the model in the game's item space, x right, y up, z towards the viewer, 1 unit = 1 block = 16 model pixels, after the shield
+// renderer's scale(1, -1, -1) and translate(-0.5, -0.5, -0.5). The display transform (eldenring_fp.hpp, shieldFpDisplay) and the arm pose go
+// on top.
 RigMesh buildShieldFirstPersonMesh(const UvRect& sheet);
 
 } // namespace mc::rig

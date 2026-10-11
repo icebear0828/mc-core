@@ -16,6 +16,9 @@
 namespace erov {
 namespace {
 // The whole 64x64 shield entity texture inside the HUD atlas: the 3D shield is mapped onto it like the game does.
+// The shield held with the arm raised (shield_blocking.json) is stored next to the idle one under this bit of the item id.
+constexpr uint16_t kBlockingKeyBit = 0x8000;
+
 mc::rig::UvRect ShieldSheet() {
     return {mc::hud::kUV_ENTITY_SHIELD.u0, mc::hud::kUV_ENTITY_SHIELD.v0, mc::hud::kUV_ENTITY_SHIELD.u1, mc::hud::kUV_ENTITY_SHIELD.v1};
 }
@@ -545,6 +548,16 @@ bool SteveRenderer::initHeldItems(ID3D12Device* device, const uint8_t* atlas_rgb
         vertices.insert(vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
         indices.insert(indices.end(), mesh.indices.begin(), mesh.indices.end());
         held_items_[cell.item] = d;
+        if (item == mc::ItemId::Shield) { // the raised shield has its own display transform
+            const mc::rig::RigMesh up = mc::rig::buildShieldMesh(ShieldSheet(), eldenring::render::kBasis, mc::rig::Hand::Right, true);
+            FpDraw u;
+            u.base_vertex = static_cast<int>(vertices.size());
+            u.first_index = static_cast<unsigned>(indices.size());
+            u.index_count = static_cast<unsigned>(up.indices.size());
+            vertices.insert(vertices.end(), up.vertices.begin(), up.vertices.end());
+            indices.insert(indices.end(), up.indices.begin(), up.indices.end());
+            held_items_[static_cast<uint16_t>(cell.item | kBlockingKeyBit)] = u;
+        }
     }
     if (vertices.empty()) return false;
     held_vertices_ = UploadBuffer(device, vertices.data(), vertices.size() * sizeof(mc::rig::RigVertex));
@@ -583,6 +596,16 @@ bool SteveRenderer::initHeldItems(ID3D12Device* device, const uint8_t* atlas_rgb
         off_vertices.insert(off_vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
         off_indices.insert(off_indices.end(), mesh.indices.begin(), mesh.indices.end());
         offhand_items_[cell.item] = d;
+        if (item == mc::ItemId::Shield) {
+            const mc::rig::RigMesh up = mc::rig::buildShieldMesh(ShieldSheet(), eldenring::render::kBasis, mc::rig::Hand::Left, true);
+            FpDraw u;
+            u.base_vertex = static_cast<int>(off_vertices.size());
+            u.first_index = static_cast<unsigned>(off_indices.size());
+            u.index_count = static_cast<unsigned>(up.indices.size());
+            off_vertices.insert(off_vertices.end(), up.vertices.begin(), up.vertices.end());
+            off_indices.insert(off_indices.end(), up.indices.begin(), up.indices.end());
+            offhand_items_[static_cast<uint16_t>(cell.item | kBlockingKeyBit)] = u;
+        }
     }
     if (!off_vertices.empty()) {
         offhand_vertices_ = UploadBuffer(device, off_vertices.data(), off_vertices.size() * sizeof(mc::rig::RigVertex));
@@ -962,7 +985,8 @@ void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* 
         list->DrawIndexedInstanced(index_count_[p], 1, first_index_[p], base_vertex_[p], 0);
     }
     if (params.held_item != 0 && held_vertices_ && params.held_table.ptr != 0) {
-        const auto it = held_items_.find(params.held_item);
+        const bool held_raised = params.held_item == static_cast<uint16_t>(mc::ItemId::Shield) && params.shield_blocking && !params.block_offhand;
+        const auto it = held_items_.find(static_cast<uint16_t>(params.held_item | (held_raised ? kBlockingKeyBit : 0)));
         if (it != held_items_.end()) {
             list->SetGraphicsRootDescriptorTable(1, params.held_table); // the item is a cell of the atlas, depth is the scene's
             list->IASetVertexBuffers(0, 1, &held_vbv_);
@@ -972,7 +996,8 @@ void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* 
         }
     }
     if (params.offhand_item != 0 && offhand_vertices_ && params.held_table.ptr != 0) {
-        const auto it = offhand_items_.find(params.offhand_item);
+        const bool off_raised = params.offhand_item == static_cast<uint16_t>(mc::ItemId::Shield) && params.shield_blocking && params.block_offhand;
+        const auto it = offhand_items_.find(static_cast<uint16_t>(params.offhand_item | (off_raised ? kBlockingKeyBit : 0)));
         if (it != offhand_items_.end()) {
             list->SetGraphicsRootDescriptorTable(1, params.held_table);
             list->IASetVertexBuffers(0, 1, &offhand_vbv_);

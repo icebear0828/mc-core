@@ -157,35 +157,30 @@ inline M4 itemDisplay() {
     return mul(p, scale(0.68f));
 }
 
-// The display transform of a shield held in first person: flat face oriented toward the view
-inline M4 shieldDisplay() {
-    M4 p = translate(0.f, 0.f, 0.f);
-    p = mul(p, rotY(180.f));
-    return mul(p, scale(0.85f));
+// The display transform of the shield in first person: models/item/shield.json (idle) and shield_blocking.json (`blocking`, the use animation),
+// firstperson_righthand / firstperson_lefthand (1.21.8), as ItemTransform.apply does it: the left hand negates the y and z rotation and the x
+// translation, then translate * rotationXYZ (= Rx * Ry * Rz) * scale. It is applied to the shield model of buildShieldFirstPersonMesh, which
+// already includes the shield renderer's scale(1, -1, -1) and the item renderer's translate(-0.5).
+inline M4 shieldFpDisplay(bool left_hand, bool blocking) {
+    struct J { float rot[3]; float trans[3]; };
+    static constexpr J kRight[2] = {{{0.f, 180.f, 5.f}, {-10.f, 2.f, -10.f}}, {{0.f, 180.f, -5.f}, {-15.f, 5.f, -11.f}}};
+    static constexpr J kLeft[2] = {{{0.f, 180.f, 5.f}, {10.f, 0.f, -10.f}}, {{0.f, 180.f, -5.f}, {5.f, 5.f, -11.f}}};
+    const J& j = (left_hand ? kLeft : kRight)[blocking ? 1 : 0];
+    const float ry = left_hand ? -j.rot[1] : j.rot[1], rz = left_hand ? -j.rot[2] : j.rot[2];
+    const float side = left_hand ? -1.f : 1.f;
+    M4 p = translate(side * j.trans[0] / 16.f, j.trans[1] / 16.f, j.trans[2] / 16.f);
+    p = mul(p, mul(rotX(j.rot[0]), mul(rotY(ry), rotZ(rz))));
+    return mul(p, scale(1.25f));
+}
+
+// The main-hand pose of a shield: raised (use animation BLOCK) it is only the arm transform, idle it follows the swing like any item.
+inline M4 shieldMainHandPose(bool blocking, float swing, float equipped) {
+    return blocking ? translate(0.56f, -0.52f + equipped * -0.6f, -0.72f) : itemPose(swing, equipped);
 }
 
 // The left-hand (offhand) item pose before display transform (ItemInHandRenderer.renderArmWithItem, left hand).
 inline M4 offhandItemPose(float equipped) {
     return translate(-0.56f, -0.52f + equipped * -0.6f, -0.72f);
-}
-
-// Shield pose in first person (UseAnim.BLOCK / idle offhand shield)
-inline M4 shieldFpPose(bool is_blocking, float equipped, bool is_left_hand = true) {
-    const float sign = is_left_hand ? -1.f : 1.f;
-    if (is_blocking) {
-        // Raised defensive shield blocking pose in front of camera
-        M4 p = translate(sign * 0.18f, -0.15f + equipped * -0.6f, -0.48f);
-        p = mul(p, rotY(sign * -15.f));
-        p = mul(p, rotX(5.f));
-        p = mul(p, rotZ(sign * 5.f));
-        return mul(p, scale(1.0f));
-    }
-    // Idle shield resting at lower corner of view
-    M4 p = translate(sign * 0.54f, -0.45f + equipped * -0.6f, -0.65f);
-    p = mul(p, rotY(sign * -40.f));
-    p = mul(p, rotZ(sign * 25.f));
-    p = mul(p, rotX(-10.f));
-    return mul(p, scale(0.85f));
 }
 
 // The display transform of a block held in the first-person right hand (block/block: rotation (0, 45, 0), no translation, scale 0.4),

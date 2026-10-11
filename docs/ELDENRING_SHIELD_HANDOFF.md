@@ -111,3 +111,16 @@ python tools/reverse/eldenring/deploy_batch4_2.py
    - 目前已具备正面 100° 与防守时序判定（`isAttackBlocked`），但尚未在受击 Hook 层拦截血量扣除，需在受击判定中完全抵消物理伤害并播放原版格挡音效。
 3. **手持动作瑕疵调优 (Arm Pose & Display Transform Fine-Tuning):**
    - 第三人称与第一人称举盾角度需进一步参照官方 `models/item/shield.json` 的 `thirdperson_lefthand` 参数精细对齐左前臂，消除抬臂过高或接合处的细微瑕疵。
+
+## 盾牌外观与摆放：用原版的显示变换，不再手调（2026-10-11）
+
+**根因**：之前盾牌的位置、大小、第一人称姿势都是估的（`shieldFpPose`、`shieldDisplay`、`kShieldModelScale = 0.7`），形状（板 12×22×1 + 握把 2×6×6，按实体贴图展开）是对的，但摆放不对，格挡姿势也不对。
+
+**现在**：全部来自 jar 里的 `assets/minecraft/models/item/shield.json`（待机）和 `shield_blocking.json`（举盾）。
+- **模型**：`ShieldModel` 的板和握把，坐标先过盾牌渲染器的 `scale(1, -1, -1)`（像素 / 16），再过物品渲染器的 `translate(-0.5)`。
+- **第三人称**（`mc::rig::buildShieldMesh(sheet, basis, hand, blocking)`）：`ItemTransform.apply(leftHand)`（左手：y、z 旋转取反，x 平移取反；`rotationXYZ = Rx·Ry·Rz`，顺序是平移 → 旋转 → 缩放）→ `ItemInHandLayer`（`rotX(-90)`、`rotY(180)`、`translate(±1/16, 0.125, -0.625)`）→ 手臂枢轴 `(±5, 2, 0)`。网格是手臂静止姿势下的绝对模型空间，按手臂矩阵绘制。四个变体（左/右 × 待机/举盾）渲染器里各存一份，举盾的那份键是 `item_id | 0x8000`。
+- **第一人称**（`buildShieldFirstPersonMesh` + `eldenring_fp.hpp` 的 `shieldFpDisplay(left, blocking)`）：手臂变换用 `ItemInHandRenderer.applyItemArmTransform`（副手是 `offhandItemPose`；主手举盾时只是手臂变换，待机时跟着挥动 `itemPose`），显示变换是 `firstperson_righthand / firstperson_lefthand`，缩放 1.25。
+- **手臂**：只有拿盾那只手抬起（`SteveAnimInput.block_offhand`：盾在副手 → 左臂，否则右臂；原版 `ArmPose.BLOCK`）。主手的盾优先，和 MC 一样。
+
+**测试**：`tests/test_item_model.cpp` 里四个变体的盾板中心和正面法线与独立算出的数值一致（0.01 px 内）；`tests/test_eldenring_fp.cpp` 里第一人称四个变体的板中心、上沿、下沿；`tests/test_animator.cpp` 里只动拿盾的那只手。
+**未做**：盾牌的耐久、盾牌被斧头破防的 5 秒冷却、盾牌上的旗帜图案。

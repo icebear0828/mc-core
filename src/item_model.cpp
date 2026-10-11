@@ -304,8 +304,6 @@ const std::vector<ShieldFace>& shieldFaces() {
     return faces;
 }
 
-constexpr float kPlateCentreZ = -1.5f; // the middle of the plate's thickness
-
 // Emits every face: `place` maps a point of the shield's model space to the output space, and winding is fixed so the cross product of the
 // output coordinates points along the transformed outward direction.
 template <typename Place>
@@ -334,23 +332,46 @@ RigMesh emitShield(const UvRect& sheet, Place place) {
 
 } // namespace
 
-RigMesh buildShieldMesh(const UvRect& sheet, const HostBasis& basis, Hand hand) {
-    // Absolute model space of the arm's rest pose (x left, y down, z back), as the held sprite is placed: the plate is centred on the
-    // forearm a little outside it and in front of it, the handle passes through the arm. The right-hand shield is the mirror image.
-    const float s = kShieldModelScale;
-    const float side = hand == Hand::Left ? 1.0f : -1.0f;
+namespace {
+
+// models/item/shield.json and shield_blocking.json (1.21.8), thirdperson_righthand / thirdperson_lefthand; the scale is 1 in all four.
+struct ShieldDisplayJson {
+    float rot[3];   // degrees
+    float trans[3]; // sixteenths of a block
+};
+constexpr ShieldDisplayJson kShieldThirdRight[2] = {{{0, 90, 0}, {10, 6, -4}}, {{45, 155, 0}, {-3.49f, 11, -2}}};
+constexpr ShieldDisplayJson kShieldThirdLeft[2] = {{{0, 90, 0}, {10, 6, 12}}, {{45, 155, 0}, {11.51f, 7, 2.5f}}};
+
+// A point of the shield model (ShieldModel pixels) in the absolute model space of the arm's rest pose (x towards the character's left, y down,
+// z back; pixels).
+Vec3 shieldThirdPersonPoint(const Vec3& l, Hand hand, bool blocking) {
+    const bool left = hand == Hand::Left;
+    const ShieldDisplayJson& d = (left ? kShieldThirdLeft : kShieldThirdRight)[blocking ? 1 : 0];
+    // ItemTransform.apply(leftHand, ...): the left hand negates the y and z rotation and the x translation; rotationXYZ = Rx * Ry * Rz
+    const float ry = left ? -d.rot[1] : d.rot[1], rz = left ? -d.rot[2] : d.rot[2];
+    const float side = left ? -1.0f : 1.0f;
+    const M3 r = mul(mul(rotX(d.rot[0] * kDeg), rotY(ry * kDeg)), rotZ(rz * kDeg));
+    // the special renderer's scale(1, -1, -1) on model pixels / 16, and the translate(-0.5, -0.5, -0.5) of the item renderer
+    const Vec3 p{l.x / 16.0f - 0.5f, -l.y / 16.0f - 0.5f, -l.z / 16.0f - 0.5f};
+    Vec3 q = apply(r, p) + Vec3{side * d.trans[0] / 16.0f, d.trans[1] / 16.0f, d.trans[2] / 16.0f};
+    // ItemInHandLayer: translate((left ? -1 : 1) / 16, 0.125, -0.625) after rotX(-90), rotY(180)
+    q = q + Vec3{side / 16.0f, 0.125f, -0.625f};
+    q = apply(mul(rotX(-90.0f * kDeg), rotY(180.0f * kDeg)), q);
+    return Vec3{q.x * 16.0f + (left ? 5.0f : -5.0f), q.y * 16.0f + 2.0f, q.z * 16.0f}; // the arm's pivot
+}
+
+} // namespace
+
+RigMesh buildShieldMesh(const UvRect& sheet, const HostBasis& basis, Hand hand, bool blocking) {
     auto place = [&](const Vec3& l) {
-        const Vec3 model{side * (7.0f + l.x * s), 9.0f + l.y * s, -3.0f + (l.z - kPlateCentreZ) * s};
+        const Vec3 model = shieldThirdPersonPoint(l, hand, blocking);
         return basis.fromCanonical(Vec3{-model.z * kCmPerModelPixel, model.x * kCmPerModelPixel, (24.0f - model.y) * kCmPerModelPixel});
     };
     return emitShield(sheet, place);
 }
 
 RigMesh buildShieldFirstPersonMesh(const UvRect& sheet) {
-    // x right, y up, z towards the viewer; the front (north, -z of the model) faces the viewer, so the model's +x (the character's left)
-    // is to the viewer's right, the model's y points down and the model's z points away from the viewer.
-    constexpr float k = 1.0f / 22.0f; // the 22 px plate is one block tall
-    auto place = [&](const Vec3& l) { return Vec3{l.x * k, -l.y * k, -(l.z - kPlateCentreZ) * k}; };
+    auto place = [](const Vec3& l) { return Vec3{l.x / 16.0f - 0.5f, -l.y / 16.0f - 0.5f, -l.z / 16.0f - 0.5f}; };
     return emitShield(sheet, place);
 }
 

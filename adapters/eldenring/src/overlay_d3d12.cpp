@@ -953,6 +953,7 @@ void RenderFrame(IDXGISwapChain* sc) {
         anim_in.bow_charge = steve.bow_charge;
         anim_in.bow_offhand = steve.bow_offhand;
         anim_in.is_blocking = steve.blocking;
+        anim_in.block_offhand = steve.block_offhand;
         g_head.update(steve.cam.forward.x, steve.cam.forward.y, steve.cam.forward.z, steve.yaw, anim_in);
         g_anim.update(dt, anim_in);
         if (g_trace_left.load() > 0) {
@@ -997,6 +998,8 @@ void RenderFrame(IDXGISwapChain* sc) {
         sp.keep_depth = blocks_drawn; // the blocks left their depth in the figure's buffer: the figure sorts against them
         sp.held_item = static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.held_item), steve.bow_charge));
         // a bow in the offhand shows the drawn-bow sprite while it is drawn (the held item in the right hand stays what it is)
+        sp.shield_blocking = steve.blocking;
+        sp.block_offhand = steve.block_offhand;
         sp.offhand_item = steve.bow_offhand ? static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.offhand_item), steve.bow_charge))
                                             : steve.offhand_item;
         sp.held_table = g_atlas_ready ? g_held_table_gpu : D3D12_GPU_DESCRIPTOR_HANDLE{};
@@ -1092,11 +1095,12 @@ void RenderFrame(IDXGISwapChain* sc) {
         const float equipped = g_hand.equipped();
         const bool drawing_bow = steve.bow_ticks > 0.f && g_hand.shownItem() == mc::ItemId::Bow;
         const bool main_is_shield = g_hand.shownItem() == mc::ItemId::Shield;
+        const bool main_raised = steve.blocking && !steve.block_offhand; // the shield in the main hand is the one being raised
         const fp::M4 item_pose = drawing_bow ? fp::bowPose(steve.bow_ticks, equipped)
-                                 : main_is_shield ? fp::shieldFpPose(steve.blocking, equipped, false)
+                                 : main_is_shield ? fp::shieldMainHandPose(main_raised, steve.swing, equipped)
                                  : steve.eating > 0.f ? fp::eatPose(steve.eating, equipped) : fp::itemPose(steve.swing, equipped);
         const bool held_block = eldenring::blocks::blockForItem(static_cast<mc::ItemId>(g_hand.shownItem())) != mc::BlockId::Air;
-        const fp::M4 item_disp = main_is_shield ? fp::shieldDisplay() : (held_block ? fp::blockDisplay() : fp::itemDisplay());
+        const fp::M4 item_disp = main_is_shield ? fp::shieldFpDisplay(false, main_raised) : (held_block ? fp::blockDisplay() : fp::itemDisplay());
         const fp::M4 item_world = fp::mul(fp::mul(base, item_pose), item_disp);
         const fp::M4 arm_world = fp::mul(base, fp::bareArmPose(steve.swing, equipped));
         const mc::ItemId shown = eldenring::bow::shownBow(g_hand.shownItem(), drawing_bow ? steve.bow_charge : 0.f); // the bow with the arrow nocked while it is drawn
@@ -1108,8 +1112,9 @@ void RenderFrame(IDXGISwapChain* sc) {
         if (steve.offhand_item != 0) {
             const bool off_is_shield = static_cast<mc::ItemId>(steve.offhand_item) == mc::ItemId::Shield;
             const bool off_block = eldenring::blocks::blockForItem(static_cast<mc::ItemId>(steve.offhand_item)) != mc::BlockId::Air;
-            const fp::M4 off_pose = off_is_shield ? fp::shieldFpPose(steve.blocking, 0.f, true) : fp::offhandItemPose(0.f);
-            const fp::M4 off_disp = off_is_shield ? fp::shieldDisplay() : (off_block ? fp::blockDisplay() : fp::itemDisplay());
+            const fp::M4 off_pose = fp::offhandItemPose(0.f); // the offhand only follows the arm transform: raised or not is the display transform
+            const fp::M4 off_disp = off_is_shield ? fp::shieldFpDisplay(true, steve.blocking && steve.block_offhand)
+                                                  : (off_block ? fp::blockDisplay() : fp::itemDisplay());
             const fp::M4 off_world = fp::mul(fp::mul(base, off_pose), off_disp);
             const uint16_t off_shown = steve.bow_offhand && steve.bow_ticks > 0.f
                                            ? static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.offhand_item), steve.bow_charge))

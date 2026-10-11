@@ -65,6 +65,7 @@ struct SteveState {
     float cooldown{1.f};        // attack strength 0..1
     float eating{0.f};          // 0..1 progress of the meal in the hand (0 = not eating)
     float bow_charge{0.f};      // 0..1 how far the bow is drawn (0 = not drawing): the third-person arms aim
+    bool block_offhand{false};  // the raised shield is held in the left hand: only the left arm is up
     bool bow_offhand{false};    // the bow that is drawn is in the offhand: the left arm aims and the offhand item is the drawn bow
     float bow_ticks{0.f};       // ticks the bow has been drawn (0 = not drawing): the first-person bow pose animates with it
     float speed_mps{0.f};       // horizontal speed, for the walking bob

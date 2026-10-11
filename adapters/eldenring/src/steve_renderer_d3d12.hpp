@@ -34,6 +34,8 @@ struct SteveParams {
     float tint[4]{0.f, 0.f, 0.f, 0.f}; // rgb + amount: mixed over the lit skin (hurt flash)
     uint16_t held_item{0};             // mc::ItemId in the right hand (0 or an item without a sprite: nothing is drawn)
     uint16_t offhand_item{0};          // mc::ItemId in the left hand / offhand (0 = nothing)
+    bool shield_blocking{false};       // a shield is raised (the arm is up): its display transform is shield_blocking.json
+    bool block_offhand{false};         // ... and it is the offhand's one (else the main hand's)
     D3D12_GPU_DESCRIPTOR_HANDLE held_table{}; // descriptor table (scene depth, atlas) the held item is drawn with
     bool keep_depth{false};            // the blocks were drawn just before: do not clear the figure's depth buffer
 };

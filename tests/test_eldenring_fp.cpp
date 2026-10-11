@@ -194,18 +194,42 @@ TEST(EldenRingFp, OffhandNormalItemMirrorsMainHandX) {
     EXPECT_NEAR(off_pos.z, main_pos.z, 1e-4f);
 }
 
-TEST(EldenRingFp, OffhandShieldSitsLowerLeftWhenIdle) {
-    const mc::Vec3 idle = apply(shieldFpPose(false, 0.f, true), origin());
-    EXPECT_LT(idle.x, -0.3f) << "Idle offhand shield sits on the left side of view";
-    EXPECT_LT(idle.y, -0.3f) << "Idle offhand shield sits low in view";
-    EXPECT_LT(idle.z, -0.3f) << "Idle offhand shield is in front of camera";
+namespace {
+// The centre of the shield plate in the model's item space (see buildShieldFirstPersonMesh): model (0, 0, -1.5) after scale(1, -1, -1) and translate(-0.5).
+mc::Vec3 plateCentre() { return {-0.5f, -0.5f, 1.5f / 16.f - 0.5f}; }
+mc::Vec3 plateTopBottomY(float sign) { return {-0.5f, -0.5f + sign * 11.f / 16.f, 1.5f / 16.f - 0.5f}; }
 }
 
-TEST(EldenRingFp, OffhandShieldRaisesToCenterWhenBlocking) {
-    const mc::Vec3 idle = apply(shieldFpPose(false, 0.f, true), origin());
-    const mc::Vec3 blocking = apply(shieldFpPose(true, 0.f, true), origin());
-    EXPECT_GT(blocking.y, idle.y + 0.15f) << "Blocking raises the shield upwards in view";
-    EXPECT_GT(blocking.x, idle.x + 0.15f) << "Blocking moves the shield towards screen center";
-    EXPECT_GT(blocking.z, idle.z) << "Blocking brings shield closer to defend eye level";
+TEST(EldenRingFp, ShieldDisplayIsTheJarsFirstPersonTransformOfTheShieldModels) {
+    // models/item/shield.json / shield_blocking.json firstperson_*hand through ItemInHandRenderer's arm transform (equipped = 0);
+    // the expected points were computed independently.
+    struct Case { bool left, blocking; float x, y, z, top_y, bottom_y; };
+    const Case cases[] = {
+        {false, false, 0.5031f, -1.0721f, -0.8372f, -0.2160f, -1.9282f},
+        {false, true, 0.2996f, -0.7756f, -0.8997f, 0.0805f, -1.6318f},
+        {true, false, -0.5079f, -1.0881f, -0.8372f, -0.2320f, -1.9443f},
+        {true, true, -0.3044f, -0.8846f, -0.8997f, -0.0285f, -1.7407f},
+    };
+    for (const Case& c : cases) {
+        const M4 arm = c.left ? offhandItemPose(0.f) : translate(0.56f, -0.52f, -0.72f);
+        const M4 m = mul(arm, shieldFpDisplay(c.left, c.blocking));
+        const mc::Vec3 centre = apply(m, plateCentre());
+        EXPECT_NEAR(centre.x, c.x, 2e-3f) << (c.left ? "left" : "right") << (c.blocking ? " blocking" : " idle");
+        EXPECT_NEAR(centre.y, c.y, 2e-3f);
+        EXPECT_NEAR(centre.z, c.z, 2e-3f);
+        EXPECT_NEAR(apply(m, plateTopBottomY(1.f)).y, c.top_y, 2e-3f);
+        EXPECT_NEAR(apply(m, plateTopBottomY(-1.f)).y, c.bottom_y, 2e-3f);
+    }
+}
+
+TEST(EldenRingFp, ShieldRaisesTowardsTheCentreOfTheViewWhenBlocking) {
+    for (const bool left : {false, true}) {
+        const M4 arm = left ? offhandItemPose(0.f) : translate(0.56f, -0.52f, -0.72f);
+        const mc::Vec3 idle = apply(mul(arm, shieldFpDisplay(left, false)), plateCentre());
+        const mc::Vec3 blocking = apply(mul(arm, shieldFpDisplay(left, true)), plateCentre());
+        EXPECT_GT(blocking.y, idle.y + 0.2f);                                  // up
+        EXPECT_LT(std::abs(blocking.x), std::abs(idle.x) - 0.15f);            // towards the middle of the screen
+        EXPECT_GT(apply(mul(arm, shieldFpDisplay(left, true)), plateTopBottomY(1.f)).y, -0.05f); // the top edge reaches the middle
+    }
 }
 

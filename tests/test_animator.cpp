@@ -119,3 +119,26 @@ TEST(SteveAnimatorTest, ADrawnBowRaisesTheArmThatHoldsIt) {
     EXPECT_GT(off_bow.getTransforms()[ra].rot.w, 0.85f);
     EXPECT_GT(idle.getTransforms()[la].rot.w, 0.85f);
 }
+
+TEST(SteveAnimatorTest, OnlyTheArmThatHoldsTheRaisedShieldMoves) {
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm), la = static_cast<size_t>(mc::StevePart::LeftArm);
+    mc::SteveAnimator idle, main_shield, off_shield;
+    mc::SteveAnimInput in{};
+    mc::SteveAnimInput main_in = in, off_in = in;
+    main_in.is_blocking = true;
+    off_in.is_blocking = true;
+    off_in.block_offhand = true;
+    for (int i = 0; i < 10; ++i) {
+        idle.update(0.05f, in);
+        main_shield.update(0.05f, main_in);
+        off_shield.update(0.05f, off_in);
+    }
+    EXPECT_GT(idle.getTransforms()[ra].rot.w, 0.97f);
+    EXPECT_GT(idle.getTransforms()[la].rot.w, 0.97f);
+    // shield in the main hand: the right arm is raised (Minecraft's ArmPose.BLOCK), the left one is not
+    EXPECT_LT(main_shield.getTransforms()[ra].rot.w, 0.92f);
+    EXPECT_GT(main_shield.getTransforms()[la].rot.w, 0.97f);
+    // shield in the offhand: the left arm is raised, the right one is not
+    EXPECT_LT(off_shield.getTransforms()[la].rot.w, 0.92f);
+    EXPECT_GT(off_shield.getTransforms()[ra].rot.w, 0.97f);
+}

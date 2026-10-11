@@ -1164,6 +1164,7 @@ bool GiveHp(uintptr_t data_module, int amount) {
 }
 
 std::atomic<bool> g_shield_blocking{false};
+std::atomic<bool> g_shield_offhand{false}; // the shield being raised is the offhand's (the left arm goes up), else the main hand's
 
 // What the raised shield decides about a hit on the player. The shield guards where the player LOOKS: the horizontal part of the camera's forward
 // vector (live data 2026-10-11: ER's body orientation only turns when the character moves and a hit reaction can even turn it, so against it the
@@ -2777,10 +2778,14 @@ DWORD WINAPI KeyThread(LPVOID) {
         {   // Minecraft shield defense: hold right mouse button with shield in main hand or offhand.
             static eldenring::shield::ShieldController s_shield;
             bool has_shield = false;
+            bool shield_in_offhand = false;
             {
                 std::lock_guard<std::mutex> g(g_melee_mutex);
                 has_shield = g_melee.holds(mc::ItemId::Shield);
+                // the main hand's shield goes first, as in Minecraft
+                shield_in_offhand = !(g_melee.heldItem() == mc::ItemId::Shield && g_melee.countAt(g_melee.selectedSlot()) > 0);
             }
+            g_shield_offhand.store(shield_in_offhand, std::memory_order_relaxed);
             const bool right_held = g_input_enabled.load() && erin::RightHeld() && fg && WantSuppress() && !inv_open && !PlayerDead() && g_mc_mode.load();
             const bool is_drawing_bow = g_bow_ticks.load(std::memory_order_relaxed) > 0;
             const bool is_eating = g_eating.isEating();
@@ -3637,6 +3642,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.eating = steve_dead_now ? 0.f : g_eating.getProgress();
         steve.bow_charge = steve_dead_now ? 0.f : g_bow_power.load(std::memory_order_relaxed);
         steve.bow_offhand = g_bow_offhand.load(std::memory_order_relaxed);
+        steve.block_offhand = g_shield_offhand.load(std::memory_order_relaxed);
         steve.bow_ticks = steve_dead_now ? 0.f : g_bow_ticks.load(std::memory_order_relaxed);
         out.totem = g_feedback.totem();
         steve.swing = steve_dead_now ? 0.f : g_melee.swingProgress();
