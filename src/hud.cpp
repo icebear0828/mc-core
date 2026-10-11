@@ -107,6 +107,7 @@ const char* HudEngine::getItemDisplayName(ItemId item) {
         case ItemId::BowPulling0:
         case ItemId::BowPulling1:
         case ItemId::BowPulling2: return "Bow";
+        case ItemId::Shield: return "Shield";
         case ItemId::None:
         default: return "";
     }

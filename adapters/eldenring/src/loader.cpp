@@ -58,6 +58,7 @@
 #include "mc/hud_atlas.hpp"
 #include "mc/inventory.hpp"
 #include "eldenring_melee.hpp"
+#include "eldenring_shield.hpp"
 #include "eldenring_particles.hpp"
 #include "eldenring_model.hpp"
 #include "eldenring_pick.hpp"
@@ -1120,6 +1121,8 @@ bool GiveHp(uintptr_t data_module, int amount) {
     }
 }
 
+std::atomic<bool> g_shield_blocking{false};
+
 // Natural hits on the player: absorption soaks damage up, then a totem keeps a killing hit at 1 HP. Returns true when a totem was used.
 bool PlayerHitSurvival(void* module, void* attacker, uint8_t* ctx, uint8_t blocked, uint32_t& popped_heal_target) {
     if (blocked != 0) return false; // a blocked hit deducts nothing
@@ -1130,6 +1133,23 @@ bool PlayerHitSurvival(void* module, void* attacker, uint8_t* ctx, uint8_t block
     if (!readVitals(g_reader, g_img.base, player, v) || v.hp <= 0 || v.max_hp <= 0) return false;
     int32_t dmg = 0;
     if (!SafeCopy(reinterpret_cast<uintptr_t>(ctx) + layout::kHitDamage, &dmg, sizeof(dmg)) || dmg <= 0) return false;
+
+    // Minecraft shield blocking: if the player is blocking with a shield and the attack comes from the front arc (100 deg),
+    // the damage is completely blocked (reduced to 0), play shield block sound, and skip hurt camera/exhaustion.
+    if (g_shield_blocking.load(std::memory_order_relaxed)) {
+        float pp[3], ap[3], q[4];
+        bool has_pos = (attacker != nullptr && detail::readPhysicsPosition(g_reader, g_img.base, player, pp) &&
+                        detail::readPhysicsPosition(g_reader, g_img.base, reinterpret_cast<uintptr_t>(attacker), ap) &&
+                        detail::readPhysicsOrientation(g_reader, g_img.base, player, q));
+        const float yaw = has_pos ? eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) : 0.f;
+        if (!has_pos || eldenring::shield::isAttackBlocked(pp, yaw, ap)) {
+            eraudio::Play("item.shield.block");
+            SafeWrite32(reinterpret_cast<uintptr_t>(ctx) + layout::kHitDamage, 0);
+            Log("SHIELD: blocked hit from %p (dmg %d -> 0)", attacker, dmg);
+            return false;
+        }
+    }
+
     bool popped = false;
     int32_t out = dmg;
     {
@@ -2611,6 +2631,24 @@ DWORD WINAPI KeyThread(LPVOID) {
                 }
             }
         }
+        {   // Minecraft shield defense: hold right mouse button with shield in main hand or offhand.
+            static eldenring::shield::ShieldController s_shield;
+            bool has_shield = false;
+            {
+                std::lock_guard<std::mutex> g(g_melee_mutex);
+                has_shield = g_melee.holds(mc::ItemId::Shield);
+            }
+            const bool right_held = g_input_enabled.load() && erin::RightHeld() && fg && WantSuppress() && !inv_open && !PlayerDead() && g_mc_mode.load();
+            const bool is_drawing_bow = g_bow_ticks.load(std::memory_order_relaxed) > 0;
+            const bool is_eating = g_eating.isEating();
+            const bool shield_usable = has_shield && !is_drawing_bow && !is_eating;
+            s_shield.update(dt, right_held, shield_usable);
+            const bool prev_blocking = g_shield_blocking.load(std::memory_order_relaxed);
+            const bool now_blocking = s_shield.isBlocking();
+            if (!prev_blocking && now_blocking) Log("shield: raised (blocking active)");
+            if (prev_blocking && !now_blocking) Log("shield: lowered");
+            g_shield_blocking.store(now_blocking, std::memory_order_relaxed);
+        }
         if (g_input_enabled.load()) {
             const int notches = erin::TakeWheelNotches();
             if (notches != 0 && fg && !inv_open && WantSuppress()) {
@@ -3448,6 +3486,8 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         out.xp_progress = g_xp.progress();
         out.cursor_item = static_cast<uint16_t>(inv.cursor().item);
         out.cursor_count = static_cast<uint8_t>(std::min(255u, inv.cursor().count));
+        out.offhand_item = static_cast<uint16_t>(inv.offhand().item);
+        out.offhand_count = static_cast<uint8_t>(std::min(255u, inv.offhand().count));
     }
     out.inv_open = g_inv_open.load();
     out.mouse_x = g_inv_mx.load();

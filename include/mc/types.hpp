@@ -89,7 +89,8 @@ enum class ItemId : uint16_t {
     // The bow as it looks while it is drawn (the arrow nocked): view-model sprites chosen by the draw power, never an inventory item.
     BowPulling0,
     BowPulling1,
-    BowPulling2
+    BowPulling2,
+    Shield
 };
 
 enum class EffectType : uint8_t {

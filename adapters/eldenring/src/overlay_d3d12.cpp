@@ -654,13 +654,22 @@ void DrawHud(const HudState& hud, float w, float h) {
         sprite(layout.hotbar(), mc::hud::kUV_HOTBAR);
         for (int i = 0; i < 9; ++i) DrawItemIcon(dl, atlas, layout.item(i), static_cast<mc::ItemId>(hud.hotbar[i]));
         sprite(layout.selection(std::clamp(hud.selected_slot, 0, 8)), mc::hud::kUV_HOTBAR_SELECTION);
+        // Offhand slot (to the left of hotbar, vanilla 29px offset, size 22x22)
+        const float gs = static_cast<float>(layout.scale());
+        if (hud.offhand_item != 0) {
+            const mc::HudRect off_box{layout.hotbar().x - 29.f * gs, layout.hotbar().y, 22.f * gs, 22.f * gs};
+            // draw slot background rectangle
+            dl->AddRectFilled({off_box.x, off_box.y}, {off_box.x + off_box.w, off_box.y + off_box.h}, IM_COL32(0, 0, 0, 120), 2.f * gs);
+            dl->AddRect({off_box.x, off_box.y}, {off_box.x + off_box.w, off_box.y + off_box.h}, IM_COL32(255, 255, 255, 100), 2.f * gs);
+            const mc::HudRect off_icon{off_box.x + 3.f * gs, off_box.y + 3.f * gs, 16.f * gs, 16.f * gs};
+            DrawItemIcon(dl, atlas, off_icon, static_cast<mc::ItemId>(hud.offhand_item));
+        }
         // The hearts as Gui.renderHearts draws them: the container blinks after a hit and the hearts just lost show white, one heart jumps
         // while Regeneration is active, and the row shakes at two hearts or less.
         const int abs_halves = static_cast<int>(std::lround(hud.absorption_mc));
         g_hearts.update(ImGui::GetIO().DeltaTime, hp_halves, abs_halves, hud.regen);
         const bool blink = g_hearts.blink();
         const int shown_before = g_hearts.displayHealth();
-        const float gs = static_cast<float>(layout.scale());
         for (int i = 0; !hud.creative && i < 10; ++i) { // creative mode shows no health, hunger or experience
             mc::HudRect r = layout.heart(i);
             if (g_hearts.regenIndex() == i) r.y -= 2.f * gs;
