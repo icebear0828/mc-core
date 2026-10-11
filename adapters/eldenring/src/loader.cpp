@@ -54,6 +54,7 @@
 #include "eldenring_hunger.hpp"
 #include "eldenring_jump.hpp"
 #include "eldenring_orientation.hpp"
+#include "eldenring_action_lock.hpp"
 #include "mc/consumables.hpp"
 #include "mc/inventory_layout.hpp"
 #include "mc/hud_atlas.hpp"
@@ -1952,33 +1953,59 @@ uintptr_t FallModuleOf(uintptr_t chr) {
     }
     return static_cast<uintptr_t>(fall);
 }
+
+// The action flag module is slot 1 of the character's module container (REVERSE M3: [[chr+0x190]+0x08], .?AVCSChrActionFlagModule@CS@@).
+// Its +0x40 is a uint64_t action_lock_flags. Bit 19 (0x80000, 0x140406AED) locks WASD movement input; bit 20 (0x100000) locks air control.
+uintptr_t ActionFlagModuleOf(uintptr_t chr) {
+    uint64_t container = 0, act = 0;
+    if (chr == 0 || !SafeCopy(chr + layout::kModuleContainerInChrIns, &container, sizeof(container)) || container == 0 ||
+        !SafeCopy(static_cast<uintptr_t>(container) + 0x08, &act, sizeof(act))) {
+        return 0;
+    }
+    return static_cast<uintptr_t>(act);
+}
+
+// Unlocks air movement locks (Bit 19 and Bit 20) while preserving damage stagger, item use, and combat animation locks.
+void UnlockAirMovement(uintptr_t chr) {
+    if (const uintptr_t act = ActionFlagModuleOf(chr)) {
+        uint64_t flags = 0;
+        if (SafeCopy(act + 0x40, &flags, sizeof(flags)) && eldenring::action::hasAirLocks(flags)) {
+            const uint64_t cleared = eldenring::action::clearAirLocks(flags);
+            WriteBytesSafe(act + 0x40, &cleared, sizeof(cleared));
+        }
+    }
+}
+
 float FallTimer(uintptr_t chr) {
     float t = -1.f;
     if (const uintptr_t fall = FallModuleOf(chr)) SafeCopy(fall + 0x18, &t, sizeof(t));
     return t;
 }
-// Our jump (and standing on a block) tells the game the player is in the air, and the landing never makes the game reset its air timer
-// (the fall module's +0x18). Measured: left alone it adds up over repeated jumps (1.0, 2.2, 3.1, 3.7 s) and past about 3 s the game stops
-// moving the player from the keys. Writing it EVERY frame is just as bad (0 makes the player crawl, a constant 1.0 freezes the movement
-// even with the keys down): the game advances the timer itself and switches state on how it changes. So the game's own behaviour is imitated:
-// reset once on our landing, and pull it back to 0 only when it has grown past `fall_hold` seconds; otherwise it is left alone.
-std::atomic<bool> g_fall_reset{false};  // mc_er_steve.txt: fall_reset=1 writes the fall timer (experiment: every way of writing it broke the movement, see HANDOFF)
-std::atomic<float> g_fall_hold{2.0f};   // fall_hold=<seconds>: the timer is reset to 0 when it passes this
+
+std::atomic<bool> g_fall_reset{true};   // mc_er_steve.txt: fall_reset=1 writes the fall timer (enabled by default; paired with action lock clearing)
+std::atomic<float> g_fall_hold{1.0f};   // fall_hold=<seconds>: reset timer before reaching the 3.0s lock threshold
 std::atomic<float> g_pre_fall_t{0.f};   // the timer as it was just before the last write
+
 void WriteFallTimer(uintptr_t chr, float value) {
     if (const uintptr_t fall = FallModuleOf(chr)) {
         g_pre_fall_t.store(FallTimer(chr));
         WriteBytesSafe(fall + 0x18, &value, sizeof(value));
     }
 }
-// Standing on a block: only when the timer has run past the limit.
+
+// Standing on a block: reset when the timer has started accumulating.
 void ResetFallTimer(uintptr_t chr) {
     if (!g_fall_reset.load(std::memory_order_relaxed)) return;
-    if (FallTimer(chr) > g_fall_hold.load(std::memory_order_relaxed)) WriteFallTimer(chr, 0.f);
+    const float cur_t = FallTimer(chr);
+    if (cur_t > g_fall_hold.load(std::memory_order_relaxed) || eldenring::action::shouldResetFallTimer(cur_t, 0.2f)) {
+        WriteFallTimer(chr, 0.f);
+    }
 }
-// Our own landing: what the game does by itself when the player lands.
+
+// Landing: reset fall timer and immediately clear air locks.
 void LandFallTimer(uintptr_t chr) {
     if (g_fall_reset.load(std::memory_order_relaxed)) WriteFallTimer(chr, 0.f);
+    UnlockAirMovement(chr);
 }
 
 // Keeps the player out of the blocks. Runs on the game thread, at the start of every camera update (the game's own per-frame hook), so
@@ -2088,6 +2115,7 @@ void BlocksCollisionStep() {
     if (supported) {
         g_movement_layer_ms.store(GetTickCount64(), std::memory_order_relaxed);
         ResetFallTimer(player);
+        UnlockAirMovement(player);
     }
     if (module != 0 && supported) {
         // The game has no ground under a block, so it thinks the player is falling (no jump, restricted movement). While the player
@@ -2100,6 +2128,7 @@ void BlocksCollisionStep() {
         }
         const float zero = 0.f;
         WriteBytesSafe(module + 0x120 + 4, &zero, sizeof(zero));
+        WriteBytesSafe(module + 0x1B8, &zero, sizeof(zero)); // Suppress fall dynamics scalar (+0x1B8)
     }
     std::memcpy(prev, final_feet, sizeof(prev));
     have_prev = true;
@@ -2253,9 +2282,12 @@ void McJumpStep() {
         WriteBytesSafe(module + 0x92, &one, 1);
         WriteBytesSafe(module + 0x1D1, &one, 1);
         WriteBytesSafe(module + 0x1D0, &zero, 1);
+        const float zero_f = 0.f;
+        WriteBytesSafe(module + 0x1B8, &zero_f, sizeof(zero_f));
         active = false;
         Log("mcjump: landed, peak %.2f m, %.2f s in the air, fall timer was %.2f", peak, static_cast<float>(GetTickCount64() - start_ms) / 1000.f, FallTimer(player));
         LandFallTimer(player);
+        UnlockAirMovement(player);
     } else {
         WriteBytesSafe(module + 0x92, &zero, 1); // stay in the air state: the game must not snap the player to the ground
         WriteBytesSafe(module + 0x1D0, &one, 1);
@@ -2340,6 +2372,8 @@ void FlightStep() {
         const float q_raw[4] = {out_q.x, out_q.y, out_q.z, out_q.w};
         WriteBytesSafe(module + layout::kPhysicsOrientation, q_raw, sizeof(q_raw));
     }
+    WriteFallTimer(player, 0.f);
+    UnlockAirMovement(player);
     // Written every frame, also when standing still in the air: the game's gravity must not pull the player down between frames.
     WriteBytesSafe(module + layout::kPhysicsPosition, own, sizeof(own));
     WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, own, sizeof(own));
