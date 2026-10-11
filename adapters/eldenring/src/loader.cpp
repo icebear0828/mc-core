@@ -133,6 +133,16 @@ bool SafeCopy(uintptr_t address, void* out, size_t size) {
     }
 }
 
+bool SafeWrite8(uintptr_t address, uint8_t value) {
+    if (address < 0x10000) return false;
+    __try {
+        *reinterpret_cast<volatile uint8_t*>(address) = value;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 bool SafeWrite32(uintptr_t address, uint32_t value) {
     if (address < 0x10000) return false;
     __try {
@@ -1024,6 +1034,37 @@ std::atomic<bool> g_log_player_hits{false}; // mc_er_hitlog.txt: log the HitCont
 // Read-only: one line per hit the player takes, with the HitContext fields the reverser needs (blood effect, flinch, knockback).
 uintptr_t DataModuleOfChr(uintptr_t chr);
 
+// Read-only (REVERSE 37, to check the reverser's claim): the four homogeneous vectors the hit context is said to keep at +0x190 (impact point),
+// +0x1A0 (attack source point), +0x1B0 (attack direction) and +0x1C0 (hit normal / knockback direction), next to the positions we can read
+// ourselves, so a few hits show which one points where. Also the classes (vtable RVAs) of the attacker argument and of ctx+0x1D8.
+void LogHitGeometry(const char* tag, void* attacker, uintptr_t player, const uint8_t* ctx) {
+    constexpr size_t kVecOffsets[4] = {0x190, 0x1A0, 0x1B0, 0x1C0};
+    float v[4][4] = {};
+    for (int i = 0; i < 4; ++i) SafeCopy(reinterpret_cast<uintptr_t>(ctx) + kVecOffsets[i], v[i], sizeof(v[i]));
+    uint8_t kind = 0, d9 = 0, react = 0;
+    float kb = 0.f;
+    uint64_t ctx_attacker = 0;
+    SafeCopy(reinterpret_cast<uintptr_t>(ctx) + 0xDA, &kind, 1);
+    SafeCopy(reinterpret_cast<uintptr_t>(ctx) + 0xD9, &d9, 1);
+    SafeCopy(reinterpret_cast<uintptr_t>(ctx) + layout::kHitEnableReaction, &react, 1);
+    SafeCopy(reinterpret_cast<uintptr_t>(ctx) + layout::kHitKnockbackIn, &kb, sizeof(kb));
+    SafeCopy(reinterpret_cast<uintptr_t>(ctx) + layout::kHitAttacker, &ctx_attacker, sizeof(ctx_attacker));
+    auto vtable_rva = [&](uintptr_t object) -> long long {
+        uint64_t vt = 0;
+        if (object == 0 || !SafeCopy(object, &vt, sizeof(vt)) || vt < g_img.base) return -1;
+        return static_cast<long long>(vt - g_img.base);
+    };
+    float pp[3] = {}, ap[3] = {};
+    const bool ok_player = player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, pp);
+    const bool ok_attacker = attacker != nullptr && detail::readPhysicsPosition(g_reader, g_img.base, reinterpret_cast<uintptr_t>(attacker), ap);
+    Log("%s: kind=%u d9=%u react=%u kb=%.2f attacker=%p vt=0x%llX ctx_attacker=%p vt=0x%llX player=%s(%.2f %.2f %.2f) attacker_pos=%s(%.2f %.2f %.2f) "
+        "v190=(%.3f %.3f %.3f %.1f) v1A0=(%.3f %.3f %.3f %.1f) v1B0=(%.3f %.3f %.3f %.1f) v1C0=(%.3f %.3f %.3f %.1f)",
+        tag, kind, d9, react, kb, attacker, static_cast<unsigned long long>(vtable_rva(reinterpret_cast<uintptr_t>(attacker))),
+        reinterpret_cast<void*>(ctx_attacker), static_cast<unsigned long long>(vtable_rva(static_cast<uintptr_t>(ctx_attacker))),
+        ok_player ? "ok" : "no", pp[0], pp[1], pp[2], ok_attacker ? "ok" : "no", ap[0], ap[1], ap[2], v[0][0], v[0][1], v[0][2], v[0][3], v[1][0], v[1][1],
+        v[1][2], v[1][3], v[2][0], v[2][1], v[2][2], v[2][3], v[3][0], v[3][1], v[3][2], v[3][3]);
+}
+
 void LogPlayerHit(void* module, void* attacker, const uint8_t* ctx, uint8_t blocked_flag) {
     uint64_t owner = 0, world = 0, player = 0;
     if (!SafeCopy(reinterpret_cast<uintptr_t>(module) + layout::kOwnerInDataModule, &owner, sizeof(owner)) || owner == 0) return;
@@ -1050,6 +1091,7 @@ void LogPlayerHit(void* module, void* attacker, const uint8_t* ctx, uint8_t bloc
         "module+148..15C=%u %u %u %u %u %u",
         u32(0x22C), u32(0x228), u16(0x220), u16(0x222), u16(0x224), u16(0x226), b[0x258], b[0x259], b[0x25A], b[0x266], b[0x267], words[0], words[1],
         words[2], words[3], words[4], words[5]);
+    LogHitGeometry("HIT-GEOM", attacker, static_cast<uintptr_t>(owner), ctx);
 }
 
 // Read-only (mc_er_chrscan.txt, after F2): the classes behind the pointers of a summoned character, and inside the model-like ones where a dword
@@ -1148,9 +1190,13 @@ bool PlayerHitSurvival(void* module, void* attacker, uint8_t* ctx, uint8_t block
         Log("SHIELD-DIAG: hit dmg=%d attacker=%p reads player=%d attacker=%d orient=%d pp=(%.2f %.2f %.2f) ap=(%.2f %.2f %.2f) yaw=%.3f dot=%.3f need>=%.3f",
             dmg, attacker, ok_player ? 1 : 0, ok_attacker ? 1 : 0, ok_orient ? 1 : 0, pp[0], pp[1], pp[2], ap[0], ap[1], ap[2], yaw,
             has_pos ? eldenring::shield::frontDot(pp, yaw, ap) : 0.f, eldenring::shield::kBlockMinDot);
+        LogHitGeometry("SHIELD-GEOM", attacker, player, ctx);
         if (eldenring::shield::shieldBlocksHit(attacker != nullptr, has_pos, pp, yaw, ap)) {
             eraudio::Play("item.shield.block");
             SafeWrite32(reinterpret_cast<uintptr_t>(ctx) + layout::kHitDamage, 0);
+            // ctx+0x264 == 0: only the HP change is applied, no flinch (layout::kHitEnableReaction, REVERSE 37). The knockback and the animation ids
+            // are produced before this hook runs (0x140444B40 / 0x140447810), so this alone may not remove them: the log shows whether it did.
+            SafeWrite8(reinterpret_cast<uintptr_t>(ctx) + layout::kHitEnableReaction, 0);
             Log("SHIELD: blocked hit from %p (dmg %d -> 0)", attacker, dmg);
             return false;
         }
