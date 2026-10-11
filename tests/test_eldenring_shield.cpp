@@ -134,3 +134,16 @@ TEST(EldenRingShield, FrontDotIsTheCosineBetweenFacingAndAttackerDirection) {
     EXPECT_EQ(isAttackBlocked(player_pos, 0.f, front), frontDot(player_pos, 0.f, front) >= kBlockMinDot);
     EXPECT_EQ(isAttackBlocked(player_pos, 0.f, behind), frontDot(player_pos, 0.f, behind) >= kBlockMinDot);
 }
+
+TEST(EldenRingShield, LiveMeasuredHitsFromTheFrontAreBlockedWithTheRawOrientationYaw) {
+    // mc_er.log SHIELD-DIAG, the player facing the attacker: the yaw straight from the physics quaternion is the facing
+    // (g_steve_yaw_offset only fixes the Steve model's own forward axis and must not be added here).
+    const float pp1[3] = {11.49f, -4.22f, -28.31f}, ap1[3] = {13.41f, -3.78f, -25.18f};
+    const float pp2[3] = {8.79f, -4.55f, -31.25f}, ap2[3] = {12.86f, -3.99f, -26.54f};
+    EXPECT_TRUE(shieldBlocksHit(true, true, pp1, 0.970f, ap1));
+    EXPECT_TRUE(shieldBlocksHit(true, true, pp2, 0.835f, ap2));
+    // the same hits with the model offset added would read as "from behind" (what the broken build did)
+    const float pi = 3.14159265f;
+    EXPECT_FALSE(shieldBlocksHit(true, true, pp1, 0.970f + pi, ap1));
+    EXPECT_FALSE(shieldBlocksHit(true, true, pp2, 0.835f + pi, ap2));
+}
