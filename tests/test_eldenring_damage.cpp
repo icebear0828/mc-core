@@ -513,3 +513,18 @@ TEST(EldenRingDamage, KnockbackStrengthIsSetAndTheOldValueReturned) {
     std::memcpy(&now, ctx + layout::kHitKnockbackIn, 4);
     EXPECT_FLOAT_EQ(now, 120.f);
 }
+
+TEST(EldenRingDamage, KnockdownIsRemovedOnlyForThePlayerInMcModeWhenEnabled) {
+    using eldenring::live::shouldSoftenHitReaction;
+    EXPECT_TRUE(shouldSoftenHitReaction(true, true, true));
+    EXPECT_FALSE(shouldSoftenHitReaction(false, true, true));  // MC mode off: the game's own reactions
+    EXPECT_FALSE(shouldSoftenHitReaction(true, false, true));  // an enemy keeps being staggered and knocked down by our hits
+    EXPECT_FALSE(shouldSoftenHitReaction(true, true, false));  // switched off by mc_er_noknockdownfix.txt
+}
+
+TEST(EldenRingDamage, HitReactionBufferFieldsAreTheOnesTheBreakTestWrites) {
+    // REVERSE 41: 0x140449520 writes [[module+0xA0]+0x34] (float, the push) and [[module+0xA0]+0x38] (the break flag) whatever it answers
+    EXPECT_EQ(layout::kDamageHitBuffer, 0xA0u);
+    EXPECT_EQ(layout::kHitBufferForce, 0x34u);
+    EXPECT_EQ(layout::kHitBufferBreakFlag, 0x38u);
+}

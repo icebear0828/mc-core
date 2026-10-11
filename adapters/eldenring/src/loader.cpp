@@ -1454,6 +1454,38 @@ void DamageVfunc7Detour(void* damage_module, void* attacker, uint8_t* ctx, uint8
     g_vfunc7_orig(damage_module, attacker, ctx, a4);
 }
 
+// The break test (0x140449520, REVERSE 41): F7 (0x140447810) writes ctx+0x258 = 1, the heavy reaction (knocked down, blown away), when it answers "yes". For
+// the player in MC mode it answers "no" and the push it wrote into the damage module's hit buffer is cleared, so a hit only flinches. Runs the original first
+// so the engine's own state stays consistent. mc_er_noknockdownfix.txt switches it off.
+using BreakTestFn = bool (*)(void* damage_module, uint8_t* ctx);
+BreakTestFn g_breaktest_orig = nullptr;
+std::atomic<bool> g_knockdown_fix{true};
+std::atomic<uint64_t> g_knockdown_log_ms{0};
+
+bool BreakTestDetour(void* damage_module, uint8_t* ctx) {
+    const bool broke = g_breaktest_orig(damage_module, ctx);
+    if (damage_module == nullptr) return broke;
+    uint64_t victim = 0;
+    const uintptr_t player = PlayerChrPtr();
+    const bool is_player = player != 0 && SafeCopy(reinterpret_cast<uintptr_t>(damage_module) + 8, &victim, sizeof(victim)) && victim == player;
+    if (!eldenring::live::shouldSoftenHitReaction(g_mc_mode.load(std::memory_order_relaxed), is_player, g_knockdown_fix.load(std::memory_order_relaxed))) return broke;
+    uint64_t buffer = 0;
+    if (SafeCopy(reinterpret_cast<uintptr_t>(damage_module) + layout::kDamageHitBuffer, &buffer, sizeof(buffer)) && buffer != 0) {
+        SafeWrite32(static_cast<uintptr_t>(buffer) + layout::kHitBufferForce, 0); // 0.0f: no push
+        SafeWrite8(static_cast<uintptr_t>(buffer) + layout::kHitBufferBreakFlag, 0);
+    }
+    if (broke) {
+        const uint64_t now = GetTickCount64();
+        if (now - g_knockdown_log_ms.load(std::memory_order_relaxed) > 500) {
+            g_knockdown_log_ms.store(now, std::memory_order_relaxed);
+            uint8_t level = 0;
+            if (ctx != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(ctx) + 0xDA, &level, 1);
+            Log("KNOCKDOWN: the break test said yes for the player (ctx+0xDA=%u): answered no and cleared the hit buffer", level);
+        }
+    }
+    return false;
+}
+
 void DrainOnce(uintptr_t updating_data_module) {
     DrainContext c;
     c.reader = &g_reader;
@@ -2649,6 +2681,24 @@ void McFlagsStep() {
             if (const auto w = hud_hold.step(b, policy.hide_hud, 0)) SafeWrite8(menu + kMenuHudSettingByte, *w);
         }
     }
+    if (menu != 0 && g_mc_mode.load(std::memory_order_relaxed)) { // read-only: the fade states of the native HUD updater (0x1407733F0), logged when one changes
+        struct HudSeen { int32_t a, b, c, d; uint8_t e, f, g, h, i; };
+        static HudSeen last{-99, -99, -99, -99, 9, 9, 9, 9, 9};
+        HudSeen now{};
+        SafeCopy(menu + 0x6530, &now.a, 4);
+        SafeCopy(menu + 0x6534, &now.b, 4);
+        SafeCopy(menu + 0x6538, &now.c, 4);
+        SafeCopy(menu + 0x6548, &now.d, 4);
+        SafeCopy(menu + 0x6540, &now.e, 1);
+        SafeCopy(menu + 0x6541, &now.f, 1);
+        SafeCopy(menu + 0x6542, &now.g, 1);
+        SafeCopy(menu + 0x654C, &now.h, 1);
+        SafeCopy(menu + kMenuHudSettingByte, &now.i, 1);
+        if (now.a != last.a || now.b != last.b || now.c != last.c || now.d != last.d || now.e != last.e || now.f != last.f || now.g != last.g || now.h != last.h || now.i != last.i) {
+            Log("HUDPROBE: +6530=%d +6534=%d +6538=%d +6548=%d b6540=%u b6541=%u b6542=%u b654C=%u setting841C=%u", now.a, now.b, now.c, now.d, now.e, now.f, now.g, now.h, now.i);
+            last = now;
+        }
+    }
     if (stamina_hold.active() != logged_stamina) { logged_stamina = stamina_hold.active(); Log("flags: no-stamina bit %s", logged_stamina ? "held" : "released"); }
     if (death_hold.active() != logged_death) { logged_death = death_hold.active(); Log("flags: cannot-die bit %s", logged_death ? "held" : "released"); }
     if (hud_hold.active() != logged_hud) { logged_hud = hud_hold.active(); Log("flags: native HUD setting byte %s", logged_hud ? "forced to 0" : "restored"); }
@@ -3443,6 +3493,21 @@ void SetupDamage() {
         g_pdc_hooked.store(true);
         Log("damage: ProcessDamageContext hooked at %p (RVA 0x%llX): final damage is replaced for our own hits", reinterpret_cast<void*>(pdc),
             static_cast<unsigned long long>(pdc - g_img.base));
+    }
+    if (FileExists(g_game_dir + "mc_er_noknockdownfix.txt")) {
+        g_knockdown_fix.store(false);
+        Log("knockdown: mc_er_noknockdownfix.txt present, the player keeps the game's heavy reactions");
+    } else {
+        uintptr_t brk = 0;
+        if (!LocateByPrefix(g_img, sigs::kBreakTest, brk)) {
+            Log("knockdown: break test signature not unique, the player keeps the game's heavy reactions");
+        } else if (MH_CreateHook(reinterpret_cast<void*>(brk), reinterpret_cast<void*>(&BreakTestDetour), reinterpret_cast<void**>(&g_breaktest_orig)) != MH_OK ||
+                   MH_EnableHook(reinterpret_cast<void*>(brk)) != MH_OK) {
+            Log("knockdown: hooking the break test at %p failed", reinterpret_cast<void*>(brk));
+        } else {
+            Log("knockdown: break test hooked at %p (RVA 0x%llX): in MC mode a hit on the player only flinches", reinterpret_cast<void*>(brk),
+                static_cast<unsigned long long>(brk - g_img.base));
+        }
     }
     if (FileExists(g_game_dir + "mc_er_noguardhook.txt")) {
         Log("shield: mc_er_noguardhook.txt present, the engine block path and the knockback fix are off (the damage hook still zeroes blocked hits)");

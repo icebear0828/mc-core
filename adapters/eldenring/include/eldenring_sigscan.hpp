@@ -115,6 +115,10 @@ inline constexpr const char* kGuardCheck =
 // 0x140444C1B, call 0x140480630) before it calls DamageDriver. Prologue up to the first call, unique in 2.7.1.0 (REVERSE 38).
 inline constexpr const char* kDamageVfunc7 =
     "48 89 5C 24 18 55 56 57 48 83 EC 30 4C 89 74 24 50 49 8B D8 4C 89 7C 24 58 45 0F B6 F1 48 8B F2 48 8B F9 E8 ?? ?? ?? ??";
+// The break test (0x140449520): (damageModule, hitContext*) -> bool. 0x140447A3B calls it; a non-zero answer writes ctx+0x258 = 1 (the heavy reaction: knocked down or
+// blown away), zero keeps the light flinch. Its tail writes [[module+0xA0]+0x34] and +0x38 whatever it answers. 59 bytes, unique in 2.7.1.0 (REVERSE 41).
+inline constexpr const char* kBreakTest =
+    "48 8B C4 48 89 58 18 48 89 70 20 55 57 41 56 48 8D 68 A1 48 81 EC E0 00 00 00 0F 29 70 D8 0F 29 78 C8 44 0F 29 40 B8 44 0F 29 48 A8 44 0F 29 50 98 48 8B 05 ?? ?? ?? ?? 48 33 C4";
 // The function that copies ChrCam's right/up/forward/position into another camera context ([rbx+0x80..0xB0]); it is called
 // through a vtable (0x1404A7190). Unique in 2.7.1.0. Used by the first-person experiment only.
 inline constexpr const char* kRenderCameraCopy =

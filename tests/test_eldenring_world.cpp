@@ -451,6 +451,7 @@ TEST(EldenRingSig, ShippedSignaturesParseToTheDocumentedLengths) {
     EXPECT_EQ(Signature::parse(sigs::kClampHp)->size(), 32u);
     EXPECT_EQ(Signature::parse(sigs::kGuardCheck)->size(), 35u);
     EXPECT_EQ(Signature::parse(sigs::kDamageVfunc7)->size(), 40u);
+    EXPECT_EQ(Signature::parse(sigs::kBreakTest)->size(), 59u);
 }
 
 TEST(EldenRingSig, HostileAndFriendSignaturesDifferOnlyInTheTail) {
