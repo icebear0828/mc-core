@@ -14,26 +14,21 @@ inline constexpr float kBlockMinDot = 0.6427876f;
 // Minecraft shield raise delay is ~5 ticks = 0.25 seconds
 inline constexpr float kShieldRaiseDelaySec = 0.25f;
 
-// Checks whether an attack coming from attacker_pos is blocked by a player at player_pos facing player_yaw.
-// In Elden Ring / Dantelion coordinates:
-// +Z is forward, +X is right, Y is up.
-// player_yaw is the rotation about +Y: forward vector is (sin(yaw), 0, cos(yaw)).
-inline bool isAttackBlocked(const float player_pos[3], float player_yaw, const float attacker_pos[3]) {
+// Cosine between the direction the player faces and the direction to the attacker, on the ground plane (1 = dead ahead, -1 = behind).
+// In Elden Ring / Dantelion coordinates: +Z is forward, +X is right, Y is up; player_yaw is the rotation about +Y,
+// so the forward vector is (sin(yaw), 0, cos(yaw)). An attacker on top of the player counts as dead ahead.
+inline float frontDot(const float player_pos[3], float player_yaw, const float attacker_pos[3]) {
     const float dx = attacker_pos[0] - player_pos[0];
     const float dz = attacker_pos[2] - player_pos[2];
     const float dist_sq = dx * dx + dz * dz;
-    if (dist_sq < 1e-6f) return true; // point blank / on top of player counts as blocked
-
+    if (dist_sq < 1e-6f) return 1.0f;
     const float inv_dist = 1.0f / std::sqrt(dist_sq);
-    const float dir_x = dx * inv_dist;
-    const float dir_z = dz * inv_dist;
+    return dx * inv_dist * std::sin(player_yaw) + dz * inv_dist * std::cos(player_yaw);
+}
 
-    // Player forward direction in XZ plane
-    const float fwd_x = std::sin(player_yaw);
-    const float fwd_z = std::cos(player_yaw);
-
-    const float dot = dir_x * fwd_x + dir_z * fwd_z;
-    return dot >= kBlockMinDot;
+// Checks whether an attack coming from attacker_pos is blocked by a player at player_pos facing player_yaw.
+inline bool isAttackBlocked(const float player_pos[3], float player_yaw, const float attacker_pos[3]) {
+    return frontDot(player_pos, player_yaw, attacker_pos) >= kBlockMinDot;
 }
 
 // The decision made for a hit the player's raised shield may stop. Only a hit with a known attacker (not fall, fire or poison)

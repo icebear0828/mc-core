@@ -1137,13 +1137,18 @@ bool PlayerHitSurvival(void* module, void* attacker, uint8_t* ctx, uint8_t block
     // Minecraft shield blocking: if the player is blocking with a shield and the attack comes from the front arc (100 deg),
     // the damage is completely blocked (reduced to 0), play shield block sound, and skip hurt camera/exhaustion.
     if (g_shield_blocking.load(std::memory_order_relaxed)) {
-        float pp[3], ap[3], q[4];
-        const bool has_pos = (attacker != nullptr && detail::readPhysicsPosition(g_reader, g_img.base, player, pp) &&
-                              detail::readPhysicsPosition(g_reader, g_img.base, reinterpret_cast<uintptr_t>(attacker), ap) &&
-                              detail::readPhysicsOrientation(g_reader, g_img.base, player, q));
+        float pp[3] = {}, ap[3] = {}, q[4] = {};
+        const bool ok_player = detail::readPhysicsPosition(g_reader, g_img.base, player, pp);
+        const bool ok_attacker = attacker != nullptr && detail::readPhysicsPosition(g_reader, g_img.base, reinterpret_cast<uintptr_t>(attacker), ap);
+        const bool ok_orient = detail::readPhysicsOrientation(g_reader, g_img.base, player, q);
+        const bool has_pos = ok_player && ok_attacker && ok_orient;
         // The body is drawn with yawFromQuat + g_steve_yaw_offset (the quaternion faces opposite to the model, 180 deg, live-verified):
         // the front arc must use the same yaw, or the shield guards the back.
-        const float yaw = has_pos ? eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) + g_steve_yaw_offset : 0.f;
+        const float raw_yaw = has_pos ? eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) : 0.f;
+        const float yaw = raw_yaw + g_steve_yaw_offset;
+        Log("SHIELD-DIAG: hit dmg=%d attacker=%p reads player=%d attacker=%d orient=%d pp=(%.2f %.2f %.2f) ap=(%.2f %.2f %.2f) raw_yaw=%.3f used_yaw=%.3f dot_used=%.3f dot_raw=%.3f need>=%.3f",
+            dmg, attacker, ok_player ? 1 : 0, ok_attacker ? 1 : 0, ok_orient ? 1 : 0, pp[0], pp[1], pp[2], ap[0], ap[1], ap[2], raw_yaw, yaw,
+            has_pos ? eldenring::shield::frontDot(pp, yaw, ap) : 0.f, has_pos ? eldenring::shield::frontDot(pp, raw_yaw, ap) : 0.f, eldenring::shield::kBlockMinDot);
         if (eldenring::shield::shieldBlocksHit(attacker != nullptr, has_pos, pp, yaw, ap)) {
             eraudio::Play("item.shield.block");
             SafeWrite32(reinterpret_cast<uintptr_t>(ctx) + layout::kHitDamage, 0);

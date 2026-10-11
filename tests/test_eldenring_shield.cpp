@@ -117,3 +117,20 @@ TEST(EldenRingShield, OffhandLayoutCoordinatesAlignSeamlessly) {
     EXPECT_FLOAT_EQ(item.w, 16.0f * s);
     EXPECT_FLOAT_EQ(item.h, 16.0f * s);
 }
+
+TEST(EldenRingShield, FrontDotIsTheCosineBetweenFacingAndAttackerDirection) {
+    const float player_pos[3] = {1.f, 5.f, 2.f};
+    const float front[3] = {1.f, 5.f, 12.f};   // +Z of the player
+    const float right[3] = {11.f, 5.f, 2.f};   // +X of the player
+    const float behind[3] = {1.f, 5.f, -8.f};
+    EXPECT_NEAR(frontDot(player_pos, 0.f, front), 1.f, 1e-5f);
+    EXPECT_NEAR(frontDot(player_pos, 0.f, right), 0.f, 1e-5f);
+    EXPECT_NEAR(frontDot(player_pos, 0.f, behind), -1.f, 1e-5f);
+    // turning the player by pi swaps front and behind
+    EXPECT_NEAR(frontDot(player_pos, 3.14159265f, front), -1.f, 1e-5f);
+    // standing on top of the player counts as in front (point blank)
+    EXPECT_NEAR(frontDot(player_pos, 0.f, player_pos), 1.f, 1e-5f);
+    // the verdict is the dot against the cone
+    EXPECT_EQ(isAttackBlocked(player_pos, 0.f, front), frontDot(player_pos, 0.f, front) >= kBlockMinDot);
+    EXPECT_EQ(isAttackBlocked(player_pos, 0.f, behind), frontDot(player_pos, 0.f, behind) >= kBlockMinDot);
+}
