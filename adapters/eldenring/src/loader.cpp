@@ -55,6 +55,7 @@
 #include "eldenring_jump.hpp"
 #include "eldenring_orientation.hpp"
 #include "eldenring_action_lock.hpp"
+#include "eldenring_roll.hpp"
 #include "mc/consumables.hpp"
 #include "mc/inventory_layout.hpp"
 #include "mc/hud_atlas.hpp"
@@ -278,6 +279,8 @@ std::atomic<uint32_t> g_hide_mask2{1};         // bits cleared in disp_flags2 (+
 float g_steve_yaw_offset = 3.14159265f; // the orientation quaternion at PhysicsModule+0x50 faces opposite to the model forward (user verified live, 180 deg)
 std::atomic<bool> g_instant_turn{true};  // mc_er_steve.txt: instant_turn=1 (snap to movement heading with zero delay)
 std::atomic<float> g_turn_speed{15.0f};  // mc_er_steve.txt: turn_speed=<rad/s> (used when instant_turn=0 for smooth turn clamp)
+std::atomic<bool> g_disable_vanilla_roll{true}; // mc_er_steve.txt: disable_vanilla_roll=1 (also disable_roll=1)
+std::atomic<int> g_roll_vk{VK_SPACE};            // mc_er_steve.txt: roll_key=<virtual key code>
 std::atomic<bool> g_require_victim_updating{true};
 DamageQueue g_queue;
 
@@ -2689,8 +2692,15 @@ DWORD WINAPI KeyThread(LPVOID) {
             if (g_mc_jump.load() && g_mc_mode.load() && fg && !g_inv_open.load()) {
                 hidden[n_hidden++] = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(g_mc_jump_vk.load()), MAPVK_VK_TO_VSC));
             }
+            if (g_disable_vanilla_roll.load() && g_mc_mode.load() && fg && !g_inv_open.load()) {
+                int roll_sc = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(g_roll_vk.load()), MAPVK_VK_TO_VSC));
+                if (roll_sc <= 0 && g_roll_vk.load() == VK_SPACE) roll_sc = eldenring::roll::kDefaultRollDik;
+                if (roll_sc > 0) {
+                    n_hidden = eldenring::roll::mergeMaskedKeys(hidden, sizeof(hidden) / sizeof(hidden[0]), n_hidden, &roll_sc, 1);
+                }
+            }
             if (g_flying.load()) { // while flying the game never sees the movement keys: the position is ours
-                for (const int dik : flight::kHiddenKeys) hidden[n_hidden++] = dik;
+                n_hidden = eldenring::roll::mergeMaskedKeys(hidden, sizeof(hidden) / sizeof(hidden[0]), n_hidden, flight::kHiddenKeys, sizeof(flight::kHiddenKeys) / sizeof(flight::kHiddenKeys[0]));
             }
             erin::SetMaskedKeys(hidden, n_hidden);
         }
@@ -3684,6 +3694,8 @@ void SetupOverlay() {
                 else if (key == "sneak_speed") g_sneak_speed.store(std::clamp(value, 0.2f, 10.f));
                 else if (key == "sprint_speed") g_sprint_speed.store(std::clamp(value, 0.5f, 20.f));
                 else if (key == "sneak_key") g_sneak_vk.store(static_cast<int>(value));
+                else if (key == "disable_vanilla_roll" || key == "disable_roll") g_disable_vanilla_roll.store(value != 0.f);
+                else if (key == "roll_key") g_roll_vk.store(static_cast<int>(value));
                 else if (key == "block_anchor") g_block_anchor.store(value != 0.f);
                 else if (key == "block_ground") g_block_ground.store(value != 0.f);
                 else if (key == "block_collision") g_block_collision.store(value != 0.f);
