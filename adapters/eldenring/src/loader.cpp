@@ -1202,6 +1202,7 @@ std::atomic<int> g_proj_log_left{80};
 std::atomic<uint32_t> g_last_bullet_id{0};      // request +0x1C of that call
 std::atomic<float> g_last_shot_damage{eldenring::bullet::kCrossbowDamage}; // the MC damage of that shot (9 for a crossbow bolt, 6 * power + crit for a bow arrow)
 std::atomic<float> g_pending_shot_damage{eldenring::bullet::kCrossbowDamage}; // of the shot queued for the game thread
+std::atomic<bool> g_bow_offhand{false};          // the bow that is drawn is the one in the offhand
 std::atomic<float> g_bow_power{0.f};             // 0..1 while the bow is drawn (third-person arms), written by the key thread
 std::atomic<float> g_bow_ticks{0.f};             // ticks drawn (first-person pose)
 std::atomic<int> g_bolt_attach_poly{-1};         // mc_er_steve.txt: bolt_attach_poly. Request +0x1C is the shooter's dummy poly id, not a bullet id: >= 0 makes the game take that bone's matrix instead of ours (REVERSE 35.12); -1 keeps ours; 56 is what a real shot sends
@@ -2622,6 +2623,8 @@ DWORD WINAPI KeyThread(LPVOID) {
             bool usable = false;
             {
                 std::lock_guard<std::mutex> g(g_melee_mutex);
+                g_bow_offhand.store(eldenring::bow::bowInOffhand(g_melee.heldItem(), g_melee.countAt(g_melee.selectedSlot()), g_melee.offhandItem(), g_melee.offhandCount()),
+                                    std::memory_order_relaxed);
                 usable = eldenring::bow::bowHandUsable(g_melee.heldItem(), g_melee.countAt(g_melee.selectedSlot()), g_melee.offhandItem(), g_melee.offhandCount()) &&
                          (!creative::consumesItems(CurrentGameMode()) || g_melee.has(mc::ItemId::Arrow));
             }
@@ -3484,6 +3487,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.cooldown = g_melee.cooldown();
         steve.eating = steve_dead_now ? 0.f : g_eating.getProgress();
         steve.bow_charge = steve_dead_now ? 0.f : g_bow_power.load(std::memory_order_relaxed);
+        steve.bow_offhand = g_bow_offhand.load(std::memory_order_relaxed);
         steve.bow_ticks = steve_dead_now ? 0.f : g_bow_ticks.load(std::memory_order_relaxed);
         out.totem = g_feedback.totem();
         steve.swing = steve_dead_now ? 0.f : g_melee.swingProgress();

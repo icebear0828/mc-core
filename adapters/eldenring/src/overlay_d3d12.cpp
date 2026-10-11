@@ -951,6 +951,7 @@ void RenderFrame(IDXGISwapChain* sc) {
         mc::SteveAnimInput anim_in = g_motion.update(dt, steve.feet, steve.yaw);
         anim_in.swing_progress = steve.swing;
         anim_in.bow_charge = steve.bow_charge;
+        anim_in.bow_offhand = steve.bow_offhand;
         anim_in.is_blocking = steve.blocking;
         g_head.update(steve.cam.forward.x, steve.cam.forward.y, steve.cam.forward.z, steve.yaw, anim_in);
         g_anim.update(dt, anim_in);
@@ -995,7 +996,9 @@ void RenderFrame(IDXGISwapChain* sc) {
         sp.tint[3] = 0.4f * std::min(1.f, steve.hurt * 4.f);
         sp.keep_depth = blocks_drawn; // the blocks left their depth in the figure's buffer: the figure sorts against them
         sp.held_item = static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.held_item), steve.bow_charge));
-        sp.offhand_item = steve.offhand_item;
+        // a bow in the offhand shows the drawn-bow sprite while it is drawn (the held item in the right hand stays what it is)
+        sp.offhand_item = steve.bow_offhand ? static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.offhand_item), steve.bow_charge))
+                                            : steve.offhand_item;
         sp.held_table = g_atlas_ready ? g_held_table_gpu : D3D12_GPU_DESCRIPTOR_HANDLE{};
         if (g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
             g_steve.draw(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, parts, sp, f.rtv);
@@ -1108,8 +1111,11 @@ void RenderFrame(IDXGISwapChain* sc) {
             const fp::M4 off_pose = off_is_shield ? fp::shieldFpPose(steve.blocking, 0.f, true) : fp::offhandItemPose(0.f);
             const fp::M4 off_disp = off_is_shield ? fp::shieldDisplay() : (off_block ? fp::blockDisplay() : fp::itemDisplay());
             const fp::M4 off_world = fp::mul(fp::mul(base, off_pose), off_disp);
+            const uint16_t off_shown = steve.bow_offhand && steve.bow_ticks > 0.f
+                                           ? static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.offhand_item), steve.bow_charge))
+                                           : steve.offhand_item;
             g_steve.drawFirstPersonItem(g_s.list, g_s.srv_heap, g_item_table_gpu, g_s.width, g_s.height, proj, fp::toHost(off_world),
-                                        steve.offhand_item, f.rtv);
+                                        off_shown, f.rtv);
         }
         g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr); // ImGui draws without a depth view
     }

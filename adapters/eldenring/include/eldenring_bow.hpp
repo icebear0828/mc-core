@@ -154,6 +154,11 @@ inline bool bowHandUsable(mc::ItemId main_item, uint32_t main_count, mc::ItemId 
     return offhand_count > 0 && offhand_item == mc::ItemId::Bow;
 }
 
+// True when the bow that draws is the one in the offhand (the left arm aims, the offhand item shows the drawn-bow sprite).
+inline bool bowInOffhand(mc::ItemId main_item, uint32_t main_count, mc::ItemId offhand_item, uint32_t offhand_count) {
+    return bowHandUsable(main_item, main_count, offhand_item, offhand_count) && !(main_count > 0 && main_item == mc::ItemId::Bow);
+}
+
 // determinant of the rows (right, up, forward): +1 for a proper rotation in which right x up = forward (a real request's matrix), -1 when one axis is mirrored.
 inline float determinant(const float r[3], const float u[3], const float f[3]) {
     return r[0] * (u[1] * f[2] - u[2] * f[1]) - r[1] * (u[0] * f[2] - u[2] * f[0]) + r[2] * (u[0] * f[1] - u[1] * f[0]);

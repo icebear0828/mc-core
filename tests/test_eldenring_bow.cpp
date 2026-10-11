@@ -218,3 +218,12 @@ TEST(EldenRingBow, ABowInTheOffhandDrawsWhenTheMainHandDoesNotClaimTheRightButto
     EXPECT_FALSE(eldenring::bow::bowHandUsable(ItemId::DiamondSword, 1, ItemId::Arrow, 64));
     EXPECT_FALSE(eldenring::bow::bowHandUsable(ItemId::None, 0, ItemId::Bow, 0));
 }
+
+TEST(EldenRingBow, TheBowIsInTheOffhandOnlyWhenTheMainHandDoesNotHoldIt) {
+    using mc::ItemId;
+    EXPECT_TRUE(eldenring::bow::bowInOffhand(ItemId::DiamondSword, 1, ItemId::Bow, 1));
+    EXPECT_TRUE(eldenring::bow::bowInOffhand(ItemId::None, 0, ItemId::Bow, 1));
+    EXPECT_FALSE(eldenring::bow::bowInOffhand(ItemId::Bow, 1, ItemId::Bow, 1)); // both hands: the main hand's bow draws
+    EXPECT_FALSE(eldenring::bow::bowInOffhand(ItemId::Shield, 1, ItemId::Bow, 1));
+    EXPECT_FALSE(eldenring::bow::bowInOffhand(ItemId::DiamondSword, 1, ItemId::Shield, 1));
+}

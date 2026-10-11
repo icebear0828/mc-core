@@ -30,6 +30,7 @@ struct SteveAnimInput {
     bool is_crouching{false};
     bool is_blocking{false};
     float bow_charge{0.f};    // [0, 1]
+    bool bow_offhand{false};  // the bow is held in the left hand (the left arm aims instead of the right one)
     float trident_charge{0.f};// [0, 1]
     float eating_progress{0.f}; // [0, 1] 0 = not eating, >0 = chewing vibration
     bool arms_forward{false}; // zombie on the Steve rig: both arms held straight out in front

@@ -97,3 +97,25 @@ TEST(SteveAnimatorTest, SwayOnlyArmsDoNotSwingWithTheStrideAndStayNearTheirRestR
     }
     EXPECT_TRUE(legs_move);
 }
+
+TEST(SteveAnimatorTest, ADrawnBowRaisesTheArmThatHoldsIt) {
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm), la = static_cast<size_t>(mc::StevePart::LeftArm);
+    mc::SteveAnimator idle, main_bow, off_bow;
+    mc::SteveAnimInput in{};
+    mc::SteveAnimInput main_in = in, off_in = in;
+    main_in.bow_charge = 0.8f;
+    off_in.bow_charge = 0.8f;
+    off_in.bow_offhand = true;
+    for (int i = 0; i < 10; ++i) {
+        idle.update(0.05f, in);
+        main_bow.update(0.05f, main_in);
+        off_bow.update(0.05f, off_in);
+    }
+    // bow in the main hand: the right arm aims (about -90 degrees of pitch), the left one stays at rest
+    EXPECT_LT(main_bow.getTransforms()[ra].rot.w, 0.75f);
+    EXPECT_GT(main_bow.getTransforms()[la].rot.w, 0.85f);
+    // bow in the offhand: the left arm aims, the right arm (with the sword) stays at rest
+    EXPECT_LT(off_bow.getTransforms()[la].rot.w, 0.75f);
+    EXPECT_GT(off_bow.getTransforms()[ra].rot.w, 0.85f);
+    EXPECT_GT(idle.getTransforms()[la].rot.w, 0.85f);
+}
