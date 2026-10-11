@@ -35,7 +35,10 @@ def main() -> int:
         print(f"ERROR: Built dll not found: {src_dll}", file=sys.stderr)
         return 1
 
-    src_atlas = workspace_root / "assets" / "source" / "textures" / "mc_hud_atlas.png"
+    # Prefer authentic vanilla atlas (full original MC textures) over stripped placeholder
+    src_atlas = workspace_root / "assets" / "source" / "textures" / "mc_hud_atlas.authentic.png"
+    if not src_atlas.is_file():
+        src_atlas = workspace_root / "assets" / "source" / "textures" / "mc_hud_atlas.png"
     if not src_atlas.is_file():
         print(f"ERROR: HUD atlas not found: {src_atlas}", file=sys.stderr)
         return 1
