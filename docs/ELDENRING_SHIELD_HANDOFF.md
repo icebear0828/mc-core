@@ -96,3 +96,18 @@ python tools/reverse/eldenring/deploy_batch4_2.py
 - **背包副手槽布局与命中判定:** [`include/mc/inventory_layout.hpp`](file:///D:/code/universal-modder/mc-core/include/mc/inventory_layout.hpp)
 - **背包界面渲染:** [`adapters/eldenring/src/overlay_d3d12.cpp`](file:///D:/code/universal-modder/mc-core/adapters/eldenring/src/overlay_d3d12.cpp#L590)
 - **输入控制与 F 键换手:** [`adapters/eldenring/src/loader.cpp`](file:///D:/code/universal-modder/mc-core/adapters/eldenring/src/loader.cpp#L2450)
+
+---
+
+## 六、批次 4.3 交付 PR 与后续核心任务清单 (Pull Request & Backlog)
+
+- **PR 链接:** [Pull Request #12: feat(eldenring): add 3D shield entity, forearm fitting, offhand HUD, and first-person shield blocking](https://github.com/icebear0828/mc-core/pull/12)
+- **提交分支:** `lindaokeefe472-eng:feat/shield-3d-model-entity` -> `icebear0828/mc-core:main`
+
+### 待推进核心问题清单：
+1. **官方素材对齐 (Official Bedrock/Java Entity Asset Alignment):**
+   - Java 版官方 jar 中无 `item/shield.png`（为 3D 实体模型 `entity/shield_base.png` 动态渲染），需要从官方基岩版提取 16x16 官方原版正投影材质，或直接构建原版 Plate (12x22x2) + Handle (2x6x6) 的双立方体实体模型。
+2. **盾牌实机格挡减伤实装 (In-Game Damage Mitigation Hook):**
+   - 目前已具备正面 100° 与防守时序判定（`isAttackBlocked`），但尚未在受击 Hook 层拦截血量扣除，需在受击判定中完全抵消物理伤害并播放原版格挡音效。
+3. **手持动作瑕疵调优 (Arm Pose & Display Transform Fine-Tuning):**
+   - 第三人称与第一人称举盾角度需进一步参照官方 `models/item/shield.json` 的 `thirdperson_lefthand` 参数精细对齐左前臂，消除抬臂过高或接合处的细微瑕疵。
