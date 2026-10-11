@@ -303,3 +303,26 @@ TEST(Blocks, SneakEdgeProtectionDoesNotClampWhenAlreadyInAir) {
     EXPECT_FLOAT_EQ(res.dz, -0.5f);
 }
 
+TEST(Blocks, SneakEdgeProtectionCatchesPlayerWhoSteppedIntoAirFromPreviousBlock) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::Stone); // Block from [0, 1] x [0, 1], top y = 1
+    // Player was at (0.9, 1.0, 0.5) on the block
+    const float prev[3] = {0.9f, 1.0f, 0.5f};
+    EXPECT_TRUE(supportedByBlock(g, prev));
+
+    // Next frame, Havok moved player by +0.5m in X to (1.4, 1.0, 0.5), which is in empty air!
+    const float over_feet[3] = {1.4f, 1.0f, 0.5f};
+    EXPECT_FALSE(supportedByBlock(g, over_feet)); // stepped off!
+
+    // Clamping movement from prev restores to safe ledge:
+    const float desired_dx = over_feet[0] - prev[0];
+    const float desired_dz = over_feet[2] - prev[2];
+    const auto res = clampSneakEdgeMovement(g, prev, desired_dx, desired_dz);
+    EXPECT_TRUE(res.clamped_x);
+    EXPECT_LT(res.dx, desired_dx);
+
+    const float clamped_feet[3] = {prev[0] + res.dx, prev[1], prev[2] + res.dz};
+    EXPECT_TRUE(supportedByBlock(g, clamped_feet)); // Restored to safe ledge!
+}
+
+

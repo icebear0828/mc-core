@@ -1919,8 +1919,18 @@ void DriveVelocityFromKeys(uintptr_t module, bool force_zero) {
                 vx = dir[0] * target_speed;
                 vz = dir[1] * target_speed;
                 if (sneaking) {
-                    if (g_sneak_clamped_x.load(std::memory_order_relaxed)) vx = 0.f;
-                    if (g_sneak_clamped_z.load(std::memory_order_relaxed)) vz = 0.f;
+                    float cur_feet[3] = {};
+                    if (SafeCopy(module + layout::kPhysicsPosition, cur_feet, sizeof(cur_feet))) {
+                        const float test_dx = vx * 0.05f;
+                        const float test_dz = vz * 0.05f;
+                        blocks::SneakMoveResult test_res;
+                        {
+                            std::lock_guard<std::mutex> g(g_blocks_mutex);
+                            test_res = blocks::clampSneakEdgeMovement(g_blocks, cur_feet, test_dx, test_dz);
+                        }
+                        if (test_res.clamped_x) vx = 0.f;
+                        if (test_res.clamped_z) vz = 0.f;
+                    }
                 }
 
                 // Compute target orientation from movement direction
@@ -2148,9 +2158,16 @@ void BlocksCollisionStep() {
         anchored = false;
     }
 
-    // Sneak edge protection: if supported on blocks and sneaking, prevent stepping off any ledge into empty space
+    // Check if the previous frame was supported on blocks
+    bool was_supported = false;
+    if (have_prev) {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        was_supported = blocks::supportedByBlock(g_blocks, prev);
+    }
+
+    // Sneak edge protection: if currently or previously on blocks and sneaking, prevent stepping off any ledge into empty space
     bool sneak_clamped = false;
-    if (sneaking && supported && have_prev && !jumped && !pinned) {
+    if (sneaking && (supported || was_supported) && have_prev && !jumped && !pinned) {
         const float desired_dx = final_feet[0] - prev[0];
         const float desired_dz = final_feet[2] - prev[2];
         blocks::SneakMoveResult sneak_res;
@@ -2163,6 +2180,7 @@ void BlocksCollisionStep() {
         if (sneak_res.clamped_x || sneak_res.clamped_z) {
             final_feet[0] = prev[0] + sneak_res.dx;
             final_feet[2] = prev[2] + sneak_res.dz;
+            supported = true; // Still safely supported at the block ledge!
             sneak_clamped = true;
         }
     } else if (!sneaking) {
