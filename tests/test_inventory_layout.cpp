@@ -62,7 +62,6 @@ TEST(InventoryLayout, HitTestFindsSlotsAndMissesTheGaps) {
 TEST(InventoryLayout, OffhandSlotPositionAndHitTest) {
     InventoryLayout l(1920.f, 1080.f);
     const HudRect off = l.offhandSlot();
-    const HudRect p = l.panel();
     const float s = static_cast<float>(l.scale());
 
     // Positioned to the left of the hotbar / panel (22x22 GUI px area)
