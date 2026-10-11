@@ -722,7 +722,6 @@ _JAR_HUD_SPRITES = {
     "hotbar": "gui/sprites/hud/hotbar.png",
     "hotbar_selection": "gui/sprites/hud/hotbar_selection.png",
     "hotbar_offhand_left": "gui/sprites/hud/hotbar_offhand_left.png",
-    "item_shield": "item/shield.png",
     "item_diamond_sword": "item/diamond_sword.png",
     "item_diamond_pickaxe": "item/diamond_pickaxe.png",
     "item_golden_apple": "item/golden_apple.png",
@@ -880,6 +879,16 @@ def _read_real_hud_sprite(jar_zip: zipfile.ZipFile, name: str, size: tuple[int, 
         egg = _multiply_tint(_fit_exact(base, size), primary)
         egg.alpha_composite(_multiply_tint(_fit_exact(spots, size), secondary))
         return egg
+    if name == "item_shield":
+        # 1.21.8 has no item/shield.png (the inventory icon is the 3D model): use the front face of the plate in the entity texture.
+        plate = _open_jar_png(jar_zip, "entity/shield_base_nopattern.png")
+        if plate is None or plate.size != (64, 64):
+            return None
+        front = plate.crop((1, 1, 13, 23))  # 12x22, the face with the rivets
+        scaled = front.resize((9, size[1]), Image.BOX)
+        icon = Image.new("RGBA", size, (0, 0, 0, 0))
+        icon.paste(scaled, ((size[0] - scaled.width) // 2, 0))
+        return icon
     if name == "item_enchanted_golden_apple":
         apple = _open_jar_png(jar_zip, "item/golden_apple.png")
         return None if apple is None else _tint(_fit_exact(apple, size), _GLINT, 0.35)

@@ -323,7 +323,6 @@ def _sprite_colors():
         "gui/sprites/hud/experience_bar_progress.png": _solid((182, 5), (73, 74, 75, 255)),
         "gui/sprites/hud/hotbar_offhand_left.png": _solid((29, 24), (80, 81, 82, 255)),
         "gui/sprites/container/slot/shield.png": _solid((16, 16), (83, 84, 85, 255)),
-        "item/shield.png": _solid((16, 16), (83, 84, 85, 255)),
     }
 
 
@@ -522,9 +521,7 @@ def test_offhand_slot_and_shield_icon_copied(tmp_path):
     assert offhand.size == (29, 24)
     assert {offhand.getpixel((x, y)) for x in range(29) for y in range(24)} == {(80, 81, 82, 255)}
 
-    shield = _hud_region(atlas, uv["item_shield"])
-    assert shield.size == (16, 16)
-    assert {shield.getpixel((x, y)) for x in range(16) for y in range(16)} == {(83, 84, 85, 255)}
+    assert _hud_region(atlas, uv["item_shield"]).size == (16, 16)
 
 
 def test_canonical_item_shield_is_solid_with_iron_rim_and_wood_planks():
@@ -778,3 +775,39 @@ def test_export_entity_models(tmp_path: Path):
         assert f.stat().st_size > 0
 
 
+
+
+def _shield_entity_texture() -> Image.Image:
+    # the plate of the shield model: the front face is 12x22 at (1, 1), the back face 12x22 at (14, 1)
+    tex = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    for x in range(1, 13):
+        for y in range(1, 23):
+            tex.putpixel((x, y), (120, 80, 40, 255))
+    for x in range(14, 26):
+        for y in range(1, 23):
+            tex.putpixel((x, y), (10, 20, 30, 255))
+    return tex
+
+
+def test_shield_icon_is_the_front_face_of_the_real_shield_texture(tmp_path):
+    import zipfile
+    from extract_mc_assets import build_hud_atlas
+
+    jar = _hud_jar(tmp_path / "client.jar")
+    with zipfile.ZipFile(jar, "a") as z:
+        z.writestr("assets/minecraft/textures/entity/shield_base_nopattern.png", _png(_shield_entity_texture()))
+    atlas, uv = build_hud_atlas(jar)
+    icon = _hud_region(atlas, uv["item_shield"])
+    assert icon.size == (16, 16)
+    # the face is scaled to the full height and centred; its centre is the front colour, never the back one
+    assert icon.getpixel((8, 8)) == (120, 80, 40, 255)
+    assert icon.getpixel((8, 0))[3] == 255 and icon.getpixel((8, 15))[3] == 255
+    assert icon.getpixel((0, 8))[3] == 0 and icon.getpixel((15, 8))[3] == 0
+    assert (10, 20, 30, 255) not in {icon.getpixel((x, y)) for x in range(16) for y in range(16)}
+
+
+def test_shield_icon_falls_back_to_the_placeholder_when_the_jar_has_no_shield_texture(tmp_path):
+    from extract_mc_assets import build_hud_atlas, create_canonical_sprite
+
+    atlas, uv = build_hud_atlas(_hud_jar(tmp_path / "client.jar"))
+    assert _hud_region(atlas, uv["item_shield"]).tobytes() == create_canonical_sprite("item_shield").tobytes()
