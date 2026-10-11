@@ -1280,3 +1280,25 @@ Table 1                     Table 2
 - 举盾格挡时额外把 `ctx+0x264` 写 0，看玩家是否还会僵直（实验，日志里有 `react=` 字段对照）。
 
 **下一步（逆向方）**：给出 `0x140480EF0` 的参数（哪个寄存器是受害者、攻击者、ctx）、它读哪些状态、返回真时之后的动画和精力扣除是否要求受害者处于防御动作状态；以及 `0x140444B40` 里 `ctx+0xFC` 派发击退的位置（能不能在我们的钩子前拦截）。
+
+## 38. 审计：GuardCheck `0x140480EF0` 与击退派发 `0x140444B40`（逆向方回复，2026-10-11，我方逐字节核对 exe 2.7.1.0）
+
+**逐字节核对属实（A）**
+- `0x140444BEA..0x140444C1B`：`cvttss2si esi,[rbx+0xFC]`、`mov [rbx+0x230],esi`、`test r14b,r14b; jne 0x140444C8F`、取受害者 → `neg esi` → `[[chr+0x190]+0x88]` → `call 0x140480630`，与回复的清单逐条一致。`0x140444C8A` 处 `call 0x140449D30`（DamageDriver）也在。
+- `DamageDriver` 里 `0x140449E55 call 0x140480EF0`；返回真 → `or [r14+0x267],0x10`、`mov byte [rsp+0xB0],1`；`0x140449EE8 jne 0x140449F44` **同时跳过 `0x140447810`（F7）和 `0x140448910`（ProcessDamageContext）**。所以被引擎判为格挡的命中，我们的 PDC 钩子根本看不到（`PlayerHitSurvival` 也不会跑）。未格挡时 PDC 在 `0x140449F1A` 被调用。
+- `GuardCheck` 的参数：`rcx = [[attackerChr+0x190]+0x88]`（攻击者动作模块），`rdx = 受害者 ChrIns`（`0x14043D250(damageModule)`），`r8d = 攻击属性字（16 位）`，`r9b = [rsp+0x31]`，第 5 参数 `[rsp+0x20]` 来自 `(ctx+0x268 >> 1) & 1`。**`ctx` 没有传进去**。
+- **`0x14043D250` 就是 `mov rax,[rcx+8]; ret`**，`GuardCheck` 开头自己对 `rcx` 调它，再调 `owner->vfunc[0x118]`。所以 `rcx+8` 就是攻击者 ChrIns，不需要 ctx。
+
+**回复不准或没说的地方（核对出来的）**
+- 回复说"返回真就直接 `0x140449F44` 调 `0x1404547C0` 播放防反动画"：不准确。`0x140449F44` 先 `cmp byte [r14+0x258],0; je 0x140449FCA`，只有 `ctx+0x258 != 0` 才会走到 `0x1404548A0` 等动画调用；为 0 就直接跳过。所以强制格挡成功不一定有动画。
+- 击退那段入口有条件：`0x140444BE0 movzx eax,cl; shr al,2; test al,1; je 0x140444C22`（`cl` 是 `[[[victimChr+0x190]+8]+0x40]` 的低字节）。回复没提。
+- `vfunc[7]` 的返回值没有使用（尾部是一次 `call` 之后直接 `ret`），按 `void` 处理。
+
+**签名（均在 2.7.1.0 `.text` 里唯一）**：`kGuardCheck`（35 字节，`0x140480EF0`）、`kDamageVfunc7`（40 字节，`0x140444B40`）。
+
+**本次实现（`fix/shield-live`）**
+- 钩 `GuardCheck`：受害者是玩家、盾已举起、攻击者在正面 100° 内时直接返回 `true`（原生格挡路径：不扣血、不僵直；真 GuardCheck 内部的体力扣除不会发生）。攻击者 ChrIns 取 `*(rcx+8)`。
+- 钩 `vfunc[7]`（`0x140444B40`）：同一判定为真时先把 `ctx+0xFC` 写 0，再调用原函数（击退冲量为 0）。
+- 两个钩子都可以用游戏目录下的 `mc_er_noguardhook.txt` 关掉（回到 PDC 钩子里清零伤害的旧做法）。日志 `SHIELD-GUARD:`。
+
+**仍未知**：`vfunc[7]` 里 `attacker` 可能不是 ChrIns（它先做 `vfunc[2]() == 1` 才当成 ChrIns）；我们的判定在它不是 ChrIns 时读到的位置没有意义，所以击退修正只在读得到位置时才生效。敌人的箭命中玩家时 `GuardCheck` 的第一个参数是什么（`rcx` 的 `+8` 是射手 ChrIns 还是别的）需要实机日志（`SHIELD-GUARD`、`HIT-GEOM`）。

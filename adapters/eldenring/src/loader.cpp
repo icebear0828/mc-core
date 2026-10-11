@@ -1165,6 +1165,29 @@ bool GiveHp(uintptr_t data_module, int amount) {
 
 std::atomic<bool> g_shield_blocking{false};
 
+// What the raised shield decides about a hit on the player. The facing is the yaw of the physics quaternion itself (live-measured: with the player
+// facing the attacker the dot is +0.91..+0.99); g_steve_yaw_offset only turns the Steve model, whose own forward axis differs, and adding it here makes
+// the shield guard the back. `attacker_chr` 0 means there is none (never blocked).
+struct ShieldVerdict {
+    bool ok_player{false}, ok_attacker{false}, ok_orient{false};
+    bool blocks{false};
+    float pp[3]{}, ap[3]{}, q[4]{}, yaw{0.f}, dot{0.f};
+};
+
+ShieldVerdict EvaluateShield(uintptr_t player, uintptr_t attacker_chr) {
+    ShieldVerdict v;
+    v.ok_player = detail::readPhysicsPosition(g_reader, g_img.base, player, v.pp);
+    v.ok_attacker = attacker_chr != 0 && detail::readPhysicsPosition(g_reader, g_img.base, attacker_chr, v.ap);
+    v.ok_orient = detail::readPhysicsOrientation(g_reader, g_img.base, player, v.q);
+    const bool has_pos = v.ok_player && v.ok_attacker && v.ok_orient;
+    if (has_pos) {
+        v.yaw = eldenring::render::yawFromQuat(v.q[0], v.q[1], v.q[2], v.q[3]);
+        v.dot = eldenring::shield::frontDot(v.pp, v.yaw, v.ap);
+    }
+    v.blocks = eldenring::shield::shieldBlocksHit(attacker_chr != 0, has_pos, v.pp, v.yaw, v.ap);
+    return v;
+}
+
 // Natural hits on the player: absorption soaks damage up, then a totem keeps a killing hit at 1 HP. Returns true when a totem was used.
 bool PlayerHitSurvival(void* module, void* attacker, uint8_t* ctx, uint8_t blocked, uint32_t& popped_heal_target) {
     if (blocked != 0) return false; // a blocked hit deducts nothing
@@ -1179,19 +1202,12 @@ bool PlayerHitSurvival(void* module, void* attacker, uint8_t* ctx, uint8_t block
     // Minecraft shield blocking: if the player is blocking with a shield and the attack comes from the front arc (100 deg),
     // the damage is completely blocked (reduced to 0), play shield block sound, and skip hurt camera/exhaustion.
     if (g_shield_blocking.load(std::memory_order_relaxed)) {
-        float pp[3] = {}, ap[3] = {}, q[4] = {};
-        const bool ok_player = detail::readPhysicsPosition(g_reader, g_img.base, player, pp);
-        const bool ok_attacker = attacker != nullptr && detail::readPhysicsPosition(g_reader, g_img.base, reinterpret_cast<uintptr_t>(attacker), ap);
-        const bool ok_orient = detail::readPhysicsOrientation(g_reader, g_img.base, player, q);
-        const bool has_pos = ok_player && ok_attacker && ok_orient;
-        // The facing is the yaw of the physics quaternion itself (live-measured: with the player facing the attacker the dot is +0.91..+0.99).
-        // g_steve_yaw_offset only turns the Steve model, whose own forward axis differs: adding it here makes the shield guard the back.
-        const float yaw = has_pos ? eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) : 0.f;
+        const ShieldVerdict sv = EvaluateShield(player, reinterpret_cast<uintptr_t>(attacker));
         Log("SHIELD-DIAG: hit dmg=%d attacker=%p reads player=%d attacker=%d orient=%d pp=(%.2f %.2f %.2f) ap=(%.2f %.2f %.2f) yaw=%.3f dot=%.3f need>=%.3f",
-            dmg, attacker, ok_player ? 1 : 0, ok_attacker ? 1 : 0, ok_orient ? 1 : 0, pp[0], pp[1], pp[2], ap[0], ap[1], ap[2], yaw,
-            has_pos ? eldenring::shield::frontDot(pp, yaw, ap) : 0.f, eldenring::shield::kBlockMinDot);
+            dmg, attacker, sv.ok_player ? 1 : 0, sv.ok_attacker ? 1 : 0, sv.ok_orient ? 1 : 0, sv.pp[0], sv.pp[1], sv.pp[2], sv.ap[0], sv.ap[1], sv.ap[2], sv.yaw,
+            sv.dot, eldenring::shield::kBlockMinDot);
         LogHitGeometry("SHIELD-GEOM", attacker, player, ctx);
-        if (eldenring::shield::shieldBlocksHit(attacker != nullptr, has_pos, pp, yaw, ap)) {
+        if (sv.blocks) {
             eraudio::Play("item.shield.block");
             SafeWrite32(reinterpret_cast<uintptr_t>(ctx) + layout::kHitDamage, 0);
             // ctx+0x264 == 0: only the HP change is applied, no flinch (layout::kHitEnableReaction, REVERSE 37). The knockback and the animation ids
@@ -1370,6 +1386,50 @@ uint64_t ProcessDamageDetour(void* module, void* attacker, uint8_t* ctx, uint32_
         }
     }
     return r;
+}
+
+// The engine's own block (REVERSE 38, bytes checked): DamageDriver 0x140449D30 asks GuardCheck 0x140480EF0 whether the hit is guarded; `true` sets
+// ctx+0x267 |= 0x10 and jumps over 0x140447810 and ProcessDamageContext: no damage, no flinch, and no stamina (that is deducted inside the real
+// GuardCheck, which we do not run). The first argument is the attacker's action module, whose +8 is the attacker's ChrIns; the second is the victim.
+using GuardCheckFn = bool (*)(void* attacker_module, void* victim_chr, uint32_t atk_attr, uint8_t def_type, uint8_t break_flag);
+GuardCheckFn g_guardcheck_orig = nullptr;
+std::atomic<uint64_t> g_guard_sound_ms{0};
+
+bool GuardCheckDetour(void* attacker_module, void* victim_chr, uint32_t atk_attr, uint8_t def_type, uint8_t break_flag) {
+    const uintptr_t victim = reinterpret_cast<uintptr_t>(victim_chr);
+    if (g_shield_blocking.load(std::memory_order_relaxed) && victim != 0 && victim == PlayerChrPtr()) {
+        uint64_t attacker_chr = 0;
+        if (attacker_module != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(attacker_module) + 8, &attacker_chr, sizeof(attacker_chr));
+        const ShieldVerdict sv = EvaluateShield(victim, static_cast<uintptr_t>(attacker_chr));
+        Log("SHIELD-GUARD: attacker=%p reads player=%d attacker=%d orient=%d dot=%.3f need>=%.3f -> %s", reinterpret_cast<void*>(attacker_chr), sv.ok_player ? 1 : 0,
+            sv.ok_attacker ? 1 : 0, sv.ok_orient ? 1 : 0, sv.dot, eldenring::shield::kBlockMinDot, sv.blocks ? "BLOCKED by the engine path" : "not blocked");
+        if (sv.blocks) {
+            const uint64_t now = GetTickCount64();
+            if (now - g_guard_sound_ms.load(std::memory_order_relaxed) > 150) { // the engine may ask more than once per hit
+                g_guard_sound_ms.store(now, std::memory_order_relaxed);
+                eraudio::Play("item.shield.block");
+            }
+            return true;
+        }
+    }
+    return g_guardcheck_orig(attacker_module, victim_chr, atk_attr, def_type, break_flag);
+}
+
+// The damage module's vfunc[7] dispatches the knockback from ctx+0xFC (0x140444BEA, call 0x140480630) before DamageDriver runs, so a blocked hit has
+// already pushed the player by the time any later hook sees it. The same shield verdict zeroes the impulse here first.
+using DamageVfunc7Fn = void (*)(void* damage_module, void* attacker, uint8_t* ctx, uint8_t a4);
+DamageVfunc7Fn g_vfunc7_orig = nullptr;
+
+void DamageVfunc7Detour(void* damage_module, void* attacker, uint8_t* ctx, uint8_t a4) {
+    if (g_shield_blocking.load(std::memory_order_relaxed) && damage_module != nullptr && ctx != nullptr) {
+        uint64_t victim = 0;
+        const uintptr_t player = PlayerChrPtr();
+        if (player != 0 && SafeCopy(reinterpret_cast<uintptr_t>(damage_module) + 8, &victim, sizeof(victim)) && victim == player &&
+            EvaluateShield(player, reinterpret_cast<uintptr_t>(attacker)).blocks) {
+            SafeWrite32(reinterpret_cast<uintptr_t>(ctx) + layout::kHitKnockbackIn, 0); // 0.0f: no push
+        }
+    }
+    g_vfunc7_orig(damage_module, attacker, ctx, a4);
 }
 
 void DrainOnce(uintptr_t updating_data_module) {
@@ -3301,6 +3361,29 @@ void SetupDamage() {
         g_pdc_hooked.store(true);
         Log("damage: ProcessDamageContext hooked at %p (RVA 0x%llX): final damage is replaced for our own hits", reinterpret_cast<void*>(pdc),
             static_cast<unsigned long long>(pdc - g_img.base));
+    }
+    if (FileExists(g_game_dir + "mc_er_noguardhook.txt")) {
+        Log("shield: mc_er_noguardhook.txt present, the engine block path and the knockback fix are off (the damage hook still zeroes blocked hits)");
+    } else {
+        uintptr_t guard = 0, vf7 = 0;
+        if (!LocateByPrefix(g_img, sigs::kGuardCheck, guard)) {
+            Log("shield: GuardCheck signature not unique, blocked hits are only zeroed in the damage hook");
+        } else if (MH_CreateHook(reinterpret_cast<void*>(guard), reinterpret_cast<void*>(&GuardCheckDetour), reinterpret_cast<void**>(&g_guardcheck_orig)) != MH_OK ||
+                   MH_EnableHook(reinterpret_cast<void*>(guard)) != MH_OK) {
+            Log("shield: hooking GuardCheck at %p failed", reinterpret_cast<void*>(guard));
+        } else {
+            Log("shield: GuardCheck hooked at %p (RVA 0x%llX): a blocked hit takes the engine's own guard path", reinterpret_cast<void*>(guard),
+                static_cast<unsigned long long>(guard - g_img.base));
+        }
+        if (!LocateByPrefix(g_img, sigs::kDamageVfunc7, vf7)) {
+            Log("shield: damage vfunc[7] signature not unique, a blocked hit still pushes the player");
+        } else if (MH_CreateHook(reinterpret_cast<void*>(vf7), reinterpret_cast<void*>(&DamageVfunc7Detour), reinterpret_cast<void**>(&g_vfunc7_orig)) != MH_OK ||
+                   MH_EnableHook(reinterpret_cast<void*>(vf7)) != MH_OK) {
+            Log("shield: hooking the damage vfunc[7] at %p failed", reinterpret_cast<void*>(vf7));
+        } else {
+            Log("shield: damage vfunc[7] hooked at %p (RVA 0x%llX): a blocked hit does not push the player", reinterpret_cast<void*>(vf7),
+                static_cast<unsigned long long>(vf7 - g_img.base));
+        }
     }
     {
         uintptr_t rcc = 0;
