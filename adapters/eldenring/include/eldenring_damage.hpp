@@ -153,6 +153,7 @@ struct DrainContext {
     uintptr_t updating_data_module{0};
     bool require_victim_updating{true};
     const HitTemplate* hit_template{nullptr};
+    bool allow_neutral{false}; // when true, non-Friend neutral entities/animals can take damage
     DamageInvoker invoke;
     // Optional: false = something static is in the way. Called on the game thread right before the hit, with the player's
     // and the victim's standing points (game metres).
@@ -269,7 +270,12 @@ private:
             !rd.read(victim + layout::kTeamTypeInChrIns, &victim_team, 1)) {
             return DamageOutcome::VictimGone;
         }
-        if (readTeamRelation(rd, base, player_team, victim_team) != TeamRelation::Hostile) return DamageOutcome::NotHostile;
+        const TeamRelation rel = readTeamRelation(rd, base, player_team, victim_team);
+        if (rel != TeamRelation::Hostile) {
+            if (!ctx.allow_neutral || rel == TeamRelation::Friend) {
+                return DamageOutcome::NotHostile;
+            }
+        }
 
         float pos[3];
         if (!detail::readPhysicsPosition(rd, base, victim, pos)) return DamageOutcome::VictimGone;

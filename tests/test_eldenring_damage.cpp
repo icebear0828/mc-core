@@ -216,6 +216,23 @@ TEST(EldenRingDamage, RefusesDeadNeutralAndWrongClassVictims) {
     EXPECT_TRUE(calls.empty());
 }
 
+TEST(EldenRingDamage, AppliesDamageToNeutralEntitiesWhenAllowNeutralIsTrue) {
+    Mem m = makeWorld();
+    const HitTemplate t = makeTemplate();
+    std::vector<Call> calls;
+    DamageQueue q;
+    // neutral team 30
+    m.put<int32_t>(kEnemy + 0x2000 + layout::kDataHp, 100);
+    m.put<uint8_t>(kEnemy + layout::kTeamTypeInChrIns, 30);
+    q.enqueue(kEnemy, 50, 10);
+    DrainContext c = baseCtx(m, t, calls);
+    c.allow_neutral = true;
+    auto r = q.drain(c);
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_EQ(r[0].outcome, DamageOutcome::Applied);
+    EXPECT_EQ(calls.size(), 1u);
+}
+
 TEST(EldenRingDamage, RefusesGoneVictimsAndBadInputs) {
     Mem m = makeWorld();
     const HitTemplate t = makeTemplate();

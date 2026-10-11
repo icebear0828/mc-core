@@ -274,7 +274,7 @@ std::atomic<float> g_kb_force{-1.f}; // mc_er_steve.txt: kb_force (>= 0 override
 std::atomic<uint32_t> g_hide_slots{0xFFFFFFFFu}; // bit n = part slot n of the native model (mc_er_steve.txt: hide_slots)
 std::atomic<uint32_t> g_hide_mask2{1};         // bits cleared in disp_flags2 (+0x24)
 float g_steve_yaw_offset = 3.14159265f; // the orientation quaternion at PhysicsModule+0x50 faces opposite to the model forward (user verified live, 180 deg)
-std::atomic<bool> g_require_victim_updating{true};
+std::atomic<bool> g_require_victim_updating{false};
 DamageQueue g_queue;
 
 // Attack rules come from mc::CombatEngine; hits are applied through g_queue, so this port only exists to build the engine.
@@ -1284,6 +1284,7 @@ void DrainOnce(uintptr_t updating_data_module) {
     c.updating_data_module = updating_data_module;
     c.require_victim_updating = g_require_victim_updating.load();
     c.hit_template = g_template ? &*g_template : nullptr;
+    c.allow_neutral = true;
     if (g_los_enabled.load()) c.line_of_sight = PlayerCanSee;
     c.max_per_drain = 1;
     c.expire_after_ticks = 60 * 5;
@@ -3282,8 +3283,9 @@ void SetupDamage() {
                 static_cast<unsigned long long>(ray - g_img.base), los::kStaticGeometryFilter);
         }
     }
-    // mc_er_anyvictim.txt: do not wait for the victim to be the entity being updated (lower latency, small race risk).
-    g_require_victim_updating.store(!FileExists(g_game_dir + "mc_er_anyvictim.txt"));
+    // mc_er_require_victim.txt: wait for the victim to be the entity being updated (higher latency, zero race risk).
+    // By default false: immediately drain on the game thread without waiting for victim-specific update tick.
+    g_require_victim_updating.store(FileExists(g_game_dir + "mc_er_require_victim.txt"));
     g_damage_enabled.store(true);
     Log("damage: enabled; ClampHP hooked at %p (RVA 0x%llX); press F8 to hit the nearest hostile enemy (require_victim_updating=%d)", reinterpret_cast<void*>(clamp),
         static_cast<unsigned long long>(clamp - g_img.base), g_require_victim_updating.load() ? 1 : 0);
