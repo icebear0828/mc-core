@@ -36,7 +36,7 @@ inline const mc::hud::HudUV* uvForItem(mc::ItemId item) {
         case ItemId::BowPulling0: return &mc::hud::kUV_ITEM_BOW_PULLING_0;
         case ItemId::BowPulling1: return &mc::hud::kUV_ITEM_BOW_PULLING_1;
         case ItemId::BowPulling2: return &mc::hud::kUV_ITEM_BOW_PULLING_2;
-        case ItemId::Shield: return &mc::hud::kUV_ITEM_TOTEM_OF_UNDYING; // fallback icon for shield
+        case ItemId::Shield: return &mc::hud::kUV_ITEM_SHIELD;
         default: return nullptr;
     }
 }

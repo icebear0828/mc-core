@@ -261,11 +261,13 @@ HUD_KEYS = [
     "block_dirt", "block_stone", "block_tnt_top", "block_tnt_side", "block_tnt_bottom",
     "heart_container_blinking", "heart_full_blinking", "heart_half_blinking", "xp_bar_background", "xp_bar_progress",
     "item_zombie_spawn_egg", "item_bow_pulling_0", "item_bow_pulling_1", "item_bow_pulling_2",
+    "hotbar_offhand_left", "item_shield",
 ]
 HUD_SIZES = {
     "heart_absorb_full": (9, 9), "heart_absorb_half": (9, 9), "particle_crit": (8, 8), "particle_damage": (8, 8),
     **{f"particle_sweep_{i}": (32, 32) for i in range(8)},
     "crosshair": (15, 15), "hotbar": (182, 22), "hotbar_selection": (24, 23),
+    "hotbar_offhand_left": (29, 24),
     "heart_container": (9, 9), "heart_full": (9, 9), "heart_half": (9, 9),
     "hunger_container": (9, 9), "hunger_full": (9, 9), "hunger_half": (9, 9),
     "container_top": (176, 71), "container_bottom": (176, 96),
@@ -319,6 +321,8 @@ def _sprite_colors():
         "gui/sprites/hud/heart/half_blinking.png": _solid((9, 9), (67, 68, 69, 255)),
         "gui/sprites/hud/experience_bar_background.png": _solid((182, 5), (70, 71, 72, 255)),
         "gui/sprites/hud/experience_bar_progress.png": _solid((182, 5), (73, 74, 75, 255)),
+        "gui/sprites/hud/hotbar_offhand_left.png": _solid((29, 24), (80, 81, 82, 255)),
+        "gui/sprites/container/slot/shield.png": _solid((16, 16), (83, 84, 85, 255)),
     }
 
 
@@ -507,6 +511,19 @@ def test_blinking_hearts_and_the_experience_bar_are_copied(tmp_path):
     for key, color in expect.items():
         region = _hud_region(atlas, uv[key])
         assert {region.getpixel((x, y)) for x in range(region.width) for y in range(region.height)} == {color}, key
+
+
+def test_offhand_slot_and_shield_icon_copied(tmp_path):
+    from extract_mc_assets import build_hud_atlas
+
+    atlas, uv = build_hud_atlas(_hud_jar(tmp_path / "client.jar"))
+    offhand = _hud_region(atlas, uv["hotbar_offhand_left"])
+    assert offhand.size == (29, 24)
+    assert {offhand.getpixel((x, y)) for x in range(29) for y in range(24)} == {(80, 81, 82, 255)}
+
+    shield = _hud_region(atlas, uv["item_shield"])
+    assert shield.size == (16, 16)
+    assert {shield.getpixel((x, y)) for x in range(16) for y in range(16)} == {(83, 84, 85, 255)}
 
 
 def test_committed_generated_headers_match_the_tool_output(tmp_path):

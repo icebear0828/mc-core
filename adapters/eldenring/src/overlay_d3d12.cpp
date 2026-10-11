@@ -654,15 +654,21 @@ void DrawHud(const HudState& hud, float w, float h) {
         sprite(layout.hotbar(), mc::hud::kUV_HOTBAR);
         for (int i = 0; i < 9; ++i) DrawItemIcon(dl, atlas, layout.item(i), static_cast<mc::ItemId>(hud.hotbar[i]));
         sprite(layout.selection(std::clamp(hud.selected_slot, 0, 8)), mc::hud::kUV_HOTBAR_SELECTION);
-        // Offhand slot (to the left of hotbar, vanilla 29px offset, size 22x22)
+        // Offhand slot (to the left of hotbar, vanilla hotbar_offhand_left sprite)
         const float gs = static_cast<float>(layout.scale());
         if (hud.offhand_item != 0) {
-            const mc::HudRect off_box{layout.hotbar().x - 29.f * gs, layout.hotbar().y, 22.f * gs, 22.f * gs};
-            // draw slot background rectangle
-            dl->AddRectFilled({off_box.x, off_box.y}, {off_box.x + off_box.w, off_box.y + off_box.h}, IM_COL32(0, 0, 0, 120), 2.f * gs);
-            dl->AddRect({off_box.x, off_box.y}, {off_box.x + off_box.w, off_box.y + off_box.h}, IM_COL32(255, 255, 255, 100), 2.f * gs);
-            const mc::HudRect off_icon{off_box.x + 3.f * gs, off_box.y + 3.f * gs, 16.f * gs, 16.f * gs};
-            DrawItemIcon(dl, atlas, off_icon, static_cast<mc::ItemId>(hud.offhand_item));
+            sprite(layout.offhand(), mc::hud::kUV_HOTBAR_OFFHAND_LEFT);
+            DrawItemIcon(dl, atlas, layout.offhandItem(), static_cast<mc::ItemId>(hud.offhand_item));
+            if (hud.offhand_count > 1) {
+                char cnt[8];
+                snprintf(cnt, sizeof(cnt), "%u", static_cast<unsigned>(hud.offhand_count));
+                const float fs = layout.textSize();
+                const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, 1e9f, 0.f, cnt);
+                const mc::HudRect r = layout.offhandItem();
+                const ImVec2 pos{r.x + 17.f * gs - sz.x, r.y + 9.f * gs};
+                dl->AddText(ImGui::GetFont(), fs, {pos.x + gs, pos.y + gs}, IM_COL32(40, 40, 40, 255), cnt);
+                dl->AddText(ImGui::GetFont(), fs, pos, IM_COL32(255, 255, 255, 255), cnt);
+            }
         }
         // The hearts as Gui.renderHearts draws them: the container blinks after a hit and the hearts just lost show white, one heart jumps
         // while Regeneration is active, and the row shakes at two hearts or less.

@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
+#include "eldenring_hudtex.hpp"
 #include "eldenring_shield.hpp"
+#include "mc/hud_layout.hpp"
 #include "mc/inventory.hpp"
 
 using namespace eldenring::shield;
@@ -83,4 +85,35 @@ TEST(EldenRingShield, ShieldBlocksOnlyFrontHitsWithKnownAttackerAndPositions) {
     EXPECT_FALSE(shieldBlocksHit(false, true, player_pos, 0.f, front));
     // unreadable positions must not turn into invulnerability
     EXPECT_FALSE(shieldBlocksHit(true, false, player_pos, 0.f, front));
+}
+
+TEST(EldenRingShield, ShieldItemHasDedicatedUVDistinctFromTotem) {
+    const auto* shield_uv = eldenring::render::uvForItem(mc::ItemId::Shield);
+    const auto* totem_uv = eldenring::render::uvForItem(mc::ItemId::TotemOfUndying);
+    ASSERT_NE(shield_uv, nullptr);
+    ASSERT_NE(totem_uv, nullptr);
+    EXPECT_FLOAT_EQ(shield_uv->u0, mc::hud::kUV_ITEM_SHIELD.u0);
+    EXPECT_FLOAT_EQ(shield_uv->v0, mc::hud::kUV_ITEM_SHIELD.v0);
+    EXPECT_NE(shield_uv, totem_uv);
+}
+
+TEST(EldenRingShield, OffhandLayoutCoordinatesAlignSeamlessly) {
+    const mc::HudLayout layout(1920.f, 1080.f);
+    const mc::HudRect off = layout.offhand();
+    const mc::HudRect bar = layout.hotbar();
+    const mc::HudRect item = layout.offhandItem();
+    const float s = static_cast<float>(layout.scale());
+
+    // Seamless connection: offhand right edge equals hotbar left edge
+    EXPECT_FLOAT_EQ(off.x + off.w, bar.x);
+    // Y offset: 1px above hotbar
+    EXPECT_FLOAT_EQ(off.y, bar.y - 1.0f * s);
+    EXPECT_FLOAT_EQ(off.w, 29.0f * s);
+    EXPECT_FLOAT_EQ(off.h, 24.0f * s);
+
+    // Item centered inside offhand
+    EXPECT_FLOAT_EQ(item.x, off.x + 3.0f * s);
+    EXPECT_FLOAT_EQ(item.y, off.y + 4.0f * s);
+    EXPECT_FLOAT_EQ(item.w, 16.0f * s);
+    EXPECT_FLOAT_EQ(item.h, 16.0f * s);
 }

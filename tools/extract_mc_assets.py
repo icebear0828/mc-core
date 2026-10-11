@@ -509,6 +509,16 @@ def create_canonical_sprite(name: str) -> Image.Image:
                     img.putpixel((x, y), (255, 255, 255, 255))
         return img
 
+    if name == "hotbar_offhand_left":
+        img = Image.new("RGBA", (29, 24), (0, 0, 0, 0))
+        for x in range(29):
+            for y in range(24):
+                if x == 0 or x == 28 or y == 0 or y == 23:
+                    img.putpixel((x, y), (200, 200, 200, 255))
+                else:
+                    img.putpixel((x, y), (40, 40, 40, 200))
+        return img
+
     # 16x16 Items
     img = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
     if name == "item_diamond_sword":
@@ -578,6 +588,13 @@ def create_canonical_sprite(name: str) -> Image.Image:
             for x in range(5, 11):
                 img.putpixel((x, y), c_gld)
         img.putpixel((6, 5), c_emr); img.putpixel((9, 5), c_emr)
+    elif name == "item_shield":
+        c_iron, c_wood = (180, 180, 180, 255), (140, 95, 50, 255)
+        for y in range(2, 14):
+            for x in range(3, 13):
+                if y <= 9 or (x - 7.5)**2 + (y - 9)**2 <= 18:
+                    edge = (x in (3, 12) or y == 2)
+                    img.putpixel((x, y), c_iron if edge else c_wood)
     elif name.startswith("block_") and name in _PLACEHOLDER_ITEM_COLORS:  # a flat coloured square
         img = Image.new("RGBA", (16, 16), _PLACEHOLDER_ITEM_COLORS[name] + (255,))
     elif name in _PLACEHOLDER_ITEM_COLORS:  # a plain coloured disc; the real icon replaces it when a client.jar is given
@@ -654,6 +671,9 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("item_bow_pulling_0", (16, 16)),
     ("item_bow_pulling_1", (16, 16)),
     ("item_bow_pulling_2", (16, 16)),
+    # the offhand hotbar slot and the shield item icon
+    ("hotbar_offhand_left", (29, 24)),
+    ("item_shield", (16, 16)),
 ]
 
 _JAR_HUD_SPRITES = {
@@ -666,6 +686,8 @@ _JAR_HUD_SPRITES = {
     "hunger_half": "gui/sprites/hud/food_half.png",
     "hotbar": "gui/sprites/hud/hotbar.png",
     "hotbar_selection": "gui/sprites/hud/hotbar_selection.png",
+    "hotbar_offhand_left": "gui/sprites/hud/hotbar_offhand_left.png",
+    "item_shield": "gui/sprites/container/slot/shield.png",
     "item_diamond_sword": "item/diamond_sword.png",
     "item_diamond_pickaxe": "item/diamond_pickaxe.png",
     "item_golden_apple": "item/golden_apple.png",
