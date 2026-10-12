@@ -312,17 +312,28 @@ TEST(EldenRingHead, TurnsNoFurtherThanFiftyDegreesOffTheBody) {
     EXPECT_NEAR(std::fabs(in.look_yaw), 50.f * kDeg, 1e-3);
 }
 
-TEST(EldenRingHead, CameraDirectlyOppositeKeepsTheLastSideInsteadOfSnapping) {
+TEST(EldenRingHead, FacesCameraWhenDirectlyOppositeAndTracksMouseSmoothly) {
     HeadTracker h;
     mc::SteveAnimInput in;
-    mc::Vec3 d = lookDir(60.f, 0.f); // settled on the +X side
+    // Character body faces +Z (body_yaw = 0). Camera is placed directly in front facing -Z (lookDir(180, 0)).
+    // Steve should look directly at the front camera (|look_yaw| ~ 0), not be twisted at 50 degrees!
+    mc::Vec3 d = lookDir(180.f, 0.f);
     h.update(d.x, d.y, d.z, 0.f, in);
-    const float side = in.look_yaw;
-    for (float deg : {175.f, -175.f, 180.f, -178.f}) {
-        d = lookDir(deg, 0.f);
-        h.update(d.x, d.y, d.z, 0.f, in);
-        EXPECT_NEAR(in.look_yaw, side < 0.f ? -50.f * kDeg : 50.f * kDeg, 1e-3) << "deg=" << deg;
-    }
+    EXPECT_NEAR(in.look_yaw, 0.f, 0.05f) << "When facing camera directly, head should be looking forward at camera!";
+
+    // Camera moves to screen left (world +X, e.g. 165 degrees facing back toward player).
+    // Steve's face must track to screen left (world +X), NOT twist to screen right!
+    d = lookDir(165.f, 0.f);
+    h.update(d.x, d.y, d.z, 0.f, in);
+    const mc::Vec3 face_left = renderedFace(in, 0.f);
+    EXPECT_GT(face_left.x, 0.02f) << "When camera is at screen left, Steve must look towards screen left (+X)!";
+
+    // Camera moves to screen right (world -X, e.g. -165 degrees).
+    // Steve's face must track to screen right (world -X), NOT twist to screen left!
+    d = lookDir(-165.f, 0.f);
+    h.update(d.x, d.y, d.z, 0.f, in);
+    const mc::Vec3 face_right = renderedFace(in, 0.f);
+    EXPECT_LT(face_right.x, -0.02f) << "When camera is at screen right, Steve must look towards screen right (-X)!";
 }
 
 TEST(EldenRingHead, DegenerateCameraVectorLeavesTheHeadStraight) {
@@ -346,32 +357,44 @@ TEST(EldenRingInventoryPreview, SteveFacesCameraAndHeadFollowsMouseAcrossScreen)
     auto getHeadForward = [](float ly, float lp, float by) -> mc::Vec3 {
         const auto parts = computePreviewPartMatrices(ly, lp, by);
         const auto& head_m = parts[static_cast<size_t>(mc::StevePart::Head)];
-        // Canonical forward is (1, 0, 0), which in game basis maps to +Z.
-        // Transform (0, 0, 1) and (0, 0, 0) by head_m to obtain world forward vector.
         const mc::Vec3 p0 = mc::rig::transformPoint(head_m, {0.f, 0.f, 0.f});
         const mc::Vec3 p1 = mc::rig::transformPoint(head_m, {0.f, 0.f, 1.f});
         return {p1.x - p0.x, p1.y - p0.y, p1.z - p0.z};
     };
 
-    // 1. Center mouse: Steve MUST face the camera (Z > 0.8), NEVER back facing the camera (Z < 0)
+    // Helper: compute transformed torso/body forward vector in world coordinates
+    auto getBodyForward = [](float ly, float lp, float by) -> mc::Vec3 {
+        const auto parts = computePreviewPartMatrices(ly, lp, by);
+        const auto& body_m = parts[static_cast<size_t>(mc::StevePart::Body)];
+        const mc::Vec3 p0 = mc::rig::transformPoint(body_m, {0.f, 0.f, 0.f});
+        const mc::Vec3 p1 = mc::rig::transformPoint(body_m, {0.f, 0.f, 1.f});
+        return {p1.x - p0.x, p1.y - p0.y, p1.z - p0.z};
+    };
+
+    // 1. Center mouse: Steve MUST face the camera (Z > 0.8), body yaw positive showing right hand in front
     computePreviewTracking(cx, cy, cx, cy, scale, look_yaw, look_pitch, body_yaw);
     EXPECT_NEAR(look_yaw, 0.f, 1e-4f);
     EXPECT_NEAR(look_pitch, 0.f, 1e-4f);
-    EXPECT_LT(std::fabs(body_yaw), 35.f * eldenring::preview::kDeg) << "Body must be facing the camera near 0 rad, not 180 rad!";
+    EXPECT_GT(body_yaw, 5.f * eldenring::preview::kDeg) << "Default body yaw should slightly angle positive (showing sword hand forward)";
+    EXPECT_LT(body_yaw, 35.f * eldenring::preview::kDeg);
     const mc::Vec3 center_fwd = getHeadForward(look_yaw, look_pitch, body_yaw);
     EXPECT_GT(center_fwd.z, 0.8f) << "Steve must face forward towards the camera at +Z, not turn away!";
 
-    // 2. Mouse to the right (mx > cx): Steve looks towards screen right (world -X)
+    // 2. Mouse to the right (mx > cx): Head and body MUST both turn towards screen right (world -X)
     computePreviewTracking(cx + 100.f, cy, cx, cy, scale, look_yaw, look_pitch, body_yaw);
     const mc::Vec3 right_fwd = getHeadForward(look_yaw, look_pitch, body_yaw);
+    const mc::Vec3 right_body = getBodyForward(look_yaw, look_pitch, body_yaw);
     EXPECT_LT(right_fwd.x, -0.1f) << "Looking towards screen right corresponds to world -X";
+    EXPECT_LT(right_body.x, getBodyForward(0.f, 0.f, kDefaultPreviewBodyYaw).x) << "Body must also turn right with head, not twist opposite!";
     EXPECT_GT(right_fwd.z, 0.5f);
 
-    // 3. Mouse to the left (mx < cx): Steve looks towards screen left (world +X)
+    // 3. Mouse to the left (mx < cx): Head and body MUST both turn towards screen left (world +X)
     computePreviewTracking(cx - 100.f, cy, cx, cy, scale, look_yaw, look_pitch, body_yaw);
     const mc::Vec3 left_fwd = getHeadForward(look_yaw, look_pitch, body_yaw);
+    const mc::Vec3 left_body = getBodyForward(look_yaw, look_pitch, body_yaw);
     EXPECT_GT(left_fwd.x, 0.1f) << "Looking towards screen left corresponds to world +X";
-    EXPECT_GT(left_fwd.z, 0.5f);
+    EXPECT_GT(left_body.x, getBodyForward(0.f, 0.f, kDefaultPreviewBodyYaw).x) << "Body must also turn left with head, not twist opposite!";
+    EXPECT_GT(left_fwd.z, 0.35f);
 
     // 4. Mouse above (my < cy): Steve tilts head up (world +Y)
     computePreviewTracking(cx, cy - 100.f, cx, cy, scale, look_yaw, look_pitch, body_yaw);

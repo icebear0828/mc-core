@@ -116,10 +116,12 @@ public:
         constexpr float kPi = 3.14159265f;
         float offset = std::atan2(cam_x, cam_z) - body_yaw; // host: positive turns toward +X
         offset = std::remainder(offset, 2.f * kPi);
-        const bool behind = std::fabs(offset) > kPi - 0.4f;
-        if (!behind) side_ = offset < 0.f ? -1.f : 1.f;
-        const float host_yaw = behind ? side_ * kMaxYaw : std::clamp(offset, -kMaxYaw, kMaxYaw);
-        in.look_yaw = -host_yaw;
+        // When camera is in the front hemisphere (character facing camera, e.g. selfie view):
+        // character looks towards the front camera smoothly rather than being clamped backwards.
+        const float host_yaw = std::cos(offset) >= 0.f
+                                   ? offset
+                                   : -(offset - (offset > 0.f ? kPi : -kPi));
+        in.look_yaw = -std::clamp(host_yaw, -kMaxYaw, kMaxYaw);
         in.look_pitch = -std::asin(std::clamp(cam_y / len, -1.f, 1.f));
     }
 

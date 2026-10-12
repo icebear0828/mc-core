@@ -12,8 +12,8 @@ namespace eldenring::preview {
 inline constexpr float kPi = 3.14159265f;
 inline constexpr float kDeg = kPi / 180.f;
 
-// Default preview body orientation: slight angle to reveal 3D side profile facing camera (-15 degrees)
-inline constexpr float kDefaultPreviewBodyYaw = -15.f * kDeg;
+// Default preview body orientation: slight angle to reveal 3D side profile facing camera (18 degrees, revealing right arm/sword slightly forward)
+inline constexpr float kDefaultPreviewBodyYaw = 18.f * kDeg;
 
 // Angular limits matching vanilla Minecraft inventory screen
 inline constexpr float kMaxPreviewHeadYaw = 50.f * kDeg;   // ~0.8727 rad
@@ -39,8 +39,8 @@ inline void computePreviewTracking(float mouse_x, float mouse_y, float center_x,
     // When mouse is above center (my < cy -> dy < 0 -> g < 0), head tilts up (look_pitch < 0).
     out_head_pitch = std::clamp(g * 0.5f, -kMaxPreviewHeadPitch, kMaxPreviewHeadPitch);
 
-    // Body slightly tracks the head around the default forward-facing pose
-    out_body_yaw = kDefaultPreviewBodyYaw + f * 0.25f;
+    // Body slightly tracks the head around the default forward-facing pose with identical lateral sign
+    out_body_yaw = kDefaultPreviewBodyYaw - f * 0.25f;
 }
 
 // Builds the view-projection matrix for the 3D inventory preview
