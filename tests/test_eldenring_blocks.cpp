@@ -325,4 +325,53 @@ TEST(Blocks, SneakEdgeProtectionCatchesPlayerWhoSteppedIntoAirFromPreviousBlock)
     EXPECT_TRUE(supportedByBlock(g, clamped_feet)); // Restored to safe ledge!
 }
 
+TEST(Blocks, AnchorBlocksPositionOnlyWhenNoMovementKeysPressed) {
+    // When any movement key is pressed (W, A, S, D, Space), anchor must be released (return false)
+    EXPECT_FALSE(shouldAnchorBlockPosition(true, true, false, false, false, false)); // W
+    EXPECT_FALSE(shouldAnchorBlockPosition(true, false, true, false, false, false)); // A
+    EXPECT_FALSE(shouldAnchorBlockPosition(true, false, false, true, false, false)); // S
+    EXPECT_FALSE(shouldAnchorBlockPosition(true, false, false, false, true, false)); // D
+    EXPECT_FALSE(shouldAnchorBlockPosition(true, false, false, false, false, true)); // Space
+
+    // When supported and no keys pressed in foreground, should anchor (return true)
+    EXPECT_TRUE(shouldAnchorBlockPosition(true, false, false, false, false, false));
+
+    // When not supported by block, must not anchor regardless of keys
+    EXPECT_FALSE(shouldAnchorBlockPosition(false, false, false, false, false, false));
+}
+
+TEST(Blocks, StepBlockMovementAdvancesPositionWhenMoving) {
+    const float feet[3] = {10.0f, 1.0f, 20.0f};
+    const float dir[2] = {1.0f, 0.0f}; // moving +X
+    const float speed = 4.317f;
+    const float dt = 0.0166667f;
+
+    float out_feet[3] = {};
+    const bool moved = stepBlockMovement(feet, dir, speed, dt, true, out_feet);
+    EXPECT_TRUE(moved);
+    EXPECT_NEAR(out_feet[0], 10.0f + speed * dt, 1e-4f);
+    EXPECT_FLOAT_EQ(out_feet[1], 1.0f);
+    EXPECT_FLOAT_EQ(out_feet[2], 20.0f);
+}
+
+TEST(Blocks, StepBlockMovementStationaryWhenNoDirectionOrZeroSpeed) {
+    const float feet[3] = {10.0f, 1.0f, 20.0f};
+    const float dir[2] = {0.0f, 0.0f};
+    float out_feet[3] = {};
+    const bool moved = stepBlockMovement(feet, dir, 4.317f, 0.0166667f, false, out_feet);
+    EXPECT_FALSE(moved);
+    EXPECT_FLOAT_EQ(out_feet[0], 10.0f);
+    EXPECT_FLOAT_EQ(out_feet[1], 1.0f);
+    EXPECT_FLOAT_EQ(out_feet[2], 20.0f);
+}
+
+TEST(Blocks, ShouldSyncPhysicsProxyTriggersOnMovedOrDirectDriven) {
+    EXPECT_TRUE(shouldSyncPhysicsProxy(true, false, false, false)); // collision pushed
+    EXPECT_TRUE(shouldSyncPhysicsProxy(false, true, false, false)); // direct driven
+    EXPECT_TRUE(shouldSyncPhysicsProxy(false, false, true, false)); // sneak clamped
+    EXPECT_TRUE(shouldSyncPhysicsProxy(false, false, false, true)); // pinned
+    EXPECT_FALSE(shouldSyncPhysicsProxy(false, false, false, false));
+}
+
+
 

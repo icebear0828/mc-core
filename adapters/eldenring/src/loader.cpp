@@ -2130,6 +2130,8 @@ void BlocksCollisionStep() {
         // +0x70 is the position, +0x80 the previous frame's: both move, so the push is not seen as speed
         WriteBytesSafe(module + layout::kPhysicsPosition, r.feet, sizeof(r.feet));
         WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, r.feet, sizeof(r.feet));
+        const uint8_t one = 1;
+        WriteBytesSafe(module + layout::kPhysicsProxySyncRequest, &one, sizeof(one));
     }
     const bool fg = GameInForeground();
     const bool sneaking = fg && ((GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0);
@@ -2148,20 +2150,23 @@ void BlocksCollisionStep() {
     static bool anchored = false;
     static float anchor[2] = {};
     bool pinned = false;
-    if (supported && g_block_anchor.load(std::memory_order_relaxed)) {
-        const bool keys = fg && ((GetAsyncKeyState('W') | GetAsyncKeyState('A') | GetAsyncKeyState('S') | GetAsyncKeyState('D') | GetAsyncKeyState(VK_SPACE)) & 0x8000) != 0;
-        if (keys) {
-            anchored = false;
-        } else {
-            if (!anchored) {
-                anchor[0] = final_feet[0];
-                anchor[1] = final_feet[2];
-                anchored = true;
-            }
-            final_feet[0] = anchor[0];
-            final_feet[2] = anchor[1];
-            pinned = true;
+    const bool key_w = fg && ((GetAsyncKeyState('W') & 0x8000) != 0);
+    const bool key_a = fg && ((GetAsyncKeyState('A') & 0x8000) != 0);
+    const bool key_s = fg && ((GetAsyncKeyState('S') & 0x8000) != 0);
+    const bool key_d = fg && ((GetAsyncKeyState('D') & 0x8000) != 0);
+    const bool key_space = fg && ((GetAsyncKeyState(VK_SPACE) & 0x8000) != 0);
+    const bool should_anchor = g_block_anchor.load(std::memory_order_relaxed) &&
+                               blocks::shouldAnchorBlockPosition(supported, key_w, key_a, key_s, key_d, key_space);
+
+    if (should_anchor) {
+        if (!anchored) {
+            anchor[0] = final_feet[0];
+            anchor[1] = final_feet[2];
+            anchored = true;
         }
+        final_feet[0] = anchor[0];
+        final_feet[2] = anchor[1];
+        pinned = true;
     } else {
         anchored = false;
     }
@@ -2199,6 +2204,8 @@ void BlocksCollisionStep() {
     if (module != 0 && (pinned || sneak_clamped)) {
         WriteBytesSafe(module + layout::kPhysicsPosition, final_feet, sizeof(final_feet));
         WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, final_feet, sizeof(final_feet));
+        const uint8_t one = 1;
+        WriteBytesSafe(module + layout::kPhysicsProxySyncRequest, &one, sizeof(one));
     }
     if (module != 0 && supported && g_block_drive.load(std::memory_order_relaxed)) DriveVelocityFromKeys(module, pinned);
     if (supported) {
@@ -2228,6 +2235,7 @@ void BlocksCollisionStep() {
     }
     static uint64_t last_diag_ms = 0;
     const uint64_t now = GetTickCount64();
+
     if (supported && now - last_diag_ms >= 1000) {
         last_diag_ms = now;
         const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
@@ -2427,6 +2435,8 @@ void McJumpStep() {
 
     WriteBytesSafe(module + layout::kPhysicsPosition, pos, sizeof(pos));
     WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, pos, sizeof(pos));
+    const uint8_t one_b = 1;
+    WriteBytesSafe(module + layout::kPhysicsProxySyncRequest, &one_b, sizeof(one_b));
 
     // Drive horizontal velocity from controller momentum:
     float vx = res.vx;

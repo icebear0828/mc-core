@@ -351,5 +351,46 @@ inline SneakMoveResult clampSneakEdgeMovement(
     return res;
 }
 
+// Determines whether the player's position on placed blocks should be pinned to the anchor.
+// Pinning is ONLY active when the player is supported by a block, the game window is in foreground,
+// and no movement keys (W, A, S, D, Space) are held.
+inline bool shouldAnchorBlockPosition(
+    bool supported,
+    bool key_w,
+    bool key_a,
+    bool key_s,
+    bool key_d,
+    bool key_space) {
+    if (!supported) return false;
+    const bool has_movement_input = key_w || key_a || key_s || key_d || key_space;
+    return !has_movement_input;
+}
+
+// Directly steps horizontal position on blocks when moving, matching the Direct Drive approach.
+inline bool stepBlockMovement(
+    const float current_feet[3],
+    const float dir[2],
+    float speed,
+    float dt,
+    bool moving,
+    float out_feet[3]) {
+    out_feet[0] = current_feet[0];
+    out_feet[1] = current_feet[1];
+    out_feet[2] = current_feet[2];
+    if (!moving || speed <= 0.f || dt <= 0.f) return false;
+    out_feet[0] += dir[0] * speed * dt;
+    out_feet[2] += dir[1] * speed * dt;
+    return true;
+}
+
+// Checks if Havok character proxy synchronization (+0x91 = 1) is needed.
+inline bool shouldSyncPhysicsProxy(
+    bool collision_moved,
+    bool direct_driven,
+    bool sneak_clamped,
+    bool pinned) {
+    return collision_moved || direct_driven || sneak_clamped || pinned;
+}
+
 } // namespace eldenring::blocks
 
