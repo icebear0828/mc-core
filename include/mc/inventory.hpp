@@ -48,6 +48,7 @@ public:
                                           {ItemId::Bow, 1},          {ItemId::Elytra, 1},          {ItemId::TotemOfUndying, 1}};
         for (int i = 0; i < kHotbar; ++i) inv.slots_[static_cast<size_t>(i)] = start[i];
         inv.slots_[kHotbar] = {ItemId::Arrow, 64}; // the hotbar is full: the arrows for the bow wait in the first main slot
+        inv.slots_[kHotbar + 1] = {ItemId::FlintAndSteel, 1}; // flint and steel in the backpack
         inv.offhand_ = {ItemId::Shield, 1};        // the offhand starts with a shield ready for defense
         return inv;
     }

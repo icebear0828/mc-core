@@ -2135,6 +2135,28 @@ bool TryBreakBlock() {
     if (!g_blocks_enabled.load()) return false;
     const BlockTarget t = FindBlockTarget();
     if (!t.have || !t.on_block) return false;
+
+    mc::ItemId held;
+    {
+        std::lock_guard<std::mutex> g(g_melee_mutex);
+        held = g_melee.heldItem();
+    }
+    if (held == mc::ItemId::FlintAndSteel) {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        if (g_blocks.get(t.cell) == mc::BlockId::Tnt) {
+            if (g_tnt_mgr.tryIgniteBlock(g_blocks, t.cell)) {
+                SendBlockMesh();
+                eraudio::Play("entity.tnt.primed", 1.0f);
+                Log("tnt: ignited TNT with flint and steel at (%d %d %d)", t.cell.x, t.cell.y, t.cell.z);
+                {
+                    std::lock_guard<std::mutex> g2(g_melee_mutex);
+                    g_melee.startSwing();
+                }
+                return true;
+            }
+        }
+    }
+
     mc::BlockId id;
     {
         std::lock_guard<std::mutex> g(g_blocks_mutex);

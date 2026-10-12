@@ -187,6 +187,13 @@ TEST(Inventory, TheStartInventoryHasArrowsSoTheBowCanBeDrawnInSurvival) {
     EXPECT_EQ(inv.slot(9).count, 63u);
 }
 
+TEST(Inventory, TheStartInventoryHasFlintAndSteelInMainBackpack) {
+    Inventory inv = Inventory::withDefaultHotbar();
+    EXPECT_EQ(inv.slot(10).item, ItemId::FlintAndSteel); // second main slot
+    EXPECT_EQ(inv.slot(10).count, 1u);
+    EXPECT_TRUE(inv.has(ItemId::FlintAndSteel));
+}
+
 TEST(Inventory, ReturnCursorPutsTheStackBackAndDropsWhatDoesNotFit) {
     Inventory inv;
     inv.setSlot(0, {ItemId::BlockDirt, 10});
