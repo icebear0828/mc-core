@@ -3886,6 +3886,16 @@ void SetupOverlay() {
                 Log("skin: %s missing or not 64x64, the figure stays flat grey-brown (extract it with tools/extract_mc_assets.py --export-steve-skin)", skin_path.c_str());
             }
         }
+        {
+            std::vector<uint8_t> bb_data;
+            const std::string anim_path = g_game_dir + "mods\\mc_adapter\\steve.bbmodel";
+            if (ReadFileAll(anim_path, bb_data) && !bb_data.empty()) {
+                erov::SetSteveAnimationModel(std::string_view(reinterpret_cast<const char*>(bb_data.data()), bb_data.size()));
+                Log("anim: loaded custom Blockbench animation model %s (%zu bytes)", anim_path.c_str(), bb_data.size());
+            } else {
+                Log("anim: %s not found, using procedural SteveAnimator sine curves", anim_path.c_str());
+            }
+        }
         {   // the mobs' model: a Bedrock geometry file copied by extract_mc_assets.py --export-entity-models (assets/source/models/entities/zombie.geo.json)
             std::vector<uint8_t> json;
             const std::string model_path = g_game_dir + "mods\\mc_adapter\\models\\zombie.geo.json";

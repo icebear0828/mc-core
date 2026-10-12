@@ -81,6 +81,8 @@ struct SteveConfig {
     float scene_height{0.f}; // 0: use the back buffer height for the projection aspect
 };
 void SetSteveConfig(const SteveConfig& cfg);
+// Data-driven Steve animations from Blockbench .bbmodel JSON: call before/after overlay creation.
+void SetSteveAnimationModel(std::string_view bbmodel_json);
 // The Steve skin (RGBA8, 64x64) the loader decoded; call before the overlay is created. Without it the figure is flat grey-brown.
 void SetSteveSkin(const uint8_t* rgba, unsigned width, unsigned height);
 // The HUD atlas (RGBA8, 256x256, the locally extracted mc_hud_atlas.png); call before the overlay is created. Without it the HUD
