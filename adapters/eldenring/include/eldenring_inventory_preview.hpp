@@ -12,8 +12,8 @@ namespace eldenring::preview {
 inline constexpr float kPi = 3.14159265f;
 inline constexpr float kDeg = kPi / 180.f;
 
-// Default preview body orientation: slight angle to reveal 3D side profile facing camera (165 degrees)
-inline constexpr float kDefaultPreviewBodyYaw = 165.f * kDeg;
+// Default preview body orientation: slight angle to reveal 3D side profile facing camera (-15 degrees)
+inline constexpr float kDefaultPreviewBodyYaw = -15.f * kDeg;
 
 // Angular limits matching vanilla Minecraft inventory screen
 inline constexpr float kMaxPreviewHeadYaw = 50.f * kDeg;   // ~0.8727 rad
@@ -23,24 +23,23 @@ inline constexpr float kMaxPreviewHeadPitch = 30.f * kDeg; // ~0.5236 rad
 inline void computePreviewTracking(float mouse_x, float mouse_y, float center_x, float center_y, float scale,
                                    float& out_head_yaw, float& out_head_pitch, float& out_body_yaw) {
     const float s = std::max(1.f, scale);
-    const float dx = center_x - mouse_x;
-    const float dy = center_y - mouse_y;
+    const float dx = mouse_x - center_x;
+    const float dy = mouse_y - center_y;
 
-    // Vanilla formula: atan(dx / 40.0), atan(dy / 40.0)
+    // Relative mouse angle offsets
     const float f = std::atan(dx / (40.f * s));
     const float g = std::atan(dy / (40.f * s));
 
-    // Vanilla yaw & pitch:
-    // head yaw in Minecraft is relative to body. Canonical coordinate: look_yaw > 0 turns left (counter-clockwise).
-    // When mouse is on the right (mx > cx -> dx < 0 -> f < 0), looking right means look_yaw < 0.
-    // Factor ~0.7f produces ~40 degrees tracking at extreme mouse position.
+    // When mouse is on screen right (mx > cx -> dx > 0 -> f > 0), head turns to screen right.
+    // Canonical coordinate: look_yaw > 0 rotates head towards host -X (screen right).
     out_head_yaw = std::clamp(f * 0.7f, -kMaxPreviewHeadYaw, kMaxPreviewHeadYaw);
 
     // In Minecraft animator convention, look_pitch > 0 is looking DOWN.
-    // When mouse is above (my < cy -> dy > 0 -> g > 0), looking UP means look_pitch < 0.
-    out_head_pitch = std::clamp(-g * 0.5f, -kMaxPreviewHeadPitch, kMaxPreviewHeadPitch);
+    // When mouse is below center (my > cy -> dy > 0 -> g > 0), head tilts down (look_pitch > 0).
+    // When mouse is above center (my < cy -> dy < 0 -> g < 0), head tilts up (look_pitch < 0).
+    out_head_pitch = std::clamp(g * 0.5f, -kMaxPreviewHeadPitch, kMaxPreviewHeadPitch);
 
-    // Body slightly tracks the head (vanilla yBodyRot has f * 20.0f)
+    // Body slightly tracks the head around the default forward-facing pose
     out_body_yaw = kDefaultPreviewBodyYaw + f * 0.25f;
 }
 

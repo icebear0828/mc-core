@@ -336,37 +336,52 @@ TEST(EldenRingHead, DegenerateCameraVectorLeavesTheHeadStraight) {
     EXPECT_EQ(in.look_pitch, 0.f);
 }
 
-TEST(EldenRingInventoryPreview, MouseTrackingComputesYawAndPitchWithinLimits) {
+TEST(EldenRingInventoryPreview, SteveFacesCameraAndHeadFollowsMouseAcrossScreen) {
     using namespace eldenring::preview;
     // Preview centered at (200, 200) with GUI scale 2.0
     const float cx = 200.f, cy = 200.f, scale = 2.0f;
     float look_yaw = 0.f, look_pitch = 0.f, body_yaw = 0.f;
 
-    // Center mouse
+    // Helper: compute transformed head forward vector in world coordinates
+    auto getHeadForward = [](float ly, float lp, float by) -> mc::Vec3 {
+        const auto parts = computePreviewPartMatrices(ly, lp, by);
+        const auto& head_m = parts[static_cast<size_t>(mc::StevePart::Head)];
+        // Canonical forward is (1, 0, 0), which in game basis maps to +Z.
+        // Transform (0, 0, 1) and (0, 0, 0) by head_m to obtain world forward vector.
+        const mc::Vec3 p0 = mc::rig::transformPoint(head_m, {0.f, 0.f, 0.f});
+        const mc::Vec3 p1 = mc::rig::transformPoint(head_m, {0.f, 0.f, 1.f});
+        return {p1.x - p0.x, p1.y - p0.y, p1.z - p0.z};
+    };
+
+    // 1. Center mouse: Steve MUST face the camera (Z > 0.8), NEVER back facing the camera (Z < 0)
     computePreviewTracking(cx, cy, cx, cy, scale, look_yaw, look_pitch, body_yaw);
     EXPECT_NEAR(look_yaw, 0.f, 1e-4f);
     EXPECT_NEAR(look_pitch, 0.f, 1e-4f);
-    EXPECT_NEAR(body_yaw, kDefaultPreviewBodyYaw, 1e-4f);
+    EXPECT_LT(std::fabs(body_yaw), 35.f * eldenring::preview::kDeg) << "Body must be facing the camera near 0 rad, not 180 rad!";
+    const mc::Vec3 center_fwd = getHeadForward(look_yaw, look_pitch, body_yaw);
+    EXPECT_GT(center_fwd.z, 0.8f) << "Steve must face forward towards the camera at +Z, not turn away!";
 
-    // Mouse to the right (mx > cx) -> head turns right (look_yaw < 0 in MC canonical coordinate, facing right)
+    // 2. Mouse to the right (mx > cx): Steve looks towards screen right (world -X)
     computePreviewTracking(cx + 100.f, cy, cx, cy, scale, look_yaw, look_pitch, body_yaw);
-    EXPECT_LT(look_yaw, 0.f);
-    EXPECT_GE(look_yaw, -kMaxPreviewHeadYaw);
+    const mc::Vec3 right_fwd = getHeadForward(look_yaw, look_pitch, body_yaw);
+    EXPECT_LT(right_fwd.x, -0.1f) << "Looking towards screen right corresponds to world -X";
+    EXPECT_GT(right_fwd.z, 0.5f);
 
-    // Mouse to the left (mx < cx) -> head turns left (look_yaw > 0)
+    // 3. Mouse to the left (mx < cx): Steve looks towards screen left (world +X)
     computePreviewTracking(cx - 100.f, cy, cx, cy, scale, look_yaw, look_pitch, body_yaw);
-    EXPECT_GT(look_yaw, 0.f);
-    EXPECT_LE(look_yaw, kMaxPreviewHeadYaw);
+    const mc::Vec3 left_fwd = getHeadForward(look_yaw, look_pitch, body_yaw);
+    EXPECT_GT(left_fwd.x, 0.1f) << "Looking towards screen left corresponds to world +X";
+    EXPECT_GT(left_fwd.z, 0.5f);
 
-    // Mouse above (my < cy) -> looks up (look_pitch < 0 in MC convention where positive is down)
+    // 4. Mouse above (my < cy): Steve tilts head up (world +Y)
     computePreviewTracking(cx, cy - 100.f, cx, cy, scale, look_yaw, look_pitch, body_yaw);
-    EXPECT_LT(look_pitch, 0.f);
-    EXPECT_GE(look_pitch, -kMaxPreviewHeadPitch);
+    const mc::Vec3 up_fwd = getHeadForward(look_yaw, look_pitch, body_yaw);
+    EXPECT_GT(up_fwd.y, 0.1f) << "Looking towards screen up corresponds to world +Y";
 
-    // Mouse below (my > cy) -> looks down (look_pitch > 0)
+    // 5. Mouse below (my > cy): Steve tilts head down (world -Y)
     computePreviewTracking(cx, cy + 100.f, cx, cy, scale, look_yaw, look_pitch, body_yaw);
-    EXPECT_GT(look_pitch, 0.f);
-    EXPECT_LE(look_pitch, kMaxPreviewHeadPitch);
+    const mc::Vec3 down_fwd = getHeadForward(look_yaw, look_pitch, body_yaw);
+    EXPECT_LT(down_fwd.y, -0.1f) << "Looking towards screen down corresponds to world -Y";
 }
 
 TEST(EldenRingInventoryPreview, CameraMatrixProjectsSteveInsideViewportNDC) {
