@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 #include "eldenring_blocks.hpp"
+#include "eldenring_blockmesh.hpp"
+#include "eldenring_pick.hpp"
 #include "eldenring_tnt.hpp"
 
 using namespace eldenring::blocks;
@@ -176,4 +178,60 @@ TEST(EldenRingTnt, ExplosionDamageIntentQueueDrainsAndComputesDamageCorrectly) {
     int far_dmg = computeTntExplosionDamage(drained[0].center, far_pos, drained[0].radius, drained[0].max_damage);
     EXPECT_EQ(far_dmg, 0);
 }
+
+TEST(EldenRingTnt, InteractionRulesFlintAndSteelIgnitesOnlyOnRightClick) {
+    // Flint and steel right click on TNT: should ignite TNT
+    EXPECT_TRUE(shouldIgniteTntOnRightClick(mc::ItemId::FlintAndSteel, mc::BlockId::Tnt));
+
+    // Right click on TNT with another block or empty hand: MUST NOT ignite TNT!
+    EXPECT_FALSE(shouldIgniteTntOnRightClick(mc::ItemId::BlockTnt, mc::BlockId::Tnt));
+    EXPECT_FALSE(shouldIgniteTntOnRightClick(mc::ItemId::BlockDirt, mc::BlockId::Tnt));
+    EXPECT_FALSE(shouldIgniteTntOnRightClick(mc::ItemId::BlockStone, mc::BlockId::Tnt));
+    EXPECT_FALSE(shouldIgniteTntOnRightClick(mc::ItemId::None, mc::BlockId::Tnt));
+
+    // Right click on non-TNT with flint and steel: does not ignite TNT
+    EXPECT_FALSE(shouldIgniteTntOnRightClick(mc::ItemId::FlintAndSteel, mc::BlockId::Dirt));
+    EXPECT_FALSE(shouldIgniteTntOnRightClick(mc::ItemId::FlintAndSteel, mc::BlockId::Air));
+
+    // Left click on TNT or any block: NEVER ignites TNT, it breaks the block
+    EXPECT_FALSE(shouldIgniteTntOnLeftClick(mc::ItemId::FlintAndSteel, mc::BlockId::Tnt));
+    EXPECT_TRUE(shouldBreakBlockOnLeftClick(mc::BlockId::Tnt));
+    EXPECT_TRUE(shouldBreakBlockOnLeftClick(mc::BlockId::Dirt));
+}
+
+TEST(EldenRingTnt, PrimedTntMaintainsFloorHeightWhenIgnitedOnGround) {
+    BlockGrid grid;
+    grid.place({5, 7, 5}, mc::BlockId::Tnt);
+
+    ErTntManager tnt_mgr;
+    EXPECT_TRUE(tnt_mgr.tryIgniteBlock(grid, {5, 7, 5}));
+
+    // Step physics for 2 seconds (simulating falling under gravity)
+    for (int i = 0; i < 40; ++i) {
+        tnt_mgr.step(0.05f, grid);
+    }
+
+    ASSERT_EQ(tnt_mgr.activeCount(), 1u);
+    const auto* primed = tnt_mgr.getTnt(0);
+    ASSERT_NE(primed, nullptr);
+    // MUST NOT fall into void! Floor height is y=7.0
+    EXPECT_GE(primed->pos[1], 7.0f);
+    EXPECT_FLOAT_EQ(primed->pos[1], 7.0f);
+}
+
+TEST(EldenRingTnt, BuildBlockMeshIncludesActivePrimedTntCubes) {
+    BlockGrid grid; // empty block grid
+    EXPECT_EQ(grid.count(), 0u);
+
+    std::vector<std::array<float, 3>> primed_tnt_positions = {
+        {10.5f, 5.0f, 20.5f}
+    };
+
+    auto mesh = buildBlockMesh(grid, primed_tnt_positions);
+    // A single cube has 6 faces * 4 vertices = 24 vertices, 6 * 6 indices = 36 indices
+    EXPECT_EQ(mesh.vertices.size(), 24u);
+    EXPECT_EQ(mesh.indices.size(), 36u);
+}
+
+
 

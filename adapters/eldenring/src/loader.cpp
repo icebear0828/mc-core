@@ -853,6 +853,13 @@ uint64_t __fastcall CameraStepDetour(uint64_t self, float dt, uint64_t chr, uint
     McJumpStep();
     ShadowGroundStep();
     RestoreCamKeep();
+    {
+        const uintptr_t p = PlayerChrPtr();
+        float p_feet[3] = {};
+        if (p != 0 && detail::readPhysicsPosition(g_reader, g_img.base, p, p_feet)) {
+            EnemiesBlockCollisionStep(p_feet);
+        }
+    }
     uintptr_t addr = 0;
     float before[3] = {};
     // Only the player's ChrCam is touched; the function runs for any camera object.
@@ -1702,10 +1709,17 @@ void* __fastcall ClampDetour(void* module, int32_t value) {
     return r;
 }
 
+std::mutex g_cached_enemies_mutex;
+std::vector<EnemyInfo> g_cached_enemies;
+
 void EnqueueNearestHostile() {
     std::vector<EnemyInfo> list;
-    if (!enumerateEnemies(g_reader, g_img.base, list, 2000)) {
-        Log("F8: enumeration failed (not in a world, or the position jumped)");
+    {
+        std::lock_guard<std::mutex> g(g_cached_enemies_mutex);
+        list = g_cached_enemies;
+    }
+    if (list.empty()) {
+        Log("F8: no cached enemies (or not in world)");
         return;
     }
     const EnemyInfo* best = nullptr;
@@ -1740,7 +1754,11 @@ void ClickAttack(float charged) {
         return;
     }
     std::vector<EnemyInfo> list;
-    if (!enumerateEnemies(g_reader, g_img.base, list, 2000)) return;
+    {
+        std::lock_guard<std::mutex> g(g_cached_enemies_mutex);
+        list = g_cached_enemies;
+    }
+    if (list.empty()) return;
     const float cam_rel[3] = {cam.position[0] - feet[0], cam.position[1] - feet[1], cam.position[2] - feet[2]};
     const int idx = pickTarget(cam_rel, cam.forward, list);
     if (idx < 0) {
@@ -1972,11 +1990,15 @@ bool BlocksPresent() {
     return g_blocks.count() != 0;
 }
 
+static size_t g_tnt_prev_active_count = 0;
+
 void SendBlockMesh() {
     std::lock_guard<std::mutex> g(g_blocks_mutex);
-    if (g_blocks_sent_version == g_blocks.version()) return;
+    const size_t tnt_count = g_tnt_mgr.activeCount();
+    if (g_blocks_sent_version == g_blocks.version() && tnt_count == 0 && g_tnt_prev_active_count == 0) return;
     g_blocks_sent_version = g_blocks.version();
-    erov::SetBlockMesh(blocks::buildBlockMesh(g_blocks));
+    g_tnt_prev_active_count = tnt_count;
+    erov::SetBlockMesh(blocks::buildBlockMesh(g_blocks, g_tnt_mgr.activePositions()));
 }
 
 struct BlockTarget {
@@ -2093,20 +2115,20 @@ bool TryIgniteTnt() {
     const BlockTarget t = FindBlockTarget();
     if (!t.have || !t.on_block) return false;
 
-    bool is_tnt = false;
+    mc::BlockId target_block = mc::BlockId::Air;
     {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
-        is_tnt = (g_blocks.get(t.cell) == mc::BlockId::Tnt);
+        target_block = g_blocks.get(t.cell);
     }
-    if (!is_tnt) return false;
+    if (target_block != mc::BlockId::Tnt) return false;
 
     mc::ItemId held = mc::ItemId::None;
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
         held = g_melee.heldItem();
     }
-    // If holding another placeable block and not holding FlintAndSteel, let placement handle it
-    if (held != mc::ItemId::FlintAndSteel && (held == mc::ItemId::BlockDirt || held == mc::ItemId::BlockStone)) {
+    // Only FlintAndSteel ignites TNT on right click (Minecraft rule)
+    if (!eldenring::tnt::shouldIgniteTntOnRightClick(held, target_block)) {
         return false;
     }
 
@@ -2163,31 +2185,11 @@ bool TryBreakBlock() {
     const BlockTarget t = FindBlockTarget();
     if (!t.have || !t.on_block) return false;
 
-    mc::ItemId held;
-    {
-        std::lock_guard<std::mutex> g(g_melee_mutex);
-        held = g_melee.heldItem();
-    }
-    if (held == mc::ItemId::FlintAndSteel) {
-        std::lock_guard<std::mutex> g(g_blocks_mutex);
-        if (g_blocks.get(t.cell) == mc::BlockId::Tnt) {
-            if (g_tnt_mgr.tryIgniteBlock(g_blocks, t.cell)) {
-                SendBlockMesh();
-                eraudio::Play("entity.tnt.primed", 1.0f);
-                Log("tnt: ignited TNT with flint and steel at (%d %d %d)", t.cell.x, t.cell.y, t.cell.z);
-                {
-                    std::lock_guard<std::mutex> g2(g_melee_mutex);
-                    g_melee.startSwing();
-                }
-                return true;
-            }
-        }
-    }
-
     mc::BlockId id;
     {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         id = g_blocks.get(t.cell);
+        if (id == mc::BlockId::Air) return false;
         if (!g_blocks.remove(t.cell)) return false;
     }
     {
@@ -2645,7 +2647,16 @@ void ProcessTntExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies) {
 void EnemiesBlockCollisionStep(const float player_feet[3]) {
     if (!g_mc_mode.load(std::memory_order_relaxed)) return;
     std::vector<EnemyInfo> enemies;
-    if (!enumerateEnemies(g_reader, g_img.base, enemies, 128)) return;
+    if (!enumerateEnemies(g_reader, g_img.base, enemies, 128)) {
+        std::lock_guard<std::mutex> g(g_cached_enemies_mutex);
+        g_cached_enemies.clear();
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> g(g_cached_enemies_mutex);
+        g_cached_enemies = enemies;
+    }
 
     // Process queued TNT explosion damage intents on game thread!
     ProcessTntExplosionsOnGameThread(enemies);
@@ -2710,7 +2721,14 @@ void EnemiesBlockCollisionStep(const float player_feet[3]) {
 
 void TriggerTntExplosionEffectsAndDamage(const float center[3]) {
     eraudio::Play("entity.generic.explode", 1.0f);
-    erov::SpawnFx(erov::FxKind::Crit, center, 16);
+    for (float dx : {-1.0f, 0.0f, 1.0f}) {
+        for (float dz : {-1.0f, 0.0f, 1.0f}) {
+            const float ppos[3] = {center[0] + dx * 0.8f, center[1] + 0.5f, center[2] + dz * 0.8f};
+            erov::SpawnFx(erov::FxKind::Crit, ppos, 16);
+        }
+    }
+    erov::SpawnFx(erov::FxKind::Sweep, center, 0);
+    Log("tnt: DETONATION at (%.2f %.2f %.2f)!", center[0], center[1], center[2]);
 
     // Queue for safe game thread processing (EnemiesBlockCollisionStep)
     {
@@ -3259,6 +3277,7 @@ void McFlagsStep() {
 }
 
 DWORD WINAPI KeyThread(LPVOID) {
+    Log("key: KeyThread started (tid %lu)", GetCurrentThreadId());
     bool prev8 = false, prev6 = false, prev7 = false;
     bool prev_digit[MeleeController::kSlots] = {};
     bool prev_space = false;

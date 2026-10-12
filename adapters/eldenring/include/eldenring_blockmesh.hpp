@@ -24,7 +24,7 @@ inline FaceCells faceCellsFor(mc::BlockId id) {
     }
 }
 
-inline mc::rig::RigMesh buildBlockMesh(const BlockGrid& grid) {
+inline mc::rig::RigMesh buildBlockMesh(const BlockGrid& grid, const std::vector<std::array<float, 3>>& primed_tnt_positions = {}) {
     mc::rig::RigMesh mesh;
     // a quarter of a source pixel inside the cell: the 4x enlarged atlas never samples a neighbouring sprite
     const float inset = 0.25f / static_cast<float>(mc::hud::kHudAtlasWidth);
@@ -58,6 +58,27 @@ inline mc::rig::RigMesh buildBlockMesh(const BlockGrid& grid) {
             for (uint16_t i : kQuad) mesh.indices.push_back(static_cast<uint16_t>(base + i));
         }
     }
+
+    // Render active primed TNT cubes so they remain fully visible while ticking down!
+    for (const auto& tpos : primed_tnt_positions) {
+        const FaceCells cells = faceCellsFor(mc::BlockId::Tnt);
+        const float bx = tpos[0] - 0.5f;
+        const float by = tpos[1];
+        const float bz = tpos[2] - 0.5f;
+        for (const Face& f : faces) {
+            if (mesh.vertices.size() + 4 > 65535) return mesh;
+            const mc::hud::HudUV& uv = f.kind == 0 ? *cells.top : (f.kind == 1 ? *cells.side : *cells.bottom);
+            const float us[4] = {uv.u0 + inset, uv.u1 - inset, uv.u1 - inset, uv.u0 + inset};
+            const float vs[4] = {uv.v0 + inset, uv.v0 + inset, uv.v1 - inset, uv.v1 - inset};
+            const uint16_t base = static_cast<uint16_t>(mesh.vertices.size());
+            for (int k = 0; k < 4; ++k) {
+                mesh.vertices.push_back({bx + f.c[k][0], by + f.c[k][1], bz + f.c[k][2], us[k], vs[k]});
+            }
+            static constexpr uint16_t kQuad[6] = {0, 1, 2, 0, 2, 3};
+            for (uint16_t i : kQuad) mesh.indices.push_back(static_cast<uint16_t>(base + i));
+        }
+    }
+
     return mesh;
 }
 

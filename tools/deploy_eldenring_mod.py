@@ -21,14 +21,24 @@ def get_sha256(file_path: Path) -> str:
 
 def main():
     root = Path(__file__).resolve().parent.parent
-    src_dll = root / "build" / "bin" / "eldenring" / "dinput8.dll"
+    candidate_paths = [
+        root / "build" / "bin" / "RelWithDebInfo" / "dinput8.dll",
+        root / "build" / "bin" / "Release" / "dinput8.dll",
+        root / "build" / "bin" / "eldenring" / "dinput8.dll",
+    ]
+    src_dll = None
+    for p in candidate_paths:
+        if p.is_file():
+            src_dll = p
+            break
+
     game_dir = Path(r"C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game")
     target_dll = game_dir / "dinput8.dll"
 
     print("=== Elden Ring Mod Deployment & Integrity Verification ===")
 
-    if not src_dll.is_file():
-        print(f"[ERROR] Source DLL not found: {src_dll}")
+    if not src_dll:
+        print("[ERROR] No valid source DLL found in build candidates!")
         sys.exit(1)
 
     src_hash = get_sha256(src_dll)

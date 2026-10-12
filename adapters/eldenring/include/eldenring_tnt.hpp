@@ -15,6 +15,7 @@ struct ErPrimedTnt {
     float pos[3]{0.f, 0.f, 0.f};
     float vel[3]{0.f, 0.f, 0.f};
     float fuse{4.0f};
+    float floor_y{-1e9f};
     bool exploded{false};
 
     [[nodiscard]] float flashFrequency() const noexcept {
@@ -64,6 +65,25 @@ inline int computeTntExplosionDamage(const float center[3], const float target_p
     const float exposure = 1.0f - (dist / radius);
     return static_cast<int>(std::round(max_damage * exposure));
 }
+
+// Minecraft interaction rules for TNT and Flint & Steel:
+// 1. Right-click on a TNT block with Flint & Steel ignites it. Any other held item does NOT ignite it.
+inline bool shouldIgniteTntOnRightClick(mc::ItemId held, mc::BlockId target_block) noexcept {
+    return (held == mc::ItemId::FlintAndSteel) && (target_block == mc::BlockId::Tnt);
+}
+
+// 2. Left-click NEVER ignites TNT (left-click is attack or mine/break block).
+inline bool shouldIgniteTntOnLeftClick(mc::ItemId held, mc::BlockId target_block) noexcept {
+    (void)held;
+    (void)target_block;
+    return false;
+}
+
+// 3. Left-click on any solid placed block breaks it.
+inline bool shouldBreakBlockOnLeftClick(mc::BlockId target_block) noexcept {
+    return target_block != mc::BlockId::Air;
+}
+
 
 class ErExplosionIntentQueue {
 public:
@@ -119,6 +139,7 @@ public:
         }
 
         tnt.fuse = fuse;
+        tnt.floor_y = static_cast<float>(cell.y);
         tnt.exploded = false;
 
         active_tnt_.push_back(tnt);
@@ -136,6 +157,17 @@ public:
 
     [[nodiscard]] const std::vector<ErPrimedTnt>& all() const noexcept {
         return active_tnt_;
+    }
+
+    [[nodiscard]] std::vector<std::array<float, 3>> activePositions() const {
+        std::vector<std::array<float, 3>> out;
+        out.reserve(active_tnt_.size());
+        for (const auto& t : active_tnt_) {
+            if (t.fuse > 0.0f && !t.exploded) {
+                out.push_back({t.pos[0], t.pos[1], t.pos[2]});
+            }
+        }
+        return out;
     }
 
     ErExplosionResult detonateAt(blocks::BlockGrid& grid, const float center[3], float power = 4.0f, float radius = 4.5f, bool add_to_active = true) {
@@ -215,6 +247,7 @@ public:
             primed.vel[1] = chain_vel[1];
             primed.vel[2] = chain_vel[2];
             primed.fuse = 1.0f;
+            primed.floor_y = static_cast<float>(c.y);
             primed.exploded = false;
 
             result.chain_primed_tnt.push_back(primed);
@@ -307,16 +340,17 @@ public:
             tnt.pos[1] += tnt.vel[1] * dt;
             tnt.pos[2] += tnt.vel[2] * dt;
 
-            // Simple floor contact with block grid
+            // Simple floor contact with block grid or resting floor_y
             blocks::Cell below = blocks::cellOf(tnt.pos[0], tnt.pos[1] - 0.05f, tnt.pos[2]);
+            float min_floor = tnt.floor_y;
             if (grid.get(below) != mc::BlockId::Air) {
-                float block_top = static_cast<float>(below.y + 1);
-                if (tnt.pos[1] <= block_top) {
-                    tnt.pos[1] = block_top;
-                    tnt.vel[0] = 0.0f;
-                    tnt.vel[1] = 0.0f;
-                    tnt.vel[2] = 0.0f;
-                }
+                min_floor = std::max(min_floor, static_cast<float>(below.y + 1));
+            }
+            if (tnt.pos[1] <= min_floor) {
+                tnt.pos[1] = min_floor;
+                tnt.vel[0] = 0.0f;
+                tnt.vel[1] = 0.0f;
+                tnt.vel[2] = 0.0f;
             }
 
             surviving_tnt.push_back(tnt);
