@@ -13,6 +13,7 @@
    - 本地 `main` 分支已硬重置至 commit `6bae2f1`，并强制推送到用户的远程 Fork 仓库：`https://github.com/lindaokeefe472-eng/mc-core`（`git push fork main --force`）。
    - **该分支已完整整合并验证了 PR#12 ~ PR#28（共 15 个分支）**：包含 3D 实体盾牌几何与原版姿态、副手系统与 HUD、原版 MC 平滑跳跃与动量积分、潜行边缘防跌落、瞬间转向、禁用翻滚、敌人物理碰撞与深度遮挡。
    - **完全剔除了 PR#29**（`feat/data-driven-model-animation`），保持代码绝对纯净稳定。
+   - **TNT 放置引爆与范围破坏系统完成并落地**：分支 `feature/tnt-mechanics-and-explosion`，含 `mc::PrimedTnt` 抛物线物理、白闪时钟、方块爆炸抗性阶梯衰减破块、邻近 TNT 连锁短引信殉爆、以及法环宿主敌人/玩家范围伤害与冲量击退，355/355 项 Elden Ring 与 TNT 自动化测试 100% 通过，`dinput8.dll` 已物理部署并备份原文件。
 2. **独立精简 PR（针对上游 `origin/fix/shield-live`）**：
    - 分支：`fix/shield-live-polish`（基于 `origin/fix/shield-live` 切出，仅 1 个 commit `b835060`，28 行增改）。
    - 已推送至：`fork/fix/shield-live-polish`。
