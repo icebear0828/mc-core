@@ -63,6 +63,8 @@ struct SteveState {
     float bow_charge{0.f};      // 0..1 how far the bow is drawn (0 = not drawing): the third-person arms aim
     float bow_ticks{0.f};       // ticks the bow has been drawn (0 = not drawing): the first-person bow pose animates with it
     float speed_mps{0.f};       // horizontal speed, for the walking bob
+    bool crouching{false};      // sneaking (Shift pressed)
+    bool blocking{false};       // holding shield or blocking
     bool on_ground{true};
     bool shadow{false};        // draw the blob shadows under the figure and the summons (mc_er_steve.txt: shadow=1)
     bool ground_valid{false};  // ground_y is the height of the ground under the feet this frame (otherwise the feet's own height is used)
@@ -81,6 +83,8 @@ struct SteveConfig {
     float scene_height{0.f}; // 0: use the back buffer height for the projection aspect
 };
 void SetSteveConfig(const SteveConfig& cfg);
+// Data-driven Steve animations from Blockbench .bbmodel JSON: call before/after overlay creation.
+void SetSteveAnimationModel(std::string_view bbmodel_json);
 // The Steve skin (RGBA8, 64x64) the loader decoded; call before the overlay is created. Without it the figure is flat grey-brown.
 void SetSteveSkin(const uint8_t* rgba, unsigned width, unsigned height);
 // The HUD atlas (RGBA8, 256x256, the locally extracted mc_hud_atlas.png); call before the overlay is created. Without it the HUD

@@ -238,3 +238,155 @@ TEST(Blocks, StandingOnABlockTopCountsAsSupported) {
     EXPECT_FALSE(supportedByBlock(g, beside));
     EXPECT_FALSE(supportedByBlock(g, inside)); // sunk: the push handles this, it is not "standing"
 }
+
+TEST(Blocks, SneakEdgeProtectionAllowsMovementWhenFullySupported) {
+    BlockGrid g;
+    // 3x3 platform at y = 0 (top at y = 1)
+    for (int x = -1; x <= 1; ++x) {
+        for (int z = -1; z <= 1; ++z) {
+            g.place({x, 0, z}, mc::BlockId::Stone);
+        }
+    }
+    const float feet[3] = {0.f, 1.0f, 0.f};
+    const auto res = clampSneakEdgeMovement(g, feet, 0.1f, 0.1f);
+    EXPECT_FALSE(res.clamped_x);
+    EXPECT_FALSE(res.clamped_z);
+    EXPECT_NEAR(res.dx, 0.1f, 1e-4f);
+    EXPECT_NEAR(res.dz, 0.1f, 1e-4f);
+}
+
+TEST(Blocks, SneakEdgeProtectionStopsPlayerAtBlockEdge) {
+    BlockGrid g;
+    // Single block at (0, 0, 0), top at y = 1
+    g.place({0, 0, 0}, mc::BlockId::Stone);
+    const float feet[3] = {0.5f, 1.0f, 0.5f};
+    // Trying to walk +1.0m in X towards the void
+    const auto res = clampSneakEdgeMovement(g, feet, 1.0f, 0.f);
+    EXPECT_TRUE(res.clamped_x);
+    EXPECT_FALSE(res.clamped_z);
+    EXPECT_LT(res.dx, 1.0f);
+    EXPECT_GT(res.dx, 0.f);
+    // The resulting position must still be supported on the block ledge!
+    const float new_feet[3] = {feet[0] + res.dx, feet[1], feet[2] + res.dz};
+    EXPECT_TRUE(supportedByBlock(g, new_feet));
+    // And advancing even 2cm further would fall off
+    const float over_edge[3] = {new_feet[0] + 0.05f, new_feet[1], new_feet[2]};
+    EXPECT_FALSE(supportedByBlock(g, over_edge));
+}
+
+TEST(Blocks, SneakEdgeProtectionSlidesAlongEdgeWhenMovingDiagonally) {
+    BlockGrid g;
+    // 1-block wide bridge along Z: (0, 0, 0), (0, 0, 1), (0, 0, 2)
+    g.place({0, 0, 0}, mc::BlockId::Stone);
+    g.place({0, 0, 1}, mc::BlockId::Stone);
+    g.place({0, 0, 2}, mc::BlockId::Stone);
+
+    const float feet[3] = {0.5f, 1.0f, 0.5f};
+    // Trying to move diagonally (+0.8 in X towards void, +0.3 in Z along bridge)
+    const auto res = clampSneakEdgeMovement(g, feet, 0.8f, 0.3f);
+    EXPECT_TRUE(res.clamped_x);
+    EXPECT_FALSE(res.clamped_z); // Z is unhindered along the bridge
+    EXPECT_NEAR(res.dz, 0.3f, 1e-4f);
+    const float new_feet[3] = {feet[0] + res.dx, feet[1], feet[2] + res.dz};
+    EXPECT_TRUE(supportedByBlock(g, new_feet));
+}
+
+TEST(Blocks, SneakEdgeProtectionDoesNotClampWhenAlreadyInAir) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::Stone);
+    // Player is 5m in the air above the block
+    const float feet[3] = {0.5f, 5.0f, 0.5f};
+    const auto res = clampSneakEdgeMovement(g, feet, 0.5f, -0.5f);
+    EXPECT_FALSE(res.clamped_x);
+    EXPECT_FALSE(res.clamped_z);
+    EXPECT_FLOAT_EQ(res.dx, 0.5f);
+    EXPECT_FLOAT_EQ(res.dz, -0.5f);
+}
+
+TEST(Blocks, SneakEdgeProtectionCatchesPlayerWhoSteppedIntoAirFromPreviousBlock) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::Stone); // Block from [0, 1] x [0, 1], top y = 1
+    // Player was at (0.9, 1.0, 0.5) on the block
+    const float prev[3] = {0.9f, 1.0f, 0.5f};
+    EXPECT_TRUE(supportedByBlock(g, prev));
+
+    // Next frame, Havok moved player by +0.5m in X to (1.4, 1.0, 0.5), which is in empty air!
+    const float over_feet[3] = {1.4f, 1.0f, 0.5f};
+    EXPECT_FALSE(supportedByBlock(g, over_feet)); // stepped off!
+
+    // Clamping movement from prev restores to safe ledge:
+    const float desired_dx = over_feet[0] - prev[0];
+    const float desired_dz = over_feet[2] - prev[2];
+    const auto res = clampSneakEdgeMovement(g, prev, desired_dx, desired_dz);
+    EXPECT_TRUE(res.clamped_x);
+    EXPECT_LT(res.dx, desired_dx);
+
+    const float clamped_feet[3] = {prev[0] + res.dx, prev[1], prev[2] + res.dz};
+    EXPECT_TRUE(supportedByBlock(g, clamped_feet)); // Restored to safe ledge!
+}
+
+TEST(Blocks, AnchorBlocksPositionOnlyWhenNoMovementKeysPressed) {
+    // When any movement key is pressed (W, A, S, D, Space), anchor must be released (return false)
+    EXPECT_FALSE(shouldAnchorBlockPosition(true, true, false, false, false, false)); // W
+    EXPECT_FALSE(shouldAnchorBlockPosition(true, false, true, false, false, false)); // A
+    EXPECT_FALSE(shouldAnchorBlockPosition(true, false, false, true, false, false)); // S
+    EXPECT_FALSE(shouldAnchorBlockPosition(true, false, false, false, true, false)); // D
+    EXPECT_FALSE(shouldAnchorBlockPosition(true, false, false, false, false, true)); // Space
+
+    // When supported and no keys pressed in foreground, should anchor (return true)
+    EXPECT_TRUE(shouldAnchorBlockPosition(true, false, false, false, false, false));
+
+    // When not supported by block, must not anchor regardless of keys
+    EXPECT_FALSE(shouldAnchorBlockPosition(false, false, false, false, false, false));
+}
+
+TEST(Blocks, StepBlockMovementAdvancesPositionWhenMoving) {
+    const float feet[3] = {10.0f, 1.0f, 20.0f};
+    const float dir[2] = {1.0f, 0.0f}; // moving +X
+    const float speed = 4.317f;
+    const float dt = 0.0166667f;
+
+    float out_feet[3] = {};
+    const bool moved = stepBlockMovement(feet, dir, speed, dt, true, out_feet);
+    EXPECT_TRUE(moved);
+    EXPECT_NEAR(out_feet[0], 10.0f + speed * dt, 1e-4f);
+    EXPECT_FLOAT_EQ(out_feet[1], 1.0f);
+    EXPECT_FLOAT_EQ(out_feet[2], 20.0f);
+}
+
+TEST(Blocks, StepBlockMovementStationaryWhenNoDirectionOrZeroSpeed) {
+    const float feet[3] = {10.0f, 1.0f, 20.0f};
+    const float dir[2] = {0.0f, 0.0f};
+    float out_feet[3] = {};
+    const bool moved = stepBlockMovement(feet, dir, 4.317f, 0.0166667f, false, out_feet);
+    EXPECT_FALSE(moved);
+    EXPECT_FLOAT_EQ(out_feet[0], 10.0f);
+    EXPECT_FLOAT_EQ(out_feet[1], 1.0f);
+    EXPECT_FLOAT_EQ(out_feet[2], 20.0f);
+}
+
+TEST(Blocks, ShouldSyncPhysicsProxyTriggersOnMovedOrDirectDriven) {
+    EXPECT_TRUE(shouldSyncPhysicsProxy(true, false, false, false)); // collision pushed
+    EXPECT_TRUE(shouldSyncPhysicsProxy(false, true, false, false)); // direct driven
+    EXPECT_TRUE(shouldSyncPhysicsProxy(false, false, true, false)); // sneak clamped
+    EXPECT_TRUE(shouldSyncPhysicsProxy(false, false, false, true)); // pinned
+    EXPECT_FALSE(shouldSyncPhysicsProxy(false, false, false, false));
+}
+
+TEST(Blocks, StepBlockMovementAdvancesDiagonally) {
+    const float feet[3] = {5.0f, 2.0f, 5.0f};
+    const float dir[2] = {0.7071f, 0.7071f};
+    const float speed = 5.612f; // sprint
+    const float dt = 0.016f;
+
+    float out_feet[3] = {};
+    const bool moved = stepBlockMovement(feet, dir, speed, dt, true, out_feet);
+    EXPECT_TRUE(moved);
+    EXPECT_NEAR(out_feet[0], 5.0f + 0.7071f * speed * dt, 1e-4f);
+    EXPECT_FLOAT_EQ(out_feet[1], 2.0f);
+    EXPECT_NEAR(out_feet[2], 5.0f + 0.7071f * speed * dt, 1e-4f);
+}
+
+
+
+

@@ -29,6 +29,7 @@
 #include "mc/hud_layout.hpp"
 #include "mc/inventory_layout.hpp"
 #include "mc/hud.hpp"
+#include "mc/animation_library.hpp"
 #include "overlay_d3d12.hpp"
 #include "png_wic.hpp"
 #include "steve_renderer_d3d12.hpp"
@@ -89,6 +90,9 @@ std::vector<uint8_t> g_skin_rgba; // decoded by the loader; applied when the ren
 unsigned g_skin_w = 0, g_skin_h = 0;
 SteveRenderer g_steve;
 mc::SteveAnimator g_anim;
+std::mutex g_steve_anim_mutex;
+std::optional<mc::anim::AnimationLibrary> g_steve_anim_lib;
+std::unique_ptr<mc::anim::SteveAnimationStateMachine> g_steve_sm;
 eldenring::render::SteveMotion g_motion;
 eldenring::render::HeadTracker g_head;
 std::mutex g_mob_mutex;
@@ -916,8 +920,20 @@ void RenderFrame(IDXGISwapChain* sc) {
         mc::SteveAnimInput anim_in = g_motion.update(dt, steve.feet, steve.yaw);
         anim_in.swing_progress = steve.swing;
         anim_in.bow_charge = steve.bow_charge;
+        anim_in.is_crouching = steve.crouching;
+        anim_in.is_blocking = steve.blocking;
         g_head.update(steve.cam.forward.x, steve.cam.forward.y, steve.cam.forward.z, steve.yaw, anim_in);
-        g_anim.update(dt, anim_in);
+        mc::SteveAnimator::PartTransforms active_transforms{};
+        {
+            std::lock_guard<std::mutex> g(g_steve_anim_mutex);
+            if (g_steve_sm) {
+                g_steve_sm->update(dt, anim_in);
+                active_transforms = g_steve_sm->getTransforms();
+            } else {
+                g_anim.update(dt, anim_in);
+                active_transforms = g_anim.getTransforms();
+            }
+        }
         if (g_trace_left.load() > 0) {
             g_trace_left.fetch_sub(1);
             char tr[220];
@@ -926,7 +942,7 @@ void RenderFrame(IDXGISwapChain* sc) {
                      anim_in.forward_speed, anim_in.strafe_speed);
             Logf(tr);
         }
-        auto parts = eldenring::render::posedMatrices(g_anim.getTransforms(), {steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw);
+        auto parts = eldenring::render::posedMatrices(active_transforms, {steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw);
         g_death_seconds = steve.dead ? g_death_seconds + dt : 0.f;
         if (g_death_seconds > 0.f) {
             const mc::rig::Mat4 fall = eldenring::render::deathFallMatrix({steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw,
@@ -1305,6 +1321,18 @@ void SetHudAtlas(const uint8_t* rgba, unsigned width, unsigned height) {
     g_atlas_rgba.assign(rgba, rgba + static_cast<size_t>(width) * height * 4);
     g_atlas_w = width;
     g_atlas_h = height;
+}
+
+void SetSteveAnimationModel(std::string_view bbmodel_json) {
+    auto lib = mc::anim::AnimationLibrary::fromBbmodelJson(bbmodel_json);
+    if (!lib) {
+        if (g_log) g_log("anim: failed to parse Blockbench model animations");
+        return;
+    }
+    std::lock_guard<std::mutex> g(g_steve_anim_mutex);
+    g_steve_anim_lib = std::move(lib);
+    g_steve_sm = std::make_unique<mc::anim::SteveAnimationStateMachine>(*g_steve_anim_lib);
+    if (g_log) g_log("anim: loaded %zu Blockbench animations for Steve rig", g_steve_anim_lib->clipCount());
 }
 
 void SetSteveSkin(const uint8_t* rgba, unsigned width, unsigned height) {

@@ -292,4 +292,105 @@ inline Resolve resolvePlayerSwept(const BlockGrid& grid, const float prev[3], co
     return resolvePlayer(grid, cur, max_push);
 }
 
+struct SneakMoveResult {
+    float dx{0.f};
+    float dz{0.f};
+    bool clamped_x{false};
+    bool clamped_z{false};
+};
+
+// Clamps horizontal movement (dx, dz) while sneaking so the player cannot step off a supporting block into the void.
+// Follows Minecraft's authentic sneak edge protection: checks support under feet, binary searches safe step if an edge is reached.
+inline SneakMoveResult clampSneakEdgeMovement(
+    const BlockGrid& grid,
+    const float feet[3],
+    float desired_dx,
+    float desired_dz) {
+    SneakMoveResult res{desired_dx, desired_dz, false, false};
+    if (desired_dx == 0.f && desired_dz == 0.f) return res;
+    if (!supportedByBlock(grid, feet)) return res; // sneak protection only applies when grounded
+
+    // 1. Check X-axis movement
+    if (desired_dx != 0.f) {
+        const float test_x[3] = {feet[0] + desired_dx, feet[1], feet[2]};
+        if (supportedByBlock(grid, test_x)) {
+            res.dx = desired_dx;
+        } else {
+            // Binary search the furthest safe step along X
+            float low = 0.f, high = desired_dx;
+            for (int it = 0; it < 8; ++it) {
+                const float mid = (low + high) * 0.5f;
+                const float probe[3] = {feet[0] + mid, feet[1], feet[2]};
+                if (supportedByBlock(grid, probe)) low = mid;
+                else high = mid;
+            }
+            res.dx = low;
+            res.clamped_x = true;
+        }
+    }
+
+    // 2. Check Z-axis movement (combined with safe X)
+    if (desired_dz != 0.f) {
+        const float test_z[3] = {feet[0] + res.dx, feet[1], feet[2] + desired_dz};
+        if (supportedByBlock(grid, test_z)) {
+            res.dz = desired_dz;
+        } else {
+            // Binary search the furthest safe step along Z
+            float low = 0.f, high = desired_dz;
+            for (int it = 0; it < 8; ++it) {
+                const float mid = (low + high) * 0.5f;
+                const float probe[3] = {feet[0] + res.dx, feet[1], feet[2] + mid};
+                if (supportedByBlock(grid, probe)) low = mid;
+                else high = mid;
+            }
+            res.dz = low;
+            res.clamped_z = true;
+        }
+    }
+
+    return res;
+}
+
+// Determines whether the player's position on placed blocks should be pinned to the anchor.
+// Pinning is ONLY active when the player is supported by a block, the game window is in foreground,
+// and no movement keys (W, A, S, D, Space) are held.
+inline bool shouldAnchorBlockPosition(
+    bool supported,
+    bool key_w,
+    bool key_a,
+    bool key_s,
+    bool key_d,
+    bool key_space) {
+    if (!supported) return false;
+    const bool has_movement_input = key_w || key_a || key_s || key_d || key_space;
+    return !has_movement_input;
+}
+
+// Directly steps horizontal position on blocks when moving, matching the Direct Drive approach.
+inline bool stepBlockMovement(
+    const float current_feet[3],
+    const float dir[2],
+    float speed,
+    float dt,
+    bool moving,
+    float out_feet[3]) {
+    out_feet[0] = current_feet[0];
+    out_feet[1] = current_feet[1];
+    out_feet[2] = current_feet[2];
+    if (!moving || speed <= 0.f || dt <= 0.f) return false;
+    out_feet[0] += dir[0] * speed * dt;
+    out_feet[2] += dir[1] * speed * dt;
+    return true;
+}
+
+// Checks if Havok character proxy synchronization (+0x91 = 1) is needed.
+inline bool shouldSyncPhysicsProxy(
+    bool collision_moved,
+    bool direct_driven,
+    bool sneak_clamped,
+    bool pinned) {
+    return collision_moved || direct_driven || sneak_clamped || pinned;
+}
+
 } // namespace eldenring::blocks
+
