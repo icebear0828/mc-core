@@ -55,7 +55,7 @@ TEST(InventoryLayout, HitTestFindsSlotsAndMissesTheGaps) {
 }
 
 TEST(InventoryLayout, ArmorAndOffhandAreInsidePanelAndFollowVanillaLayout) {
-    InventoryLayout l(1920.f, 1080.f);
+    InventoryLayout l(1920.f, 1080.f, false);
     const HudRect p = l.panel();
     const float s = static_cast<float>(l.scale());
 
@@ -91,7 +91,7 @@ TEST(InventoryLayout, ArmorAndOffhandAreInsidePanelAndFollowVanillaLayout) {
     EXPECT_EQ(ro.kind, SlotRef::Kind::Offhand);
     EXPECT_EQ(ro.index, 0);
 
-    // Player 3D preview window area (x=26, y=8, w=51, h=72)
+    // Player preview window area (x=26, y=8, w=51, h=72)
     const HudRect prev = l.playerPreview();
     EXPECT_FLOAT_EQ(prev.x, p.x + 26.f * s);
     EXPECT_FLOAT_EQ(prev.y, p.y + 8.f * s);
@@ -109,6 +109,21 @@ TEST(InventoryLayout, ArmorAndOffhandAreInsidePanelAndFollowVanillaLayout) {
     const HudRect cr = l.craftResultSlot();
     EXPECT_FLOAT_EQ(cr.x, p.x + 154.f * s);
     EXPECT_FLOAT_EQ(cr.y, p.y + 28.f * s);
+}
+
+TEST(InventoryLayout, CreativeModeHitTestExcludesArmorAndOffhand) {
+    InventoryLayout creative(1920.f, 1080.f, true);
+    // In creative mode, clicking palette slot 0 must return Palette, never Armor
+    const HudRect pal0 = creative.paletteSlot(0);
+    const SlotRef r = creative.hitTest(pal0.x + 5.f, pal0.y + 5.f);
+    EXPECT_EQ(r.kind, SlotRef::Kind::Palette);
+    EXPECT_EQ(r.index, 0);
+
+    // Clicking offhand coordinate in creative mode must return Panel or Palette, never Offhand
+    const HudRect off = creative.offhandSlot();
+    const SlotRef roff = creative.hitTest(off.x + 5.f, off.y + 5.f);
+    EXPECT_NE(roff.kind, SlotRef::Kind::Offhand);
+    EXPECT_NE(roff.kind, SlotRef::Kind::Armor);
 }
 
 TEST(InventoryLayout, PaletteListsEveryItemOnce) {

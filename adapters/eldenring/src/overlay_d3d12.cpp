@@ -35,22 +35,9 @@
 #include "overlay_d3d12.hpp"
 #include "png_wic.hpp"
 #include "steve_renderer_d3d12.hpp"
-#include "eldenring_inventory_preview.hpp"
 
 namespace erov {
 namespace {
-
-struct PreviewState {
-    bool active{false};
-    mc::HudRect rect{};
-    float mouse_x{0.f};
-    float mouse_y{0.f};
-    float scale{1.f};
-    uint16_t held_item{0};
-    uint16_t offhand_item{0};
-};
-static PreviewState g_inv_preview{};
-static D3D12_CPU_DESCRIPTOR_HANDLE g_current_rtv{};
 
 constexpr UINT kMaxFrames = 8;
 constexpr UINT kVtblPresent = 8;
@@ -621,7 +608,7 @@ void DrawInventory(const HudState& hud, float w, float h) {
         }
     } else {
         // Vanilla Minecraft Survival layout:
-        // Central 3D Player Preview Window (26, 8, 51, 72)
+        // Central Player Preview Window (26, 8, 51, 72)
         const mc::HudRect prev = lay.playerPreview();
         dl->AddRectFilled({prev.x, prev.y}, {prev.x + prev.w, prev.y + prev.h}, IM_COL32(16, 16, 16, 255));
         dl->AddLine({prev.x, prev.y}, {prev.x + prev.w, prev.y}, IM_COL32(55, 55, 55, 255), gs);
@@ -629,47 +616,38 @@ void DrawInventory(const HudState& hud, float w, float h) {
         dl->AddLine({prev.x, prev.y + prev.h}, {prev.x + prev.w, prev.y + prev.h}, IM_COL32(255, 255, 255, 180), gs);
         dl->AddLine({prev.x + prev.w, prev.y}, {prev.x + prev.w, prev.y + prev.h}, IM_COL32(255, 255, 255, 180), gs);
 
-        // Queue real 3D Steve character rendering inside the preview window
-        g_inv_preview.active = true;
-        g_inv_preview.rect = prev;
-        g_inv_preview.mouse_x = hud.mouse_x;
-        g_inv_preview.mouse_y = hud.mouse_y;
-        g_inv_preview.scale = gs;
-        const int sel = std::clamp(hud.selected_slot, 0, 8);
-        g_inv_preview.held_item = static_cast<uint16_t>(hud.hotbar[sel]);
-        g_inv_preview.offhand_item = static_cast<uint16_t>(hud.offhand_item);
+        // 4 Armor slots on the left (x = 8, y = 8, 26, 44, 62)
+        for (int i = 0; i < 4; ++i) {
+            const mc::HudRect arm = lay.armorSlot(i);
+            drawSlotBox(arm);
+            const mc::HudRect arm_item{arm.x + 1.f * gs, arm.y + 1.f * gs, 16.f * gs, 16.f * gs};
+            if (hud.armor_item[i] == 0) {
+                if (g_atlas_ready) {
+                    if (const mc::hud::HudUV* wuv = eldenring::render::uvForEmptyArmorSlot(static_cast<mc::ArmorSlot>(i))) {
+                        dl->AddImage(atlas, {arm_item.x, arm_item.y}, {arm_item.x + arm_item.w, arm_item.y + arm_item.h},
+                                     {wuv->u0, wuv->v0}, {wuv->u1, wuv->v1}, IM_COL32(255, 255, 255, 90));
+                    }
+                }
+            } else {
+                icon(arm_item, static_cast<mc::ItemId>(hud.armor_item[i]));
+                stackCount(arm_item, hud.armor_count[i]);
+            }
+        }
 
-        dl->AddCallback([](const ImDrawList*, const ImDrawCmd*) {
-            if (!g_inv_preview.active || !g_steve.ready() || g_current_rtv.ptr == 0) return;
-            const float cx = g_inv_preview.rect.x + g_inv_preview.rect.w * 0.5f;
-            const float cy = g_inv_preview.rect.y + g_inv_preview.rect.h * 0.5f;
-            float look_yaw = 0.f, look_pitch = 0.f, body_yaw = 0.f;
-            eldenring::preview::computePreviewTracking(g_inv_preview.mouse_x, g_inv_preview.mouse_y, cx, cy,
-                                                       g_inv_preview.scale, look_yaw, look_pitch, body_yaw);
-            const auto parts = eldenring::preview::computePreviewPartMatrices(look_yaw, look_pitch, body_yaw);
-            const mc::rig::Mat4 vp = eldenring::preview::computePreviewViewProjection(g_inv_preview.rect.w / g_inv_preview.rect.h);
-
-            const D3D12_VIEWPORT pvp{g_inv_preview.rect.x, g_inv_preview.rect.y, g_inv_preview.rect.w, g_inv_preview.rect.h, 0.f, 1.f};
-            const D3D12_RECT psc{static_cast<LONG>(g_inv_preview.rect.x), static_cast<LONG>(g_inv_preview.rect.y),
-                                static_cast<LONG>(g_inv_preview.rect.x + g_inv_preview.rect.w),
-                                static_cast<LONG>(g_inv_preview.rect.y + g_inv_preview.rect.h)};
-
-            SteveParams sp;
-            sp.mode = 0.f; // 0: no scene occlusion
-            sp.depth_const = 0.0501f;
-            sp.rel_bias = 0.f;
-            sp.abs_bias = 0.f;
-            sp.tint[0] = sp.tint[1] = sp.tint[2] = sp.tint[3] = 0.f;
-            sp.keep_depth = false;
-            sp.held_item = g_inv_preview.held_item;
-            sp.offhand_item = g_inv_preview.offhand_item;
-            sp.shield_blocking = false;
-            sp.block_offhand = false;
-            sp.held_table = g_atlas_ready ? g_held_table_gpu : D3D12_GPU_DESCRIPTOR_HANDLE{};
-
-            g_steve.drawInventoryPreview(g_s.list, g_s.srv_heap, g_depth_gpu, pvp, psc, vp, parts, sp, g_current_rtv);
-        }, nullptr);
-        dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+        // Offhand slot in inventory (x = 77, y = 62)
+        const mc::HudRect off = lay.offhandSlot();
+        drawSlotBox(off);
+        const mc::HudRect off_item{off.x + 1.f * gs, off.y + 1.f * gs, 16.f * gs, 16.f * gs};
+        if (hud.offhand_item == 0) {
+            if (g_atlas_ready) {
+                const mc::hud::HudUV& suv = mc::hud::kUV_ITEM_SHIELD;
+                dl->AddImage(atlas, {off_item.x, off_item.y}, {off_item.x + off_item.w, off_item.y + off_item.h},
+                             {suv.u0, suv.v0}, {suv.u1, suv.v1}, IM_COL32(255, 255, 255, 90));
+            }
+        } else {
+            icon(off_item, static_cast<mc::ItemId>(hud.offhand_item));
+            stackCount(off_item, hud.offhand_count);
+        }
 
         // 2x2 Crafting grid and result
         dl->AddText(ImGui::GetFont(), fs, {lay.titleCrafting().x, lay.titleCrafting().y}, label, "Crafting");
@@ -681,39 +659,6 @@ void DrawInventory(const HudState& hud, float w, float h) {
     }
 
     dl->AddText(ImGui::GetFont(), fs, {lay.titleInventory().x, lay.titleInventory().y}, label, "Inventory");
-
-    // 2. 4 Armor slots on the left (x = 8, y = 8, 26, 44, 62)
-    for (int i = 0; i < 4; ++i) {
-        const mc::HudRect arm = lay.armorSlot(i);
-        drawSlotBox(arm);
-        const mc::HudRect arm_item{arm.x + 1.f * gs, arm.y + 1.f * gs, 16.f * gs, 16.f * gs};
-        if (hud.armor_item[i] == 0) {
-            if (g_atlas_ready) {
-                if (const mc::hud::HudUV* wuv = eldenring::render::uvForEmptyArmorSlot(static_cast<mc::ArmorSlot>(i))) {
-                    dl->AddImage(atlas, {arm_item.x, arm_item.y}, {arm_item.x + arm_item.w, arm_item.y + arm_item.h},
-                                 {wuv->u0, wuv->v0}, {wuv->u1, wuv->v1}, IM_COL32(255, 255, 255, 90));
-                }
-            }
-        } else {
-            icon(arm_item, static_cast<mc::ItemId>(hud.armor_item[i]));
-            stackCount(arm_item, hud.armor_count[i]);
-        }
-    }
-
-    // 3. Offhand slot in inventory (x = 77, y = 62)
-    const mc::HudRect off = lay.offhandSlot();
-    drawSlotBox(off);
-    const mc::HudRect off_item{off.x + 1.f * gs, off.y + 1.f * gs, 16.f * gs, 16.f * gs};
-    if (hud.offhand_item == 0) {
-        if (g_atlas_ready) {
-            const mc::hud::HudUV& suv = mc::hud::kUV_ITEM_SHIELD;
-            dl->AddImage(atlas, {off_item.x, off_item.y}, {off_item.x + off_item.w, off_item.y + off_item.h},
-                         {suv.u0, suv.v0}, {suv.u1, suv.v1}, IM_COL32(255, 255, 255, 90));
-        }
-    } else {
-        icon(off_item, static_cast<mc::ItemId>(hud.offhand_item));
-        stackCount(off_item, hud.offhand_count);
-    }
 
     // 4. Main Inventory (3x9) and Hotbar (1x9)
     for (int i = 0; i < 36; ++i) {
@@ -1093,7 +1038,7 @@ void RenderFrame(IDXGISwapChain* sc) {
         blocks_drawn = g_steve.drawBlocks(g_s.device, g_s.list, g_s.srv_heap, g_held_table_gpu, g_s.width, g_s.height, vp, bp, f.rtv, idx);
         if (blocks_drawn) g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
     }
-    if (steve.draw && g_steve.ready()) {
+    if (steve.draw && !hud.inv_open && g_steve.ready()) {
         const float scene_h = g_steve_cfg.scene_height > 0.f ? g_steve_cfg.scene_height : static_cast<float>(g_s.height);
         const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
         mc::SteveAnimInput anim_in = g_motion.update(dt, steve.feet, steve.yaw);
@@ -1272,13 +1217,7 @@ void RenderFrame(IDXGISwapChain* sc) {
         }
         g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr); // ImGui draws without a depth view
     }
-    if (hud.inv_open && g_steve.ready()) {
-        g_steve.ensureDepth(g_s.device, g_s.width, g_s.height);
-    }
-    g_current_rtv = f.rtv;
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_s.list);
-    g_inv_preview.active = false;
-    g_current_rtv = {};
     // A screenshot (F4): the finished back buffer is copied into a read-back buffer in the same command list.
     ID3D12Resource* shot_buf = nullptr;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT shot_fp{};

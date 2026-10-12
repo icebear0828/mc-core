@@ -57,7 +57,17 @@ def main():
         shutil.copy2(target_dll, backup_path)
         print(f"[BACKUP] Existing DLL backed up to: {backup_path}")
 
-    shutil.copy2(src_dll, target_dll)
+    try:
+        shutil.copy2(src_dll, target_dll)
+    except PermissionError:
+        temp_old = game_dir / f"dinput8.dll.old_{os.getpid()}"
+        if temp_old.exists():
+            try:
+                temp_old.unlink()
+            except Exception:
+                pass
+        target_dll.rename(temp_old)
+        shutil.copy2(src_dll, target_dll)
     print(f"[DEPLOY] Copied to: {target_dll}")
 
     target_hash = get_sha256(target_dll)

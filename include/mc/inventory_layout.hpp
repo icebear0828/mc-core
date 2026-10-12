@@ -74,14 +74,16 @@ public:
     [[nodiscard]] HudRect titleInventory() const { return slotAt(8, 72, 0.f); }
 
     [[nodiscard]] SlotRef hitTest(float x, float y) const {
-        for (int i = 0; i < 4; ++i) {
-            if (inside(armorSlot(i), x, y)) return {SlotRef::Kind::Armor, i};
+        if (!palette_) {
+            for (int i = 0; i < 4; ++i) {
+                if (inside(armorSlot(i), x, y)) return {SlotRef::Kind::Armor, i};
+            }
+            if (inside(offhandSlot(), x, y)) return {SlotRef::Kind::Offhand, 0};
+            for (int i = 0; i < 4; ++i) {
+                if (inside(craftSlot(i), x, y)) return {SlotRef::Kind::Crafting, i};
+            }
+            if (inside(craftResultSlot(), x, y)) return {SlotRef::Kind::CraftResult, 0};
         }
-        if (inside(offhandSlot(), x, y)) return {SlotRef::Kind::Offhand, 0};
-        for (int i = 0; i < 4; ++i) {
-            if (inside(craftSlot(i), x, y)) return {SlotRef::Kind::Crafting, i};
-        }
-        if (inside(craftResultSlot(), x, y)) return {SlotRef::Kind::CraftResult, 0};
         if (x < panel_.x || y < panel_.y || x >= panel_.x + panel_.w || y >= panel_.y + panel_.h) return {};
         for (int i = 0; palette_ && i < kPaletteSlots; ++i) {
             if (inside(paletteSlot(i), x, y)) return {SlotRef::Kind::Palette, i};
