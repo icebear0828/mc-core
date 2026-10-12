@@ -240,3 +240,18 @@ TEST(Inventory, ClickOffhandFollowsVanillaRules) {
     EXPECT_EQ(inv.offhand().item, ItemId::Shield);
     EXPECT_EQ(inv.cursor().item, ItemId::TotemOfUndying);
 }
+
+TEST(Inventory, SwapMainAndOffhandSwapsHotbarSlotWithOffhand) {
+    Inventory inv;
+    inv.setSlot(0, {ItemId::DiamondSword, 1});
+    inv.setOffhand({ItemId::Shield, 1});
+    inv.swapMainAndOffhand(0);
+    EXPECT_EQ(inv.slot(0).item, ItemId::Shield);
+    EXPECT_EQ(inv.offhand().item, ItemId::DiamondSword);
+
+    // Swap back
+    inv.swapMainAndOffhand(0);
+    EXPECT_EQ(inv.slot(0).item, ItemId::DiamondSword);
+    EXPECT_EQ(inv.offhand().item, ItemId::Shield);
+}
+

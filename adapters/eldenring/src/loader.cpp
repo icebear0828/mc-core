@@ -1930,7 +1930,7 @@ std::atomic<bool> g_sneak_active{false};
 std::atomic<bool> g_sneak_clamped_x{false};
 std::atomic<bool> g_sneak_clamped_z{false};
 std::atomic<bool> g_block_drive{true};         // block_drive=0: leave the game's own (stale) velocity alone on a block
-std::atomic<bool> g_block_anchor{true};        // block_anchor=0: do not pin the player in place on a block while no movement key is down
+std::atomic<bool> g_block_anchor{false};       // default false: do not pin the player in place on a block while no movement key is down
 std::atomic<bool> g_block_ground{true};        // block_ground=0: do not fake "on the ground" while standing on a block
 std::atomic<bool> g_block_collision{true};     // block_collision=0: the player walks through the blocks
 std::atomic<bool> g_enemy_block_collision{true}; // enemy_block_collision=0: enemies walk through the blocks
