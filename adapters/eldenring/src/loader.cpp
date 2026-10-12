@@ -98,6 +98,32 @@ void Log(const char* fmt, ...) {
     fflush(g_log);
 }
 
+LONG WINAPI CrashVehHandler(PEXCEPTION_POINTERS ep) {
+    if (ep == nullptr || ep->ExceptionRecord == nullptr) return EXCEPTION_CONTINUE_SEARCH;
+    const DWORD code = ep->ExceptionRecord->ExceptionCode;
+    // Intercept fatal faults: Access Violation, illegal instruction, stack overflow, fastfail, abort
+    if (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION ||
+        code == EXCEPTION_STACK_OVERFLOW || code == 0xC0000409 /* STATUS_STACK_BUFFER_OVERRUN / __fastfail */ ||
+        code == 0xE06D7363 /* C++ exception */) {
+        const uintptr_t rip = ep->ContextRecord != nullptr ? static_cast<uintptr_t>(ep->ContextRecord->Rip) : 0;
+        const uintptr_t addr = reinterpret_cast<uintptr_t>(ep->ExceptionRecord->ExceptionAddress);
+        const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+        Log("CRASH-VEH: Exception 0x%08lX at addr %p (RVA 0x%llX, rip %p, tid %lu)",
+            code, reinterpret_cast<void*>(addr),
+            (addr >= base) ? static_cast<unsigned long long>(addr - base) : 0ULL,
+            reinterpret_cast<void*>(rip), GetCurrentThreadId());
+        if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2) {
+            const ULONG_PTR type = ep->ExceptionRecord->ExceptionInformation[0];
+            const ULONG_PTR target = ep->ExceptionRecord->ExceptionInformation[1];
+            Log("CRASH-VEH: Access Violation %s memory at %p",
+                type == 0 ? "reading" : type == 1 ? "writing" : "executing",
+                reinterpret_cast<void*>(target));
+        }
+        if (g_log) fflush(g_log);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 void InitLogOnce() {
     static std::mutex m;
     static bool done = false;
@@ -111,8 +137,9 @@ void InitLogOnce() {
     g_start_ms = GetTickCount64();
     // _fsopen with _SH_DENYNO: other processes (the probes, `type`) can read the log while the game runs.
     g_log = _fsopen((g_game_dir + "mc_er.log").c_str(), "a", _SH_DENYNO);
+    AddVectoredExceptionHandler(1, CrashVehHandler);
     Log("==== eldenring adapter loaded (pid %lu, exe %s) ====", GetCurrentProcessId(), exe);
-    Log("build: OUR adapter (shadow, bolt F3, bow), compiled %s %s", __DATE__, __TIME__); // a log without this line came from another dll (the reverser's probe build)
+    Log("build: OUR adapter (shadow, bolt F3, bow, crash VEH), compiled %s %s", __DATE__, __TIME__); // a log without this line came from another dll (the reverser's probe build)
 }
 
 // ---- guarded memory access -----------------------------------------------------------------------------------
@@ -2587,14 +2614,47 @@ void BlocksCollisionStep() {
     EnemiesBlockCollisionStep(final_feet);
 }
 
+// Pending TNT explosion damage intents to be safely evaluated on the game thread.
+std::mutex g_tnt_intent_mutex;
+eldenring::tnt::ErExplosionIntentQueue g_tnt_damage_intents;
+
+void ProcessTntExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies) {
+    std::vector<eldenring::tnt::ErExplosionDamageIntent> intents;
+    {
+        std::lock_guard<std::mutex> g(g_tnt_intent_mutex);
+        if (g_tnt_damage_intents.pendingCount() == 0) return;
+        intents = g_tnt_damage_intents.drain();
+    }
+    if (intents.empty() || enemies.empty()) return;
+
+    for (const auto& exp : intents) {
+        for (const auto& e : enemies) {
+            if (e.chr == 0 || e.hp <= 0) continue;
+            float e_feet[3];
+            if (!detail::readPhysicsPosition(g_reader, g_img.base, e.chr, e_feet)) continue;
+
+            const int dmg = eldenring::tnt::computeTntExplosionDamage(exp.center, e_feet, exp.radius, exp.max_damage);
+            if (dmg > 0) {
+                g_queue.enqueue(e.chr, dmg, NowTick(), 4u | (static_cast<uint32_t>(std::min(255, dmg / 10)) << 8));
+                Log("tnt: explosion hit enemy chr=%p for %d dmg", reinterpret_cast<void*>(e.chr), dmg);
+            }
+        }
+    }
+}
+
 void EnemiesBlockCollisionStep(const float player_feet[3]) {
-    if (!g_enemy_block_collision.load(std::memory_order_relaxed) || !g_mc_mode.load(std::memory_order_relaxed)) return;
+    if (!g_mc_mode.load(std::memory_order_relaxed)) return;
+    std::vector<EnemyInfo> enemies;
+    if (!enumerateEnemies(g_reader, g_img.base, enemies, 128)) return;
+
+    // Process queued TNT explosion damage intents on game thread!
+    ProcessTntExplosionsOnGameThread(enemies);
+
+    if (!g_enemy_block_collision.load(std::memory_order_relaxed)) return;
     {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         if (g_blocks.count() == 0) return;
     }
-    std::vector<EnemyInfo> enemies;
-    if (!enumerateEnemies(g_reader, g_img.base, enemies, 128)) return;
 
     static unsigned enemy_pushes = 0;
     static std::unordered_map<uintptr_t, std::array<float, 3>> prev_enemy_feet;
@@ -2647,42 +2707,27 @@ void EnemiesBlockCollisionStep(const float player_feet[3]) {
     }
 }
 
-// Triggers explosion sound, particles, enemy damage, and player damage for detonating TNT.
+
 void TriggerTntExplosionEffectsAndDamage(const float center[3]) {
     eraudio::Play("entity.generic.explode", 1.0f);
     erov::SpawnFx(erov::FxKind::Crit, center, 16);
 
+    // Queue for safe game thread processing (EnemiesBlockCollisionStep)
+    {
+        std::lock_guard<std::mutex> g(g_tnt_intent_mutex);
+        g_tnt_damage_intents.enqueue(center, 8.0f, 1500.0f);
+    }
+
+    // Player damage (safe direct evaluation)
     const uintptr_t player = PlayerChrPtr();
     float feet[3] = {};
     if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(player), feet)) {
-        std::vector<EnemyInfo> list;
-        if (enumerateEnemies(g_reader, g_img.base, list, 2000)) {
-            for (const auto& e : list) {
-                const float ex_pos[3] = {feet[0] + e.rel_x, feet[1] + e.rel_y, feet[2] + e.rel_z};
-                const float diff[3] = {ex_pos[0] - center[0], ex_pos[1] - center[1], ex_pos[2] - center[2]};
-                const float dist = std::sqrt(diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]);
-                if (dist <= 8.0f) {
-                    const float exposure = 1.0f - (dist / 8.0f);
-                    const int dmg = static_cast<int>(std::round(1500.0f * exposure));
-                    if (dmg > 0) {
-                        g_queue.enqueue(e.chr, dmg, NowTick(), 4u | (static_cast<uint32_t>(std::min(255, dmg / 10)) << 8));
-                        Log("tnt: explosion hit enemy chr=%p for %d dmg at dist=%.1f", reinterpret_cast<void*>(e.chr), dmg, dist);
-                    }
-                }
-            }
-        }
-
-        const float player_diff[3] = {feet[0] - center[0], feet[1] - center[1], feet[2] - center[2]};
-        const float player_dist = std::sqrt(player_diff[0] * player_diff[0] + player_diff[1] * player_diff[1] + player_diff[2] * player_diff[2]);
-        if (player_dist <= 8.0f) {
-            const float exposure = 1.0f - (player_dist / 8.0f);
-            const int32_t p_dmg = static_cast<int32_t>(std::round(400.0f * exposure));
-            if (p_dmg > 0) {
-                Vitals v;
-                if (readVitals(g_reader, g_img.base, player, v)) {
-                    eraudio::Play("entity.player.hurt");
-                    Log("tnt: explosion hit player for %d dmg at dist=%.1f", p_dmg, player_dist);
-                }
+        const int p_dmg = eldenring::tnt::computeTntExplosionDamage(center, feet, 8.0f, 400.0f);
+        if (p_dmg > 0) {
+            Vitals v;
+            if (readVitals(g_reader, g_img.base, player, v)) {
+                eraudio::Play("entity.player.hurt");
+                Log("tnt: explosion hit player for %d dmg", p_dmg);
             }
         }
     }

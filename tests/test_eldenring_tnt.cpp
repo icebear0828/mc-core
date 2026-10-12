@@ -149,3 +149,31 @@ TEST(EldenRingTnt, StepHandlesChainReactionWithoutMemoryCorruptionOrIteratorInva
     }
 }
 
+TEST(EldenRingTnt, ExplosionDamageIntentQueueDrainsAndComputesDamageCorrectly) {
+    ErExplosionIntentQueue intent_queue;
+    EXPECT_EQ(intent_queue.pendingCount(), 0u);
+
+    // Push two explosion intents
+    const float c1[3] = {0.0f, 0.0f, 0.0f};
+    const float c2[3] = {10.0f, 0.0f, 0.0f};
+    intent_queue.enqueue(c1, 8.0f, 1500.0f);
+    intent_queue.enqueue(c2, 4.0f, 800.0f);
+    EXPECT_EQ(intent_queue.pendingCount(), 2u);
+
+    auto drained = intent_queue.drain();
+    EXPECT_EQ(drained.size(), 2u);
+    EXPECT_EQ(intent_queue.pendingCount(), 0u);
+
+    // Verify distance and damage calculation helper
+    // Target 2m away from blast at (0,0,0) with radius 8m, max 1500
+    float target_pos[3] = {2.0f, 0.0f, 0.0f};
+    int dmg = computeTntExplosionDamage(drained[0].center, target_pos, drained[0].radius, drained[0].max_damage);
+    // exposure = 1.0 - 2/8 = 0.75 -> 1500 * 0.75 = 1125
+    EXPECT_EQ(dmg, 1125);
+
+    // Target 8m or further away takes 0 damage
+    float far_pos[3] = {8.5f, 0.0f, 0.0f};
+    int far_dmg = computeTntExplosionDamage(drained[0].center, far_pos, drained[0].radius, drained[0].max_damage);
+    EXPECT_EQ(far_dmg, 0);
+}
+

@@ -48,6 +48,49 @@ struct ErExplosionResult {
     std::vector<ErPrimedTnt> chain_primed_tnt;
 };
 
+struct ErExplosionDamageIntent {
+    float center[3]{0.f, 0.f, 0.f};
+    float radius{8.0f};
+    float max_damage{1500.0f};
+};
+
+inline int computeTntExplosionDamage(const float center[3], const float target_pos[3], float radius, float max_damage) {
+    if (radius <= 0.0f || max_damage <= 0.0f) return 0;
+    const float dx = target_pos[0] - center[0];
+    const float dy = target_pos[1] - center[1];
+    const float dz = target_pos[2] - center[2];
+    const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (dist > radius) return 0;
+    const float exposure = 1.0f - (dist / radius);
+    return static_cast<int>(std::round(max_damage * exposure));
+}
+
+class ErExplosionIntentQueue {
+public:
+    void enqueue(const float center[3], float radius = 8.0f, float max_damage = 1500.0f) {
+        ErExplosionDamageIntent intent;
+        intent.center[0] = center[0];
+        intent.center[1] = center[1];
+        intent.center[2] = center[2];
+        intent.radius = radius;
+        intent.max_damage = max_damage;
+        intents_.push_back(intent);
+    }
+
+    [[nodiscard]] size_t pendingCount() const noexcept {
+        return intents_.size();
+    }
+
+    [[nodiscard]] std::vector<ErExplosionDamageIntent> drain() {
+        std::vector<ErExplosionDamageIntent> out = std::move(intents_);
+        intents_.clear();
+        return out;
+    }
+
+private:
+    std::vector<ErExplosionDamageIntent> intents_;
+};
+
 class ErTntManager {
 public:
     static constexpr float kGravityMPerS2 = -16.0f;
