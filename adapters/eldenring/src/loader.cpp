@@ -1916,7 +1916,7 @@ std::mutex g_blocks_mutex;
 std::atomic<bool> g_blocks_enabled{true};      // mc_er_steve.txt: blocks=0 turns placing and breaking off
 std::atomic<float> g_block_walk_speed{3.9f};   // m/s on a block (measured ground speed of the run)
 std::atomic<bool> g_block_drive{true};         // block_drive=0: leave the game's own (stale) velocity alone on a block
-std::atomic<bool> g_block_anchor{true};        // block_anchor=0: do not pin the player in place on a block while no movement key is down
+std::atomic<bool> g_block_anchor{false};       // default false: do not pin the player in place on a block while no movement key is down
 std::atomic<bool> g_block_ground{true};        // block_ground=0: do not fake "on the ground" while standing on a block
 std::atomic<bool> g_block_collision{true};     // block_collision=0: the player walks through the blocks
 std::atomic<float> g_reach{4.5f};              // reach, metres (Minecraft survival)
@@ -2912,6 +2912,14 @@ DWORD WINAPI KeyThread(LPVOID) {
             }
         }
         if (fg && !inv_open && WantSuppress()) {
+            static bool prev_gameplay_f = false;
+            const bool f_down = (GetAsyncKeyState('F') & 0x8000) != 0;
+            if (f_down && !prev_gameplay_f) {
+                std::lock_guard<std::mutex> g(g_melee_mutex);
+                g_melee.inventory().swapMainAndOffhand(g_melee.selectedSlot());
+                Log("inventory: swapped main and offhand via F key (slot %d)", g_melee.selectedSlot());
+            }
+            prev_gameplay_f = f_down;
             for (int i = 0; i < MeleeController::kSlots; ++i) {
                 const bool d = (GetAsyncKeyState('1' + i) & 0x8000) != 0;
                 if (d && !prev_digit[i]) {
