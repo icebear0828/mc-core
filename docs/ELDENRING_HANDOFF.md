@@ -1,11 +1,50 @@
 # 艾尔登法环 Minecraft 适配器：交接文档
 
-给**新开的 Claude Code 对话**（或接手的人）。先读完这一份，先看紧接着的"0. 当前状态（2026-10-11）"，再按"第 11 节"的顺序动手。最后更新：2026-10-11（盾牌/副手/原生格挡/去击倒/体力与 HUD 标志位/深度图修复都做完并部署，全部在分支 `fix/shield-live`，**尚未合入 main**；下面第 0 节是这一阶段，旧的第 0 节降级为 0.1）。
+给**新开的 AI 会话 / 接手开发者**。先读完这一份，先看紧接着的"0. 当前最新状态（2026-10-12）"，再开展下一步工作。
+最后更新：2026-10-12（PR#12~PR#28 完整通过真实游戏实机游玩验收；3D 盾牌透明度、方块锚定卡人、F 键探索换手全部修复；主干正式确立为 `fork/main`；精炼 PR `fix/shield-live-polish` 已推送至 Fork 准备提给 upstream；下一步聚焦 **PR#29 重构模块审查与集成**）。
 需要查证据时，权威文档是 `docs/ELDENRING_REVERSE.md`（逆向事实与审计）和 `docs/ELDENRING_VERIFY_CHECKLIST.md`（逐项验证状态，F1~F22 是近战/生存/视觉/音效）。
 
 ---
 
-## 0. 当前状态（2026-10-11，最新，先读这里）
+## 0. 当前最新状态（2026-10-12，新开会话必读）
+
+### 0.1 核心成果与分支拓扑
+1. **主干基线确立（`fork/main`）**：
+   - 本地 `main` 分支已硬重置至 commit `6bae2f1`，并强制推送到用户的远程 Fork 仓库：`https://github.com/lindaokeefe472-eng/mc-core`（`git push fork main --force`）。
+   - **该分支已完整整合并验证了 PR#12 ~ PR#28（共 15 个分支）**：包含 3D 实体盾牌几何与原版姿态、副手系统与 HUD、原版 MC 平滑跳跃与动量积分、潜行边缘防跌落、瞬间转向、禁用翻滚、敌人物理碰撞与深度遮挡。
+   - **完全剔除了 PR#29**（`feat/data-driven-model-animation`），保持代码绝对纯净稳定。
+2. **独立精简 PR（针对上游 `origin/fix/shield-live`）**：
+   - 分支：`fix/shield-live-polish`（基于 `origin/fix/shield-live` 切出，仅 1 个 commit `b835060`，28 行增改）。
+   - 已推送至：`fork/fix/shield-live-polish`。
+   - PR 开启链接：`https://github.com/lindaokeefe472-eng/mc-core/pull/new/fix/shield-live-polish`。
+   - 改动内容：
+     - `.gitignore`：加入 `*.authentic.png` 保护规则，防止本地真实解压素材泄露；
+     - `adapters/eldenring/src/loader.cpp`：将 `g_block_anchor` 默认值改为 `false`；在 `KeyThread` 中增加常规探索时的 `F` 键换手；
+     - `tests/test_inventory.cpp`：添加 `swapMainAndOffhand` 自动化单元测试。
+
+### 0.2 历史缺陷根因追溯与实机验证结论
+- **“盾牌是假的 / 看不见盾牌”根因**：
+  - 之前部署到游戏目录 `Game/mods/mc_adapter/mc_hud_atlas.png` 的 18KB 图集中，`entity_shield` UV 区域 100% 全是透明像素（Alpha=0）。3D 模型虽在，贴图全透明导致不可见。
+  - **修复**：从 `D:\game\sekiro\build\mc_client_1.21.8.jar` 提取 20,186 字节真实图集（包含木纹、铁边、把手完整 18 色）部署，并在 `.gitignore` 保护。
+- **“方块卡人 / 移动钉死”根因**：
+  - 代码默认 `g_block_anchor{true}`，在未按键盘 WASD 时死锁玩家坐标。
+  - **修复**：代码默认改为 `false`，配置文件 `mc_er_steve.txt` 设 `block_anchor=0`。
+- **物理部署物**：
+  - `Game\dinput8.dll` SHA256: `18B866114E6D31E2908BD31A9877E24D25310FA4EFFE4E892B2779E6F9D382E6`。
+  - `Game\mods\mc_adapter\mc_hud_atlas.png`（20,186 字节）。
+  - 测试通过情况：321/321 Elden Ring 测试通过，81 项 pytest 全过。
+
+### 0.3 下一个会话的明确任务：PR#29 专项审查与集成
+- **目标**：跟进最新的 **PR#29**（`feat/data-driven-model-animation` 重构模块，引入 Blockbench 动画状态机）。
+- **注意要点**：
+  1. 必须基于当前的 `main`（commit `6bae2f1`）切出专用的试验分支（例如 `feature/integrate-pr29-animation`）；
+  2. PR#29 会重构角色手臂骨骼与动作插值，合并时**严防冲垮现有的 3D 实体盾牌姿态变换矩阵（`shield.json` / `shield_blocking.json`）与平滑跳跃逻辑**；
+  3. 严格执行 TDD，重新编译 `dinput8.dll`，在本地测试通过后再部署进游戏实机验收。
+
+---
+
+## 0.4 上一阶段（2026-10-11，盾牌逆向与探针阶段）
+
 
 **分支与部署**
 - **`origin/main` 仍是 `d4c9d16`**（PR #10）。这一阶段的全部工作在 **`origin/fix/shield-live`（`381874d`，icebear0828/mc-core）**，**未合入 main**。它建立在 fork（`lindaokeefe472-eng/mc-core`）的 PR #12 头（`70ec269`）之上，所以**包含 fork 里 PR #13~#18、#12 的全部提交**（已被我方修复并强推到 fork 的各分支，#13~#18 是 #12 之下的叠加链，#12 是链顶）加我方的后续提交。PR #11（diag 日志）已关闭（`ARROW-TIMING` 在 #15 里）。**合并方式待用户决定**：建议开一个 `fix/shield-live → main` 的 PR，并关闭 fork 的 #12~#18（内容重复）。
