@@ -53,6 +53,9 @@
 #include "eldenring_xp.hpp"
 #include "eldenring_hunger.hpp"
 #include "eldenring_jump.hpp"
+#include "eldenring_orientation.hpp"
+#include "eldenring_action_lock.hpp"
+#include "eldenring_roll.hpp"
 #include "mc/consumables.hpp"
 #include "mc/inventory_layout.hpp"
 #include "mc/hud_atlas.hpp"
@@ -286,6 +289,10 @@ std::atomic<float> g_kb_force{-1.f}; // mc_er_steve.txt: kb_force (>= 0 override
 std::atomic<uint32_t> g_hide_slots{0xFFFFFFFFu}; // bit n = part slot n of the native model (mc_er_steve.txt: hide_slots)
 std::atomic<uint32_t> g_hide_mask2{1};         // bits cleared in disp_flags2 (+0x24)
 float g_steve_yaw_offset = 3.14159265f; // the orientation quaternion at PhysicsModule+0x50 faces opposite to the model forward (user verified live, 180 deg)
+std::atomic<bool> g_instant_turn{true};  // mc_er_steve.txt: instant_turn=1 (snap to movement heading with zero delay)
+std::atomic<float> g_turn_speed{15.0f};  // mc_er_steve.txt: turn_speed=<rad/s> (used when instant_turn=0 for smooth turn clamp)
+std::atomic<bool> g_disable_vanilla_roll{true}; // mc_er_steve.txt: disable_vanilla_roll=1 (also disable_roll=1)
+std::atomic<int> g_roll_vk{VK_SHIFT};            // mc_er_steve.txt: roll_key=<virtual key code> (default Shift)
 std::atomic<bool> g_require_victim_updating{false};
 DamageQueue g_queue;
 
@@ -664,6 +671,7 @@ struct CamKeep {
 CamKeep g_cam_keep;
 std::atomic<bool> g_camstep_installed{false}; // the camera update hook (game thread, every frame) is in place
 void BlocksCollisionStep(); // defined with the placed blocks below
+void EnemiesBlockCollisionStep(const float player_feet[3]);
 void ShadowGroundStep();    // the same
 void McJumpStep();          // defined after them
 void FlightStep();          // defined after them
@@ -1914,11 +1922,19 @@ void CycleHiddenSlot(int& cursor) {
 blocks::BlockGrid g_blocks;
 std::mutex g_blocks_mutex;
 std::atomic<bool> g_blocks_enabled{true};      // mc_er_steve.txt: blocks=0 turns placing and breaking off
-std::atomic<float> g_block_walk_speed{3.9f};   // m/s on a block (measured ground speed of the run)
+std::atomic<float> g_block_walk_speed{4.317f}; // Minecraft walk speed: 4.317 m/s
+std::atomic<float> g_sneak_speed{1.295f};      // Minecraft sneak speed: 1.295 m/s (~1.3 m/s)
+std::atomic<float> g_sprint_speed{5.612f};     // Minecraft sprint speed: 5.612 m/s (~5.6 m/s)
+std::atomic<int> g_sneak_vk{VK_SHIFT};         // Sneak key: default Shift
+std::atomic<bool> g_sneak_active{false};
+std::atomic<bool> g_sneak_clamped_x{false};
+std::atomic<bool> g_sneak_clamped_z{false};
 std::atomic<bool> g_block_drive{true};         // block_drive=0: leave the game's own (stale) velocity alone on a block
 std::atomic<bool> g_block_anchor{true};        // block_anchor=0: do not pin the player in place on a block while no movement key is down
 std::atomic<bool> g_block_ground{true};        // block_ground=0: do not fake "on the ground" while standing on a block
 std::atomic<bool> g_block_collision{true};     // block_collision=0: the player walks through the blocks
+std::atomic<bool> g_enemy_block_collision{true}; // enemy_block_collision=0: enemies walk through the blocks
+std::atomic<bool> g_block_supported{false};     // true when player's feet are supported by placed voxel blocks
 std::atomic<float> g_reach{4.5f};              // reach, metres (Minecraft survival)
 unsigned g_blocks_sent_version = ~0u;
 
@@ -2105,18 +2121,77 @@ void DriveVelocityFromKeys(uintptr_t module, bool force_zero) {
     if (!force_zero && GameInForeground()) {
         const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
         const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
+        const bool sneaking = (GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0;
+        const bool sprinting = !sneaking && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        g_sneak_active.store(sneaking, std::memory_order_relaxed);
+
+        const float target_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
+                                  : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
+                                  : g_block_walk_speed.load(std::memory_order_relaxed);
+
         const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
         CameraPose cam;
-        if ((fwd_key != 0.f || right_key != 0.f) && world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
-            float fx = cam.forward[0], fz = cam.forward[2], rx = cam.right[0], rz = cam.right[2];
-            const float fl = std::sqrt(fx * fx + fz * fz), rl = std::sqrt(rx * rx + rz * rz);
-            if (fl > 1e-3f && rl > 1e-3f) {
-                fx /= fl; fz /= fl; rx /= rl; rz /= rl;
-                const float wx = fwd_key * fx + right_key * rx, wz = fwd_key * fz + right_key * rz;
-                const float wl = std::sqrt(wx * wx + wz * wz);
-                if (wl > 1e-3f) {
-                    vx = wx / wl * g_block_walk_speed.load();
-                    vz = wz / wl * g_block_walk_speed.load();
+        if (world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
+            float dir[2] = {0.f, 0.f};
+            const bool moving = eldenring::motion::computeInputDirection(fwd_key, right_key, cam.forward, cam.right, dir);
+            if (moving) {
+                vx = dir[0] * target_speed;
+                vz = dir[1] * target_speed;
+                if (sneaking) {
+                    float cur_feet[3] = {};
+                    if (SafeCopy(module + layout::kPhysicsPosition, cur_feet, sizeof(cur_feet))) {
+                        const float test_dx = vx * 0.05f;
+                        const float test_dz = vz * 0.05f;
+                        blocks::SneakMoveResult test_res;
+                        {
+                            std::lock_guard<std::mutex> g(g_blocks_mutex);
+                            test_res = blocks::clampSneakEdgeMovement(g_blocks, cur_feet, test_dx, test_dz);
+                        }
+                        if (test_res.clamped_x) vx = 0.f;
+                        if (test_res.clamped_z) vz = 0.f;
+                    }
+                }
+
+                // Compute target orientation from movement direction
+                float target_yaw = std::atan2(dir[0], dir[1]);
+                if (g_first_person.load(std::memory_order_relaxed)) {
+                    // In first-person mode, character always faces camera forward
+                    float fx = cam.forward[0], fz = cam.forward[2];
+                    if (fx * fx + fz * fz > 1e-4f) target_yaw = std::atan2(fx, fz);
+                }
+
+                // Update orientation quaternion at PhysicsModule + 0x50 (M2 reverse finding)
+                const bool instant = g_instant_turn.load(std::memory_order_relaxed);
+                float final_yaw = target_yaw;
+                if (!instant) {
+                    float curr_q[4] = {};
+                    if (SafeCopy(module + layout::kPhysicsOrientation, curr_q, sizeof(curr_q))) {
+                        const float curr_yaw = eldenring::motion::headingFromCharacterQuat(
+                            eldenring::motion::OrientationQuat{curr_q[0], curr_q[1], curr_q[2], curr_q[3]});
+                        final_yaw = eldenring::motion::stepYaw(curr_yaw, target_yaw, 0.0166667f, g_turn_speed.load(), false);
+                    }
+                }
+                const auto out_q = eldenring::motion::characterQuatFromHeading(final_yaw);
+                const float q_raw[4] = {out_q.x, out_q.y, out_q.z, out_q.w};
+                WriteBytesSafe(module + layout::kPhysicsOrientation, q_raw, sizeof(q_raw));
+            } else if (g_first_person.load(std::memory_order_relaxed)) {
+                // In first person even while stationary, track camera yaw with deadzone to avoid redundant Havok contact recalculation
+                float fx = cam.forward[0], fz = cam.forward[2];
+                if (fx * fx + fz * fz > 1e-4f) {
+                    const float target_yaw = std::atan2(fx, fz);
+                    float curr_q[4] = {};
+                    bool should_update = true;
+                    if (SafeCopy(module + layout::kPhysicsOrientation, curr_q, sizeof(curr_q))) {
+                        const float curr_yaw = eldenring::motion::headingFromCharacterQuat(
+                            eldenring::motion::OrientationQuat{curr_q[0], curr_q[1], curr_q[2], curr_q[3]});
+                        const float diff = std::abs(eldenring::motion::normalizeAngle(target_yaw - curr_yaw));
+                        if (diff < 0.02f) should_update = false; // deadzone: avoid redundant per-frame writes when still
+                    }
+                    if (should_update) {
+                        const auto out_q = eldenring::motion::characterQuatFromHeading(target_yaw);
+                        const float q_raw[4] = {out_q.x, out_q.y, out_q.z, out_q.w};
+                        WriteBytesSafe(module + layout::kPhysicsOrientation, q_raw, sizeof(q_raw));
+                    }
                 }
             }
         }
@@ -2136,33 +2211,59 @@ uintptr_t FallModuleOf(uintptr_t chr) {
     }
     return static_cast<uintptr_t>(fall);
 }
+
+// The action flag module is slot 1 of the character's module container (REVERSE M3: [[chr+0x190]+0x08], .?AVCSChrActionFlagModule@CS@@).
+// Its +0x40 is a uint64_t action_lock_flags. Bit 19 (0x80000, 0x140406AED) locks WASD movement input; bit 20 (0x100000) locks air control.
+uintptr_t ActionFlagModuleOf(uintptr_t chr) {
+    uint64_t container = 0, act = 0;
+    if (chr == 0 || !SafeCopy(chr + layout::kModuleContainerInChrIns, &container, sizeof(container)) || container == 0 ||
+        !SafeCopy(static_cast<uintptr_t>(container) + 0x08, &act, sizeof(act))) {
+        return 0;
+    }
+    return static_cast<uintptr_t>(act);
+}
+
+// Unlocks air movement locks (Bit 19 and Bit 20) while preserving damage stagger, item use, and combat animation locks.
+void UnlockAirMovement(uintptr_t chr) {
+    if (const uintptr_t act = ActionFlagModuleOf(chr)) {
+        uint64_t flags = 0;
+        if (SafeCopy(act + 0x40, &flags, sizeof(flags)) && eldenring::action::hasAirLocks(flags)) {
+            const uint64_t cleared = eldenring::action::clearAirLocks(flags);
+            WriteBytesSafe(act + 0x40, &cleared, sizeof(cleared));
+        }
+    }
+}
+
 float FallTimer(uintptr_t chr) {
     float t = -1.f;
     if (const uintptr_t fall = FallModuleOf(chr)) SafeCopy(fall + 0x18, &t, sizeof(t));
     return t;
 }
-// Our jump (and standing on a block) tells the game the player is in the air, and the landing never makes the game reset its air timer
-// (the fall module's +0x18). Measured: left alone it adds up over repeated jumps (1.0, 2.2, 3.1, 3.7 s) and past about 3 s the game stops
-// moving the player from the keys. Writing it EVERY frame is just as bad (0 makes the player crawl, a constant 1.0 freezes the movement
-// even with the keys down): the game advances the timer itself and switches state on how it changes. So the game's own behaviour is imitated:
-// reset once on our landing, and pull it back to 0 only when it has grown past `fall_hold` seconds; otherwise it is left alone.
-std::atomic<bool> g_fall_reset{false};  // mc_er_steve.txt: fall_reset=1 writes the fall timer (experiment: every way of writing it broke the movement, see HANDOFF)
-std::atomic<float> g_fall_hold{2.0f};   // fall_hold=<seconds>: the timer is reset to 0 when it passes this
+
+std::atomic<bool> g_fall_reset{true};   // mc_er_steve.txt: fall_reset=1 writes the fall timer (enabled by default; paired with action lock clearing)
+std::atomic<float> g_fall_hold{1.0f};   // fall_hold=<seconds>: reset timer before reaching the 3.0s lock threshold
 std::atomic<float> g_pre_fall_t{0.f};   // the timer as it was just before the last write
+
 void WriteFallTimer(uintptr_t chr, float value) {
     if (const uintptr_t fall = FallModuleOf(chr)) {
         g_pre_fall_t.store(FallTimer(chr));
         WriteBytesSafe(fall + 0x18, &value, sizeof(value));
     }
 }
-// Standing on a block: only when the timer has run past the limit.
+
+// Standing on a block: reset when the timer has started accumulating.
 void ResetFallTimer(uintptr_t chr) {
     if (!g_fall_reset.load(std::memory_order_relaxed)) return;
-    if (FallTimer(chr) > g_fall_hold.load(std::memory_order_relaxed)) WriteFallTimer(chr, 0.f);
+    const float cur_t = FallTimer(chr);
+    if (cur_t > g_fall_hold.load(std::memory_order_relaxed) || eldenring::action::shouldResetFallTimer(cur_t, 0.2f)) {
+        WriteFallTimer(chr, 0.f);
+    }
 }
-// Our own landing: what the game does by itself when the player lands.
+
+// Landing: reset fall timer and immediately clear air locks.
 void LandFallTimer(uintptr_t chr) {
     if (g_fall_reset.load(std::memory_order_relaxed)) WriteFallTimer(chr, 0.f);
+    UnlockAirMovement(chr);
 }
 
 // Keeps the player out of the blocks. Runs on the game thread, at the start of every camera update (the game's own per-frame hook), so
@@ -2202,12 +2303,14 @@ void BlocksCollisionStep() {
     static unsigned pushes = 0;
     if (!g_block_collision.load(std::memory_order_relaxed) || !g_mc_mode.load(std::memory_order_relaxed)) {
         have_prev = false;
+        g_block_supported.store(false, std::memory_order_relaxed);
         return;
     }
     {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         if (g_blocks.count() == 0) {
             have_prev = false;
+            g_block_supported.store(false, std::memory_order_relaxed);
             return;
         }
     }
@@ -2215,6 +2318,7 @@ void BlocksCollisionStep() {
     float feet[3];
     if (player == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) {
         have_prev = false;
+        g_block_supported.store(false, std::memory_order_relaxed);
         return;
     }
     float dx = 0.f, dy = 0.f, dz = 0.f;
@@ -2235,43 +2339,148 @@ void BlocksCollisionStep() {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         supported = blocks::supportedByBlock(g_blocks, final_feet);
     }
+    g_block_supported.store(supported, std::memory_order_relaxed);
     const uintptr_t module = detail::readPhysicsModule(g_reader, g_img.base, player);
     if (module != 0 && r.moved) {
         // +0x70 is the position, +0x80 the previous frame's: both move, so the push is not seen as speed
         WriteBytesSafe(module + layout::kPhysicsPosition, r.feet, sizeof(r.feet));
         WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, r.feet, sizeof(r.feet));
+        const uint8_t one = 1;
+        WriteBytesSafe(module + layout::kPhysicsProxySyncRequest, &one, sizeof(one));
     }
+    const bool fg = GameInForeground();
+    const bool sneaking = fg && ((GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0);
+    g_sneak_active.store(sneaking, std::memory_order_relaxed);
+
+    // Smooth first-person eye height transition: normal 1.65m <-> sneak 1.27m
+    if (g_first_person.load(std::memory_order_relaxed)) {
+        const float target_eye = sneaking ? 1.27f : 1.65f;
+        float cur_eye = g_eye_height.load(std::memory_order_relaxed);
+        cur_eye += (target_eye - cur_eye) * 0.25f;
+        g_eye_height.store(cur_eye, std::memory_order_relaxed);
+    }
+
     // On a block the game has no ground, so the horizontal speed it carries from the air never fades: the player slid forward at a
     // constant speed with no key down. While no movement key (WASD, Space) is held, the player is pinned to where it stopped.
     static bool anchored = false;
     static float anchor[2] = {};
     bool pinned = false;
-    if (supported && g_block_anchor.load(std::memory_order_relaxed)) {
-        const bool fg = GameInForeground();
-        const bool keys = fg && ((GetAsyncKeyState('W') | GetAsyncKeyState('A') | GetAsyncKeyState('S') | GetAsyncKeyState('D') | GetAsyncKeyState(VK_SPACE)) & 0x8000) != 0;
-        if (keys) {
-            anchored = false;
-        } else {
-            if (!anchored) {
-                anchor[0] = final_feet[0];
-                anchor[1] = final_feet[2];
-                anchored = true;
-            }
-            final_feet[0] = anchor[0];
-            final_feet[2] = anchor[1];
-            pinned = true;
+    const bool key_w = fg && ((GetAsyncKeyState('W') & 0x8000) != 0);
+    const bool key_a = fg && ((GetAsyncKeyState('A') & 0x8000) != 0);
+    const bool key_s = fg && ((GetAsyncKeyState('S') & 0x8000) != 0);
+    const bool key_d = fg && ((GetAsyncKeyState('D') & 0x8000) != 0);
+    const bool key_space = fg && ((GetAsyncKeyState(VK_SPACE) & 0x8000) != 0);
+    const bool should_anchor = g_block_anchor.load(std::memory_order_relaxed) &&
+                               blocks::shouldAnchorBlockPosition(supported, key_w, key_a, key_s, key_d, key_space);
+
+    if (should_anchor) {
+        if (!anchored) {
+            anchor[0] = final_feet[0];
+            anchor[1] = final_feet[2];
+            anchored = true;
         }
+        final_feet[0] = anchor[0];
+        final_feet[2] = anchor[1];
+        pinned = true;
     } else {
         anchored = false;
     }
-    if (module != 0 && pinned) {
+
+    // Check if the previous frame was supported on blocks
+    bool was_supported = false;
+    if (have_prev) {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        was_supported = blocks::supportedByBlock(g_blocks, prev);
+    }
+
+    // Sneak edge protection: if currently or previously on blocks and sneaking, prevent stepping off any ledge into empty space
+    bool sneak_clamped = false;
+    if (sneaking && (supported || was_supported) && have_prev && !jumped && !pinned) {
+        const float desired_dx = final_feet[0] - prev[0];
+        const float desired_dz = final_feet[2] - prev[2];
+        blocks::SneakMoveResult sneak_res;
+        {
+            std::lock_guard<std::mutex> g(g_blocks_mutex);
+            sneak_res = blocks::clampSneakEdgeMovement(g_blocks, prev, desired_dx, desired_dz);
+        }
+        g_sneak_clamped_x.store(sneak_res.clamped_x, std::memory_order_relaxed);
+        g_sneak_clamped_z.store(sneak_res.clamped_z, std::memory_order_relaxed);
+        if (sneak_res.clamped_x || sneak_res.clamped_z) {
+            final_feet[0] = prev[0] + sneak_res.dx;
+            final_feet[2] = prev[2] + sneak_res.dz;
+            supported = true; // Still safely supported at the block ledge!
+            sneak_clamped = true;
+        }
+    } else if (!sneaking) {
+        g_sneak_clamped_x.store(false, std::memory_order_relaxed);
+        g_sneak_clamped_z.store(false, std::memory_order_relaxed);
+    }
+
+    // Direct position drive on blocks:
+    // When standing on a block, the game has no native Havok ground under it, so Havok will not translate +0x120 velocity into world displacement.
+    // Instead, just like FlightStep and McJumpStep, we directly step the horizontal position along the input direction,
+    // verify swept collision and sneak ledge safety, write to +0x70/+0x80, and set kPhysicsProxySyncRequest (+0x91 = 1).
+    static LARGE_INTEGER last_block_qpc{};
+    LARGE_INTEGER now_block_qpc, freq_block;
+    QueryPerformanceCounter(&now_block_qpc);
+    QueryPerformanceFrequency(&freq_block);
+    const float block_dt = last_block_qpc.QuadPart != 0 ? std::clamp(static_cast<float>(now_block_qpc.QuadPart - last_block_qpc.QuadPart) / static_cast<float>(freq_block.QuadPart), 0.f, 0.05f) : 0.016f;
+    last_block_qpc = now_block_qpc;
+
+    bool direct_moved = false;
+    if (supported && !pinned && fg) {
+        const float fwd_key = (key_w ? 1.f : 0.f) - (key_s ? 1.f : 0.f);
+        const float right_key = (key_d ? 1.f : 0.f) - (key_a ? 1.f : 0.f);
+        const bool sprinting = !sneaking && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        const float target_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
+                                  : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
+                                  : g_block_walk_speed.load(std::memory_order_relaxed);
+
+        const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+        CameraPose cam;
+        if (world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
+            float dir[2] = {0.f, 0.f};
+            if (eldenring::motion::computeInputDirection(fwd_key, right_key, cam.forward, cam.right, dir)) {
+                float stepped_feet[3] = {};
+                if (blocks::stepBlockMovement(final_feet, dir, target_speed, block_dt, true, stepped_feet)) {
+                    // Check sneak edge clamp on stepped position
+                    if (sneaking) {
+                        const float desired_dx = stepped_feet[0] - final_feet[0];
+                        const float desired_dz = stepped_feet[2] - final_feet[2];
+                        blocks::SneakMoveResult sneak_res;
+                        {
+                            std::lock_guard<std::mutex> g(g_blocks_mutex);
+                            sneak_res = blocks::clampSneakEdgeMovement(g_blocks, final_feet, desired_dx, desired_dz);
+                        }
+                        stepped_feet[0] = final_feet[0] + sneak_res.dx;
+                        stepped_feet[2] = final_feet[2] + sneak_res.dz;
+                    }
+                    // Check swept block collision for stepped position
+                    blocks::Resolve step_r;
+                    {
+                        std::lock_guard<std::mutex> g(g_blocks_mutex);
+                        step_r = blocks::resolvePlayerSwept(g_blocks, final_feet, stepped_feet);
+                    }
+                    final_feet[0] = step_r.feet[0];
+                    final_feet[1] = step_r.feet[1];
+                    final_feet[2] = step_r.feet[2];
+                    direct_moved = true;
+                }
+            }
+        }
+    }
+
+    if (module != 0 && (pinned || sneak_clamped || direct_moved)) {
         WriteBytesSafe(module + layout::kPhysicsPosition, final_feet, sizeof(final_feet));
         WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, final_feet, sizeof(final_feet));
+        const uint8_t one = 1;
+        WriteBytesSafe(module + layout::kPhysicsProxySyncRequest, &one, sizeof(one));
     }
     if (module != 0 && supported && g_block_drive.load(std::memory_order_relaxed)) DriveVelocityFromKeys(module, pinned);
     if (supported) {
         g_movement_layer_ms.store(GetTickCount64(), std::memory_order_relaxed);
         ResetFallTimer(player);
+        UnlockAirMovement(player);
     }
     if (module != 0 && supported) {
         // The game has no ground under a block, so it thinks the player is falling (no jump, restricted movement). While the player
@@ -2281,11 +2490,14 @@ void BlocksCollisionStep() {
             const uint8_t one = 1;
             WriteBytesSafe(module + 0x92, &one, sizeof(one));
             WriteBytesSafe(module + 0x1D1, &one, sizeof(one));
+            WriteBytesSafe(module + 0x1D0, &one, sizeof(one)); // Keep airborne state active on blocks so Havok consumes +0x120 velocity!
         }
         const float zero = 0.f;
         WriteBytesSafe(module + 0x120 + 4, &zero, sizeof(zero));
+        WriteBytesSafe(module + 0x1B8, &zero, sizeof(zero)); // Suppress fall dynamics scalar (+0x1B8)
     }
     std::memcpy(prev, final_feet, sizeof(prev));
+
     have_prev = true;
     if (r.moved && (++pushes <= 20 || pushes % 500 == 0)) {
         Log("blocks: pushed the player out (%.2f %.2f %.2f) -> (%.2f %.2f %.2f)%s, %u so far", feet[0], feet[1], feet[2], r.feet[0], r.feet[1], r.feet[2],
@@ -2293,6 +2505,7 @@ void BlocksCollisionStep() {
     }
     static uint64_t last_diag_ms = 0;
     const uint64_t now = GetTickCount64();
+
     if (supported && now - last_diag_ms >= 1000) {
         last_diag_ms = now;
         const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
@@ -2308,6 +2521,68 @@ void BlocksCollisionStep() {
         Log("blocks: standing diag: feet=(%.2f %.2f %.2f) cam=(%.2f %.2f %.2f) first_person=%d 92=%u 93=%u vel=(%.2f %.2f %.2f) pinned=%d fall_t_before=%.2f fall_t_now=%.2f", final_feet[0], final_feet[1],
             final_feet[2], have_cam ? cam.position[0] : 0.f, have_cam ? cam.position[1] : 0.f, have_cam ? cam.position[2] : 0.f, g_first_person.load() ? 1 : 0, flags[0],
             flags[1], vel[0], vel[1], vel[2], pinned ? 1 : 0, g_pre_fall_t.load(), FallTimer(player));
+    }
+
+    EnemiesBlockCollisionStep(final_feet);
+}
+
+void EnemiesBlockCollisionStep(const float player_feet[3]) {
+    if (!g_enemy_block_collision.load(std::memory_order_relaxed) || !g_mc_mode.load(std::memory_order_relaxed)) return;
+    {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        if (g_blocks.count() == 0) return;
+    }
+    std::vector<EnemyInfo> enemies;
+    if (!enumerateEnemies(g_reader, g_img.base, enemies, 128)) return;
+
+    static unsigned enemy_pushes = 0;
+    static std::unordered_map<uintptr_t, std::array<float, 3>> prev_enemy_feet;
+
+    if (prev_enemy_feet.size() > 256) prev_enemy_feet.clear();
+
+    for (const EnemyInfo& e : enemies) {
+        if (e.chr == 0 || e.hp <= 0) continue;
+        float e_feet[3];
+        if (!detail::readPhysicsPosition(g_reader, g_img.base, e.chr, e_feet)) continue;
+
+        // Skip enemies far from the player
+        const float dx = e_feet[0] - player_feet[0];
+        const float dy = e_feet[1] - player_feet[1];
+        const float dz = e_feet[2] - player_feet[2];
+        if (dx * dx + dy * dy + dz * dz > 50.f * 50.f) continue;
+
+        blocks::Resolve er;
+        {
+            std::lock_guard<std::mutex> g(g_blocks_mutex);
+            if (g_blocks.count() == 0) return;
+            auto it = prev_enemy_feet.find(e.chr);
+            if (it != prev_enemy_feet.end()) {
+                const auto& prev = it->second;
+                const float mx = e_feet[0] - prev[0], my = e_feet[1] - prev[1], mz = e_feet[2] - prev[2];
+                if (mx * mx + my * my + mz * mz < 25.f) {
+                    er = blocks::resolveBoxSwept(g_blocks, prev.data(), e_feet, 0.35f, 1.8f);
+                } else {
+                    er = blocks::resolveBox(g_blocks, e_feet, 0.35f, 1.8f);
+                }
+            } else {
+                er = blocks::resolveBox(g_blocks, e_feet, 0.35f, 1.8f);
+            }
+        }
+        float final_e_feet[3] = {er.moved ? er.feet[0] : e_feet[0], er.moved ? er.feet[1] : e_feet[1], er.moved ? er.feet[2] : e_feet[2]};
+        prev_enemy_feet[e.chr] = {final_e_feet[0], final_e_feet[1], final_e_feet[2]};
+
+        if (er.moved) {
+            const uintptr_t emodule = detail::readPhysicsModule(g_reader, g_img.base, e.chr);
+            if (emodule != 0) {
+                WriteBytesSafe(emodule + layout::kPhysicsPosition, er.feet, sizeof(er.feet));
+                WriteBytesSafe(emodule + layout::kPhysicsPosition + 0x10, er.feet, sizeof(er.feet));
+                if (++enemy_pushes <= 10 || enemy_pushes % 100 == 0) {
+                    Log("blocks: pushed enemy %p out (%.2f %.2f %.2f) -> (%.2f %.2f %.2f)%s, %u total",
+                        reinterpret_cast<void*>(e.chr), e_feet[0], e_feet[1], e_feet[2], er.feet[0], er.feet[1], er.feet[2],
+                        er.standing ? " standing" : "", enemy_pushes);
+                }
+            }
+        }
     }
 }
 
@@ -2330,20 +2605,19 @@ void BlocksTick() {
 }
 
 // ---- MC jump (mc_jump=1) ------------------------------------------------------------------------------------------------------
-// The game's jump has a 0.7-0.8 s wind-up and is low, and its vertical speed cannot be written (the first experiment wrote 8.95 m/s and
-// read 0.84 back: +0x124 is only a read-out). So the whole arc is ours: the jump key is hidden from the game (DirectInput), on the press
-// (on the ground or on a block) the height is integrated here with Minecraft's numbers and written into the physics position every frame,
-// the "on the ground" flag is kept cleared so the game does not snap the player back, and the keys drive the horizontal speed. The landing
-// is the game's ground (a static ray down) or the top of a placed block. Game thread (camera update).
+// The game's jump has a 0.7-0.8 s wind-up and is low, and its vertical speed cannot be written (+0x124 is only a read-out).
+// So the whole arc is ours: the jump key is hidden from the game (DirectInput), on the press (on the ground or on a block)
+// the height is integrated using Minecraft kinematics (MinecraftJumpController: 8.4 m/s initial, 32 m/s^2 gravity, 0.98 drag, ~1.25m peak)
+// and written into the physics position every frame. Horizontal velocity carries momentum with sprint boost (1.15x) and air steering authority.
+// The landing is the game's ground (a static ray down) or the top of a placed block. Game thread (camera update).
 std::atomic<bool> g_mc_jump{false};
 std::atomic<int> g_mc_jump_vk{VK_SPACE};
-std::atomic<float> g_mc_jump_speed{8.944f};  // m/s: with 32 m/s^2 gravity the peak is 1.25 m, Minecraft's jump
-std::atomic<float> g_mc_gravity{32.f};
+std::atomic<float> g_mc_jump_speed{eldenring::jump::kMcJumpInitialVelocity};
+std::atomic<float> g_mc_gravity{eldenring::jump::kMcJumpGravity};
 
 void McJumpStep() {
     static bool prev_key = false;
-    static bool active = false;
-    static float y = 0.f, vy = 0.f, start_y = 0.f, peak = 0.f;
+    static eldenring::jump::MinecraftJumpController controller;
     static LARGE_INTEGER last_qpc{};
     static uint64_t start_ms = 0;
     LARGE_INTEGER now_qpc, freq;
@@ -2354,7 +2628,7 @@ void McJumpStep() {
     dt = std::clamp(dt, 0.f, 0.05f);
     if (!g_mc_jump.load(std::memory_order_relaxed) || !g_mc_mode.load(std::memory_order_relaxed) || g_inv_open.load(std::memory_order_relaxed) || !GameInForeground()) {
         prev_key = false;
-        active = false;
+        controller.cancel();
         return;
     }
     const uintptr_t player = PlayerChrPtr();
@@ -2369,49 +2643,110 @@ void McJumpStep() {
     SafeCopy(module + 0x92, &ground, 1);
     const uint8_t zero = 0, one = 1;
 
-    if (!active) {
-        if (edge && ground == 1 && !PlayerDead()) {
-            active = true;
-            y = start_y = feet[1];
-            vy = g_mc_jump_speed.load();
-            peak = 0.f;
+    if (!controller.isActive()) {
+        bool supported_by_block = false;
+        {
+            std::lock_guard<std::mutex> g(g_blocks_mutex);
+            if (g_blocks.count() != 0) {
+                supported_by_block = blocks::supportedByBlock(g_blocks, feet);
+            }
+        }
+        if (!supported_by_block) {
+            supported_by_block = g_block_supported.load(std::memory_order_relaxed);
+        }
+
+        const bool can_jump = eldenring::jump::canTakeOff(
+            ground == 1,
+            supported_by_block,
+            g_on_ground.load(std::memory_order_relaxed),
+            PlayerDead());
+
+        if (edge && can_jump) {
+            // Read input and camera direction to initialize horizontal momentum
+            const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
+            const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
+            const bool sneaking = (GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0;
+            const bool sprinting = !sneaking && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            const float target_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
+                                      : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
+                                      : g_block_walk_speed.load(std::memory_order_relaxed);
+
+            float init_vx = 0.f, init_vz = 0.f;
+            const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+            CameraPose cam;
+            if (world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
+                float dir[2] = {0.f, 0.f};
+                if (eldenring::motion::computeInputDirection(fwd_key, right_key, cam.forward, cam.right, dir)) {
+                    init_vx = dir[0] * target_speed;
+                    init_vz = dir[1] * target_speed;
+                }
+            }
+
+            controller.start(feet[1], init_vx, init_vz, sprinting, g_mc_jump_speed.load());
             start_ms = GetTickCount64();
-            Log("mcjump: start at y=%.3f, v=%.2f m/s, g=%.1f", y, vy, g_mc_gravity.load());
+            Log("mcjump: start at y=%.3f, v=%.2f m/s, sprint=%d, h_speed=%.2f m/s",
+                feet[1], controller.vy(), sprinting ? 1 : 0,
+                std::sqrt(controller.vx() * controller.vx() + controller.vz() * controller.vz()));
         } else {
             return;
         }
     }
 
     g_movement_layer_ms.store(GetTickCount64(), std::memory_order_relaxed);
-    // integrate (semi-implicit Euler)
-    vy -= g_mc_gravity.load() * dt;
-    float ny = y + vy * dt;
+    UnlockAirMovement(player);
+    ResetFallTimer(player);
+
+    // Compute input for air steering:
+    const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
+    const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
+    const bool sneaking = (GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0;
+    const bool sprinting = !sneaking && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    const float steer_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
+                            : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
+                            : g_block_walk_speed.load(std::memory_order_relaxed);
+
+    float dir[2] = {0.f, 0.f};
+    bool has_steer = false;
+    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    CameraPose cam;
+    if (world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
+        has_steer = eldenring::motion::computeInputDirection(fwd_key, right_key, cam.forward, cam.right, dir);
+    }
+
+    const auto res = controller.update(dt, dir[0], dir[1], steer_speed, has_steer);
+    float ny = res.y;
     float pos[3] = {feet[0], ny, feet[2]};
     bool landed = false;
-    {   // a block above: the head stops the rise
+    bool landed_on_block = false;
+
+    // Block collision & ceiling resolution:
+    {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         if (g_blocks.count() != 0) {
             const blocks::Resolve r = blocks::resolvePlayer(g_blocks, pos);
             if (r.moved && r.feet[1] < ny - 1e-4f) { // pushed down by a ceiling
                 pos[1] = r.feet[1];
                 ny = r.feet[1];
-                if (vy > 0.f) vy = 0.f;
-            } else if (vy <= 0.f && blocks::supportedByBlock(g_blocks, pos)) {
+                controller.hitCeiling(r.feet[1]);
+            } else if (res.vy <= 0.f && blocks::supportedByBlock(g_blocks, pos)) {
                 landed = true;
-            } else if (vy <= 0.f) {
-                const float prev_pos[3] = {feet[0], y, feet[2]};
+                landed_on_block = true;
+            } else if (res.vy <= 0.f) {
+                const float prev_pos[3] = {feet[0], controller.currentY() - res.vy * dt, feet[2]};
                 const blocks::Resolve sw = blocks::resolvePlayerSwept(g_blocks, prev_pos, pos);
                 if (sw.moved && sw.standing) {
                     pos[1] = sw.feet[1];
                     ny = sw.feet[1];
                     landed = true;
+                    landed_on_block = true;
                 }
             }
         }
     }
-    if (!landed && vy <= 0.f && g_los_enabled.load()) { // the game's ground: a ray down from just above the feet
+
+    if (!landed && res.vy <= 0.f && g_los_enabled.load()) { // the game's ground: a ray down from just above the feet
         const float from[3] = {feet[0], ny + 0.5f, feet[2]};
-        const float drop = std::max(2.0f, (y - start_y) + 2.5f);
+        const float drop = std::max(2.0f, (controller.currentY() - controller.startY()) + 2.5f);
         const float disp[3] = {0.f, -drop, 0.f};
         const RayResult r = CastStaticRay(from, disp);
         if (r.ok && r.hit) {
@@ -2420,26 +2755,55 @@ void McJumpStep() {
                 pos[1] = ground_y;
                 ny = ground_y;
                 landed = true;
+                landed_on_block = false;
             }
-        } else if (ny < start_y - 3.0f) { // no ground within reach (a cliff): hand the fall back to the game
-            Log("mcjump: no ground under the arc, the game takes over");
-            active = false;
+        } else if (ny < controller.startY() - 3.0f) { // no ground within reach: fall hands over to native Havok
+            Log("mcjump: no ground under the arc, native game takes over");
+            controller.cancel();
             WriteBytesSafe(module + 0x92, &zero, 1);
             return;
         }
     }
-    peak = std::max(peak, ny - start_y);
-    y = ny;
+
     WriteBytesSafe(module + layout::kPhysicsPosition, pos, sizeof(pos));
-    WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, pos, sizeof(pos)); // the previous position follows: no speed from the jump itself
-    DriveVelocityFromKeys(module, false);
+    WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, pos, sizeof(pos));
+    const uint8_t one_b = 1;
+    WriteBytesSafe(module + layout::kPhysicsProxySyncRequest, &one_b, sizeof(one_b));
+
+    // Drive horizontal velocity from controller momentum:
+    float vx = res.vx;
+    float vz = res.vz;
+    WriteBytesSafe(module + 0x120, &vx, sizeof(vx));
+    WriteBytesSafe(module + 0x120 + 8, &vz, sizeof(vz));
+
+    // Update orientation if steering in air
+    if (has_steer) {
+        float target_yaw = std::atan2(dir[0], dir[1]);
+        if (g_first_person.load(std::memory_order_relaxed)) {
+            float fx = cam.forward[0], fz = cam.forward[2];
+            if (fx * fx + fz * fz > 1e-4f) target_yaw = std::atan2(fx, fz);
+        }
+        const auto out_q = eldenring::motion::characterQuatFromHeading(target_yaw);
+        const float q_raw[4] = {out_q.x, out_q.y, out_q.z, out_q.w};
+        WriteBytesSafe(module + layout::kPhysicsOrientation, q_raw, sizeof(q_raw));
+    }
+
     if (landed) {
-        WriteBytesSafe(module + 0x92, &one, 1);
-        WriteBytesSafe(module + 0x1D1, &one, 1);
-        WriteBytesSafe(module + 0x1D0, &zero, 1);
-        active = false;
-        Log("mcjump: landed, peak %.2f m, %.2f s in the air, fall timer was %.2f", peak, static_cast<float>(GetTickCount64() - start_ms) / 1000.f, FallTimer(player));
+        controller.land(ny);
+        const auto flags = eldenring::jump::computeLandingFlags(landed_on_block);
+        const uint8_t ground_byte = flags.on_ground_flag ? 1 : 0;
+        const uint8_t air_byte = flags.airborne_flag ? 1 : 0;
+        const uint8_t supp_byte = flags.support_flag ? 1 : 0;
+        WriteBytesSafe(module + 0x92, &ground_byte, 1);
+        WriteBytesSafe(module + 0x1D1, &supp_byte, 1);
+        WriteBytesSafe(module + 0x1D0, &air_byte, 1);
+        const float zero_f = 0.f;
+        WriteBytesSafe(module + 0x1B8, &zero_f, sizeof(zero_f));
+        Log("mcjump: landed %s, peak %.2f m, %.2f s in the air, fall timer was %.2f",
+            landed_on_block ? "on block" : "on terrain", controller.peak(),
+            static_cast<float>(GetTickCount64() - start_ms) / 1000.f, FallTimer(player));
         LandFallTimer(player);
+        UnlockAirMovement(player);
     } else {
         WriteBytesSafe(module + 0x92, &zero, 1); // stay in the air state: the game must not snap the player to the ground
         WriteBytesSafe(module + 0x1D0, &one, 1);
@@ -2517,7 +2881,15 @@ void FlightStep() {
     if (!have_heading) keys.forward = keys.back = keys.left = keys.right = false; // no heading this frame: vertical only
     g_movement_layer_ms.store(now_ms, std::memory_order_relaxed);
     flight::step(own, keys, heading, dt, g_fly_h_speed.load(std::memory_order_relaxed), g_fly_v_speed.load(std::memory_order_relaxed));
-    if (have_heading) g_fly_yaw.store(flight::bodyYaw(heading), std::memory_order_relaxed);
+    if (have_heading) {
+        const float fly_yaw = flight::bodyYaw(heading);
+        g_fly_yaw.store(fly_yaw, std::memory_order_relaxed);
+        const auto out_q = eldenring::motion::characterQuatFromHeading(fly_yaw);
+        const float q_raw[4] = {out_q.x, out_q.y, out_q.z, out_q.w};
+        WriteBytesSafe(module + layout::kPhysicsOrientation, q_raw, sizeof(q_raw));
+    }
+    WriteFallTimer(player, 0.f);
+    UnlockAirMovement(player);
     // Written every frame, also when standing still in the air: the game's gravity must not pull the player down between frames.
     WriteBytesSafe(module + layout::kPhysicsPosition, own, sizeof(own));
     WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, own, sizeof(own));
@@ -2545,7 +2917,7 @@ void InventoryTick(bool fg) {
     static bool prev_digit[mc::Inventory::kHotbar] = {};
     const bool want = fg && WantSuppress() && g_mc_mode.load() && !PlayerDead();
     bool open = g_inv_open.load();
-    const bool key = fg && (GetAsyncKeyState(g_inv_vk.load()) & 0x8000) != 0;
+    const bool key = fg && ((GetAsyncKeyState(g_inv_vk.load()) | GetAsyncKeyState('E')) & 0x8000) != 0;
     const bool esc = fg && (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
     auto closeIt = [&](const char* why) {
         {
@@ -2834,8 +3206,12 @@ DWORD WINAPI KeyThread(LPVOID) {
             if (g_mc_jump.load() && g_mc_mode.load() && fg && !g_inv_open.load()) {
                 hidden[n_hidden++] = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(g_mc_jump_vk.load()), MAPVK_VK_TO_VSC));
             }
+            if (g_disable_vanilla_roll.load() && g_mc_mode.load() && fg && !g_inv_open.load()) {
+                const auto roll_mask = eldenring::roll::computeRollMask(true, true, g_roll_vk.load());
+                n_hidden = eldenring::roll::mergeMaskedKeys(hidden, sizeof(hidden) / sizeof(hidden[0]), n_hidden, roll_mask.scancodes, roll_mask.count);
+            }
             if (g_flying.load()) { // while flying the game never sees the movement keys: the position is ours
-                for (const int dik : flight::kHiddenKeys) hidden[n_hidden++] = dik;
+                n_hidden = eldenring::roll::mergeMaskedKeys(hidden, sizeof(hidden) / sizeof(hidden[0]), n_hidden, flight::kHiddenKeys, sizeof(flight::kHiddenKeys) / sizeof(flight::kHiddenKeys[0]));
             }
             erin::SetMaskedKeys(hidden, n_hidden);
         }
@@ -3818,7 +4194,11 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.cam.right = {cam.right[0], cam.right[1], cam.right[2]};
         steve.cam.up = {cam.up[0], cam.up[1], cam.up[2]};
         steve.cam.forward = {cam.forward[0], cam.forward[1], cam.forward[2]};
-        steve.cam.position = {cam.position[0], cam.position[1], cam.position[2]};
+        if (g_first_person.load(std::memory_order_relaxed)) {
+            steve.cam.position = {feet[0], feet[1] + g_eye_height.load(std::memory_order_relaxed), feet[2]};
+        } else {
+            steve.cam.position = {cam.position[0], cam.position[1], cam.position[2]};
+        }
         steve.fov_y = cam.fov_y;
         steve.feet[0] = feet[0];
         steve.feet[1] = feet[1];
@@ -3910,10 +4290,18 @@ void SetupOverlay() {
                 else if (key == "mc_jump_speed") g_mc_jump_speed.store(std::clamp(value, 1.f, 20.f));
                 else if (key == "blocks") g_blocks_enabled.store(value != 0.f);
                 else if (key == "block_drive") g_block_drive.store(value != 0.f);
-                else if (key == "block_speed") g_block_walk_speed.store(std::clamp(value, 0.5f, 12.f));
+                else if (key == "instant_turn") g_instant_turn.store(value != 0.f);
+                else if (key == "turn_speed") g_turn_speed.store(std::clamp(value, 0.5f, 50.f));
+                else if (key == "block_speed" || key == "walk_speed") g_block_walk_speed.store(std::clamp(value, 0.5f, 15.f));
+                else if (key == "sneak_speed") g_sneak_speed.store(std::clamp(value, 0.2f, 10.f));
+                else if (key == "sprint_speed") g_sprint_speed.store(std::clamp(value, 0.5f, 20.f));
+                else if (key == "sneak_key") g_sneak_vk.store(static_cast<int>(value));
+                else if (key == "disable_vanilla_roll" || key == "disable_roll") g_disable_vanilla_roll.store(value != 0.f);
+                else if (key == "roll_key") g_roll_vk.store(static_cast<int>(value));
                 else if (key == "block_anchor") g_block_anchor.store(value != 0.f);
                 else if (key == "block_ground") g_block_ground.store(value != 0.f);
                 else if (key == "block_collision") g_block_collision.store(value != 0.f);
+                else if (key == "enemy_block_collision" || key == "enemy_collision") g_enemy_block_collision.store(value != 0.f);
                 else if (key == "reach") g_reach.store(std::clamp(value, 1.f, 8.f));
                 else if (key == "no_stagger") g_no_stagger.store(value != 0.f);
                 else if (key == "inv_key") g_inv_vk.store(static_cast<int>(value));

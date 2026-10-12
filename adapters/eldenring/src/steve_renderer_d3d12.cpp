@@ -72,10 +72,10 @@ float4 PSDepthView(FullOut i) : SV_Target {
 
 float4 PSMain(VSOut i) : SV_Target {
     if (scene.w > 0.5) {
-        // Reverse-Z game depth: nearer = larger, 0 = far. SV_POSITION.w is 1 / view-space z in a pixel shader.
+        // Reverse-Z game depth: nearer = larger, 0 = far. SV_POSITION.w is view-space z in D3D12 pixel shader.
         int2 texel = int2(i.pos.xy / dims.zw * dims.xy);
         float gd = scene_depth.Load(int3(texel, 0)).r;
-        float steve_z = rcp(i.pos.w);
+        float steve_z = i.pos.w;
         if (scene.w > 2.5) {
             // Measurement: the constant K = depth * view z over the figure's pixels (the native character is drawn
             // in the same place, so the scene depth here is its own distance).
@@ -116,7 +116,7 @@ float4 PSShadow(VSOut i) : SV_Target {
     if (scene.w > 0.5) {
         int2 texel = int2(i.pos.xy / dims.zw * dims.xy);
         float gd = scene_depth.Load(int3(texel, 0)).r;
-        float steve_z = rcp(i.pos.w);
+        float steve_z = i.pos.w;
         const float near_skip = (scene.w > 1.1 && scene.w < 1.4) ? 2.2 : 0.0;
         if (steve_z > near_skip && gd > 0.0 && scene.x / gd < steve_z * (1.0 - scene.y) - scene.z) discard;
     }

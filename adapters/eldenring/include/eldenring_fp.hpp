@@ -234,8 +234,11 @@ private:
 };
 
 // Sways the hand behind the view: bob follows the angle with half the gap closed per tick.
+// Clamped to [-kMaxSwayDeg, kMaxSwayDeg] to prevent viewmodel lag / stutter appearance during rapid mouse turns.
 class SwayFilter {
 public:
+    static constexpr float kMaxSwayDeg = 4.0f;
+
     // angles in degrees; returns (pitch - bob, yaw - bob)
     void update(float dt, float pitch_deg, float yaw_deg, float& d_pitch, float& d_yaw) {
         if (!seeded_) {
@@ -249,11 +252,11 @@ public:
         while (dy > 180.f) dy -= 360.f;
         while (dy < -180.f) dy += 360.f;
         yaw_bob_ += dy * k;
-        d_pitch = pitch_deg - pitch_bob_;
+        d_pitch = std::clamp(pitch_deg - pitch_bob_, -kMaxSwayDeg, kMaxSwayDeg);
         float out_yaw = yaw_deg - yaw_bob_;
         while (out_yaw > 180.f) out_yaw -= 360.f;
         while (out_yaw < -180.f) out_yaw += 360.f;
-        d_yaw = out_yaw;
+        d_yaw = std::clamp(out_yaw, -kMaxSwayDeg, kMaxSwayDeg);
     }
 
 private:

@@ -52,8 +52,11 @@ add_executable(mc_tests
     test_eldenring_blocks.cpp
     test_eldenring_blockmesh.cpp
     test_eldenring_blockicon.cpp
+    test_eldenring_action_lock.cpp
     test_eldenring_hud_anim.cpp
     test_eldenring_jump.cpp
+    test_eldenring_orientation.cpp
+    test_eldenring_roll.cpp
     test_entity_model.cpp
     test_eldenring_shield.cpp
     test_eldenring_flags.cpp
