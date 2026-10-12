@@ -149,6 +149,12 @@ TEST(AnimationLibraryTest, SteveAnimationStateMachineTransitionsByInput) {
     sm.update(0.05f, input);
     EXPECT_EQ(sm.activeClip(), "attack");
 
+    // In attack swing, right arm pitches forward (positive in Blockbench -> negative in canonical pitch)
+    auto attack_transforms = sm.getTransforms();
+    const auto& right_arm_rot = attack_transforms[static_cast<size_t>(StevePart::RightArm)].rot;
+    // Canonical pitch rotates about Y; negative pitch gives positive y in quaternion when pitched forward
+    EXPECT_GT(right_arm_rot.y, 0.0f);
+
     // 6. Back to idle
     input = SteveAnimInput{};
     sm.update(0.05f, input);

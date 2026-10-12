@@ -13,7 +13,9 @@ constexpr float kPi = std::numbers::pi_v<float>;
 
 // Helper: Euler angles in degrees (X=pitch, Y=yaw, Z=roll) to Quat
 Quat quatFromEulerDegrees(const Vec3& deg) {
-    const float pitch = deg.x * (kPi / 180.0f);
+    // In Blockbench / Minecraft Bedrock models, positive X rotation pitches arms/legs forward.
+    // In canonical rig frame (X forward, Y left, Z up), pitching forward requires negative canonical pitch rotation about Y.
+    const float pitch = -deg.x * (kPi / 180.0f);
     const float yaw   = deg.y * (kPi / 180.0f);
     const float roll  = deg.z * (kPi / 180.0f);
 
@@ -481,6 +483,18 @@ void ClipPlayer::update(float dt) {
     }
 }
 
+void ClipPlayer::setTime(float time) {
+    current_time_ = time;
+    if (current_clip_ && current_clip_->length > 0.0f) {
+        if (loop_) {
+            current_time_ = std::fmod(current_time_, current_clip_->length);
+            if (current_time_ < 0.0f) current_time_ += current_clip_->length;
+        } else {
+            current_time_ = std::clamp(current_time_, 0.0f, current_clip_->length);
+        }
+    }
+}
+
 EvaluatedBonePose ClipPlayer::sampleBone(std::string_view bone_name) const {
     EvaluatedBonePose res;
     if (!current_clip_) return res;
@@ -593,8 +607,21 @@ void SteveAnimationStateMachine::update(float dt, const SteveAnimInput& input) {
         blend_time = 0.2f;
     }
 
-    player_.play(target_clip, blend_time, true);
-    player_.update(dt);
+    const bool is_attack = (input.swing_progress > 0.0f);
+    player_.play(target_clip, blend_time, !is_attack);
+
+    if (is_attack) {
+        // Drive attack animation directly from Minecraft melee swing_progress [0, 1]
+        // This ensures the punch/slash syncs perfectly with player hit cadence (attack clip is 0.4s)
+        player_.setTime(input.swing_progress * 0.4f);
+    } else if (target_clip == "walk" || target_clip == "sprint" || (target_clip == "sneak" && speed > 0.1f)) {
+        // Velocity-based stride frequency (authentically matching Steve's walking cadence)
+        // Reference walk speed is ~4.317 m/s for a 1.0s clip
+        const float playback_rate = std::clamp(speed / 4.317f, 0.5f, 2.5f);
+        player_.update(dt * playback_rate);
+    } else {
+        player_.update(dt);
+    }
 }
 
 SteveAnimator::PartTransforms SteveAnimationStateMachine::getTransforms() const {

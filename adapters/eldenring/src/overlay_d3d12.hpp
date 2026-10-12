@@ -63,6 +63,8 @@ struct SteveState {
     float bow_charge{0.f};      // 0..1 how far the bow is drawn (0 = not drawing): the third-person arms aim
     float bow_ticks{0.f};       // ticks the bow has been drawn (0 = not drawing): the first-person bow pose animates with it
     float speed_mps{0.f};       // horizontal speed, for the walking bob
+    bool crouching{false};      // sneaking (Shift pressed)
+    bool blocking{false};       // holding shield or blocking
     bool on_ground{true};
     bool shadow{false};        // draw the blob shadows under the figure and the summons (mc_er_steve.txt: shadow=1)
     bool ground_valid{false};  // ground_y is the height of the ground under the feet this frame (otherwise the feet's own height is used)

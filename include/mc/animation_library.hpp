@@ -101,6 +101,9 @@ public:
     // Update playhead by dt seconds
     void update(float dt);
 
+    // Explicitly set current playhead time
+    void setTime(float time);
+
     // Sample evaluated pose for a specific bone
     [[nodiscard]] EvaluatedBonePose sampleBone(std::string_view bone_name) const;
 

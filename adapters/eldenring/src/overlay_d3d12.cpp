@@ -920,6 +920,8 @@ void RenderFrame(IDXGISwapChain* sc) {
         mc::SteveAnimInput anim_in = g_motion.update(dt, steve.feet, steve.yaw);
         anim_in.swing_progress = steve.swing;
         anim_in.bow_charge = steve.bow_charge;
+        anim_in.is_crouching = steve.crouching;
+        anim_in.is_blocking = steve.blocking;
         g_head.update(steve.cam.forward.x, steve.cam.forward.y, steve.cam.forward.z, steve.yaw, anim_in);
         mc::SteveAnimator::PartTransforms active_transforms{};
         {
