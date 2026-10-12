@@ -647,6 +647,30 @@ SteveAnimator::PartTransforms SteveAnimationStateMachine::getTransforms() const 
         applyHead(StevePart::Hat);
     }
 
+    // Scale limb swing amplitude with movement speed when walking or sneaking,
+    // exactly reproducing SteveAnimator's authentic Minecraft physics feel.
+    if (player_.currentClip() == "walk" || player_.currentClip() == "sneak") {
+        const float speed = std::sqrt(last_input_.forward_speed * last_input_.forward_speed +
+                                      last_input_.strafe_speed * last_input_.strafe_speed);
+        // At normal speed (~4.3 m/s) scale is 1.0; at slow creeping speeds scale smoothly decreases.
+        const float limb_scale = std::clamp(speed / 4.317f, 0.2f, 1.0f);
+        if (limb_scale < 0.999f) {
+            const Quat identity{0.0f, 0.0f, 0.0f, 1.0f};
+            auto scaleLimb = [&](StevePart part) {
+                auto& t = transforms[static_cast<size_t>(part)];
+                t.rot = slerp(identity, t.rot, limb_scale);
+            };
+            scaleLimb(StevePart::RightArm);
+            scaleLimb(StevePart::RightSleeve);
+            scaleLimb(StevePart::LeftArm);
+            scaleLimb(StevePart::LeftSleeve);
+            scaleLimb(StevePart::RightLeg);
+            scaleLimb(StevePart::RightPants);
+            scaleLimb(StevePart::LeftLeg);
+            scaleLimb(StevePart::LeftPants);
+        }
+    }
+
     return transforms;
 }
 

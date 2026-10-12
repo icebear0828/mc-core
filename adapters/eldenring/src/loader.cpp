@@ -3783,7 +3783,9 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     steve.first_person = g_first_person.load() && g_slot_probe.load() < 0;
     steve.speed_mps = g_walk_speed.load();
     steve.on_ground = g_on_ground.load();
-    steve.crouching = g_sneak_active.load(std::memory_order_relaxed);
+    const bool sneaking_now = GameInForeground() && ((GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0);
+    g_sneak_active.store(sneaking_now, std::memory_order_relaxed);
+    steve.crouching = sneaking_now;
     if (g_slot_probe.load() >= 0 || g_first_person.load()) steve.draw = false; // slot probing: show only the native model, with the one slot missing
     return true;
 }
