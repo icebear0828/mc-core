@@ -40,6 +40,8 @@ EVENTS = [
     # experience
     "entity.experience_orb.pickup", "entity.player.levelup",
     "entity.arrow.shoot", "entity.arrow.hit", "entity.arrow.hit_player", "item.crossbow.shoot",
+    # tnt & explosion
+    "entity.tnt.primed", "entity.generic.explode",
 ]
 
 

@@ -29,6 +29,7 @@ add_library(mc_core STATIC
     include/mc/rig.hpp
     include/mc/item_model.hpp
     include/mc/entity_model.hpp
+    include/mc/tnt.hpp
     include/mc/contracts/physics_adapter.hpp
     include/mc/contracts/render_adapter.hpp
     include/mc/contracts/combat_adapter.hpp
@@ -46,6 +47,7 @@ add_library(mc_core STATIC
     src/rig.cpp
     src/item_model.cpp
     src/entity_model.cpp
+    src/tnt.cpp
 )
 
 target_include_directories(mc_core

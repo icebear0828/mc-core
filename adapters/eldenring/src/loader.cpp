@@ -40,6 +40,7 @@
 #include "eldenring_audio_data.hpp"
 #include "eldenring_blockmesh.hpp"
 #include "eldenring_blocks.hpp"
+#include "eldenring_tnt.hpp"
 #include "eldenring_buddy.hpp"
 #include "eldenring_chrscan.hpp"
 #include "eldenring_mobs.hpp"
@@ -1920,6 +1921,7 @@ void CycleHiddenSlot(int& cursor) {
 // Right click with a block in hand places it, left click on a placed block breaks it. The game's physics knows nothing about the
 // blocks: the player is kept out of them by writing the physics position (soft collision); enemies and arrows ignore them.
 blocks::BlockGrid g_blocks;
+eldenring::tnt::ErTntManager g_tnt_mgr;
 std::mutex g_blocks_mutex;
 std::atomic<bool> g_blocks_enabled{true};      // mc_er_steve.txt: blocks=0 turns placing and breaking off
 std::atomic<float> g_block_walk_speed{4.317f}; // Minecraft walk speed: 4.317 m/s
@@ -2055,6 +2057,43 @@ bool TryUseSpawnEgg() {
     std::lock_guard<std::mutex> g(g_melee_mutex);
     if (creative::consumesItems(CurrentGameMode())) g_melee.consumeAt(g_melee.selectedSlot());
     g_melee.startSwing();
+    return true;
+}
+
+// Right click on a placed TNT block ignites it.
+bool TryIgniteTnt() {
+    if (!g_blocks_enabled.load()) return false;
+    const BlockTarget t = FindBlockTarget();
+    if (!t.have || !t.on_block) return false;
+
+    bool is_tnt = false;
+    {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        is_tnt = (g_blocks.get(t.cell) == mc::BlockId::Tnt);
+    }
+    if (!is_tnt) return false;
+
+    mc::ItemId held = mc::ItemId::None;
+    {
+        std::lock_guard<std::mutex> g(g_melee_mutex);
+        held = g_melee.heldItem();
+    }
+    // If holding another placeable block and not holding FlintAndSteel, let placement handle it
+    if (held != mc::ItemId::FlintAndSteel && (held == mc::ItemId::BlockDirt || held == mc::ItemId::BlockStone)) {
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        if (!g_tnt_mgr.tryIgniteBlock(g_blocks, t.cell)) return false;
+    }
+    SendBlockMesh();
+    eraudio::Play("entity.tnt.primed", 1.0f);
+    Log("tnt: ignited TNT at (%d %d %d)", t.cell.x, t.cell.y, t.cell.z);
+    {
+        std::lock_guard<std::mutex> g(g_melee_mutex);
+        g_melee.startSwing();
+    }
     return true;
 }
 
@@ -2586,6 +2625,47 @@ void EnemiesBlockCollisionStep(const float player_feet[3]) {
     }
 }
 
+// Triggers explosion sound, particles, enemy damage, and player damage for detonating TNT.
+void TriggerTntExplosionEffectsAndDamage(const float center[3]) {
+    eraudio::Play("entity.generic.explode", 1.0f);
+    erov::SpawnFx(erov::FxKind::Crit, center, 16);
+
+    const uintptr_t player = PlayerChrPtr();
+    float feet[3] = {};
+    if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(player), feet)) {
+        std::vector<EnemyInfo> list;
+        if (enumerateEnemies(g_reader, g_img.base, list, 2000)) {
+            for (const auto& e : list) {
+                const float ex_pos[3] = {feet[0] + e.rel_x, feet[1] + e.rel_y, feet[2] + e.rel_z};
+                const float diff[3] = {ex_pos[0] - center[0], ex_pos[1] - center[1], ex_pos[2] - center[2]};
+                const float dist = std::sqrt(diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]);
+                if (dist <= 8.0f) {
+                    const float exposure = 1.0f - (dist / 8.0f);
+                    const int dmg = static_cast<int>(std::round(1500.0f * exposure));
+                    if (dmg > 0) {
+                        g_queue.enqueue(e.chr, dmg, NowTick(), 4u | (static_cast<uint32_t>(std::min(255, dmg / 10)) << 8));
+                        Log("tnt: explosion hit enemy chr=%p for %d dmg at dist=%.1f", reinterpret_cast<void*>(e.chr), dmg, dist);
+                    }
+                }
+            }
+        }
+
+        const float player_diff[3] = {feet[0] - center[0], feet[1] - center[1], feet[2] - center[2]};
+        const float player_dist = std::sqrt(player_diff[0] * player_diff[0] + player_diff[1] * player_diff[1] + player_diff[2] * player_diff[2]);
+        if (player_dist <= 8.0f) {
+            const float exposure = 1.0f - (player_dist / 8.0f);
+            const int32_t p_dmg = static_cast<int32_t>(std::round(400.0f * exposure));
+            if (p_dmg > 0) {
+                Vitals v;
+                if (readVitals(g_reader, g_img.base, player, v)) {
+                    eraudio::Play("entity.player.hurt");
+                    Log("tnt: explosion hit player for %d dmg at dist=%.1f", p_dmg, player_dist);
+                }
+            }
+        }
+    }
+}
+
 // Called every key-thread tick: forgets the blocks when the game loads another map (the world coordinates are not the same any more),
 // and keeps the player out of the blocks.
 void BlocksTick() {
@@ -2597,9 +2677,35 @@ void BlocksTick() {
             std::lock_guard<std::mutex> g(g_blocks_mutex);
             if (g_blocks.count() != 0) Log("blocks: loading screen, %zu blocks forgotten", g_blocks.count());
             g_blocks.clear();
+            g_tnt_mgr.clear();
         }
         prev_loading = ls.screen_loading;
     }
+
+    // Step active primed TNT
+    static uint64_t last_tnt_ms = 0;
+    const uint64_t now_ms = GetTickCount64();
+    if (last_tnt_ms == 0) last_tnt_ms = now_ms;
+    const float dt = std::clamp(static_cast<float>(now_ms - last_tnt_ms) / 1000.f, 0.001f, 0.1f);
+    last_tnt_ms = now_ms;
+
+    {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        if (g_tnt_mgr.activeCount() > 0) {
+            const size_t prev_active = g_tnt_mgr.activeCount();
+            for (size_t i = 0; i < g_tnt_mgr.activeCount(); ++i) {
+                const auto* t = g_tnt_mgr.getTnt(i);
+                if (t && t->fuse <= dt) {
+                    TriggerTntExplosionEffectsAndDamage(t->pos);
+                }
+            }
+            g_tnt_mgr.step(dt, g_blocks);
+            if (g_tnt_mgr.activeCount() != prev_active) {
+                SendBlockMesh();
+            }
+        }
+    }
+
     SendBlockMesh();
     if (!g_camstep_installed.load()) BlocksCollisionStep(); // without the camera hook the collision runs here (less smooth)
 }
@@ -3217,7 +3323,9 @@ DWORD WINAPI KeyThread(LPVOID) {
         }
         const bool inv_open = g_inv_open.load();
         const bool right_edge = !inv_open && g_input_enabled.load() && erin::TakeRightClick();
-        if (right_edge && fg && WantSuppress() && !PlayerDead() && TryPlaceBlock()) {
+        if (right_edge && fg && WantSuppress() && !PlayerDead() && TryIgniteTnt()) {
+            // a placed TNT block was ignited
+        } else if (right_edge && fg && WantSuppress() && !PlayerDead() && TryPlaceBlock()) {
             // a block was placed (or the click was refused): not a meal
         } else if (right_edge && fg && WantSuppress() && !PlayerDead() && g_mc_mode.load() && TryUseSpawnEgg()) {
             // the zombie spawn egg: a summon request (or a refusal): not a meal
