@@ -157,6 +157,32 @@ inline M4 itemDisplay() {
     return mul(p, scale(0.68f));
 }
 
+// The display transform of the shield in first person: models/item/shield.json (idle) and shield_blocking.json (`blocking`, the use animation),
+// firstperson_righthand / firstperson_lefthand (1.21.8), as ItemTransform.apply does it: the left hand negates the y and z rotation and the x
+// translation, then translate * rotationXYZ (= Rx * Ry * Rz) * scale. It is applied to the shield model of buildShieldFirstPersonMesh, which
+// already includes the shield renderer's scale(1, -1, -1) and the item renderer's translate(-0.5).
+inline M4 shieldFpDisplay(bool left_hand, bool blocking) {
+    struct J { float rot[3]; float trans[3]; };
+    static constexpr J kRight[2] = {{{0.f, 180.f, 5.f}, {-10.f, 2.f, -10.f}}, {{0.f, 180.f, -5.f}, {-15.f, 5.f, -11.f}}};
+    static constexpr J kLeft[2] = {{{0.f, 180.f, 5.f}, {10.f, 0.f, -10.f}}, {{0.f, 180.f, -5.f}, {5.f, 5.f, -11.f}}};
+    const J& j = (left_hand ? kLeft : kRight)[blocking ? 1 : 0];
+    const float ry = left_hand ? -j.rot[1] : j.rot[1], rz = left_hand ? -j.rot[2] : j.rot[2];
+    const float side = left_hand ? -1.f : 1.f;
+    M4 p = translate(side * j.trans[0] / 16.f, j.trans[1] / 16.f, j.trans[2] / 16.f);
+    p = mul(p, mul(rotX(j.rot[0]), mul(rotY(ry), rotZ(rz))));
+    return mul(p, scale(1.25f));
+}
+
+// The main-hand pose of a shield: raised (use animation BLOCK) it is only the arm transform, idle it follows the swing like any item.
+inline M4 shieldMainHandPose(bool blocking, float swing, float equipped) {
+    return blocking ? translate(0.56f, -0.52f + equipped * -0.6f, -0.72f) : itemPose(swing, equipped);
+}
+
+// The left-hand (offhand) item pose before display transform (ItemInHandRenderer.renderArmWithItem, left hand).
+inline M4 offhandItemPose(float equipped) {
+    return translate(-0.56f, -0.52f + equipped * -0.6f, -0.72f);
+}
+
 // The display transform of a block held in the first-person right hand (block/block: rotation (0, 45, 0), no translation, scale 0.4),
 // applied to the unit cube centred on the origin.
 inline M4 blockDisplay() { return mul(rotY(45.f), scale(0.4f)); }

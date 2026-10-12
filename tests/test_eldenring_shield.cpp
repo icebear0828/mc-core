@@ -1,0 +1,164 @@
+#include <gtest/gtest.h>
+
+#include "eldenring_hudtex.hpp"
+#include "eldenring_shield.hpp"
+#include "mc/hud_layout.hpp"
+#include "mc/inventory.hpp"
+
+using namespace eldenring::shield;
+
+TEST(EldenRingShield, AngleFacingForwardBlocksWithin100Degrees) {
+    // Player facing along +Z (yaw = 0): forward is (0, 0, 1)
+    const float player_pos[3] = {0.f, 0.f, 0.f};
+    const float player_yaw = 0.f;
+
+    // Attacker straight ahead (+Z) -> 0 degrees, inside 100 deg cone
+    const float front_attacker[3] = {0.f, 0.f, 10.f};
+    EXPECT_TRUE(isAttackBlocked(player_pos, player_yaw, front_attacker));
+
+    // Attacker at 40 degrees forward-right -> cos(40 deg) ~ 0.766 >= cos(50 deg) ~ 0.642 -> blocked
+    const float right_front[3] = {6.f, 0.f, 7.15f};
+    EXPECT_TRUE(isAttackBlocked(player_pos, player_yaw, right_front));
+
+    // Attacker at 40 degrees forward-left -> blocked
+    const float left_front[3] = {-6.f, 0.f, 7.15f};
+    EXPECT_TRUE(isAttackBlocked(player_pos, player_yaw, left_front));
+
+    // Attacker at 60 degrees (outside 100 deg arc, cone half-angle is 50 deg) -> not blocked
+    const float flank_attacker[3] = {8.66f, 0.f, 5.0f};
+    EXPECT_FALSE(isAttackBlocked(player_pos, player_yaw, flank_attacker));
+
+    // Attacker directly behind -> not blocked
+    const float behind_attacker[3] = {0.f, 0.f, -5.f};
+    EXPECT_FALSE(isAttackBlocked(player_pos, player_yaw, behind_attacker));
+}
+
+TEST(EldenRingShield, ShieldControllerRequiresShieldAndRightClick) {
+    ShieldController s;
+    EXPECT_FALSE(s.isBlocking());
+
+    // Right held without shield -> not blocking
+    s.update(0.1f, true, false);
+    EXPECT_FALSE(s.isBlocking());
+
+    // Right held with shield -> starts raise前摇 (5 ticks = 0.25s)
+    s.update(0.1f, true, true);
+    EXPECT_FALSE(s.isBlocking()); // 0.1s < 0.25s
+    s.update(0.16f, true, true);  // total 0.26s >= 0.25s
+    EXPECT_TRUE(s.isBlocking());
+
+    // Release right click -> immediately lowers shield
+    s.update(0.01f, false, true);
+    EXPECT_FALSE(s.isBlocking());
+}
+
+TEST(EldenRingShield, OffhandSlotInInventoryHoldsShieldAndTotem) {
+    mc::Inventory inv;
+    EXPECT_TRUE(inv.offhand().empty());
+
+    inv.setOffhand({mc::ItemId::Shield, 1});
+    EXPECT_EQ(inv.offhand().item, mc::ItemId::Shield);
+    EXPECT_EQ(inv.offhand().count, 1u);
+    EXPECT_TRUE(inv.has(mc::ItemId::Shield));
+
+    // Consuming offhand
+    EXPECT_TRUE(inv.consumeOffhand());
+    EXPECT_TRUE(inv.offhand().empty());
+}
+
+TEST(EldenRingShield, TotemInOffhandTriggersClamp) {
+    mc::Inventory inv;
+    inv.setOffhand({mc::ItemId::TotemOfUndying, 1});
+
+    // Check if player holds totem either in main hand OR offhand
+    EXPECT_TRUE(inv.holdsOrOffhand(mc::ItemId::TotemOfUndying, 0)); // slot 0 empty, but offhand has it!
+}
+
+TEST(EldenRingShield, ShieldBlocksOnlyFrontHitsWithKnownAttackerAndPositions) {
+    const float player_pos[3] = {0.f, 0.f, 0.f};
+    const float front[3] = {0.f, 0.f, 10.f};
+    const float behind[3] = {0.f, 0.f, -10.f};
+    // facing +Z: front is blocked, behind is not
+    EXPECT_TRUE(shieldBlocksHit(true, true, player_pos, 0.f, front));
+    EXPECT_FALSE(shieldBlocksHit(true, true, player_pos, 0.f, behind));
+    // environmental damage (no attacker) is never blocked: Minecraft's shield does not stop falls, fire or poison
+    EXPECT_FALSE(shieldBlocksHit(false, true, player_pos, 0.f, front));
+    // unreadable positions must not turn into invulnerability
+    EXPECT_FALSE(shieldBlocksHit(true, false, player_pos, 0.f, front));
+}
+
+TEST(EldenRingShield, ShieldItemHasDedicatedUVDistinctFromTotem) {
+    const auto* shield_uv = eldenring::render::uvForItem(mc::ItemId::Shield);
+    const auto* totem_uv = eldenring::render::uvForItem(mc::ItemId::TotemOfUndying);
+    ASSERT_NE(shield_uv, nullptr);
+    ASSERT_NE(totem_uv, nullptr);
+    EXPECT_FLOAT_EQ(shield_uv->u0, mc::hud::kUV_ITEM_SHIELD.u0);
+    EXPECT_FLOAT_EQ(shield_uv->v0, mc::hud::kUV_ITEM_SHIELD.v0);
+    EXPECT_NE(shield_uv, totem_uv);
+}
+
+TEST(EldenRingShield, OffhandLayoutCoordinatesAlignSeamlessly) {
+    const mc::HudLayout layout(1920.f, 1080.f);
+    const mc::HudRect off = layout.offhand();
+    const mc::HudRect bar = layout.hotbar();
+    const mc::HudRect item = layout.offhandItem();
+    const float s = static_cast<float>(layout.scale());
+
+    // Seamless connection: offhand right edge equals hotbar left edge
+    EXPECT_FLOAT_EQ(off.x + off.w, bar.x);
+    // Y offset: 1px above hotbar
+    EXPECT_FLOAT_EQ(off.y, bar.y - 1.0f * s);
+    EXPECT_FLOAT_EQ(off.w, 29.0f * s);
+    EXPECT_FLOAT_EQ(off.h, 24.0f * s);
+
+    // Item centered inside offhand
+    EXPECT_FLOAT_EQ(item.x, off.x + 3.0f * s);
+    EXPECT_FLOAT_EQ(item.y, off.y + 4.0f * s);
+    EXPECT_FLOAT_EQ(item.w, 16.0f * s);
+    EXPECT_FLOAT_EQ(item.h, 16.0f * s);
+}
+
+TEST(EldenRingShield, FrontDotIsTheCosineBetweenFacingAndAttackerDirection) {
+    const float player_pos[3] = {1.f, 5.f, 2.f};
+    const float front[3] = {1.f, 5.f, 12.f};   // +Z of the player
+    const float right[3] = {11.f, 5.f, 2.f};   // +X of the player
+    const float behind[3] = {1.f, 5.f, -8.f};
+    EXPECT_NEAR(frontDot(player_pos, 0.f, front), 1.f, 1e-5f);
+    EXPECT_NEAR(frontDot(player_pos, 0.f, right), 0.f, 1e-5f);
+    EXPECT_NEAR(frontDot(player_pos, 0.f, behind), -1.f, 1e-5f);
+    // turning the player by pi swaps front and behind
+    EXPECT_NEAR(frontDot(player_pos, 3.14159265f, front), -1.f, 1e-5f);
+    // standing on top of the player counts as in front (point blank)
+    EXPECT_NEAR(frontDot(player_pos, 0.f, player_pos), 1.f, 1e-5f);
+    // the verdict is the dot against the cone
+    EXPECT_EQ(isAttackBlocked(player_pos, 0.f, front), frontDot(player_pos, 0.f, front) >= kBlockMinDot);
+    EXPECT_EQ(isAttackBlocked(player_pos, 0.f, behind), frontDot(player_pos, 0.f, behind) >= kBlockMinDot);
+}
+
+TEST(EldenRingShield, LiveMeasuredHitsFromTheFrontAreBlockedWithTheRawOrientationYaw) {
+    // mc_er.log SHIELD-DIAG, the player facing the attacker: the yaw straight from the physics quaternion is the facing
+    // (g_steve_yaw_offset only fixes the Steve model's own forward axis and must not be added here).
+    const float pp1[3] = {11.49f, -4.22f, -28.31f}, ap1[3] = {13.41f, -3.78f, -25.18f};
+    const float pp2[3] = {8.79f, -4.55f, -31.25f}, ap2[3] = {12.86f, -3.99f, -26.54f};
+    EXPECT_TRUE(shieldBlocksHit(true, true, pp1, 0.970f, ap1));
+    EXPECT_TRUE(shieldBlocksHit(true, true, pp2, 0.835f, ap2));
+    // the same hits with the model offset added would read as "from behind" (what the broken build did)
+    const float pi = 3.14159265f;
+    EXPECT_FALSE(shieldBlocksHit(true, true, pp1, 0.970f + pi, ap1));
+    EXPECT_FALSE(shieldBlocksHit(true, true, pp2, 0.835f + pi, ap2));
+}
+
+TEST(EldenRingShield, YawFromForwardIsTheInverseOfTheForwardVectorTheArcUses) {
+    for (const float yaw : {0.f, 0.5f, 1.2f, 2.9f, -0.7f, -2.3f}) {
+        EXPECT_NEAR(yawFromForward(std::sin(yaw), std::cos(yaw)), yaw, 1e-5f);
+        // a camera that looks along that forward blocks an attacker straight ahead and not one straight behind
+        const float pos[3] = {0.f, 0.f, 0.f};
+        const float ahead[3] = {10.f * std::sin(yaw), 0.f, 10.f * std::cos(yaw)};
+        const float behind[3] = {-10.f * std::sin(yaw), 0.f, -10.f * std::cos(yaw)};
+        EXPECT_TRUE(isAttackBlocked(pos, yawFromForward(std::sin(yaw), std::cos(yaw)), ahead));
+        EXPECT_FALSE(isAttackBlocked(pos, yawFromForward(std::sin(yaw), std::cos(yaw)), behind));
+    }
+    // the vertical part of a camera forward does not matter: only x and z are given
+    EXPECT_NEAR(yawFromForward(0.f, 1.f), 0.f, 1e-6f);
+    EXPECT_NEAR(yawFromForward(1.f, 0.f), 1.5707963f, 1e-5f);
+}

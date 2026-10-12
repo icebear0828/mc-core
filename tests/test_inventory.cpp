@@ -208,3 +208,50 @@ TEST(ZombieSpawnEgg, StacksTo64AndIsOfferedByThePalette) {
     EXPECT_TRUE(found);
     EXPECT_LE(paletteItems().size(), static_cast<size_t>(InventoryLayout::kPaletteSlots));
 }
+
+TEST(ShieldItem, IsOfferedByThePaletteAndStacksToOne) {
+    EXPECT_EQ(maxStackSize(ItemId::Shield), 1u);
+    bool found = false;
+    for (ItemId id : paletteItems()) found = found || id == ItemId::Shield;
+    EXPECT_TRUE(found);
+    EXPECT_LE(paletteItems().size(), static_cast<size_t>(InventoryLayout::kPaletteSlots));
+}
+
+TEST(Inventory, ClickOffhandFollowsVanillaRules) {
+    Inventory inv;
+    EXPECT_TRUE(inv.offhand().empty());
+
+    // Pick up from palette and place into offhand
+    inv.clickPalette(ItemId::Shield, Button::Left);
+    EXPECT_EQ(inv.cursor().item, ItemId::Shield);
+    inv.clickOffhand(Button::Left);
+    EXPECT_TRUE(inv.cursor().empty());
+    EXPECT_EQ(inv.offhand().item, ItemId::Shield);
+    EXPECT_EQ(inv.offhand().count, 1u);
+
+    // Pick back up from offhand
+    inv.clickOffhand(Button::Left);
+    EXPECT_EQ(inv.cursor().item, ItemId::Shield);
+    EXPECT_TRUE(inv.offhand().empty());
+
+    // Swap offhand with another item on cursor
+    inv.setOffhand({ItemId::TotemOfUndying, 1});
+    inv.clickOffhand(Button::Left); // swap cursor (Shield) with offhand (Totem)
+    EXPECT_EQ(inv.offhand().item, ItemId::Shield);
+    EXPECT_EQ(inv.cursor().item, ItemId::TotemOfUndying);
+}
+
+TEST(Inventory, SwapMainAndOffhandSwapsHotbarSlotWithOffhand) {
+    Inventory inv;
+    inv.setSlot(0, {ItemId::DiamondSword, 1});
+    inv.setOffhand({ItemId::Shield, 1});
+    inv.swapMainAndOffhand(0);
+    EXPECT_EQ(inv.slot(0).item, ItemId::Shield);
+    EXPECT_EQ(inv.offhand().item, ItemId::DiamondSword);
+
+    // Swap back
+    inv.swapMainAndOffhand(0);
+    EXPECT_EQ(inv.slot(0).item, ItemId::DiamondSword);
+    EXPECT_EQ(inv.offhand().item, ItemId::Shield);
+}
+

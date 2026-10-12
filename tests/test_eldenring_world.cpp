@@ -261,12 +261,47 @@ TEST(EldenRingEnumerate, SkipsMainPlayerDeadGraceAndForeignClasses) {
     setEntry(m, 1, dead, 1);
     setEntry(m, 2, grace, 2);
     setEntry(m, 3, junk, 3);
-    setEntry(m, 4, 0, 0);
-    setEntry(m, 5, live, 5);
+    setEntry(m, 4, live, 4);
     std::vector<EnemyInfo> out;
     ASSERT_TRUE(enumerateEnemies(m, kBase, out, 16));
     ASSERT_EQ(out.size(), 1u);
     EXPECT_EQ(out[0].chr, live);
+}
+
+TEST(EldenRingEnumerate, EnumeratesEnemiesFromActiveChrSetArrayEvenWhenSparseTableEmpty) {
+    FakeMemory m;
+    m.region(kBase + layout::kWorldChrManGlobalRva, 8);
+    m.region(kWorld, 0x20000);
+    m.put<uint64_t>(kBase + layout::kWorldChrManGlobalRva, kWorld);
+    m.put<uint64_t>(kWorld + layout::kPlayerInsInWorldChrMan, kPlayer);
+    spawnChr(m, kPlayer, layout::kPlayerInsVtableRva, 0, 1, 500, 500, 10.f, 2.f, 20.f);
+    addTeamMatrix(m);
+
+    // Note: Sparse table (+0x1DED8) has no entries (all zeros).
+    // But Active ChrSet array (+0x1CC60, count at +0x1CC58) has 1 active set (e.g. dungeon/catacomb set).
+    constexpr uintptr_t kDungeonSet = 0x7ff508000000ull;
+    constexpr uintptr_t kDungeonEntries = 0x7ff508000100ull;
+    constexpr uintptr_t kDungeonEnemy = 0x7ff508001000ull;
+
+    m.region(kDungeonSet, 0x100);
+    m.region(kDungeonEntries, 16 * 64);
+    m.put<uint32_t>(kDungeonSet + layout::kChrSetCapacity, 64);
+    m.put<uint64_t>(kDungeonSet + layout::kChrSetEntries, kDungeonEntries);
+
+    spawnChr(m, kDungeonEnemy, layout::kEnemyInsVtableRva, 4500, 51, 100, 100, 14.f, 2.f, 20.f);
+    m.put<uint64_t>(kDungeonEntries + 0, kDungeonEnemy);
+    m.put<uint64_t>(kDungeonEntries + 8, 0xDDDD);
+
+    // Write to Active ChrSet array at WorldChrMan + 0x1CC60
+    m.put<uint32_t>(kWorld + layout::kActiveChrSetCountInWorldChrMan, 1);
+    m.put<uint64_t>(kWorld + layout::kActiveChrSetArrayInWorldChrMan + 0 * layout::kActiveChrSetEntryStride, kDungeonSet);
+
+    std::vector<EnemyInfo> out;
+    ASSERT_TRUE(enumerateEnemies(m, kBase, out, 16));
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_EQ(out[0].chr, kDungeonEnemy);
+    EXPECT_EQ(out[0].npc_id, 4500);
+    EXPECT_EQ(out[0].handle, 0xDDDDu);
 }
 
 TEST(EldenRingEnumerate, DeduplicatesAndHonoursMax) {
@@ -414,6 +449,9 @@ TEST(EldenRingSig, ShippedSignaturesParseToTheDocumentedLengths) {
     EXPECT_EQ(Signature::parse(sigs::kCheckTeamFriend)->size(), 32u);
     EXPECT_EQ(Signature::parse(sigs::kGetEffectiveTeamType)->size(), 19u);
     EXPECT_EQ(Signature::parse(sigs::kClampHp)->size(), 32u);
+    EXPECT_EQ(Signature::parse(sigs::kGuardCheck)->size(), 35u);
+    EXPECT_EQ(Signature::parse(sigs::kDamageVfunc7)->size(), 40u);
+    EXPECT_EQ(Signature::parse(sigs::kBreakTest)->size(), 59u);
 }
 
 TEST(EldenRingSig, HostileAndFriendSignaturesDifferOnlyInTheTail) {

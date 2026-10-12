@@ -209,6 +209,7 @@ TEST(EldenRingBulletDamage, OnlyAHitByTheShootersBoltRightAfterAShotIsReplaced) 
     const uint64_t player = 0x7FF500100000ull, other = 0x7FF500400000ull;
     // Measured (REVERSE 35.5): a bolt hit on an enemy is u8[DA] == 2 with the player as the attacker argument.
     EXPECT_TRUE(isPlayersBoltHit(2, player, player, other, kBoltBulletId, 500));
+    EXPECT_TRUE(isPlayersBoltHit(2, player, player, other, 0xFFFFFFFFu, 500));            // our directional shot with attach_poly = -1
     EXPECT_FALSE(isPlayersBoltHit(1, player, player, other, kBoltBulletId, 500));         // a melee hit
     EXPECT_FALSE(isPlayersBoltHit(6, player, player, other, kBoltBulletId, 500));         // the kind of an arrow that hits the player
     EXPECT_FALSE(isPlayersBoltHit(2, other, player, other, kBoltBulletId, 500));          // somebody else's projectile

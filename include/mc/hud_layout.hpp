@@ -19,6 +19,8 @@ public:
 
     [[nodiscard]] HudRect crosshair() const;       // 15x15 GUI px, centred
     [[nodiscard]] HudRect hotbar() const;          // 182x22, centred on the bottom edge
+    [[nodiscard]] HudRect offhand() const;         // 29x24 offhand slot left of the hotbar
+    [[nodiscard]] HudRect offhandItem() const;     // 16x16 icon inside the offhand slot
     [[nodiscard]] HudRect selection(int slot) const; // 24x23 frame around slot 0..8
     [[nodiscard]] HudRect item(int slot) const;    // 16x16 icon inside slot 0..8
     [[nodiscard]] HudRect heart(int index) const;  // 9x9 at an 8px pitch (icons overlap by 1 GUI px); 0 = leftmost

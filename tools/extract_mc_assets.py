@@ -367,6 +367,29 @@ _PLACEHOLDER_ITEM_COLORS = {
 
 def create_canonical_sprite(name: str) -> Image.Image:
     """Generate canonical pixel sprite when extracting without an official client.jar."""
+    if name == "entity_shield":
+        # Placeholder with the real texture's layout (ShieldModel: plate box at texOffs (0, 0), 12x22x1; handle box at (26, 0), 2x6x6):
+        # a riveted front at (1, 1), a plain back at (14, 1), iron edges around them and a dark handle.
+        sheet = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        iron, iron_dk = (150, 150, 155, 255), (95, 95, 100, 255)
+        wood, wood_dk, rivet = (140, 95, 50, 255), (112, 74, 36, 255), (200, 200, 205, 255)
+        for x in range(0, 27):  # the top and bottom edge strips and the side strips of the plate
+            for y in range(0, 24):
+                if y in (0, 23) or x in (0, 13, 26):
+                    sheet.putpixel((x, y), iron if (x + y) % 2 == 0 else iron_dk)
+        for face_x in (1, 14):
+            for dx in range(12):
+                for dy in range(22):
+                    rim = dx in (0, 11) or dy in (0, 21)
+                    col = iron if rim else (wood if dx % 3 else wood_dk)
+                    if face_x == 1 and not rim and dx in (2, 9) and dy % 4 == 2:
+                        col = rivet  # the front has rivets, the back does not
+                    sheet.putpixel((face_x + dx, 1 + dy), col)
+        for x in range(26, 42):  # the handle's six faces
+            for y in range(0, 12):
+                sheet.putpixel((x, y), iron_dk if (x + y) % 3 else wood_dk)
+        return sheet
+
     if name == "crosshair":
         img = Image.new("RGBA", (15, 15), (0, 0, 0, 0))
         for i in range(4, 11):  # a plain white plus; the real sprite replaces it when a client.jar is given
@@ -509,6 +532,16 @@ def create_canonical_sprite(name: str) -> Image.Image:
                     img.putpixel((x, y), (255, 255, 255, 255))
         return img
 
+    if name == "hotbar_offhand_left":
+        img = Image.new("RGBA", (29, 24), (0, 0, 0, 0))
+        for x in range(29):
+            for y in range(24):
+                if x == 0 or x == 28 or y == 0 or y == 23:
+                    img.putpixel((x, y), (200, 200, 200, 255))
+                else:
+                    img.putpixel((x, y), (40, 40, 40, 200))
+        return img
+
     # 16x16 Items
     img = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
     if name == "item_diamond_sword":
@@ -578,6 +611,48 @@ def create_canonical_sprite(name: str) -> Image.Image:
             for x in range(5, 11):
                 img.putpixel((x, y), c_gld)
         img.putpixel((6, 5), c_emr); img.putpixel((9, 5), c_emr)
+    elif name == "item_shield":
+        # Full 16x16 canonical Minecraft shield with iron rim, wood planks, and iron boss/rivet
+        c_ir_hi = (220, 220, 225, 255) # iron highlight
+        c_ir_md = (180, 180, 185, 255) # iron midtone
+        c_ir_dk = (120, 120, 125, 255) # iron shadow
+        c_ir_ol = (60, 60, 65, 255)    # iron outline edge
+        c_wd_hi = (170, 120, 70, 255)  # wood light grain
+        c_wd_md = (145, 95, 50, 255)   # wood base
+        c_wd_dk = (115, 75, 35, 255)   # wood seam
+
+        # Shield shape: row ranges [x_start, x_end] (inclusive)
+        shield_rows = {
+            1: (3, 12),
+            2: (2, 13), 3: (2, 13), 4: (2, 13), 5: (2, 13),
+            6: (2, 13), 7: (2, 13), 8: (2, 13),
+            9: (3, 12), 10: (3, 12),
+            11: (4, 11), 12: (4, 11),
+            13: (5, 10),
+            14: (6, 9),
+        }
+        for y, (x_min, x_max) in shield_rows.items():
+            for x in range(x_min, x_max + 1):
+                is_rim = (y == 1 or y == 14 or x == x_min or x == x_max)
+                if is_rim:
+                    if y == 1 or x == x_min:
+                        col = c_ir_hi if (x + y) % 2 == 0 else c_ir_md
+                    elif x == x_max or y >= 13:
+                        col = c_ir_dk if (x + y) % 2 == 0 else c_ir_ol
+                    else:
+                        col = c_ir_md
+                elif y in (6, 7) and x in (7, 8):
+                    # Central iron boss / rivet
+                    col = c_ir_hi if (x == 7 and y == 6) else (c_ir_dk if (x == 8 and y == 7) else c_ir_md)
+                else:
+                    # Wood planks with vertical grain pattern
+                    if x in (4, 8, 11):
+                        col = c_wd_dk
+                    elif (x + y) % 3 == 0:
+                        col = c_wd_hi
+                    else:
+                        col = c_wd_md
+                img.putpixel((x, y), col)
     elif name.startswith("block_") and name in _PLACEHOLDER_ITEM_COLORS:  # a flat coloured square
         img = Image.new("RGBA", (16, 16), _PLACEHOLDER_ITEM_COLORS[name] + (255,))
     elif name in _PLACEHOLDER_ITEM_COLORS:  # a plain coloured disc; the real icon replaces it when a client.jar is given
@@ -654,9 +729,15 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("item_bow_pulling_0", (16, 16)),
     ("item_bow_pulling_1", (16, 16)),
     ("item_bow_pulling_2", (16, 16)),
+    # the offhand hotbar slot and the shield item icon
+    ("hotbar_offhand_left", (29, 24)),
+    ("item_shield", (16, 16)),
+    # the whole 64x64 shield entity texture: the 3D shield model (plate 12x22x1 and handle 2x6x6) is mapped onto it like the game does
+    ("entity_shield", (64, 64)),
 ]
 
 _JAR_HUD_SPRITES = {
+    "entity_shield": "entity/shield_base_nopattern.png",
     "crosshair": "gui/sprites/hud/crosshair.png",
     "heart_container": "gui/sprites/hud/heart/container.png",
     "heart_full": "gui/sprites/hud/heart/full.png",
@@ -666,6 +747,7 @@ _JAR_HUD_SPRITES = {
     "hunger_half": "gui/sprites/hud/food_half.png",
     "hotbar": "gui/sprites/hud/hotbar.png",
     "hotbar_selection": "gui/sprites/hud/hotbar_selection.png",
+    "hotbar_offhand_left": "gui/sprites/hud/hotbar_offhand_left.png",
     "item_diamond_sword": "item/diamond_sword.png",
     "item_diamond_pickaxe": "item/diamond_pickaxe.png",
     "item_golden_apple": "item/golden_apple.png",
@@ -823,6 +905,16 @@ def _read_real_hud_sprite(jar_zip: zipfile.ZipFile, name: str, size: tuple[int, 
         egg = _multiply_tint(_fit_exact(base, size), primary)
         egg.alpha_composite(_multiply_tint(_fit_exact(spots, size), secondary))
         return egg
+    if name == "item_shield":
+        # 1.21.8 has no item/shield.png (the inventory icon is the 3D model): use the front face of the plate in the entity texture.
+        plate = _open_jar_png(jar_zip, "entity/shield_base_nopattern.png")
+        if plate is None or plate.size != (64, 64):
+            return None
+        front = plate.crop((1, 1, 13, 23))  # 12x22, the face with the rivets
+        scaled = front.resize((9, size[1]), Image.BOX)
+        icon = Image.new("RGBA", size, (0, 0, 0, 0))
+        icon.paste(scaled, ((size[0] - scaled.width) // 2, 0))
+        return icon
     if name == "item_enchanted_golden_apple":
         apple = _open_jar_png(jar_zip, "item/golden_apple.png")
         return None if apple is None else _tint(_fit_exact(apple, size), _GLINT, 0.35)

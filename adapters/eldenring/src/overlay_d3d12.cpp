@@ -22,6 +22,9 @@
 #include "eldenring_bow.hpp"
 #include "eldenring_fp.hpp"
 #include "eldenring_hudtex.hpp"
+#include "eldenring_depth.hpp"
+#include "depth_probe_d3d12.hpp"
+#include "eldenring_pixel.hpp"
 #include "eldenring_particles.hpp"
 #include "eldenring_blockicon.hpp"
 #include "eldenring_heart_anim.hpp"
@@ -381,6 +384,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
              g_s.width, g_s.height, static_cast<int>(g_s.format), static_cast<void*>(queue),
              static_cast<unsigned>(std::max(0, FindQueueOffsetInSwapChain(sc, queue))));
     Logf(msg);
+    if (g_steve_cfg.depth_probe) probe::Install(g_s.list, g_log);
     return true;
 }
 
@@ -593,6 +597,23 @@ void DrawInventory(const HudState& hud, float w, float h) {
         icon(lay.invSlot(i), item);
         stackCount(lay.invSlot(i), hud.inv_count[i]);
     }
+    // Offhand slot in inventory: slot border, vanilla shield watermark if empty, and item icon
+    const mc::HudRect off = lay.offhandSlot();
+    dl->AddRectFilled({off.x - 1.f * gs, off.y - 1.f * gs}, {off.x + off.w + 1.f * gs, off.y + off.h + 1.f * gs}, IM_COL32(139, 139, 139, 255));
+    dl->AddRectFilled({off.x, off.y}, {off.x + off.w, off.y + off.h}, IM_COL32(198, 198, 198, 255));
+    dl->AddRect({off.x, off.y}, {off.x + off.w, off.y + off.h}, IM_COL32(55, 55, 55, 255), 0.f, 0, gs);
+    dl->AddText(ImGui::GetFont(), fs, {off.x - 2.f * gs, off.y - 10.f * gs}, IM_COL32(255, 255, 255, 230), "Offhand");
+    const mc::HudRect off_item{off.x + 1.f * gs, off.y + 1.f * gs, 16.f * gs, 16.f * gs};
+    if (hud.offhand_item == 0) {
+        if (g_atlas_ready) {
+            const mc::hud::HudUV& suv = mc::hud::kUV_ITEM_SHIELD;
+            dl->AddImage(atlas, {off_item.x, off_item.y}, {off_item.x + off_item.w, off_item.y + off_item.h},
+                         {suv.u0, suv.v0}, {suv.u1, suv.v1}, IM_COL32(255, 255, 255, 90));
+        }
+    } else {
+        icon(off_item, static_cast<mc::ItemId>(hud.offhand_item));
+        stackCount(off_item, hud.offhand_count);
+    }
     // hover: the vanilla slot highlight and the item name
     const mc::SlotRef hover = lay.hitTest(hud.mouse_x, hud.mouse_y);
     mc::ItemId hovered = mc::ItemId::None;
@@ -600,9 +621,12 @@ void DrawInventory(const HudState& hud, float w, float h) {
         hovered = palette[static_cast<size_t>(hover.index)];
     } else if (hover.kind == mc::SlotRef::Kind::Inventory) {
         hovered = static_cast<mc::ItemId>(hud.inv_item[hover.index]);
+    } else if (hover.kind == mc::SlotRef::Kind::Offhand) {
+        hovered = static_cast<mc::ItemId>(hud.offhand_item);
     }
-    if (hover.kind == mc::SlotRef::Kind::Palette || hover.kind == mc::SlotRef::Kind::Inventory) {
-        const mc::HudRect r = hover.kind == mc::SlotRef::Kind::Palette ? lay.paletteSlot(hover.index) : lay.invSlot(hover.index);
+    if (hover.kind == mc::SlotRef::Kind::Palette || hover.kind == mc::SlotRef::Kind::Inventory || hover.kind == mc::SlotRef::Kind::Offhand) {
+        const mc::HudRect r = hover.kind == mc::SlotRef::Kind::Palette ? lay.paletteSlot(hover.index) :
+                              (hover.kind == mc::SlotRef::Kind::Inventory ? lay.invSlot(hover.index) : lay.offhandSlot());
         dl->AddRectFilled({r.x, r.y}, {r.x + r.w, r.y + r.h}, IM_COL32(255, 255, 255, 128));
     }
     // the stack on the cursor is drawn centred on the pointer, above everything
@@ -654,13 +678,28 @@ void DrawHud(const HudState& hud, float w, float h) {
         sprite(layout.hotbar(), mc::hud::kUV_HOTBAR);
         for (int i = 0; i < 9; ++i) DrawItemIcon(dl, atlas, layout.item(i), static_cast<mc::ItemId>(hud.hotbar[i]));
         sprite(layout.selection(std::clamp(hud.selected_slot, 0, 8)), mc::hud::kUV_HOTBAR_SELECTION);
+        // Offhand slot (to the left of hotbar, vanilla hotbar_offhand_left sprite)
+        const float gs = static_cast<float>(layout.scale());
+        if (hud.offhand_item != 0) {
+            sprite(layout.offhand(), mc::hud::kUV_HOTBAR_OFFHAND_LEFT);
+            DrawItemIcon(dl, atlas, layout.offhandItem(), static_cast<mc::ItemId>(hud.offhand_item));
+            if (hud.offhand_count > 1) {
+                char cnt[8];
+                snprintf(cnt, sizeof(cnt), "%u", static_cast<unsigned>(hud.offhand_count));
+                const float fs = layout.textSize();
+                const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, 1e9f, 0.f, cnt);
+                const mc::HudRect r = layout.offhandItem();
+                const ImVec2 pos{r.x + 17.f * gs - sz.x, r.y + 9.f * gs};
+                dl->AddText(ImGui::GetFont(), fs, {pos.x + gs, pos.y + gs}, IM_COL32(40, 40, 40, 255), cnt);
+                dl->AddText(ImGui::GetFont(), fs, pos, IM_COL32(255, 255, 255, 255), cnt);
+            }
+        }
         // The hearts as Gui.renderHearts draws them: the container blinks after a hit and the hearts just lost show white, one heart jumps
         // while Regeneration is active, and the row shakes at two hearts or less.
         const int abs_halves = static_cast<int>(std::lround(hud.absorption_mc));
         g_hearts.update(ImGui::GetIO().DeltaTime, hp_halves, abs_halves, hud.regen);
         const bool blink = g_hearts.blink();
         const int shown_before = g_hearts.displayHealth();
-        const float gs = static_cast<float>(layout.scale());
         for (int i = 0; !hud.creative && i < 10; ++i) { // creative mode shows no health, hunger or experience
             mc::HudRect r = layout.heart(i);
             if (g_hearts.regenIndex() == i) r.y -= 2.f * gs;
@@ -916,6 +955,9 @@ void RenderFrame(IDXGISwapChain* sc) {
         mc::SteveAnimInput anim_in = g_motion.update(dt, steve.feet, steve.yaw);
         anim_in.swing_progress = steve.swing;
         anim_in.bow_charge = steve.bow_charge;
+        anim_in.bow_offhand = steve.bow_offhand;
+        anim_in.is_blocking = steve.blocking;
+        anim_in.block_offhand = steve.block_offhand;
         g_head.update(steve.cam.forward.x, steve.cam.forward.y, steve.cam.forward.z, steve.yaw, anim_in);
         g_anim.update(dt, anim_in);
         if (g_trace_left.load() > 0) {
@@ -959,6 +1001,11 @@ void RenderFrame(IDXGISwapChain* sc) {
         sp.tint[3] = 0.4f * std::min(1.f, steve.hurt * 4.f);
         sp.keep_depth = blocks_drawn; // the blocks left their depth in the figure's buffer: the figure sorts against them
         sp.held_item = static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.held_item), steve.bow_charge));
+        // a bow in the offhand shows the drawn-bow sprite while it is drawn (the held item in the right hand stays what it is)
+        sp.shield_blocking = steve.blocking;
+        sp.block_offhand = steve.block_offhand;
+        sp.offhand_item = steve.bow_offhand ? static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.offhand_item), steve.bow_charge))
+                                            : steve.offhand_item;
         sp.held_table = g_atlas_ready ? g_held_table_gpu : D3D12_GPU_DESCRIPTOR_HANDLE{};
         if (g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
             g_steve.draw(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, parts, sp, f.rtv);
@@ -1051,16 +1098,34 @@ void RenderFrame(IDXGISwapChain* sc) {
         const fp::M4 base = fp::mul(fp::walkBob(g_walk_dist, g_walk_bob), fp::handSway(d_pitch, d_yaw));
         const float equipped = g_hand.equipped();
         const bool drawing_bow = steve.bow_ticks > 0.f && g_hand.shownItem() == mc::ItemId::Bow;
+        const bool main_is_shield = g_hand.shownItem() == mc::ItemId::Shield;
+        const bool main_raised = steve.blocking && !steve.block_offhand; // the shield in the main hand is the one being raised
         const fp::M4 item_pose = drawing_bow ? fp::bowPose(steve.bow_ticks, equipped)
+                                 : main_is_shield ? fp::shieldMainHandPose(main_raised, steve.swing, equipped)
                                  : steve.eating > 0.f ? fp::eatPose(steve.eating, equipped) : fp::itemPose(steve.swing, equipped);
         const bool held_block = eldenring::blocks::blockForItem(static_cast<mc::ItemId>(g_hand.shownItem())) != mc::BlockId::Air;
-        const fp::M4 item_world = fp::mul(fp::mul(base, item_pose), held_block ? fp::blockDisplay() : fp::itemDisplay());
+        const fp::M4 item_disp = main_is_shield ? fp::shieldFpDisplay(false, main_raised) : (held_block ? fp::blockDisplay() : fp::itemDisplay());
+        const fp::M4 item_world = fp::mul(fp::mul(base, item_pose), item_disp);
         const fp::M4 arm_world = fp::mul(base, fp::bareArmPose(steve.swing, equipped));
         const mc::ItemId shown = eldenring::bow::shownBow(g_hand.shownItem(), drawing_bow ? steve.bow_charge : 0.f); // the bow with the arrow nocked while it is drawn
         const mc::rig::Mat4 proj = mc::rig::perspectiveLH(70.f * fp::kDeg, static_cast<float>(g_s.width) / static_cast<float>(g_s.height), 0.05f, 20.f);
         D3D12_GPU_DESCRIPTOR_HANDLE skin_table = g_depth_gpu; // slots 1 and 2: depth, skin
         g_steve.drawFirstPerson(g_s.list, g_s.srv_heap, skin_table, g_item_table_gpu, g_s.width, g_s.height, proj, fp::toHost(arm_world),
                                 fp::toHost(item_world), static_cast<uint16_t>(shown), f.rtv);
+        // Offhand item in first person (e.g. shield in offhand, torch, etc.)
+        if (steve.offhand_item != 0) {
+            const bool off_is_shield = static_cast<mc::ItemId>(steve.offhand_item) == mc::ItemId::Shield;
+            const bool off_block = eldenring::blocks::blockForItem(static_cast<mc::ItemId>(steve.offhand_item)) != mc::BlockId::Air;
+            const fp::M4 off_pose = fp::offhandItemPose(0.f); // the offhand only follows the arm transform: raised or not is the display transform
+            const fp::M4 off_disp = off_is_shield ? fp::shieldFpDisplay(true, steve.blocking && steve.block_offhand)
+                                                  : (off_block ? fp::blockDisplay() : fp::itemDisplay());
+            const fp::M4 off_world = fp::mul(fp::mul(base, off_pose), off_disp);
+            const uint16_t off_shown = steve.bow_offhand && steve.bow_ticks > 0.f
+                                           ? static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.offhand_item), steve.bow_charge))
+                                           : steve.offhand_item;
+            g_steve.drawFirstPersonItem(g_s.list, g_s.srv_heap, g_item_table_gpu, g_s.width, g_s.height, proj, fp::toHost(off_world),
+                                        off_shown, f.rtv);
+        }
         g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr); // ImGui draws without a depth view
     }
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_s.list);
@@ -1122,13 +1187,21 @@ void RenderFrame(IDXGISwapChain* sc) {
         D3D12_RANGE range{0, shot_fp.Footprint.RowPitch * shot_rows};
         const bool rgba = rd.Format == DXGI_FORMAT_R8G8B8A8_UNORM || rd.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
         const bool bgra = rd.Format == DXGI_FORMAT_B8G8R8A8_UNORM || rd.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
-        if ((rgba || bgra) && SUCCEEDED(shot_buf->Map(0, &range, &mapped))) {
+        const bool r10 = rd.Format == DXGI_FORMAT_R10G10B10A2_UNORM; // the game's own back buffer (format 24)
+        if ((rgba || bgra || r10) && SUCCEEDED(shot_buf->Map(0, &range, &mapped))) {
             const unsigned w = static_cast<unsigned>(rd.Width), h = rd.Height;
             std::vector<uint8_t> out(static_cast<size_t>(w) * h * 4);
             for (unsigned y = 0; y < h; ++y) {
                 const uint8_t* srow = static_cast<const uint8_t*>(mapped) + static_cast<size_t>(y) * shot_fp.Footprint.RowPitch;
                 uint8_t* drow = out.data() + static_cast<size_t>(y) * w * 4;
                 for (unsigned x = 0; x < w; ++x) {
+                    if (r10) {
+                        uint32_t packed;
+                        std::memcpy(&packed, srow + x * 4, sizeof(packed));
+                        eldenring::pixel::unpackR10G10B10A2(packed, drow + x * 4);
+                        drow[x * 4 + 3] = 255;
+                        continue;
+                    }
                     drow[x * 4 + 0] = srow[x * 4 + (bgra ? 2 : 0)];
                     drow[x * 4 + 1] = srow[x * 4 + 1];
                     drow[x * 4 + 2] = srow[x * 4 + (bgra ? 0 : 2)];
@@ -1152,9 +1225,15 @@ void STDMETHODCALLTYPE CreateDsvDetour(ID3D12Device* d, ID3D12Resource* res, con
                                        D3D12_CPU_DESCRIPTOR_HANDLE handle) {
     g_create_dsv_orig(d, res, desc, handle);
     if (res == nullptr) return;
+    if (g_steve_cfg.depth_probe) probe::NoteDsv(handle.ptr, res); // every depth texture, whatever its size
     const D3D12_RESOURCE_DESC rd = res->GetDesc();
     if (rd.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || rd.Format != DXGI_FORMAT_R32G8X24_TYPELESS || rd.Width < 1024 ||
         rd.DepthOrArraySize != 1) {
+        return;
+    }
+    if (!eldenring::depth::isSceneDepth(rd.Width, rd.Height, g_s.width, g_s.height)) {
+        static int ignored_logged = 0;
+        if (ignored_logged++ < 10 && g_log) g_log("overlay: ignored depth %llux%u (the back buffer is %ux%u): not the scene's", static_cast<unsigned long long>(rd.Width), rd.Height, g_s.width, g_s.height);
         return;
     }
     {
@@ -1190,10 +1269,12 @@ void STDMETHODCALLTYPE ExecuteDetour(ID3D12CommandQueue* q, UINT n, ID3D12Comman
         const D3D12_COMMAND_QUEUE_DESC d = q->GetDesc();
         if (d.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) g_queue.store(q);
     }
+    if (g_steve_cfg.depth_probe) probe::NoteExecute(n, lists);
     g_execute_orig(q, n, lists);
 }
 
 HRESULT STDMETHODCALLTYPE PresentDetour(IDXGISwapChain* sc, UINT sync, UINT flags) {
+    if (g_steve_cfg.depth_probe) probe::OnPresent();
     if (!g_s.failed) {
         ID3D12CommandQueue* q = g_queue.load();
         if (!g_s.ready && q != nullptr) {

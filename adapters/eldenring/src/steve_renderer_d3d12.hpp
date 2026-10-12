@@ -33,6 +33,9 @@ struct SteveParams {
     float depth_w{0.f}, depth_h{0.f}; // size of the depth texture, to map back buffer pixels onto it
     float tint[4]{0.f, 0.f, 0.f, 0.f}; // rgb + amount: mixed over the lit skin (hurt flash)
     uint16_t held_item{0};             // mc::ItemId in the right hand (0 or an item without a sprite: nothing is drawn)
+    uint16_t offhand_item{0};          // mc::ItemId in the left hand / offhand (0 = nothing)
+    bool shield_blocking{false};       // a shield is raised (the arm is up): its display transform is shield_blocking.json
+    bool block_offhand{false};         // ... and it is the offhand's one (else the main hand's)
     D3D12_GPU_DESCRIPTOR_HANDLE held_table{}; // descriptor table (scene depth, atlas) the held item is drawn with
     bool keep_depth{false};            // the blocks were drawn just before: do not clear the figure's depth buffer
 };
@@ -76,6 +79,9 @@ public:
     void drawFirstPerson(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE skin_table,
                          D3D12_GPU_DESCRIPTOR_HANDLE atlas_table, unsigned width, unsigned height, const mc::rig::Mat4& projection,
                          const mc::rig::Mat4& arm_world, const mc::rig::Mat4& item_world, uint16_t item, D3D12_CPU_DESCRIPTOR_HANDLE rtv);
+    void drawFirstPersonItem(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
+                             D3D12_GPU_DESCRIPTOR_HANDLE atlas_table, unsigned width, unsigned height, const mc::rig::Mat4& projection,
+                             const mc::rig::Mat4& item_world, uint16_t item, D3D12_CPU_DESCRIPTOR_HANDLE rtv);
     [[nodiscard]] bool firstPersonReady() const { return fp_vertices_ != nullptr; }
 
     // Third person: the held item as Minecraft draws it (a flat sprite extruded one pixel, ItemInHandLayer transform), built from the
@@ -149,6 +155,11 @@ private:
     D3D12_VERTEX_BUFFER_VIEW held_vbv_{};
     D3D12_INDEX_BUFFER_VIEW held_ibv_{};
     std::map<uint16_t, FpDraw> held_items_;
+    ID3D12Resource* offhand_vertices_{nullptr};
+    ID3D12Resource* offhand_indices_{nullptr};
+    D3D12_VERTEX_BUFFER_VIEW offhand_vbv_{};
+    D3D12_INDEX_BUFFER_VIEW offhand_ibv_{};
+    std::map<uint16_t, FpDraw> offhand_items_;
     struct BlockSlot {
         ID3D12Resource* vb{nullptr};
         ID3D12Resource* ib{nullptr};

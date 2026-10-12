@@ -1,11 +1,55 @@
 # 艾尔登法环 Minecraft 适配器：交接文档
 
-给**新开的 Claude Code 对话**（或接手的人）。先读完这一份，先看紧接着的"0. 当前状态"，再按"第 11 节"的顺序动手。最后更新：2026-10-10 深夜（PR #7 拉弓、PR #9 射击方向修复都已合入 main；**新记录了三个时序问题，下一步先收诊断数据再等逆向**），分支见第 0 节。
+给**新开的 Claude Code 对话**（或接手的人）。先读完这一份，先看紧接着的"0. 当前状态（2026-10-11）"，再按"第 11 节"的顺序动手。最后更新：2026-10-11（盾牌/副手/原生格挡/去击倒/体力与 HUD 标志位/深度图修复都做完并部署，全部在分支 `fix/shield-live`，**尚未合入 main**；下面第 0 节是这一阶段，旧的第 0 节降级为 0.1）。
 需要查证据时，权威文档是 `docs/ELDENRING_REVERSE.md`（逆向事实与审计）和 `docs/ELDENRING_VERIFY_CHECKLIST.md`（逐项验证状态，F1~F22 是近战/生存/视觉/音效）。
 
 ---
 
-## 0. 当前状态（2026-10-10 深夜，僵尸召唤、阴影、弩箭、MC 拉弓都已合入 main，最新，先读这里）
+## 0. 当前状态（2026-10-11，最新，先读这里）
+
+**分支与部署**
+- **`origin/main` 仍是 `d4c9d16`**（PR #10）。这一阶段的全部工作在 **`origin/fix/shield-live`（`381874d`，icebear0828/mc-core）**，**未合入 main**。它建立在 fork（`lindaokeefe472-eng/mc-core`）的 PR #12 头（`70ec269`）之上，所以**包含 fork 里 PR #13~#18、#12 的全部提交**（已被我方修复并强推到 fork 的各分支，#13~#18 是 #12 之下的叠加链，#12 是链顶）加我方的后续提交。PR #11（diag 日志）已关闭（`ARROW-TIMING` 在 #15 里）。**合并方式待用户决定**：建议开一个 `fix/shield-live → main` 的 PR，并关闭 fork 的 #12~#18（内容重复）。
+- **fork 的历史已重写过**：#12 里曾提交真实 Mojang 资产 `mc_hud_atlas.authentic.png`，已从 #12~#18 的历史里去掉（旧 commit 可能仍留在 GitHub 上，是否处理由用户决定）。**真实资产绝不入库**，见第 6 节。
+- 测试：mac `./build/bin/mc_tests` **792 个全过**；`uv run --with pillow --with pytest python -m pytest tests/test_extract_assets.py tests/test_adapter_standards.py -q` **49 个全过**。win 编译 `/W4 /WX` 无 error 无 warning。
+- **游戏目录里的 `dinput8.dll`**：哈希 `4926264e433be57bfc63c76364341c19177eb8f26ce871d51d75c5aa157481ab`（`fix/shield-live` 的 `83150ea`）。**`381874d`（带深度探针）已在 win 上编译但没有部署**（部署时游戏在运行）；探针只有 `mc_er_depthprobe.txt` 存在才启用，所以部署它不改变行为。备份：`dinput8.dll.pre-shield-verify.bak`（`3e4b33a7…`，部署本阶段之前的版本）；图集备份 `mods\mc_adapter\mc_hud_atlas.png.bak_before_shield_icon`、`.bak_before_shield_model`；**当前的图集是用 client jar 重新生成的（57 个区域，含 `entity_shield`），换版本后必须重新生成**（命令见第 6 节）。
+- **win 工作树（第 0.1 节的约定仍有效，我这一阶段违反过，已还原）**：`D:\game\mc\mc-core` 是逆向方的探针树，应停在 `feat/lighting-root-cbv-probe`（`35aad43`）；**我方构建必须用 `D:\game\mc\mc-core-bullet`**。我这一阶段错误地在 `D:\game\mc\mc-core` 里切分支、构建（分支 `verify/shield-stack`、`verify/shield-live` 还留在那里，无害），**已把它切回 `feat/lighting-root-cbv-probe`**，它的 `build-win` 里现在有我们的构建产物，逆向方下次构建会覆盖。`mc-core-bullet` 停在旧的 `adf758e`（detached）：下次先 `git -c http.proxy=http://127.0.0.1:7897 fetch origin fix/shield-live`，再 `git checkout --detach origin/fix/shield-live` 后构建。
+
+**本阶段完成（用户实机确认，除另注）**
+1. **盾牌 MC 格挡**：右键按住 0.25 s 举起（`ShieldController`），正面 100° 内挡住；**朝向取相机朝向，不是身体物理朝向**（ER 身体只在角色移动时才转，实测按身体算攻击者全在背后）。路径：`vfunc[7]`（`0x140444B40`）钩子判定为挡时把 `ctx+0xFC`（击退）清 0、`ctx+0xD9` 写 1（引擎只在 `0xD9∈{1,3}` 时才问 GuardCheck），`GuardCheck`（`0x140480EF0`）钩子返回真，引擎走原生格挡：不扣血、不僵直、不扣原生体力。`PlayerHitSurvival` 里把伤害清零是兜底。`mc_er_noguardhook.txt` 关掉这两个钩子。纯逻辑 `eldenring_shield.hpp`（`frontDot`、`shieldBlocksHit`、`yawFromForward`）。**箭的格挡没有实测过**（`attacker` 参数是射手 ChrIns，位置可读，理论上同样适用）。
+2. **盾牌外观**：`ShieldModel`（板 12×22×1 + 握把 2×6×6）按实体贴图 `entity/shield_base_nopattern.png` 展开，**摆放用 jar 里 `models/item/shield.json` / `shield_blocking.json` 的原版显示变换**（第三人称：`ItemInHandLayer` 链 + 左手镜像；第一人称：`firstperson_*hand`，缩放 1.25），四个变体（左/右 × 待机/举盾）。**只有拿盾的那只手抬起**（`SteveAnimInput.block_offhand`）。图集里追加 64×64 的 `entity_shield`。用户确认第一、第三人称没问题。
+3. **副手**：背包里副手格、`F` 键交换（**只在背包打开时有效**，用户接受）、副手弓可以拉弓发射（`bowHandUsable`：主手没有占用右键的物品时），第三人称由左臂举弓、副手显示拉弓贴图。第一人称副手弓没有拉弓姿势，只有贴图。
+4. **去掉倒地击飞（已部署，未实机确认）**：钩 `0x140449520`（破韧判定，`sigs::kBreakTest`），MC 模式下对玩家先调原函数，再返回 0 并清 `[[module+0xA0]+0x34/+0x38]`。`mc_er_noknockdownfix.txt` 关掉。日志 `KNOCKDOWN:`。
+5. **标志位持有（`McFlagsStep`，`eldenring_flags.hpp`）**：MC 模式下 `DataModule+0x19A |= 0x40`（体力不扣，日志实测持有期间体力不降）、`CSMenuMan+0x841C = 0`（隐藏原生 HUD，关 MC 模式还原）；**创造模式**再加 `0x80`（"不会死"，**生存模式绝不能开**：`0x140436B30` 的按变化量扣血包装也问同一个检查，会让生存模式死不了）。`mc_er_noflags.txt` 整体关闭。**被打时的体力伤害（`0x140448EBA`，`r8b=1`）仍会扣**；`0x80` 拦不住 `KillChr`。
+6. **其它修复**：F4 截图支持游戏的 R10G10B10A2 后备缓冲（格式 24）；**死亡重生后 Steve 不见**的根因是深度抓取"最新的赢"，重生后新建的 1024×512 阴影深度图顶掉了场景深度，现在只接受和后备缓冲同宽的深度图（`eldenring_depth.hpp`）；盾牌图标改为从实体贴图正面裁出（1.21.8 的 jar 里没有 `item/shield.png`）；`#13`~`#18` 里的近战/弩箭/召唤修复（中立目标、`require_victim_updating=false` 默认、活跃 ChrSet 双扫描、`Unknown` 关系不可攻击）。
+7. **新增诊断日志**（都只读）：`SHIELD-DIAG`/`SHIELD-GEOM`/`SHIELD-PRE`/`SHIELD-GUARD`、`HIT-GEOM`（`mc_er_hitlog.txt`，**该文件在 win 上已存在**）、`FLAGS:`（每 3 s 体力/标志/HUD 字节）、`HUDPROBE:`、`STEVE-STATE:`、`DEPTHPROBE:`。**日志文件 `mc_er.log` 追加写入，按时间戳回退切会话，只看最后一段**（我切错过一次会话，先确认编译时间戳）。
+
+**未解决 / 用户暂停的**
+1. **原版生物遮挡不了我们的方块、Steve、MC 僵尸**（用户："先不管"）：只有环境能遮挡，近远无关，两张 1920×1080 候选深度图（F7 轮换）都不行。逆向方的第七份回复不可信（模板表的 `OMSetStencilRef` 实为别的调用，拷贝点只是"可能"，叙述自相矛盾，见 `ELDENRING_REVERSE.md` §44）。**已写好动态探针 `depth_probe_d3d12.hpp`（`mc_er_depthprobe.txt` 开关）**，部署 `381874d` 后在游戏目录放这个空文件，玩一分钟以上，读 `DEPTHPROBE:` 行：哪张深度图被绑定、画了多少次、什么时候被清（标志/深度/模板值）、拷贝、状态转换。拿到后在"完整深度存在的时间点"（某个深度图转到可读状态之前）往我们自己的纹理拷一次。
+2. **战斗时原生 HUD 冒出来**（用户："可以先不管"）：`0x1407733F0` 是淡入淡出状态更新器（两组状态 `+0x6534`/`+0x6538`），`+0x841C == 0` 只影响其中 `+0x6534` 这一组；两个布尔检查（`0x140E210F0`、`0x140A9E000`）为真时整个函数早退。**不盲改**：部署后用 `HUDPROBE:` 记录战斗前后 `CSMenuMan+0x6530/0x6534/0x6538/0x6548`、`+0x6540/41/42/4C` 的变化再决定。
+3. **MC 起跳 / 移动手感**（用户："以后再继续"）。现状与需要的数据见下面 0.2。
+4. **受击无敌（0.5 s）**：用户说先不急；纯逻辑，在 `ProcessDamageContext` 钩子里记 `last_hit_tick`，不需要逆向。
+5. **`DataModule+0x19A |= 0x80` 对毒/腐败/岩浆是否有效未验证**（逆向方只给了调用方地址，没有语义证据）；生存模式不用它。
+6. **体力**：用户说"在掉"，日志里原生体力冻结，疑似看到的是 MC 的饥饿条（冲刺会加消耗度）——**待用户确认看到的是哪个条**。
+7. 第 0.1 节里未完成的：召唤物粒子、碰撞体积、骷髅/苦力怕、飞行地形碰撞、光照、30 分钟稳定性长跑、创造模式不是无敌的（创造模式现在只是不会被摔死，战斗伤害仍会扣，HP=0 仍会死）。
+
+**0.2 MC 起跳 / 移动手感：还需要什么（2026-10-11 与用户对齐）**
+- **前摇本身不需要逆向**：屏蔽原生空格（DirectInput 单键屏蔽已有）、自己积分垂直运动（和创造飞行同一套），原生前摇就不发生。
+- **已知（A 级实测）**：我们自己抬起玩家时游戏认为在空中，`FallModule+0x18`（`[[chr+0x190]+0x70]`）累加（1.0、2.2、3.1、3.7 s），**超过约 3 s 游戏就不再按键盘移动玩家**；往里写 0/常数都会让玩家爬行或不动（HANDOFF 第 9 节）。**字节层面**：`0x14046154B` 在 `PhysicsModule+0x92 == 0` 时累加 `PhysicsModule+0x1B8`；`0x1404609F8` 算 `+0x1D0 = (+0x92==0) && ([+0xCC]==0 || +0x1B8 >= 阈值)`；`0x1404614A2` 是 `eax==5/6` 状态分支里清 `+0x92/+0x1D1` 并调 `0x140472340`。**"`+0x1D0` 置位就锁死 WASD"只是推测。**
+- **待验证方案**：全程把 `+0x92` 保持为 1（"假着地"），空中计时器就不累加，垂直位置自己写。
+- **要逆向方回答（每条要地址和指令字节，我们只采信字节和实测）**：J1 着地状态下引擎有没有每帧把垂直位置拉回地面（贴地/台阶），哪个函数、什么时候执行、会不会覆盖我们写的 `+0x70.y`；J2 "超过约 3 s 不再按键移动"的具体门禁指令（读哪个计时器、怎么分支）；J3 `FallModule+0x18` 与 `PhysicsModule+0x1B8` 各被谁读、阈值、超过后各导致什么。M1 写入角色代理"期望速度"的函数（地址、参数、线程）及其在一帧里相对动画更新和相机步骤（`0x1403B11D0`）的顺序；M2 朝向 `+0x50` 四元数谁写、角速度限制的**真实**位置（逆向方给的 `minss [rcx+0x48]` 在给定区间不存在）；M3 动作锁对象（`0x140406AED bts rax,0x13` 那个对象）的类（RTTI）、从 ChrIns 怎么走到它、掩码各位含义。
+- **我方先做的实验（不需要逆向，都用开关文件，默认关）**：E1 假着地起跳，逐帧记录引擎对 `+0x70/+0x80/+0x120` 的反应；E2 把方块上已验证的 `DriveVelocityFromKeys`（每帧在相机步骤里写 `+0x120` 的 x/z）用到原生地面，逐帧回读看是否被覆盖；E3 M3 给出路径后记录各动作期间的动作锁掩码。
+- **已被字节推翻的逆向方说法**：`0x14045BE50` 不是"根运动转速度"（`0x14045BE7C` 是把速度清零的初始化块）；"滞空计时器是 FallModule+0x18"（`0x14046154B` 累加的是 PhysicsModule+0x1B8，但 HANDOFF 实测的 3 s 现象在 FallModule+0x18）；"`mc_jump` 已验证（A 级）"（与第 9 节实测矛盾）；`chr+0x1C7 |= 2` 冻结 AI（该代码读的是 bit5，不是 bit1）；`0x14044E090` 是"按米数扣落地伤害"（实际是 `edx=0` 的致死路径）。`0x140408130`（AI 启用/禁用 setter，`rcx = [[chr+0x190]+0x80]`，`dl` 是开关）字节上成立，召唤物 AI 控制可以从这里试。
+
+**逆向方回复的核对记录**：`ELDENRING_REVERSE.md` §37~§44（每份回复一节：属实 / 需修正 / 不采信 / 新发现）。**新发现且字节成立**：`DataModule+0x19A` 的 `0x40`（不扣体力）和 `0x80`（"不会死"）、`0x140438810` 恰有 24 个直接调用方、`KillChr` 直接以 HP=0 调 SetHP 核心 `0x140437450`、`0x140436B30` 也问同一个"不死"检查、`CSMenuMan+0x841C` 是 HUD 设置字节（三处引用）、`0x140449520` 尾部不论结果都写 `[buf+0x34/+0x38]`。
+
+**用户的工作方式（补充）**：经常把逆向方的回复整段贴过来，要求先核对字节；我每次都对着 `eldenring.exe`（从 win 拉到 mac 本地，capstone 反汇编，`tools/reverse/` 之外的临时脚本）核对，不采信没有字节依据的说法。改完先在 mac 写测试、跑全量，再 push、win 同步（带代理重试直到哈希一致）、`/W4 /WX` 编译、**确认游戏已关**、部署并核对哈希，最后告诉用户测什么。**游戏在运行时不要部署，也不要碰游戏目录的 dll。**
+
+---
+
+## 0.1 上一阶段（2026-10-10 深夜，已过时的部分见上面第 0 节）
+
+> 下面这一节写于盾牌阶段之前。**已被取代的条目**：第 8 项"盾牌/副手/双持/盔甲"（盾牌、副手、F 交换、盾牌外观、原生格挡已完成，盔甲未做）；"第三人称拉弓手臂不对"（弓在副手时已由左臂举弓，主手弓仍是右臂举平）；"MC 起跳搁置"（见 0.2）；win 工作树的约定仍有效。
+
 
 **分支与部署**
 - **`origin/main` = `de06672`**（PR #7 `feat/bow`）：创造模式（PR #4）、生存站方块假死修复（PR #5）、**僵尸召唤、脚下阴影、弩箭发射与命中伤害**（PR #6）、**MC 拉弓、第一人称拉弓姿势和带箭贴图、命中反馈、起始背包带箭、瞄准校准日志**（PR #7）。都经用户实机确认，唯一例外是下面的"射击方向"（未解决）。合并走 PR：`gh pr create --base main --head <分支>`，`gh pr merge N --merge`（GitHub 的 TLS 和 API 常断，会报 EOF 但请求其实可能已通，用 `gh pr view N --json state` 核对，别重复创建；循环重试并核对 `git rev-parse` 两边一致）。**项目有 PreToolUse 钩子禁止直接 `git push` 到 main/master，必须走分支 + PR。下次的新工作从 main 切新分支。**
@@ -46,10 +90,10 @@
 
 **【新记录的问题（用户 2026-10-10 夜）——下次先读这里】** 数据与机制在 `ELDENRING_REVERSE.md` §36，给逆向组的完整提示词在 `docs/REVERSE_REQUESTS.md` §8（用户会把它丢给逆向 agent；**逆向回复先核对字节再采信，别让他们覆盖游戏目录的 dinput8.dll**）。
 1. **箭射中后伤害和声响"过一会才来"**（用户的话："MC 箭飞得太快，箭已经射中了但要过一会才受到伤害和声响"）。事实：我们的命中音、命中标记、伤害替换都在 `ProcessDamageContext` 钩子里（没有额外排队），F3/拉弓发射到命中处理的间隔是 0.8~1.5 s，实测弩箭直线 32.5 m/s（10 m≈0.3 s），但当时没记目标距离，所以不能判断是引擎处理命中晚，还是游戏弩箭的视觉特效（`GXFfxSceneCtrl`）和物理子弹速度不同步。**已加诊断日志但分支未合并**：`diag/timing-logs`（提交 `adf758e`，已编译并部署到游戏目录，哈希 `4cdea64eaa649637fec21bd708cc0f9dbeba95b17775a3fd261821735c47b6fe`，**还没有人在游戏里跑过**）。`ARROW-TIMING` 行写：命中在发射后多少 ms、目标离枪口多远、直线飞行应当多久、晚了多少 ms。测法：拉弓/F3 朝一个固定距离（比如 10 m、20 m）的敌人射几发，读日志。
-2. **近战偶尔打不中（甚至有时有延迟）**，有**两个独立原因**：
-   - **挑目标太严**（我们自己的代码 `eldenring_pick.hpp`，**可能不需要逆向**）：目标必须离玩家脚 ≤4.0 m 且准星射线穿过"敌人脚下 +1.0 m 为球心、半径 0.9 m 的球"。日志 `click: no target` 152 次（同期入队 127 次），其中 51 次近处有敌人，很多只差 0.1~1.2 m（大型敌人被漏）。改进方向：按敌人真实包围盒挑（需要逆向回答"角色碰撞体半径/高度在哪里"，提示词 R3）；不逆向的临时办法：按距离放宽半径、MC 触及改 3 m 之类。
-   - **请求过期**（需要逆向，提示词 R1）：近战请求只在受害者自己的 `SetMaxHPAndClampHP` 恰好在**游戏线程**上执行时才应用（`require_victim_updating`），否则排队，300 tick 后过期：日志 `DAMAGE: request chr=… -> Expired` 37 次对 85 次成功，约 30% 的被接受请求过期；成功的挥击到伤害延迟 p90 0.41 s，7/71 次 >0.5 s。**已加诊断日志（同一未合并分支）**：`MELEE-TIMING` 行写等待期间受害者数据模块在游戏线程/其他线程各被更新多少次，直接验证"在 worker 线程更新"的假设。测法：近战打不同距离的敌人若干下，读日志。
-3. 以上两点的**测完之后**再决定：能不能放宽 `require_victim_updating`（需要逆向 R1.3/R1.4 的答案）、要不要改挑目标。**不要凭猜测改**，先看 `MELEE-TIMING`/`ARROW-TIMING` 的数字。
+2. **近战打不中/打中不掉血问题（已彻底解决，2026-10-10 实机验证通过）**：
+   - **实体漏判与阵营过滤**（批次一解决）：原先过滤了非 Hostile，导致中立动物（羊/鹿等 Team 0）、中立怪（Team 30）被忽略；几何容差（4.0m / 0.9m）偏严。已放宽至 4.5m / 1.3m，增加 Hostile 优先级判定，并支持中立动物。
+   - **扣血请求死锁超时（Expired）**（批次一解决）：原先 `require_victim_updating=true` 导致只有在主线程更新该怪物 DataModule 时才允许扣血，普通怪物不在主线程更新导致 100% 请求超时（Expired）而怪物不掉血。已将 `require_victim_updating` 默认置为 `false`，每帧直接出队并通过 `CallVfunc7` 立即结算伤害。
+   - **地牢/动态副本敌人遗漏**（批次二解决）：引擎在地下墓地/动态加载区使用位于 `WorldChrMan + 0x1CC60` 的活跃集合数组。已实现 `+0x1CC60` 活跃数组与 `+0x1DED8` 稀疏表的双重扫描与双重去重（`sets_to_scan` 与 `found` 去重）。用户实机验证全部通过。
 
 **脚下接触阴影（已合入 main，用户实机确认）**：`eldenring_shadow.hpp`（地面高度=向下射线与方块顶面取高、按离地高度衰减、单位圆盘）；`SteveRenderer::drawShadows` 画玩家和召唤物脚下的黑色柔边圆片（`PSShadow`，被场景深度和方块遮挡）；射线在游戏线程 `ShadowGroundStep`，配置 `shadow=0` 关闭。坑：管线描述复制自 `pd` 时 `pd.VS` 指向已释放的 blob，创建失败，必须自己再编译一份 VS。
 
@@ -131,8 +175,12 @@
 | `eldenring_particles.hpp` | 粒子系统、受击镜头倾斜曲线 |
 | `eldenring_hudtex.hpp` / `eldenring_audio_data.hpp` | 物品→图集格、最近邻放大；声音清单/WAV 解析、脚步节拍 |
 | `eldenring_model.hpp` / `eldenring_pick.hpp` | 玩家部件槽（隐藏原模型）、准星选目标 |
+| `eldenring_shield.hpp` | 盾牌：`frontDot`/`isAttackBlocked`（正面 100°）、`shieldBlocksHit`（无攻击者、读不到位置都不挡）、`yawFromForward`、`ShieldController`（按住 0.25 s 举起） |
+| `eldenring_flags.hpp` | MC 模式持有的游戏标志位：`ByteFlagHold`/`ByteValueHold`（只还原我们改过的位）、`policyFor`（体力、HUD 设置字节、创造模式才开的"不会死"位）、偏移常量 |
+| `eldenring_depth.hpp` | `isSceneDepth`：只有与后备缓冲同宽的深度图才算场景深度（重生后的 1024×512 阴影深度图曾顶掉它） |
+| `eldenring_pixel.hpp` / `eldenring_d3dstate.hpp` | R10G10B10A2 转 8 位（F4 截图）；`D3D12_RESOURCE_STATES` 转文字（深度探针日志） |
 
-`adapters/eldenring/src/`（**Windows 专用，只在 win 上编译**）：`loader.cpp`（总入口、全部钩子、按键线程、HUD 数据）、`overlay_d3d12.cpp`（Present 钩子、ImGui、HUD、粒子、view model 调度）、`steve_renderer_d3d12.cpp`（Steve/手臂/物品 D3D12 渲染；第二张皮肤、`drawMobModel` 通用骨骼绘制）、`input_hook.cpp`（DirectInput）、`audio_xaudio2.cpp`、`png_wic.cpp`。
+`adapters/eldenring/src/`（**Windows 专用，只在 win 上编译**）：`loader.cpp`（总入口、全部钩子、按键线程、HUD 数据）、`overlay_d3d12.cpp`（Present 钩子、ImGui、HUD、粒子、view model 调度）、`steve_renderer_d3d12.cpp`（Steve/手臂/物品 D3D12 渲染；第二张皮肤、`drawMobModel` 通用骨骼绘制）、`input_hook.cpp`（DirectInput）、`audio_xaudio2.cpp`、`png_wic.cpp`。 **`depth_probe_d3d12.hpp`**：只读的深度纹理探针（header-only，只被 `overlay_d3d12.cpp` 包含，`mc_er_depthprobe.txt` 开关）。核心库里 `include/mc/item_model.hpp` / `src/item_model.cpp` 新增 `buildShieldMesh`/`buildShieldFirstPersonMesh`（原版盾牌模型 + jar 的显示变换），`include/mc/animator.hpp` 新增 `bow_offhand`/`block_offhand`。
 
 核心库：`src/entity_model.cpp`（Bedrock geometry JSON 解析、骨骼 pivot/默认旋转/父子矩阵 `boneMatrices`、`mirror`）、`src/combat.cpp`（MC 伤害表、暴击、横扫）、`src/consumables.cpp`（进食）、`src/item_model.cpp`（`buildFlatItemMesh`）、`src/rig.cpp`（Steve 12 部件网格）、`src/hud_layout.cpp`（原版 GUI 缩放排布）。
 
@@ -153,6 +201,9 @@
 | 渲染相机拷贝 | `0x4A7190` | `sigs::kRenderCameraCopy` | 渲染前：第一人称改相机位置/受击倾斜（拷贝后还原）；清除原模型显示位 |
 | 相机更新 | `0x3B11D0` | `sigs::kCameraStepExecute` | 签名 `(ChrCam*, float dt@xmm1, ChrIns*, bool)`。执行前还原引擎相机，执行后把眼睛位置写进 ChrCam+0x40 并保持到下一帧，使特效/粒子/声音等所有读相机处都用眼睛位置（`fp_persist=0` 关闭）。**由硬件写断点（`mc_er_camwatch.txt`，会卡死，别常开）在 `0x3B1929 movaps [rdi+0x40]` 抓到；`0x3BC070` 不是它（日志 changed=0），已证伪。** |
 | 受击反应挑选器 | `0x1404547C0` / `0x1404548A0` | `sigs::kHitReactDefault/Heavy` | `no_stagger=1` 实验：玩家受害者时跳过（**默认关，需求不符：用户只要去掉倒地，普通受击反馈要保留**，见 REVERSE 21.4） |
+| 伤害模块 `vfunc[7]` | `0x444B40` | `sigs::kDamageVfunc7` | `(module, attacker, ctx, a4)`，`void`。**只对玩家受害者做事**：盾判定为挡时 `ctx+0xFC=0`（不击退）、`ctx+0xD9=1`（引擎才会问 GuardCheck）。敌人的伤害模块 `vfunc[7]` 是 `0x4455C0`（另一个函数） |
+| GuardCheck | `0x480EF0` | `sigs::kGuardCheck` | `(攻击者动作模块, 受害者 ChrIns, u32, u8, u8) -> bool`；攻击者 ChrIns = `*(rcx+8)`。返回真 → DamageDriver `0x449D30` 置 `ctx+0x267\|=0x10` 并跳过 F7 和 ProcessDamageContext。`mc_er_noguardhook.txt` 关掉它和上一行 |
+| 破韧判定 | `0x449520` | `sigs::kBreakTest` | `(damageModule, ctx) -> bool`，F7 在 `0x447A3B` 调用，真 → `ctx+0x258=1`（重受击：倒地/击飞）。MC 模式下对玩家：先调原函数，返回 0，清 `[[module+0xA0]+0x34/+0x38]`。`mc_er_noknockdownfix.txt` 关掉 |
 | 输入总闸门 | `0x14067B020` | `sigs::kIsInputBlocked` | 背包打开时返回 1（6 个调用者）。**实测背包开着时从未被调用（forced=0），键盘屏蔽靠 DirectInput 层清零；保留但不是必需** |
 | 相机转动冻结 | `0x140766C60` | `sigs::kMenuFreezesCamera` | 背包打开时返回 1。**实测有效（每秒 120 次）**。有一个只差 call 位移的孪生函数 `0x140766BC0`，签名带了字面位移才唯一。 |
 | 受击特效生成（可选） | `0x450120` | `sigs::kHitVfxSpawn` | 放 `mc_er_hitvfx.txt` 才装；血液已用游戏设置关掉，通常不需要 |
@@ -160,7 +211,7 @@
 | 射线包装（调用） | `0xC71D70` | `sigs::kRaycastWrapper` | 墙体遮挡，过滤器 `0x5D`，在 `DamageQueue` 里（游戏线程）调用 |
 | 敌人伤害入口（虚表调用） | `vfunc[7]`=`0x4455C0` | — | 我们造成伤害：单次调用，引擎自己算硬直/音效/仇恨/死亡 |
 | 弩箭发射 `spawn_bullet` | `0x3A2CB0` | `sigs::kSpawnBullet` | 只读记录请求体、存模板；F3 也调用它（游戏线程，SEH）。`r9` 是状态码指针 |
-| D3D12 | Present / ResizeBuffers / ExecuteCommandLists / CreateDepthStencilView | — | 覆盖层、命令队列捕获、深度缓冲识别 |
+| D3D12 | Present / ResizeBuffers / ExecuteCommandLists / CreateDepthStencilView | — | 覆盖层、命令队列捕获、深度缓冲识别（**只接受与后备缓冲同宽的深度图**）；`mc_er_depthprobe.txt` 存在时另挂命令列表的 `OMSetRenderTargets`/`Draw*`/`ClearDepthStencilView`/`ResourceBarrier`/`CopyResource`/`CopyTextureRegion`（只记录） |
 | DirectInput | `CreateDevice`、设备 `GetDeviceState/GetDeviceData` | — | 吞鼠标键、取左/右键边沿和滚轮 |
 
 **伤害链（要点）**：点击 → `ClickAttack`（选目标、`MeleeController::makeIntent` 算 MC 伤害 → `erDamage` 换成最大血量百分比）→ `DamageQueue.enqueue`（`tag` 位：1=暴击、2=横扫、4=强击、位 8~15=MC 伤害整数）→ 游戏线程 `ClampDetour` 排空 → 视线检查（射线）→ 构造 `HitContext`（模板见 5.2）→ 调 `vfunc[7]` → 引擎走 `ProcessDamageContext`，我们的钩子把 `ctx+0x228` 换成目标伤害 → 结果回到 `DrainOnce`：命中标记/粒子/音效。
@@ -171,7 +222,7 @@
 
 ### 5.1 开关文件（空文件即可，存在就启用）
 
-`mc_er_overlay.txt`（覆盖层）、`mc_er_damage.txt`（伤害功能）、`mc_er_input.txt`（输入拦截）、`mc_er_hit.bin`（**必须**，见 5.2）、`mc_er_steve.txt`（配置，见下）、`mc_er_physlog.txt`（物理向量日志）、`mc_er_hitlog.txt`（`HIT-IN` 受击日志）、`mc_er_hitvfx.txt`（装受击特效钩子）、`mc_er_buddylog.txt`（召唤管理器只读探针，**会占满一个 CPU 核**）、`mc_er_summon.txt`（让 F2 触发一次群狼召唤）、`mc_er_summonhide.txt`（隐藏召唤物原模型、画 MC 僵尸）、`mc_er_chrscan.txt`（F2 后扫描召唤物结构，只读）、`mc_er_creativelog.txt`（创造模式只读探针：事件分发器、击杀包装等）、`mc_er_bulletlog.txt` / `mc_er_bulletfire.txt` / `mc_er_arrowdmg.txt`（弩箭，见第 0 节）、`mc_er_nolos.txt`（**应急**：关闭墙体遮挡）、`mc_er_anyvictim.txt`（不等受害者被更新，有小概率与 worker 线程竞争）。
+`mc_er_overlay.txt`（覆盖层）、`mc_er_damage.txt`（伤害功能）、`mc_er_input.txt`（输入拦截）、`mc_er_hit.bin`（**必须**，见 5.2）、`mc_er_steve.txt`（配置，见下）、`mc_er_physlog.txt`（物理向量日志）、`mc_er_hitlog.txt`（`HIT-IN` 受击日志）、`mc_er_hitvfx.txt`（装受击特效钩子）、`mc_er_buddylog.txt`（召唤管理器只读探针，**会占满一个 CPU 核**）、`mc_er_summon.txt`（让 F2 触发一次群狼召唤）、`mc_er_summonhide.txt`（隐藏召唤物原模型、画 MC 僵尸）、`mc_er_chrscan.txt`（F2 后扫描召唤物结构，只读）、`mc_er_creativelog.txt`（创造模式只读探针：事件分发器、击杀包装等）、`mc_er_bulletlog.txt` / `mc_er_bulletfire.txt` / `mc_er_arrowdmg.txt`（弩箭，见第 0 节）、`mc_er_nolos.txt`（**应急**：关闭墙体遮挡）、`mc_er_anyvictim.txt`（不等受害者被更新，有小概率与 worker 线程竞争）。 **本阶段新增**：`mc_er_noguardhook.txt`（关盾牌的 GuardCheck 与 `vfunc[7]` 钩子）、`mc_er_noknockdownfix.txt`（关去倒地钩子）、`mc_er_noflags.txt`（关体力/HUD/不死标志位的持有）、`mc_er_depthprobe.txt`（开深度探针）。
 
 ### 5.2 `mc_er_hit.bin`（576 字节，必备）
 
@@ -183,7 +234,7 @@
 
 ### 5.4 热键（游戏窗口在前台时）
 
-`F2` 召唤（需 `mc_er_summon.txt`；僵尸刷怪蛋右键走同一条流程）· `F3` 发射一支弩箭（需 `mc_er_bulletfire.txt` 和 `mc_er_bullet.bin`；400 ms 冷却）· `F4` 截图（**别占用**）· `F5` 生存/创造（MC 模式内）· 双击空格 创造飞行 · `F6` MC 模式开关 · `F7` 切换深度候选（标定） · `F8` 打最近的敌人 · `F9` 逐槽隐藏部件（屏幕黄字显示槽号，`F6`/`F10` 会复位）· `F10` 第一人称 · `F11` 打印部件槽快照 · `F12` 记录 240 帧位置轨迹 · `I` 背包（Esc/再按 `I` 关；打开后：左键拿/放/合并/交换，右键拿一半/放一个，Shift+左键在热键栏和主背包间移动，数字键把悬停格与热键栏对换，物品栏面板上方是 17 种物品的创造选取区）· 滚轮/数字 `1~9` 切热键栏 · 右键 吃东西 · 左键 攻击 · 空格（写死）起跳判定。
+`F2` 召唤（需 `mc_er_summon.txt`；僵尸刷怪蛋右键走同一条流程）· `F3` 发射一支弩箭（需 `mc_er_bulletfire.txt` 和 `mc_er_bullet.bin`；400 ms 冷却）· `F4` 截图（**别占用**；写 `mc_er_shot_001.png`，现在支持 R10G10B10A2 后备缓冲，之前格式 24 时一直失败）· `F5` 生存/创造（MC 模式内）· 双击空格 创造飞行 · `F6` MC 模式开关 · `F7` 切换深度候选（标定；现在只在与后备缓冲同宽的候选间切换） · `F8` 打最近的敌人 · `F9` 逐槽隐藏部件（屏幕黄字显示槽号，`F6`/`F10` 会复位）· `F10` 第一人称 · `F11` 打印部件槽快照 · `F12` 记录 240 帧位置轨迹 · `I` 背包（Esc/再按 `I` 关；打开后：左键拿/放/合并/交换，右键拿一半/放一个，Shift+左键在热键栏和主背包间移动，数字键把悬停格与热键栏对换，物品栏面板上方是 17 种物品的创造选取区）· 滚轮/数字 `1~9` 切热键栏 · 右键 吃东西 · 左键 攻击 · 空格（写死）起跳判定。
 
 ---
 
@@ -200,6 +251,8 @@
 
 图集里现在 51 个精灵（含 `item_zombie_spawn_egg`；真实图集用 1.21.8 jar 里 `item/zombie_spawn_egg.png`，旧 jar 才走灰蛋着色合成）。图集精灵表只往末尾追加（图集 2026-10-09 从 256 扩到 512，所有 UV 数值因此变了，新旧图集文件不能混用，换版本后必须重新生成）；改完要重新生成头文件和占位图集（见第 2 节）。
 
+
+**盾牌（本阶段）**：图集里追加了 `entity_shield`（64×64，jar 的 `entity/shield_base_nopattern.png` 原样；占位图集里是程序画的同布局占位），3D 盾牌按原版盒子展开方式贴它；`item_shield` 图标从同一张贴图的正面（12×22 → 9×16）裁出。1.21.8 的 jar 里**没有** `item/shield.png`。图集头文件和占位 PNG 必须用工具生成（`--export-header include/mc/hud_atlas.hpp --export-adapter-header adapters/sekiro/include/sekiro_hud_atlas.hpp`，`--export-hud-atlas --out-dir` 再复制 PNG），测试逐字节比对。
 ---
 
 ## 7. 已验证的实测事实（别再重新猜）
@@ -233,6 +286,8 @@
 ---
 
 ## 9. 待办（按优先级）
+
+> **2026-10-11：当前待办以第 0 节的"未解决 / 用户暂停的"和 0.2 为准。** 下面是更早的长期清单。
 
 > 2026-10-10：创造模式、召唤僵尸已完成；**当前最新的待办看第 0 节末尾**。下面是更早的长期清单（背包存档、弓箭、HUD 还原等仍有效；"背包界面""创造/飞行/起跳"相关条目已过时）。
 
@@ -274,6 +329,8 @@
 ---
 
 ## 11. 新对话的第一步
+
+0. **先读第 0 节和 0.2**；确认 `git log origin/fix/shield-live -1`（应是 `381874d` 或更新）；win 上用 `D:\game\mc\mc-core-bullet` 构建，**别动 `D:\game\mc\mc-core`**；游戏在运行时不要部署。
 
 1. 读：本文件 → `docs/ELDENRING_VERIFY_CHECKLIST.md`（尤其 F 节）→ 需要时查 `docs/ELDENRING_REVERSE.md` 对应章节（目录：§1 已确认、§3 受击管线、§8~§18 近期审计与任务单）。
 2. 检查状态：`git status -sb && git log --oneline -5`；`ssh win 'cd /d D:\game\mc\mc-core && git rev-parse --short HEAD'`；`ssh win 'tasklist | findstr /I "eldenring start_protected"'`；`ssh win 'certutil -hashfile "<游戏目录>\dinput8.dll" SHA256'` 与 win 构建产物对比。

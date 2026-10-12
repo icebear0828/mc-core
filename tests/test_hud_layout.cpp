@@ -29,6 +29,8 @@ TEST(HudLayoutTest, HotbarIsCentredOnTheBottomEdgeAt1080p) {
     const HudLayout l(1920.f, 1080.f);
     ASSERT_EQ(l.scale(), 3);
     expectRect(l.hotbar(), 687.f, 1014.f, 546.f, 66.f);  // (1920 - 182*3)/2, 1080 - 22*3
+    expectRect(l.offhand(), 687.f - 29.f * 3.f, 1014.f - 3.f, 29.f * 3.f, 24.f * 3.f);
+    expectRect(l.offhandItem(), 687.f - 26.f * 3.f, 1014.f + 9.f, 48.f, 48.f);
 }
 
 TEST(HudLayoutTest, SelectionAndItemsFollowTheTwentyPixelSlotPitch) {

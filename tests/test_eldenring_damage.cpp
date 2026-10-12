@@ -216,6 +216,41 @@ TEST(EldenRingDamage, RefusesDeadNeutralAndWrongClassVictims) {
     EXPECT_TRUE(calls.empty());
 }
 
+TEST(EldenRingDamage, AppliesDamageToNeutralEntitiesWhenAllowNeutralIsTrue) {
+    Mem m = makeWorld();
+    const HitTemplate t = makeTemplate();
+    std::vector<Call> calls;
+    DamageQueue q;
+    // neutral team 30
+    m.put<int32_t>(kEnemy + 0x2000 + layout::kDataHp, 100);
+    m.put<uint8_t>(kEnemy + layout::kTeamTypeInChrIns, 30);
+    q.enqueue(kEnemy, 50, 10);
+    DrainContext c = baseCtx(m, t, calls);
+    c.allow_neutral = true;
+    auto r = q.drain(c);
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_EQ(r[0].outcome, DamageOutcome::Applied);
+    EXPECT_EQ(calls.size(), 1u);
+}
+
+TEST(EldenRingDamage, UnknownRelationIsNotDamagedEvenWhenAllowNeutralIsTrue) {
+    Mem m = makeWorld();
+    const HitTemplate t = makeTemplate();
+    std::vector<Call> calls;
+    DamageQueue q;
+    // team 20 has no relation object behind the matrix entry: the read is Unknown, which must never be attacked
+    m.put<uint64_t>(kBase + layout::kTeamMatrixRva + (1 * layout::kTeamCount + 20) * 8, kBase + 0x1234);
+    m.put<int32_t>(kEnemy + 0x2000 + layout::kDataHp, 100);
+    m.put<uint8_t>(kEnemy + layout::kTeamTypeInChrIns, 20);
+    q.enqueue(kEnemy, 50, 10);
+    DrainContext c = baseCtx(m, t, calls);
+    c.allow_neutral = true;
+    auto r = q.drain(c);
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_EQ(r[0].outcome, DamageOutcome::NotHostile);
+    EXPECT_TRUE(calls.empty());
+}
+
 TEST(EldenRingDamage, RefusesGoneVictimsAndBadInputs) {
     Mem m = makeWorld();
     const HitTemplate t = makeTemplate();
@@ -477,4 +512,19 @@ TEST(EldenRingDamage, KnockbackStrengthIsSetAndTheOldValueReturned) {
     float now = 0.f;
     std::memcpy(&now, ctx + layout::kHitKnockbackIn, 4);
     EXPECT_FLOAT_EQ(now, 120.f);
+}
+
+TEST(EldenRingDamage, KnockdownIsRemovedOnlyForThePlayerInMcModeWhenEnabled) {
+    using eldenring::live::shouldSoftenHitReaction;
+    EXPECT_TRUE(shouldSoftenHitReaction(true, true, true));
+    EXPECT_FALSE(shouldSoftenHitReaction(false, true, true));  // MC mode off: the game's own reactions
+    EXPECT_FALSE(shouldSoftenHitReaction(true, false, true));  // an enemy keeps being staggered and knocked down by our hits
+    EXPECT_FALSE(shouldSoftenHitReaction(true, true, false));  // switched off by mc_er_noknockdownfix.txt
+}
+
+TEST(EldenRingDamage, HitReactionBufferFieldsAreTheOnesTheBreakTestWrites) {
+    // REVERSE 41: 0x140449520 writes [[module+0xA0]+0x34] (float, the push) and [[module+0xA0]+0x38] (the break flag) whatever it answers
+    EXPECT_EQ(layout::kDamageHitBuffer, 0xA0u);
+    EXPECT_EQ(layout::kHitBufferForce, 0x34u);
+    EXPECT_EQ(layout::kHitBufferBreakFlag, 0x38u);
 }

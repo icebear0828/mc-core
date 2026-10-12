@@ -55,6 +55,11 @@ add_executable(mc_tests
     test_eldenring_hud_anim.cpp
     test_eldenring_jump.cpp
     test_entity_model.cpp
+    test_eldenring_shield.cpp
+    test_eldenring_flags.cpp
+    test_eldenring_pixel.cpp
+    test_eldenring_depth.cpp
+    test_eldenring_d3dstate.cpp
 )
 
 target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source")

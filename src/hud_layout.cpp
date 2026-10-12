@@ -38,6 +38,8 @@ HudRect HudLayout::crosshair() const {
 }
 
 HudRect HudLayout::hotbar() const { return box(0.f, -kHotbarHeight, kHotbarWidth, kHotbarHeight); }
+HudRect HudLayout::offhand() const { return box(-29.f, -kHotbarHeight - 1.f, 29.f, 24.f); }
+HudRect HudLayout::offhandItem() const { return box(-29.f + 3.f, -kHotbarHeight + 3.f, 16.f, 16.f); }
 
 HudRect HudLayout::selection(int slot) const {
     return box(kSlotPitch * static_cast<float>(slot) - 1.f, -kHotbarHeight - 1.f, 24.f, 23.f);

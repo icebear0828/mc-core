@@ -28,6 +28,7 @@ inline uint32_t maxStackSize(ItemId item) {
         case ItemId::Trident:
         case ItemId::FlintAndSteel:
         case ItemId::TotemOfUndying:
+        case ItemId::Shield:
         case ItemId::Elytra: return 1;
         case ItemId::EnderPearl: return 16;
         default: return 64;
@@ -47,6 +48,7 @@ public:
                                           {ItemId::Bow, 1},          {ItemId::Elytra, 1},          {ItemId::TotemOfUndying, 1}};
         for (int i = 0; i < kHotbar; ++i) inv.slots_[static_cast<size_t>(i)] = start[i];
         inv.slots_[kHotbar] = {ItemId::Arrow, 64}; // the hotbar is full: the arrows for the bow wait in the first main slot
+        inv.offhand_ = {ItemId::Shield, 1};        // the offhand starts with a shield ready for defense
         return inv;
     }
 
@@ -57,6 +59,38 @@ public:
         slots_[static_cast<size_t>(i)] = s;
     }
     [[nodiscard]] const ItemStack& cursor() const { return cursor_; }
+
+    [[nodiscard]] const ItemStack& offhand() const { return offhand_; }
+    void setOffhand(ItemStack s) {
+        if (s.empty()) s = {};
+        offhand_ = s;
+    }
+    bool consumeOffhand() {
+        if (offhand_.empty()) return false;
+        if (--offhand_.count == 0) offhand_ = {};
+        return true;
+    }
+
+    // Checks if the player holds an item in the main hand slot, OR in the offhand.
+    [[nodiscard]] bool holdsOrOffhand(ItemId item, int selected_slot) const {
+        if (selected_slot >= 0 && selected_slot < kSlots && !slots_[static_cast<size_t>(selected_slot)].empty() &&
+            slots_[static_cast<size_t>(selected_slot)].item == item) {
+            return true;
+        }
+        return !offhand_.empty() && offhand_.item == item;
+    }
+
+    // Consumes held item if present in selected slot, otherwise from offhand if present.
+    bool consumeHeldOrOffhand(ItemId item, int selected_slot) {
+        if (selected_slot >= 0 && selected_slot < kSlots && !slots_[static_cast<size_t>(selected_slot)].empty() &&
+            slots_[static_cast<size_t>(selected_slot)].item == item) {
+            return consume(selected_slot);
+        }
+        if (!offhand_.empty() && offhand_.item == item) {
+            return consumeOffhand();
+        }
+        return false;
+    }
 
     // Adds a stack: existing partial stacks first, then empty slots, hotbar before the main inventory. Returns what did not fit.
     uint32_t add(ItemStack s) {
@@ -87,9 +121,11 @@ public:
         return true;
     }
     [[nodiscard]] bool has(ItemId item) const {
+        if (!offhand_.empty() && offhand_.item == item) return true;
         return std::any_of(slots_.begin(), slots_.end(), [&](const ItemStack& t) { return !t.empty() && t.item == item; });
     }
     bool consumeFirst(ItemId item) {
+        if (!offhand_.empty() && offhand_.item == item) return consumeOffhand();
         for (int i = 0; i < kSlots; ++i) {
             if (!slots_[static_cast<size_t>(i)].empty() && slots_[static_cast<size_t>(i)].item == item) return consume(i);
         }
@@ -167,6 +203,55 @@ public:
         std::swap(slots_[static_cast<size_t>(i)], slots_[static_cast<size_t>(hotbar)]);
     }
 
+    // Swap offhand with selected main hand hotbar slot (standard Minecraft 'F' key swap)
+    void swapMainAndOffhand(int hotbar_slot) {
+        if (hotbar_slot < 0 || hotbar_slot >= kHotbar) return;
+        std::swap(slots_[static_cast<size_t>(hotbar_slot)], offhand_);
+    }
+
+    void clickOffhand(Button button, bool shift = false) {
+        if (shift) {
+            if (!offhand_.empty()) {
+                const uint32_t left = add(offhand_);
+                offhand_.count = left;
+                if (left == 0) offhand_ = {};
+            }
+            return;
+        }
+        if (button == Button::Left) {
+            if (cursor_.empty()) {
+                cursor_ = offhand_;
+                offhand_ = {};
+            } else if (offhand_.empty()) {
+                offhand_ = cursor_;
+                cursor_ = {};
+            } else if (offhand_.item == cursor_.item) {
+                const uint32_t cap = maxStackSize(offhand_.item);
+                const uint32_t move = std::min(cap > offhand_.count ? cap - offhand_.count : 0, cursor_.count);
+                offhand_.count += move;
+                cursor_.count -= move;
+                if (cursor_.count == 0) cursor_ = {};
+            } else {
+                std::swap(offhand_, cursor_);
+            }
+            return;
+        }
+        // Right button
+        if (cursor_.empty()) {
+            if (offhand_.empty()) return;
+            const uint32_t take = (offhand_.count + 1) / 2;
+            cursor_ = {offhand_.item, take};
+            offhand_.count -= take;
+            if (offhand_.count == 0) offhand_ = {};
+        } else if (offhand_.empty() || (offhand_.item == cursor_.item && offhand_.count < maxStackSize(offhand_.item))) {
+            if (offhand_.empty()) offhand_ = {cursor_.item, 0};
+            ++offhand_.count;
+            if (--cursor_.count == 0) cursor_ = {};
+        } else {
+            std::swap(offhand_, cursor_);
+        }
+    }
+
 private:
     void shiftMove(int i) {
         ItemStack& src = slots_[static_cast<size_t>(i)];
@@ -190,6 +275,7 @@ private:
     }
 
     std::array<ItemStack, kSlots> slots_{};
+    ItemStack offhand_{};
     ItemStack cursor_{};
 };
 
