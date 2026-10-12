@@ -653,6 +653,49 @@ def create_canonical_sprite(name: str) -> Image.Image:
                     else:
                         col = c_wd_md
                 img.putpixel((x, y), col)
+    elif name == "item_diamond_helmet":
+        c_dm, c_dd = (43, 235, 235, 255), (28, 163, 163, 255)
+        for y in range(4, 13):
+            for x in range(3, 13):
+                if y <= 8 or x in (3, 4, 11, 12):
+                    img.putpixel((x, y), c_dm if (x + y) % 2 == 0 else c_dd)
+    elif name == "item_diamond_chestplate":
+        c_dm, c_dd = (43, 235, 235, 255), (28, 163, 163, 255)
+        for y in range(3, 13):
+            for x in range(2, 14):
+                if (y >= 6 and 5 <= x <= 10) or (x in (2, 3, 4, 11, 12, 13) and y <= 8) or (y <= 5 and (x <= 4 or x >= 11)):
+                    img.putpixel((x, y), c_dm if (x + y) % 2 == 0 else c_dd)
+    elif name == "item_diamond_leggings":
+        c_dm, c_dd = (43, 235, 235, 255), (28, 163, 163, 255)
+        for y in range(3, 14):
+            for x in range(3, 13):
+                if y <= 6 or x in (3, 4, 5, 10, 11, 12):
+                    img.putpixel((x, y), c_dm if (x + y) % 2 == 0 else c_dd)
+    elif name == "item_diamond_boots":
+        c_dm, c_dd = (43, 235, 235, 255), (28, 163, 163, 255)
+        for y in range(7, 13):
+            for x in range(2, 14):
+                if (x in (2, 3, 4, 5) and (y >= 10 or x <= 4)) or (x in (10, 11, 12, 13) and (y >= 10 or x >= 11)):
+                    img.putpixel((x, y), c_dm if (x + y) % 2 == 0 else c_dd)
+    elif name.startswith("empty_armor_slot_"):
+        c_wm = (140, 140, 140, 120)
+        part = name.replace("empty_armor_slot_", "")
+        if part == "helmet":
+            for y in range(5, 11):
+                for x in range(4, 12):
+                    if y <= 8 or x in (4, 5, 10, 11): img.putpixel((x, y), c_wm)
+        elif part == "chestplate":
+            for y in range(4, 12):
+                for x in range(3, 13):
+                    if (y >= 6 and 5 <= x <= 10) or (y <= 5 and (x <= 5 or x >= 10)): img.putpixel((x, y), c_wm)
+        elif part == "leggings":
+            for y in range(4, 13):
+                for x in range(4, 12):
+                    if y <= 7 or x in (4, 5, 10, 11): img.putpixel((x, y), c_wm)
+        elif part == "boots":
+            for y in range(7, 12):
+                for x in range(3, 13):
+                    if x in (3, 4, 5, 10, 11, 12): img.putpixel((x, y), c_wm)
     elif name.startswith("block_") and name in _PLACEHOLDER_ITEM_COLORS:  # a flat coloured square
         img = Image.new("RGBA", (16, 16), _PLACEHOLDER_ITEM_COLORS[name] + (255,))
     elif name in _PLACEHOLDER_ITEM_COLORS:  # a plain coloured disc; the real icon replaces it when a client.jar is given
@@ -734,9 +777,26 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("item_shield", (16, 16)),
     # the whole 64x64 shield entity texture: the 3D shield model (plate 12x22x1 and handle 2x6x6) is mapped onto it like the game does
     ("entity_shield", (64, 64)),
+    # diamond armor items and empty armor slot watermarks
+    ("item_diamond_helmet", (16, 16)),
+    ("item_diamond_chestplate", (16, 16)),
+    ("item_diamond_leggings", (16, 16)),
+    ("item_diamond_boots", (16, 16)),
+    ("empty_armor_slot_helmet", (16, 16)),
+    ("empty_armor_slot_chestplate", (16, 16)),
+    ("empty_armor_slot_leggings", (16, 16)),
+    ("empty_armor_slot_boots", (16, 16)),
 ]
 
 _JAR_HUD_SPRITES = {
+    "item_diamond_helmet": "item/diamond_helmet.png",
+    "item_diamond_chestplate": "item/diamond_chestplate.png",
+    "item_diamond_leggings": "item/diamond_leggings.png",
+    "item_diamond_boots": "item/diamond_boots.png",
+    "empty_armor_slot_helmet": "gui/sprites/container/slot/helmet.png",
+    "empty_armor_slot_chestplate": "gui/sprites/container/slot/chestplate.png",
+    "empty_armor_slot_leggings": "gui/sprites/container/slot/leggings.png",
+    "empty_armor_slot_boots": "gui/sprites/container/slot/boots.png",
     "entity_shield": "entity/shield_base_nopattern.png",
     "crosshair": "gui/sprites/hud/crosshair.png",
     "heart_container": "gui/sprites/hud/heart/container.png",

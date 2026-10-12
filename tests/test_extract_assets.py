@@ -262,6 +262,8 @@ HUD_KEYS = [
     "heart_container_blinking", "heart_full_blinking", "heart_half_blinking", "xp_bar_background", "xp_bar_progress",
     "item_zombie_spawn_egg", "item_bow_pulling_0", "item_bow_pulling_1", "item_bow_pulling_2",
     "hotbar_offhand_left", "item_shield", "entity_shield",
+    "item_diamond_helmet", "item_diamond_chestplate", "item_diamond_leggings", "item_diamond_boots",
+    "empty_armor_slot_helmet", "empty_armor_slot_chestplate", "empty_armor_slot_leggings", "empty_armor_slot_boots",
 ]
 HUD_SIZES = {
     "heart_absorb_full": (9, 9), "heart_absorb_half": (9, 9), "particle_crit": (8, 8), "particle_damage": (8, 8),
@@ -323,6 +325,14 @@ def _sprite_colors():
         "gui/sprites/hud/experience_bar_progress.png": _solid((182, 5), (73, 74, 75, 255)),
         "gui/sprites/hud/hotbar_offhand_left.png": _solid((29, 24), (80, 81, 82, 255)),
         "gui/sprites/container/slot/shield.png": _solid((16, 16), (83, 84, 85, 255)),
+        "item/diamond_helmet.png": _solid((16, 16), (86, 87, 88, 255)),
+        "item/diamond_chestplate.png": _solid((16, 16), (89, 90, 91, 255)),
+        "item/diamond_leggings.png": _solid((16, 16), (92, 93, 94, 255)),
+        "item/diamond_boots.png": _solid((16, 16), (95, 96, 97, 255)),
+        "gui/sprites/container/slot/helmet.png": _solid((16, 16), (98, 99, 100, 255)),
+        "gui/sprites/container/slot/chestplate.png": _solid((16, 16), (101, 102, 103, 255)),
+        "gui/sprites/container/slot/leggings.png": _solid((16, 16), (104, 105, 106, 255)),
+        "gui/sprites/container/slot/boots.png": _solid((16, 16), (107, 108, 109, 255)),
     }
 
 

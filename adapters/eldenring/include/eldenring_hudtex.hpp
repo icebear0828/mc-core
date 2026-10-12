@@ -37,6 +37,21 @@ inline const mc::hud::HudUV* uvForItem(mc::ItemId item) {
         case ItemId::BowPulling1: return &mc::hud::kUV_ITEM_BOW_PULLING_1;
         case ItemId::BowPulling2: return &mc::hud::kUV_ITEM_BOW_PULLING_2;
         case ItemId::Shield: return &mc::hud::kUV_ITEM_SHIELD;
+        case ItemId::DiamondHelmet: return &mc::hud::kUV_ITEM_DIAMOND_HELMET;
+        case ItemId::DiamondChestplate: return &mc::hud::kUV_ITEM_DIAMOND_CHESTPLATE;
+        case ItemId::DiamondLeggings: return &mc::hud::kUV_ITEM_DIAMOND_LEGGINGS;
+        case ItemId::DiamondBoots: return &mc::hud::kUV_ITEM_DIAMOND_BOOTS;
+        default: return nullptr;
+    }
+}
+
+inline const mc::hud::HudUV* uvForEmptyArmorSlot(mc::ArmorSlot slot) {
+    using mc::ArmorSlot;
+    switch (slot) {
+        case ArmorSlot::Helmet: return &mc::hud::kUV_EMPTY_ARMOR_SLOT_HELMET;
+        case ArmorSlot::Chestplate: return &mc::hud::kUV_EMPTY_ARMOR_SLOT_CHESTPLATE;
+        case ArmorSlot::Leggings: return &mc::hud::kUV_EMPTY_ARMOR_SLOT_LEGGINGS;
+        case ArmorSlot::Boots: return &mc::hud::kUV_EMPTY_ARMOR_SLOT_BOOTS;
         default: return nullptr;
     }
 }

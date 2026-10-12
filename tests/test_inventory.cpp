@@ -262,3 +262,92 @@ TEST(Inventory, SwapMainAndOffhandSwapsHotbarSlotWithOffhand) {
     EXPECT_EQ(inv.offhand().item, ItemId::Shield);
 }
 
+TEST(Inventory, ArmorSlotsAcceptMatchingArmor) {
+    Inventory inv;
+    EXPECT_EQ(getArmorSlot(ItemId::DiamondHelmet), ArmorSlot::Helmet);
+    EXPECT_EQ(getArmorSlot(ItemId::DiamondChestplate), ArmorSlot::Chestplate);
+    EXPECT_EQ(getArmorSlot(ItemId::DiamondLeggings), ArmorSlot::Leggings);
+    EXPECT_EQ(getArmorSlot(ItemId::DiamondBoots), ArmorSlot::Boots);
+    EXPECT_EQ(getArmorSlot(ItemId::Elytra), ArmorSlot::Chestplate);
+    EXPECT_EQ(getArmorSlot(ItemId::DiamondSword), ArmorSlot::None);
+
+    for (int i = 0; i < Inventory::kArmorSlots; ++i) {
+        EXPECT_TRUE(inv.armor(i).empty());
+    }
+
+    // Direct placement
+    inv.setArmor(ArmorSlot::Helmet, {ItemId::DiamondHelmet, 1});
+    EXPECT_EQ(inv.armor(ArmorSlot::Helmet).item, ItemId::DiamondHelmet);
+    EXPECT_EQ(inv.armor(0).count, 1u);
+
+    // Click cursor to armor slot: reject mismatched item
+    inv.clickPalette(ItemId::DiamondSword, Button::Left);
+    EXPECT_EQ(inv.cursor().item, ItemId::DiamondSword);
+    inv.clickArmor(1, Button::Left); // chest slot rejects sword
+    EXPECT_EQ(inv.cursor().item, ItemId::DiamondSword);
+    EXPECT_TRUE(inv.armor(1).empty());
+
+    // Click cursor to chest slot: accept Elytra
+    inv.clickPalette(ItemId::Elytra, Button::Left);
+    EXPECT_EQ(inv.cursor().item, ItemId::Elytra);
+    inv.clickArmor(1, Button::Left);
+    EXPECT_TRUE(inv.cursor().empty());
+    EXPECT_EQ(inv.armor(ArmorSlot::Chestplate).item, ItemId::Elytra);
+
+    // Swap chest slot Elytra with DiamondChestplate
+    inv.clickPalette(ItemId::DiamondChestplate, Button::Left);
+    EXPECT_EQ(inv.cursor().item, ItemId::DiamondChestplate);
+    inv.clickArmor(1, Button::Left);
+    EXPECT_EQ(inv.armor(ArmorSlot::Chestplate).item, ItemId::DiamondChestplate);
+    EXPECT_EQ(inv.cursor().item, ItemId::Elytra);
+    inv.returnCursor();
+}
+
+TEST(Inventory, ShiftClickMovesArmorToMatchingSlots) {
+    Inventory inv;
+    inv.setSlot(10, {ItemId::DiamondHelmet, 1});
+    inv.setSlot(11, {ItemId::DiamondLeggings, 1});
+    EXPECT_TRUE(inv.armor(ArmorSlot::Helmet).empty());
+    EXPECT_TRUE(inv.armor(ArmorSlot::Leggings).empty());
+
+    // Shift-click in main inventory equips to matching armor slot
+    inv.click(10, Button::Left, true);
+    EXPECT_TRUE(inv.slot(10).empty());
+    EXPECT_EQ(inv.armor(ArmorSlot::Helmet).item, ItemId::DiamondHelmet);
+
+    inv.click(11, Button::Left, true);
+    EXPECT_TRUE(inv.slot(11).empty());
+    EXPECT_EQ(inv.armor(ArmorSlot::Leggings).item, ItemId::DiamondLeggings);
+
+    // Shift-click inside armor slot un-equips back to main inventory
+    inv.clickArmor(0, Button::Left, true);
+    EXPECT_TRUE(inv.armor(ArmorSlot::Helmet).empty());
+    EXPECT_EQ(inv.slot(0).item, ItemId::DiamondHelmet); // moves to first available slot
+}
+
+TEST(Inventory, TotalArmorPointsAndDamageReduction) {
+    Inventory inv;
+    EXPECT_EQ(inv.totalArmorPoints(), 0);
+    EXPECT_NEAR(inv.damageReductionRatio(), 0.0f, 1e-4f);
+    EXPECT_FLOAT_EQ(inv.applyDamageReduction(100.0f), 100.0f);
+
+    inv.setArmor(ArmorSlot::Helmet, {ItemId::DiamondHelmet, 1});       // 3 points
+    inv.setArmor(ArmorSlot::Chestplate, {ItemId::DiamondChestplate, 1}); // 8 points
+    inv.setArmor(ArmorSlot::Leggings, {ItemId::DiamondLeggings, 1});   // 6 points
+    inv.setArmor(ArmorSlot::Boots, {ItemId::DiamondBoots, 1});         // 3 points
+
+    EXPECT_EQ(inv.totalArmorPoints(), 20);
+    // 20 points * 4% = 80% damage reduction
+    EXPECT_NEAR(inv.damageReductionRatio(), 0.80f, 1e-4f);
+    EXPECT_NEAR(inv.applyDamageReduction(100.0f), 20.0f, 0.1f);
+}
+
+TEST(Inventory, StartInventoryHasFullDiamondArmorReadyToEquip) {
+    const Inventory inv = Inventory::withDefaultHotbar();
+    EXPECT_TRUE(inv.has(ItemId::DiamondHelmet));
+    EXPECT_TRUE(inv.has(ItemId::DiamondChestplate));
+    EXPECT_TRUE(inv.has(ItemId::DiamondLeggings));
+    EXPECT_TRUE(inv.has(ItemId::DiamondBoots));
+    EXPECT_TRUE(inv.has(ItemId::Elytra));
+}
+

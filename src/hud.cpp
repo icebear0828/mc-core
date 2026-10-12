@@ -108,6 +108,10 @@ const char* HudEngine::getItemDisplayName(ItemId item) {
         case ItemId::BowPulling1:
         case ItemId::BowPulling2: return "Bow";
         case ItemId::Shield: return "Shield";
+        case ItemId::DiamondHelmet: return "Diamond Helmet";
+        case ItemId::DiamondChestplate: return "Diamond Chestplate";
+        case ItemId::DiamondLeggings: return "Diamond Leggings";
+        case ItemId::DiamondBoots: return "Diamond Boots";
         case ItemId::None:
         default: return "";
     }

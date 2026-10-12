@@ -24,6 +24,10 @@ inline uint32_t maxStackSize(ItemId item) {
         case ItemId::None: return 0;
         case ItemId::DiamondSword:
         case ItemId::DiamondPickaxe:
+        case ItemId::DiamondHelmet:
+        case ItemId::DiamondChestplate:
+        case ItemId::DiamondLeggings:
+        case ItemId::DiamondBoots:
         case ItemId::Bow:
         case ItemId::Trident:
         case ItemId::FlintAndSteel:
@@ -39,6 +43,7 @@ class Inventory {
 public:
     static constexpr int kHotbar = 9;
     static constexpr int kSlots = 36;
+    static constexpr int kArmorSlots = 4;
 
     // The hotbar the game starts with (same as the old MeleeController / Session::loadDefaultHotbar).
     static Inventory withDefaultHotbar() {
@@ -49,6 +54,10 @@ public:
         for (int i = 0; i < kHotbar; ++i) inv.slots_[static_cast<size_t>(i)] = start[i];
         inv.slots_[kHotbar] = {ItemId::Arrow, 64}; // the hotbar is full: the arrows for the bow wait in the first main slot
         inv.slots_[kHotbar + 1] = {ItemId::FlintAndSteel, 1}; // flint and steel in the backpack
+        inv.slots_[kHotbar + 2] = {ItemId::DiamondHelmet, 1}; // full diamond armor ready to equip
+        inv.slots_[kHotbar + 3] = {ItemId::DiamondChestplate, 1};
+        inv.slots_[kHotbar + 4] = {ItemId::DiamondLeggings, 1};
+        inv.slots_[kHotbar + 5] = {ItemId::DiamondBoots, 1};
         inv.offhand_ = {ItemId::Shield, 1};        // the offhand starts with a shield ready for defense
         return inv;
     }
@@ -60,6 +69,21 @@ public:
         slots_[static_cast<size_t>(i)] = s;
     }
     [[nodiscard]] const ItemStack& cursor() const { return cursor_; }
+
+    [[nodiscard]] const ItemStack& armor(int i) const {
+        return armor_[static_cast<size_t>(std::clamp(i, 0, kArmorSlots - 1))];
+    }
+    [[nodiscard]] const ItemStack& armor(ArmorSlot slot) const {
+        return armor(static_cast<int>(slot));
+    }
+    void setArmor(int i, ItemStack s) {
+        if (i < 0 || i >= kArmorSlots) return;
+        if (s.empty()) s = {};
+        armor_[static_cast<size_t>(i)] = s;
+    }
+    void setArmor(ArmorSlot slot, ItemStack s) {
+        setArmor(static_cast<int>(slot), s);
+    }
 
     [[nodiscard]] const ItemStack& offhand() const { return offhand_; }
     void setOffhand(ItemStack s) {
@@ -123,6 +147,9 @@ public:
     }
     [[nodiscard]] bool has(ItemId item) const {
         if (!offhand_.empty() && offhand_.item == item) return true;
+        for (const auto& a : armor_) {
+            if (!a.empty() && a.item == item) return true;
+        }
         return std::any_of(slots_.begin(), slots_.end(), [&](const ItemStack& t) { return !t.empty() && t.item == item; });
     }
     bool consumeFirst(ItemId item) {
@@ -253,10 +280,92 @@ public:
         }
     }
 
+    // A click on armor slot 0..3: rejects mismatched item, supports shift-click unequip
+    void clickArmor(int i, Button button, bool shift = false) {
+        if (i < 0 || i >= kArmorSlots) return;
+        ItemStack& t = armor_[static_cast<size_t>(i)];
+        const ArmorSlot target_slot = static_cast<ArmorSlot>(i);
+
+        if (shift) {
+            if (t.empty()) return;
+            const uint32_t leftover = add(t);
+            if (leftover == 0) {
+                t = {};
+            } else {
+                t.count = leftover;
+            }
+            return;
+        }
+
+        if (button == Button::Left) {
+            if (cursor_.empty()) {
+                cursor_ = t;
+                t = {};
+            } else {
+                if (getArmorSlot(cursor_.item) != target_slot) {
+                    return; // Mismatched armor slot: reject placement
+                }
+                if (t.empty()) {
+                    t = cursor_;
+                    cursor_ = {};
+                } else {
+                    std::swap(t, cursor_);
+                }
+            }
+            return;
+        }
+
+        // Right button on armor slot
+        if (cursor_.empty()) {
+            if (t.empty()) return;
+            cursor_ = t;
+            t = {};
+        } else {
+            if (getArmorSlot(cursor_.item) != target_slot) return;
+            if (t.empty()) {
+                t = {cursor_.item, 1};
+                if (--cursor_.count == 0) cursor_ = {};
+            } else {
+                std::swap(t, cursor_);
+            }
+        }
+    }
+
+    [[nodiscard]] int totalArmorPoints() const {
+        int pts = 0;
+        for (const auto& a : armor_) {
+            if (!a.empty()) pts += getArmorPoints(a.item);
+        }
+        return pts;
+    }
+
+    [[nodiscard]] float damageReductionRatio() const {
+        // Minecraft vanilla: 4% damage reduction per armor point, capped at 80% (20 armor points)
+        const int pts = totalArmorPoints();
+        return std::clamp(static_cast<float>(pts) * 0.04f, 0.0f, 0.80f);
+    }
+
+    [[nodiscard]] float applyDamageReduction(float incoming_damage) const {
+        const float ratio = damageReductionRatio();
+        return std::max(0.0f, incoming_damage * (1.0f - ratio));
+    }
+
 private:
     void shiftMove(int i) {
         ItemStack& src = slots_[static_cast<size_t>(i)];
         if (src.empty()) return;
+
+        // Auto-equip armor if slot is empty
+        const ArmorSlot arm_slot = getArmorSlot(src.item);
+        if (arm_slot != ArmorSlot::None) {
+            ItemStack& dst = armor_[static_cast<size_t>(arm_slot)];
+            if (dst.empty()) {
+                dst = {src.item, 1};
+                if (--src.count == 0) src = {};
+                return;
+            }
+        }
+
         const int first = i < kHotbar ? kHotbar : 0;
         const int last = i < kHotbar ? kSlots : kHotbar;
         const uint32_t cap = maxStackSize(src.item);
@@ -276,6 +385,7 @@ private:
     }
 
     std::array<ItemStack, kSlots> slots_{};
+    std::array<ItemStack, kArmorSlots> armor_{};
     ItemStack offhand_{};
     ItemStack cursor_{};
 };

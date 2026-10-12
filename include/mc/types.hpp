@@ -86,12 +86,45 @@ enum class ItemId : uint16_t {
     BlockStone,
     BlockTnt,
     ZombieSpawnEgg, // appended: the ids above stay as they are
-    // The bow as it looks while it is drawn (the arrow nocked): view-model sprites chosen by the draw power, never an inventory item.
     BowPulling0,
     BowPulling1,
     BowPulling2,
-    Shield
+    Shield,
+    DiamondHelmet,
+    DiamondChestplate,
+    DiamondLeggings,
+    DiamondBoots
 };
+
+enum class ArmorSlot : uint8_t {
+    Helmet = 0,
+    Chestplate = 1,
+    Leggings = 2,
+    Boots = 3,
+    Count = 4,
+    None = 255
+};
+
+constexpr ArmorSlot getArmorSlot(ItemId item) {
+    switch (item) {
+        case ItemId::DiamondHelmet: return ArmorSlot::Helmet;
+        case ItemId::DiamondChestplate:
+        case ItemId::Elytra: return ArmorSlot::Chestplate;
+        case ItemId::DiamondLeggings: return ArmorSlot::Leggings;
+        case ItemId::DiamondBoots: return ArmorSlot::Boots;
+        default: return ArmorSlot::None;
+    }
+}
+
+constexpr int getArmorPoints(ItemId item) {
+    switch (item) {
+        case ItemId::DiamondHelmet: return 3;
+        case ItemId::DiamondChestplate: return 8;
+        case ItemId::DiamondLeggings: return 6;
+        case ItemId::DiamondBoots: return 3;
+        default: return 0;
+    }
+}
 
 enum class EffectType : uint8_t {
     Regeneration,

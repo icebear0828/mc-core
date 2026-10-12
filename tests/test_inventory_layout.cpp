@@ -76,7 +76,7 @@ TEST(InventoryLayout, OffhandSlotPositionAndHitTest) {
 
 TEST(InventoryLayout, PaletteListsEveryItemOnce) {
     const auto& items = paletteItems();
-    EXPECT_EQ(items.size(), 19u); // 18 + shield
+    EXPECT_EQ(items.size(), 23u); // 19 + 4 diamond armor items
     EXPECT_EQ(items.front(), ItemId::DiamondSword);
     for (size_t i = 0; i < items.size(); ++i) {
         EXPECT_NE(items[i], ItemId::None);
@@ -96,4 +96,27 @@ TEST(InventoryLayout, WithoutThePaletteItsSlotsAreOnlyPanel) {
     const mc::HudRect inv = off.invSlot(12);
     EXPECT_EQ(off.hitTest(inv.x + 1.f, inv.y + 1.f).kind, mc::SlotRef::Kind::Inventory);
     EXPECT_EQ(off.hitTest(inv.x + 1.f, inv.y + 1.f).index, 12);
+}
+
+TEST(InventoryLayout, ArmorSlotsPositionAndHitTest) {
+    InventoryLayout l(1920.f, 1080.f);
+    const float s = static_cast<float>(l.scale());
+
+    for (int i = 0; i < 4; ++i) {
+        const HudRect arm = l.armorSlot(i);
+        EXPECT_FLOAT_EQ(arm.w, 18.f * s);
+        EXPECT_FLOAT_EQ(arm.h, 18.f * s);
+
+        // Armor slots are vertically stacked above the offhand slot
+        SlotRef r = l.hitTest(arm.x + 5.f, arm.y + 5.f);
+        EXPECT_EQ(r.kind, SlotRef::Kind::Armor);
+        EXPECT_EQ(r.index, i);
+    }
+
+    // Verify ordering: Helmet (0) is above Chestplate (1) is above Leggings (2) is above Boots (3)
+    EXPECT_LT(l.armorSlot(0).y, l.armorSlot(1).y);
+    EXPECT_LT(l.armorSlot(1).y, l.armorSlot(2).y);
+    EXPECT_LT(l.armorSlot(2).y, l.armorSlot(3).y);
+    // Boots (3) is above Offhand
+    EXPECT_LT(l.armorSlot(3).y, l.offhandSlot().y);
 }

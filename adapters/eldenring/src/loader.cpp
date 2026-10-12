@@ -1279,6 +1279,11 @@ bool PlayerHitSurvival(void* module, void* attacker, uint8_t* ctx, uint8_t block
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
         out = g_survival.absorb(dmg, v.max_hp);
+        const int armor_pts = g_melee.inventory().totalArmorPoints();
+        if (armor_pts > 0) {
+            const float reduced = g_melee.inventory().applyDamageReduction(static_cast<float>(out));
+            out = std::max(1, static_cast<int32_t>(std::round(reduced)));
+        }
         const TotemOutcome t = totemClamp(out, v.hp, g_melee.holds(mc::ItemId::TotemOfUndying));
         out = t.damage;
         if (t.popped && g_melee.consumeHeld(mc::ItemId::TotemOfUndying)) {
@@ -3177,8 +3182,9 @@ void InventoryTick(bool fg) {
         switch (ref.kind) {
             case mc::SlotRef::Kind::Inventory: inv.click(ref.index, button, shift); break;
             case mc::SlotRef::Kind::Offhand: inv.clickOffhand(button, shift); break;
+            case mc::SlotRef::Kind::Armor: inv.clickArmor(ref.index, button, shift); break;
             case mc::SlotRef::Kind::Palette:
-                if (static_cast<size_t>(ref.index) < mc::paletteItems().size()) inv.clickPalette(mc::paletteItems()[static_cast<size_t>(ref.index)], button, shift);
+                if (static_cast<size_t>(ref.index) < mc::paletteItems().size()) inv.clickPalette(mc::paletteItems()[static_cast<size_t>(ref.index)], button);
                 break;
             case mc::SlotRef::Kind::None: inv.clickOutside(); break;
             case mc::SlotRef::Kind::Panel: break;
@@ -4359,6 +4365,10 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         out.cursor_count = static_cast<uint8_t>(std::min(255u, inv.cursor().count));
         out.offhand_item = static_cast<uint16_t>(inv.offhand().item);
         out.offhand_count = static_cast<uint8_t>(std::min(255u, inv.offhand().count));
+        for (int i = 0; i < mc::Inventory::kArmorSlots; ++i) {
+            out.armor_item[i] = static_cast<uint16_t>(inv.armor(i).item);
+            out.armor_count[i] = static_cast<uint8_t>(std::min(255u, inv.armor(i).count));
+        }
     }
     out.inv_open = g_inv_open.load();
     out.mouse_x = g_inv_mx.load();

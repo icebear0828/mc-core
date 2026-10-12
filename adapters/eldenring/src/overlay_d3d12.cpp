@@ -597,6 +597,29 @@ void DrawInventory(const HudState& hud, float w, float h) {
         icon(lay.invSlot(i), item);
         stackCount(lay.invSlot(i), hud.inv_count[i]);
     }
+    // Armor slots in inventory (Helmet, Chestplate, Leggings, Boots): slot border, watermark if empty, and item icon
+    for (int i = 0; i < 4; ++i) {
+        const mc::HudRect arm = lay.armorSlot(i);
+        dl->AddRectFilled({arm.x - 1.f * gs, arm.y - 1.f * gs}, {arm.x + arm.w + 1.f * gs, arm.y + arm.h + 1.f * gs}, IM_COL32(139, 139, 139, 255));
+        dl->AddRectFilled({arm.x, arm.y}, {arm.x + arm.w, arm.y + arm.h}, IM_COL32(198, 198, 198, 255));
+        dl->AddRect({arm.x, arm.y}, {arm.x + arm.w, arm.y + arm.h}, IM_COL32(55, 55, 55, 255), 0.f, 0, gs);
+        if (i == 0) {
+            dl->AddText(ImGui::GetFont(), fs, {arm.x - 2.f * gs, arm.y - 10.f * gs}, IM_COL32(255, 255, 255, 230), "Armor");
+        }
+        const mc::HudRect arm_item{arm.x + 1.f * gs, arm.y + 1.f * gs, 16.f * gs, 16.f * gs};
+        if (hud.armor_item[i] == 0) {
+            if (g_atlas_ready) {
+                if (const mc::hud::HudUV* wuv = eldenring::render::uvForEmptyArmorSlot(static_cast<mc::ArmorSlot>(i))) {
+                    dl->AddImage(atlas, {arm_item.x, arm_item.y}, {arm_item.x + arm_item.w, arm_item.y + arm_item.h},
+                                 {wuv->u0, wuv->v0}, {wuv->u1, wuv->v1}, IM_COL32(255, 255, 255, 90));
+                }
+            }
+        } else {
+            icon(arm_item, static_cast<mc::ItemId>(hud.armor_item[i]));
+            stackCount(arm_item, hud.armor_count[i]);
+        }
+    }
+
     // Offhand slot in inventory: slot border, vanilla shield watermark if empty, and item icon
     const mc::HudRect off = lay.offhandSlot();
     dl->AddRectFilled({off.x - 1.f * gs, off.y - 1.f * gs}, {off.x + off.w + 1.f * gs, off.y + off.h + 1.f * gs}, IM_COL32(139, 139, 139, 255));
@@ -623,10 +646,14 @@ void DrawInventory(const HudState& hud, float w, float h) {
         hovered = static_cast<mc::ItemId>(hud.inv_item[hover.index]);
     } else if (hover.kind == mc::SlotRef::Kind::Offhand) {
         hovered = static_cast<mc::ItemId>(hud.offhand_item);
+    } else if (hover.kind == mc::SlotRef::Kind::Armor && hover.index >= 0 && hover.index < 4) {
+        hovered = static_cast<mc::ItemId>(hud.armor_item[hover.index]);
     }
-    if (hover.kind == mc::SlotRef::Kind::Palette || hover.kind == mc::SlotRef::Kind::Inventory || hover.kind == mc::SlotRef::Kind::Offhand) {
+    if (hover.kind == mc::SlotRef::Kind::Palette || hover.kind == mc::SlotRef::Kind::Inventory ||
+        hover.kind == mc::SlotRef::Kind::Offhand || hover.kind == mc::SlotRef::Kind::Armor) {
         const mc::HudRect r = hover.kind == mc::SlotRef::Kind::Palette ? lay.paletteSlot(hover.index) :
-                              (hover.kind == mc::SlotRef::Kind::Inventory ? lay.invSlot(hover.index) : lay.offhandSlot());
+                              (hover.kind == mc::SlotRef::Kind::Inventory ? lay.invSlot(hover.index) :
+                              (hover.kind == mc::SlotRef::Kind::Offhand ? lay.offhandSlot() : lay.armorSlot(hover.index)));
         dl->AddRectFilled({r.x, r.y}, {r.x + r.w, r.y + r.h}, IM_COL32(255, 255, 255, 128));
     }
     // the stack on the cursor is drawn centred on the pointer, above everything

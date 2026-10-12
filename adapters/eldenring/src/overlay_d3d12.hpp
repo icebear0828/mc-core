@@ -39,6 +39,8 @@ struct HudState {
     uint8_t cursor_count{0};
     uint16_t offhand_item{0};
     uint8_t offhand_count{0};
+    uint16_t armor_item[4]{};
+    uint8_t armor_count[4]{};
     float mouse_x{0.f}, mouse_y{0.f};
     // Survival status bars: food level (0..20), the Regeneration effect (the hearts' wave), experience level and bar progress 0..1.
     int food{20};

@@ -17,14 +17,15 @@ inline const std::vector<ItemId>& paletteItems() {
         ItemId::DiamondSword, ItemId::DiamondPickaxe, ItemId::Bow,         ItemId::Arrow,        ItemId::Trident,
         ItemId::FlintAndSteel, ItemId::EnderPearl,    ItemId::GoldenApple, ItemId::EnchantedGoldenApple, ItemId::Bread,
         ItemId::CookedBeef,   ItemId::TotemOfUndying, ItemId::Shield,      ItemId::Elytra,      ItemId::FireworkRocket,
-        ItemId::BlockDirt,    ItemId::BlockStone,     ItemId::BlockTnt,    ItemId::ZombieSpawnEgg};
+        ItemId::BlockDirt,    ItemId::BlockStone,     ItemId::BlockTnt,    ItemId::ZombieSpawnEgg,
+        ItemId::DiamondHelmet, ItemId::DiamondChestplate, ItemId::DiamondLeggings, ItemId::DiamondBoots};
     return items;
 }
 
 struct SlotRef {
-    enum class Kind { None, Panel, Palette, Inventory, Offhand };
+    enum class Kind { None, Panel, Palette, Inventory, Offhand, Armor };
     Kind kind{Kind::None};
-    int index{-1}; // palette slot 0..26, or inventory slot 0..35, or offhand 0
+    int index{-1}; // palette slot 0..26, inventory slot 0..35, offhand 0, armor 0..3
 };
 
 class InventoryLayout {
@@ -51,6 +52,9 @@ public:
         const int m = i - 9;
         return slotAt(8 + 18 * (m % 9), 85 + 18 * (m / 9));
     }
+    // Armor slots in inventory: 4 slots vertically stacked above the offhand slot
+    [[nodiscard]] HudRect armorSlot(int i) const { return slotAt(-22, 70 + 18 * std::clamp(i, 0, 3), 18.f); }
+    [[nodiscard]] HudRect armorSlot(ArmorSlot slot) const { return armorSlot(static_cast<int>(slot)); }
     // Offhand slot in inventory: 18x18 GUI px slot positioned to the left of the hotbar at Y = 142
     [[nodiscard]] HudRect offhandSlot() const { return slotAt(-22, 142, 18.f); }
     // Where the section titles ("Items", "Inventory") start, in screen pixels.
@@ -58,6 +62,9 @@ public:
     [[nodiscard]] HudRect titleInventory() const { return slotAt(8, 73, 0.f); }
 
     [[nodiscard]] SlotRef hitTest(float x, float y) const {
+        for (int i = 0; i < 4; ++i) {
+            if (inside(armorSlot(i), x, y)) return {SlotRef::Kind::Armor, i};
+        }
         if (inside(offhandSlot(), x, y)) return {SlotRef::Kind::Offhand, 0};
         if (x < panel_.x || y < panel_.y || x >= panel_.x + panel_.w || y >= panel_.y + panel_.h) return {};
         for (int i = 0; palette_ && i < kPaletteSlots; ++i) {
