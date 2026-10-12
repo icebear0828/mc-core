@@ -100,3 +100,52 @@ TEST(EldenRingTnt, ExplosionCalculatesDamageAndKnockbackToEnemies) {
     // Direction points away from explosion (+X)
     EXPECT_GT(hits[0].impulse_dir[0], 0.9f);
 }
+
+TEST(EldenRingTnt, StepReturnsExplosionResultsAndRemovesDetonatedTnt) {
+    BlockGrid grid;
+    grid.place({0, 5, 0}, mc::BlockId::Tnt);
+
+    ErTntManager tnt_mgr;
+    ASSERT_TRUE(tnt_mgr.tryIgniteBlock(grid, {0, 5, 0}, 1.0f));
+    EXPECT_EQ(tnt_mgr.activeCount(), 1u);
+
+    // Step 0.5s: fuse not expired
+    auto explosions_half = tnt_mgr.step(0.5f, grid);
+    EXPECT_TRUE(explosions_half.empty());
+    EXPECT_EQ(tnt_mgr.activeCount(), 1u);
+
+    // Step 0.6s: fuse expires, detonates and returns explosion event
+    auto explosions_det = tnt_mgr.step(0.6f, grid);
+    ASSERT_EQ(explosions_det.size(), 1u);
+    EXPECT_NEAR(explosions_det[0].center[0], 0.5f, 1e-2f);
+    EXPECT_EQ(tnt_mgr.activeCount(), 0u);
+}
+
+TEST(EldenRingTnt, StepHandlesChainReactionWithoutMemoryCorruptionOrIteratorInvalidation) {
+    BlockGrid grid;
+    // Primary TNT
+    grid.place({0, 5, 0}, mc::BlockId::Tnt);
+    // Nearby TNT blocks in blast range (will chain ignite)
+    grid.place({1, 5, 0}, mc::BlockId::Tnt);
+    grid.place({0, 5, 1}, mc::BlockId::Tnt);
+    grid.place({-1, 5, 0}, mc::BlockId::Tnt);
+
+    ErTntManager tnt_mgr;
+    ASSERT_TRUE(tnt_mgr.tryIgniteBlock(grid, {0, 5, 0}, 0.2f));
+    EXPECT_EQ(tnt_mgr.activeCount(), 1u);
+
+    // Step 0.25s: primary TNT explodes and chains into 3 adjacent TNT blocks
+    auto explosions = tnt_mgr.step(0.25f, grid);
+    ASSERT_EQ(explosions.size(), 1u);
+    EXPECT_EQ(explosions[0].chain_tnt_cells.size(), 3u);
+
+    // Primary TNT removed, but 3 newly primed chain TNT entities are active
+    EXPECT_EQ(tnt_mgr.activeCount(), 3u);
+    for (size_t i = 0; i < tnt_mgr.activeCount(); ++i) {
+        const auto* ct = tnt_mgr.getTnt(i);
+        ASSERT_NE(ct, nullptr);
+        EXPECT_GT(ct->fuse, 0.0f);
+        EXPECT_LE(ct->fuse, 1.5f);
+    }
+}
+

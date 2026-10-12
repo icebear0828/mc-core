@@ -2711,21 +2711,17 @@ void BlocksTick() {
     const float dt = std::clamp(static_cast<float>(now_ms - last_tnt_ms) / 1000.f, 0.001f, 0.1f);
     last_tnt_ms = now_ms;
 
+    std::vector<eldenring::tnt::ErExplosionResult> explosions;
     {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         if (g_tnt_mgr.activeCount() > 0) {
-            const size_t prev_active = g_tnt_mgr.activeCount();
-            for (size_t i = 0; i < g_tnt_mgr.activeCount(); ++i) {
-                const auto* t = g_tnt_mgr.getTnt(i);
-                if (t && t->fuse <= dt) {
-                    TriggerTntExplosionEffectsAndDamage(t->pos);
-                }
-            }
-            g_tnt_mgr.step(dt, g_blocks);
-            if (g_tnt_mgr.activeCount() != prev_active) {
-                SendBlockMesh();
-            }
+            explosions = g_tnt_mgr.step(dt, g_blocks);
         }
+    }
+
+    // Trigger effects and sounds outside of g_blocks_mutex to eliminate lock recursion
+    for (const auto& exp : explosions) {
+        TriggerTntExplosionEffectsAndDamage(exp.center);
     }
 
     SendBlockMesh();

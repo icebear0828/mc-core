@@ -45,6 +45,7 @@ struct ErExplosionResult {
     float center[3]{0.f, 0.f, 0.f};
     std::vector<blocks::Cell> destroyed_cells;
     std::vector<blocks::Cell> chain_tnt_cells;
+    std::vector<ErPrimedTnt> chain_primed_tnt;
 };
 
 class ErTntManager {
@@ -94,7 +95,7 @@ public:
         return active_tnt_;
     }
 
-    ErExplosionResult detonateAt(blocks::BlockGrid& grid, const float center[3], float power = 4.0f, float radius = 4.5f) {
+    ErExplosionResult detonateAt(blocks::BlockGrid& grid, const float center[3], float power = 4.0f, float radius = 4.5f, bool add_to_active = true) {
         ErExplosionResult result;
         result.center[0] = center[0];
         result.center[1] = center[1];
@@ -172,7 +173,11 @@ public:
             primed.vel[2] = chain_vel[2];
             primed.fuse = 1.0f;
             primed.exploded = false;
-            active_tnt_.push_back(primed);
+
+            result.chain_primed_tnt.push_back(primed);
+            if (add_to_active) {
+                active_tnt_.push_back(primed);
+            }
 
             result.chain_tnt_cells.push_back(c);
         }
@@ -228,11 +233,13 @@ public:
         return hits;
     }
 
-    void step(float dt, blocks::BlockGrid& grid) {
-        for (size_t i = 0; i < active_tnt_.size(); ) {
-            auto& tnt = active_tnt_[i];
+    std::vector<ErExplosionResult> step(float dt, blocks::BlockGrid& grid) {
+        std::vector<ErExplosionResult> explosions;
+        std::vector<ErPrimedTnt> surviving_tnt;
+        std::vector<ErPrimedTnt> pending_chain_tnt;
+
+        for (auto& tnt : active_tnt_) {
             if (tnt.fuse <= 0.0f || tnt.exploded) {
-                ++i;
                 continue;
             }
 
@@ -240,9 +247,11 @@ public:
             if (tnt.fuse <= 0.0f) {
                 tnt.fuse = 0.0f;
                 tnt.exploded = true;
-                detonateAt(grid, tnt.pos, 4.0f, 4.5f);
-                // Remove exploded entity
-                active_tnt_.erase(active_tnt_.begin() + static_cast<ptrdiff_t>(i));
+                ErExplosionResult exp = detonateAt(grid, tnt.pos, 4.0f, 4.5f, false);
+                for (const auto& ct : exp.chain_primed_tnt) {
+                    pending_chain_tnt.push_back(ct);
+                }
+                explosions.push_back(std::move(exp));
                 continue;
             }
 
@@ -267,8 +276,15 @@ public:
                 }
             }
 
-            ++i;
+            surviving_tnt.push_back(tnt);
         }
+
+        for (auto& ct : pending_chain_tnt) {
+            surviving_tnt.push_back(ct);
+        }
+
+        active_tnt_ = std::move(surviving_tnt);
+        return explosions;
     }
 
     void clear() {
