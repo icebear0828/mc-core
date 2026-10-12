@@ -29,6 +29,29 @@ inline TotemOutcome totemClamp(int damage, int hp, bool has_totem) {
     return {damage, false};
 }
 
+struct ArmorDamageReductionResult {
+    int raw_damage{0};
+    int damage_after_absorb{0};
+    int armor_points{0};
+    float reduction_ratio{0.f};
+    int final_damage{0};
+};
+
+inline ArmorDamageReductionResult computeArmorDamageReduction(int raw_damage, int damage_after_absorb, int armor_points, float reduction_ratio) {
+    ArmorDamageReductionResult r;
+    r.raw_damage = raw_damage;
+    r.damage_after_absorb = damage_after_absorb;
+    r.armor_points = armor_points;
+    r.reduction_ratio = reduction_ratio;
+    if (armor_points > 0 && reduction_ratio > 0.0f) {
+        const float reduced = static_cast<float>(damage_after_absorb) * (1.0f - std::clamp(reduction_ratio, 0.0f, 0.80f));
+        r.final_damage = std::max(1, static_cast<int>(std::round(reduced)));
+    } else {
+        r.final_damage = damage_after_absorb;
+    }
+    return r;
+}
+
 class SurvivalState {
 public:
     // Regeneration heals 1 HP every 50 >> (level - 1) ticks (Minecraft, 20 ticks per second); absorption gives 4 HP per level

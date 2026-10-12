@@ -118,6 +118,14 @@ public:
     static constexpr float kTotemSec = 1.2f;
     static constexpr float kHurtSec = 0.5f; // Minecraft: hurtTime 10 ticks
 
+    struct ArmorDamageToast {
+        int raw{0};
+        int final_dmg{0};
+        int armor_pts{0};
+        float ratio{0.f};
+        float timer{0.f};
+    };
+
     void onHit(bool critical) {
         hit_ = 1.f;
         crit_ = critical;
@@ -128,11 +136,15 @@ public:
         hurt_ = 1.f;
         hurt_side_ = side < 0.f ? -1.f : 1.f;
     }
+    void onArmorDamage(int raw, int final_dmg, int armor_pts, float ratio) {
+        toast_ = {raw, final_dmg, armor_pts, ratio, 3.0f};
+    }
     void tick(float dt) {
         hit_ = std::max(0.f, hit_ - dt / kHitSec);
         kill_ = std::max(0.f, kill_ - dt / kKillSec);
         totem_ = std::max(0.f, totem_ - dt / kTotemSec);
         hurt_ = std::max(0.f, hurt_ - dt / kHurtSec);
+        toast_.timer = std::max(0.f, toast_.timer - dt);
         if (hit_ <= 0.f) crit_ = false;
     }
     [[nodiscard]] float hit() const { return hit_; }
@@ -141,6 +153,7 @@ public:
     [[nodiscard]] float totem() const { return totem_; }
     [[nodiscard]] float hurt() const { return hurt_; }       // 1 just hurt .. 0
     [[nodiscard]] float hurtSide() const { return hurt_side_; }
+    [[nodiscard]] const ArmorDamageToast& armorToast() const { return toast_; }
 
 private:
     float hit_{0.f};
@@ -149,6 +162,7 @@ private:
     float hurt_{0.f};
     float hurt_side_{1.f};
     bool crit_{false};
+    ArmorDamageToast toast_{};
 };
 
 // Elden Ring hit points for a landed MC hit: a full diamond-sword hit (7 damage) is `max_hp_percent` of the enemy's

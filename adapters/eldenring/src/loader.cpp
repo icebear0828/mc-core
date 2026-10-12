@@ -1276,13 +1276,18 @@ bool PlayerHitSurvival(void* module, void* attacker, uint8_t* ctx, uint8_t block
 
     bool popped = false;
     int32_t out = dmg;
+    int armor_pts = 0;
+    float reduction_ratio = 0.0f;
+    int32_t dmg_after_absorb = dmg;
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
-        out = g_survival.absorb(dmg, v.max_hp);
-        const int armor_pts = g_melee.inventory().totalArmorPoints();
+        dmg_after_absorb = g_survival.absorb(dmg, v.max_hp);
+        armor_pts = g_melee.inventory().totalArmorPoints();
+        reduction_ratio = g_melee.inventory().defenseReductionRatio();
+        const ArmorDamageReductionResult ar = computeArmorDamageReduction(dmg, dmg_after_absorb, armor_pts, reduction_ratio);
+        out = ar.final_damage;
         if (armor_pts > 0) {
-            const float reduced = g_melee.inventory().applyDamageReduction(static_cast<float>(out));
-            out = std::max(1, static_cast<int32_t>(std::round(reduced)));
+            g_feedback.onArmorDamage(dmg, out, armor_pts, reduction_ratio);
         }
         const TotemOutcome t = totemClamp(out, v.hp, g_melee.holds(mc::ItemId::TotemOfUndying));
         out = t.damage;
@@ -1311,6 +1316,8 @@ bool PlayerHitSurvival(void* module, void* attacker, uint8_t* ctx, uint8_t block
         g_hunger.addExhaustion(0.1f); // Minecraft: taking damage
     }
     if (out != dmg) SafeWrite32(reinterpret_cast<uintptr_t>(ctx) + layout::kHitDamage, static_cast<uint32_t>(out));
+    Log("ARMOR-DAMAGE: raw=%d absorb=%d armor_pts=%d (-%.1f%%) => final=%d (hp %d/%d)%s",
+        dmg, dmg_after_absorb, armor_pts, reduction_ratio * 100.0f, out, v.hp, v.max_hp, popped ? " [TOTEM POPPED]" : "");
     if (out != dmg || popped) {
         Log("SURVIVAL: hit %d -> %d (hp %d/%d)%s", dmg, out, v.hp, v.max_hp, popped ? " TOTEM" : "");
     }
@@ -3183,6 +3190,9 @@ void InventoryTick(bool fg) {
             case mc::SlotRef::Kind::Inventory: inv.click(ref.index, button, shift); break;
             case mc::SlotRef::Kind::Offhand: inv.clickOffhand(button, shift); break;
             case mc::SlotRef::Kind::Armor: inv.clickArmor(ref.index, button, shift); break;
+            case mc::SlotRef::Kind::Crafting:
+            case mc::SlotRef::Kind::CraftResult:
+                break;
             case mc::SlotRef::Kind::Palette:
                 if (static_cast<size_t>(ref.index) < mc::paletteItems().size()) inv.clickPalette(mc::paletteItems()[static_cast<size_t>(ref.index)], button);
                 break;
@@ -4351,6 +4361,12 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         out.hit = g_feedback.hit();
         out.hit_crit = g_feedback.crit();
         out.kill = g_feedback.kill();
+        const auto& at = g_feedback.armorToast();
+        out.armor_toast_timer = at.timer;
+        out.armor_toast_raw = at.raw;
+        out.armor_toast_final = at.final_dmg;
+        out.armor_toast_pts = at.armor_pts;
+        out.armor_toast_ratio = at.ratio;
         const mc::Inventory& inv = g_melee.inventory();
         for (int i = 0; i < mc::Inventory::kSlots; ++i) {
             out.inv_item[i] = static_cast<uint16_t>(inv.slot(i).item);

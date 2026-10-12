@@ -564,20 +564,16 @@ void DrawInventory(const HudState& hud, float w, float h) {
     const mc::InventoryLayout lay(w, h, hud.creative);
     const mc::HudRect p = lay.panel();
     const float gs = static_cast<float>(lay.scale());
-    auto image = [&](float x, float y, float rw, float rh, const mc::hud::HudUV& uv) {
-        dl->AddImage(atlas, {x, y}, {x + rw, y + rh}, {uv.u0, uv.v0}, {uv.u1, uv.v1});
-    };
-    if (g_atlas_ready) {
-        image(p.x, p.y, 176.f * gs, 71.f * gs, mc::hud::kUV_CONTAINER_TOP);
-        image(p.x, p.y + 71.f * gs, 176.f * gs, 96.f * gs, mc::hud::kUV_CONTAINER_BOTTOM);
-    } else {
-        dl->AddRectFilled({p.x, p.y}, {p.x + p.w, p.y + p.h}, IM_COL32(198, 198, 198, 255));
-    }
     const float fs = 8.f * gs;
     const ImU32 label = IM_COL32(64, 64, 64, 255);
-    dl->AddText(ImGui::GetFont(), fs, {p.x, p.y - 10.f * gs}, IM_COL32(255, 255, 255, 230), hud.creative ? "Creative Mode" : "Survival Mode");
-    if (hud.creative) dl->AddText(ImGui::GetFont(), fs, {lay.titleItems().x, lay.titleItems().y}, label, "Items");
-    dl->AddText(ImGui::GetFont(), fs, {lay.titleInventory().x, lay.titleInventory().y}, label, "Inventory");
+
+    auto drawSlotBox = [&](const mc::HudRect& r) {
+        dl->AddLine({r.x, r.y}, {r.x + r.w, r.y}, IM_COL32(55, 55, 55, 255), gs);
+        dl->AddLine({r.x, r.y}, {r.x, r.y + r.h}, IM_COL32(55, 55, 55, 255), gs);
+        dl->AddLine({r.x, r.y + r.h}, {r.x + r.w, r.y + r.h}, IM_COL32(255, 255, 255, 200), gs);
+        dl->AddLine({r.x + r.w, r.y}, {r.x + r.w, r.y + r.h}, IM_COL32(255, 255, 255, 200), gs);
+        dl->AddRectFilled({r.x + gs, r.y + gs}, {r.x + r.w - gs, r.y + r.h - gs}, IM_COL32(139, 139, 139, 255));
+    };
 
     auto stackCount = [&](const mc::HudRect& r, unsigned n) {
         if (n <= 1) return;
@@ -589,23 +585,67 @@ void DrawInventory(const HudState& hud, float w, float h) {
         dl->AddText(ImGui::GetFont(), fs, pos, IM_COL32(255, 255, 255, 255), cnt);
     };
     auto icon = [&](const mc::HudRect& r, mc::ItemId item) { DrawItemIcon(dl, atlas, r, item); };
+
+    // 1. Draw Container Base Panel (176 x 166)
+    dl->AddRectFilled({p.x, p.y}, {p.x + p.w, p.y + p.h}, IM_COL32(198, 198, 198, 255));
+    dl->AddLine({p.x, p.y}, {p.x + p.w, p.y}, IM_COL32(255, 255, 255, 255), 2.f * gs);
+    dl->AddLine({p.x, p.y}, {p.x, p.y + p.h}, IM_COL32(255, 255, 255, 255), 2.f * gs);
+    dl->AddLine({p.x, p.y + p.h}, {p.x + p.w, p.y + p.h}, IM_COL32(85, 85, 85, 255), 2.f * gs);
+    dl->AddLine({p.x + p.w, p.y}, {p.x + p.w, p.y + p.h}, IM_COL32(85, 85, 85, 255), 2.f * gs);
+
+    dl->AddText(ImGui::GetFont(), fs, {p.x, p.y - 10.f * gs}, IM_COL32(255, 255, 255, 230), hud.creative ? "Creative Mode" : "Survival Mode");
+
     const auto& palette = mc::paletteItems();
-    for (size_t i = 0; hud.creative && i < palette.size() && i < mc::InventoryLayout::kPaletteSlots; ++i) icon(lay.paletteSlot(static_cast<int>(i)), palette[i]);
-    for (int i = 0; i < 36; ++i) {
-        const mc::ItemId item = static_cast<mc::ItemId>(hud.inv_item[i]);
-        if (item == mc::ItemId::None) continue;
-        icon(lay.invSlot(i), item);
-        stackCount(lay.invSlot(i), hud.inv_count[i]);
+
+    if (hud.creative) {
+        // Creative mode palette on top
+        dl->AddText(ImGui::GetFont(), fs, {lay.titleItems().x, lay.titleItems().y}, label, "Items");
+        for (int i = 0; i < mc::InventoryLayout::kPaletteSlots; ++i) {
+            drawSlotBox(lay.paletteSlot(i));
+        }
+        for (size_t i = 0; i < palette.size() && i < mc::InventoryLayout::kPaletteSlots; ++i) {
+            icon(lay.paletteSlot(static_cast<int>(i)), palette[i]);
+        }
+    } else {
+        // Vanilla Minecraft Survival layout:
+        // Central 3D Player Preview Window (26, 8, 51, 72)
+        const mc::HudRect prev = lay.playerPreview();
+        dl->AddRectFilled({prev.x, prev.y}, {prev.x + prev.w, prev.y + prev.h}, IM_COL32(16, 16, 16, 255));
+        dl->AddLine({prev.x, prev.y}, {prev.x + prev.w, prev.y}, IM_COL32(55, 55, 55, 255), gs);
+        dl->AddLine({prev.x, prev.y}, {prev.x, prev.y + prev.h}, IM_COL32(55, 55, 55, 255), gs);
+        dl->AddLine({prev.x, prev.y + prev.h}, {prev.x + prev.w, prev.y + prev.h}, IM_COL32(255, 255, 255, 180), gs);
+        dl->AddLine({prev.x + prev.w, prev.y}, {prev.x + prev.w, prev.y + prev.h}, IM_COL32(255, 255, 255, 180), gs);
+
+        // Character silhouette in preview box
+        const float pcx = prev.x + prev.w * 0.5f, pcy = prev.y + 10.f * gs;
+        dl->AddRectFilled({pcx - 8.f * gs, pcy}, {pcx + 8.f * gs, pcy + 16.f * gs}, IM_COL32(180, 140, 105, 255));
+        dl->AddRectFilled({pcx - 8.f * gs, pcy + 16.f * gs}, {pcx + 8.f * gs, pcy + 38.f * gs}, IM_COL32(0, 150, 150, 255));
+        dl->AddRectFilled({pcx - 16.f * gs, pcy + 16.f * gs}, {pcx - 8.f * gs, pcy + 38.f * gs}, IM_COL32(0, 150, 150, 255));
+        dl->AddRectFilled({pcx + 8.f * gs, pcy + 16.f * gs}, {pcx + 16.f * gs, pcy + 38.f * gs}, IM_COL32(0, 150, 150, 255));
+        dl->AddRectFilled({pcx - 8.f * gs, pcy + 38.f * gs}, {pcx, pcy + 56.f * gs}, IM_COL32(40, 50, 130, 255));
+        dl->AddRectFilled({pcx, pcy + 38.f * gs}, {pcx + 8.f * gs, pcy + 56.f * gs}, IM_COL32(40, 50, 130, 255));
+
+        // Highlight armor pieces worn on silhouette with diamond aqua
+        if (hud.armor_item[0] != 0) dl->AddRect({pcx - 9.f * gs, pcy - gs}, {pcx + 9.f * gs, pcy + 17.f * gs}, IM_COL32(43, 235, 235, 255), 0.f, 0, gs);
+        if (hud.armor_item[1] != 0) dl->AddRect({pcx - 17.f * gs, pcy + 15.f * gs}, {pcx + 17.f * gs, pcy + 39.f * gs}, IM_COL32(43, 235, 235, 255), 0.f, 0, gs);
+        if (hud.armor_item[2] != 0) dl->AddRect({pcx - 9.f * gs, pcy + 37.f * gs}, {pcx + 9.f * gs, pcy + 49.f * gs}, IM_COL32(43, 235, 235, 255), 0.f, 0, gs);
+        if (hud.armor_item[3] != 0) dl->AddRect({pcx - 9.f * gs, pcy + 49.f * gs}, {pcx + 9.f * gs, pcy + 57.f * gs}, IM_COL32(43, 235, 235, 255), 0.f, 0, gs);
+
+        // 2x2 Crafting grid and result
+        dl->AddText(ImGui::GetFont(), fs, {lay.titleCrafting().x, lay.titleCrafting().y}, label, "Crafting");
+        for (int i = 0; i < 4; ++i) drawSlotBox(lay.craftSlot(i));
+        drawSlotBox(lay.craftResultSlot());
+        // Crafting arrow
+        dl->AddLine({p.x + 135.f * gs, p.y + 37.f * gs}, {p.x + 148.f * gs, p.y + 37.f * gs}, IM_COL32(139, 139, 139, 255), 2.f * gs);
+        dl->AddTriangleFilled({p.x + 148.f * gs, p.y + 33.f * gs}, {p.x + 148.f * gs, p.y + 41.f * gs}, {p.x + 152.f * gs, p.y + 37.f * gs}, IM_COL32(139, 139, 139, 255));
     }
-    // Armor slots in inventory (Helmet, Chestplate, Leggings, Boots): slot border, watermark if empty, and item icon
+
+    dl->AddText(ImGui::GetFont(), fs, {lay.titleInventory().x, lay.titleInventory().y}, label, "Inventory");
+
+    // 2. 4 Armor slots on the left (x = 8, y = 8, 26, 44, 62)
     for (int i = 0; i < 4; ++i) {
         const mc::HudRect arm = lay.armorSlot(i);
-        dl->AddRectFilled({arm.x - 1.f * gs, arm.y - 1.f * gs}, {arm.x + arm.w + 1.f * gs, arm.y + arm.h + 1.f * gs}, IM_COL32(139, 139, 139, 255));
-        dl->AddRectFilled({arm.x, arm.y}, {arm.x + arm.w, arm.y + arm.h}, IM_COL32(198, 198, 198, 255));
-        dl->AddRect({arm.x, arm.y}, {arm.x + arm.w, arm.y + arm.h}, IM_COL32(55, 55, 55, 255), 0.f, 0, gs);
-        if (i == 0) {
-            dl->AddText(ImGui::GetFont(), fs, {arm.x - 2.f * gs, arm.y - 10.f * gs}, IM_COL32(255, 255, 255, 230), "Armor");
-        }
+        drawSlotBox(arm);
         const mc::HudRect arm_item{arm.x + 1.f * gs, arm.y + 1.f * gs, 16.f * gs, 16.f * gs};
         if (hud.armor_item[i] == 0) {
             if (g_atlas_ready) {
@@ -620,12 +660,9 @@ void DrawInventory(const HudState& hud, float w, float h) {
         }
     }
 
-    // Offhand slot in inventory: slot border, vanilla shield watermark if empty, and item icon
+    // 3. Offhand slot in inventory (x = 77, y = 62)
     const mc::HudRect off = lay.offhandSlot();
-    dl->AddRectFilled({off.x - 1.f * gs, off.y - 1.f * gs}, {off.x + off.w + 1.f * gs, off.y + off.h + 1.f * gs}, IM_COL32(139, 139, 139, 255));
-    dl->AddRectFilled({off.x, off.y}, {off.x + off.w, off.y + off.h}, IM_COL32(198, 198, 198, 255));
-    dl->AddRect({off.x, off.y}, {off.x + off.w, off.y + off.h}, IM_COL32(55, 55, 55, 255), 0.f, 0, gs);
-    dl->AddText(ImGui::GetFont(), fs, {off.x - 2.f * gs, off.y - 10.f * gs}, IM_COL32(255, 255, 255, 230), "Offhand");
+    drawSlotBox(off);
     const mc::HudRect off_item{off.x + 1.f * gs, off.y + 1.f * gs, 16.f * gs, 16.f * gs};
     if (hud.offhand_item == 0) {
         if (g_atlas_ready) {
@@ -637,25 +674,51 @@ void DrawInventory(const HudState& hud, float w, float h) {
         icon(off_item, static_cast<mc::ItemId>(hud.offhand_item));
         stackCount(off_item, hud.offhand_count);
     }
-    // hover: the vanilla slot highlight and the item name
+
+    // 4. Main Inventory (3x9) and Hotbar (1x9)
+    for (int i = 0; i < 36; ++i) {
+        const mc::HudRect r = lay.invSlot(i);
+        drawSlotBox(r);
+        const mc::ItemId item = static_cast<mc::ItemId>(hud.inv_item[i]);
+        if (item != mc::ItemId::None) {
+            const mc::HudRect item_r{r.x + 1.f * gs, r.y + 1.f * gs, 16.f * gs, 16.f * gs};
+            icon(item_r, item);
+            stackCount(item_r, hud.inv_count[i]);
+        }
+    }
+
+    // 5. Hover: slot highlight and tooltip
     const mc::SlotRef hover = lay.hitTest(hud.mouse_x, hud.mouse_y);
     mc::ItemId hovered = mc::ItemId::None;
+    mc::HudRect hover_r{};
+    bool show_hover = false;
     if (hover.kind == mc::SlotRef::Kind::Palette && static_cast<size_t>(hover.index) < palette.size()) {
         hovered = palette[static_cast<size_t>(hover.index)];
-    } else if (hover.kind == mc::SlotRef::Kind::Inventory) {
+        hover_r = lay.paletteSlot(hover.index);
+        show_hover = true;
+    } else if (hover.kind == mc::SlotRef::Kind::Inventory && hover.index >= 0 && hover.index < 36) {
         hovered = static_cast<mc::ItemId>(hud.inv_item[hover.index]);
+        hover_r = lay.invSlot(hover.index);
+        show_hover = true;
     } else if (hover.kind == mc::SlotRef::Kind::Offhand) {
         hovered = static_cast<mc::ItemId>(hud.offhand_item);
+        hover_r = lay.offhandSlot();
+        show_hover = true;
     } else if (hover.kind == mc::SlotRef::Kind::Armor && hover.index >= 0 && hover.index < 4) {
         hovered = static_cast<mc::ItemId>(hud.armor_item[hover.index]);
+        hover_r = lay.armorSlot(hover.index);
+        show_hover = true;
+    } else if (hover.kind == mc::SlotRef::Kind::Crafting && hover.index >= 0 && hover.index < 4) {
+        hover_r = lay.craftSlot(hover.index);
+        show_hover = true;
+    } else if (hover.kind == mc::SlotRef::Kind::CraftResult) {
+        hover_r = lay.craftResultSlot();
+        show_hover = true;
     }
-    if (hover.kind == mc::SlotRef::Kind::Palette || hover.kind == mc::SlotRef::Kind::Inventory ||
-        hover.kind == mc::SlotRef::Kind::Offhand || hover.kind == mc::SlotRef::Kind::Armor) {
-        const mc::HudRect r = hover.kind == mc::SlotRef::Kind::Palette ? lay.paletteSlot(hover.index) :
-                              (hover.kind == mc::SlotRef::Kind::Inventory ? lay.invSlot(hover.index) :
-                              (hover.kind == mc::SlotRef::Kind::Offhand ? lay.offhandSlot() : lay.armorSlot(hover.index)));
-        dl->AddRectFilled({r.x, r.y}, {r.x + r.w, r.y + r.h}, IM_COL32(255, 255, 255, 128));
+    if (show_hover) {
+        dl->AddRectFilled({hover_r.x, hover_r.y}, {hover_r.x + hover_r.w, hover_r.y + hover_r.h}, IM_COL32(255, 255, 255, 128));
     }
+
     // the stack on the cursor is drawn centred on the pointer, above everything
     const mc::ItemId held = static_cast<mc::ItemId>(hud.cursor_item);
     if (held != mc::ItemId::None) {
@@ -866,6 +929,20 @@ void DrawHud(const HudState& hud, float w, float h) {
         const char* name = hud.creative ? "Creative Mode" : "Survival Mode";
         dl->AddText(ImGui::GetFont(), fs, {pos.x + scale, pos.y + scale}, IM_COL32(0, 0, 0, static_cast<int>(200 * a)), name);
         dl->AddText(ImGui::GetFont(), fs, pos, hud.creative ? IM_COL32(255, 220, 90, static_cast<int>(255 * a)) : IM_COL32(255, 255, 255, static_cast<int>(255 * a)), name);
+    }
+    // armor damage reduction live toast (shows damage breakdown when hit)
+    if (hud.armor_toast_timer > 0.f) {
+        const float a = std::clamp(hud.armor_toast_timer / 3.0f, 0.f, 1.f);
+        const float fs = 15.f * scale;
+        char msg[128];
+        snprintf(msg, sizeof(msg), "[Armor] Raw: %d -> Final: %d (-%.1f%%, %d pts)",
+                 hud.armor_toast_raw, hud.armor_toast_final, hud.armor_toast_ratio * 100.f, hud.armor_toast_pts);
+        const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, 1e9f, 0.f, msg);
+        const float px = 16.f * scale, py = 42.f * scale;
+        dl->AddRectFilled({px - 4.f * scale, py - 2.f * scale}, {px + sz.x + 8.f * scale, py + sz.y + 4.f * scale},
+                          IM_COL32(20, 20, 20, static_cast<int>(180 * a)), 4.f * scale);
+        dl->AddText(ImGui::GetFont(), fs, {px + scale, py + scale}, IM_COL32(0, 0, 0, static_cast<int>(200 * a)), msg);
+        dl->AddText(ImGui::GetFont(), fs, {px, py}, IM_COL32(85, 255, 255, static_cast<int>(255 * a)), msg);
     }
     // eating: a thin bar under the crosshair that fills in 1.6 s
     if (hud.eating > 0.f) {

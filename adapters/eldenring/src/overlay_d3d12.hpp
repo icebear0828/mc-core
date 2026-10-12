@@ -48,6 +48,12 @@ struct HudState {
     bool regen{false};
     int xp_level{0};
     float xp_progress{0.f};
+    // Armor damage reduction toast notification for live verification
+    float armor_toast_timer{0.f};
+    int armor_toast_raw{0};
+    int armor_toast_final{0};
+    int armor_toast_pts{0};
+    float armor_toast_ratio{0.f};
 };
 
 // The 3D figure for this frame: camera, standing point (feet, game metres) and heading (rotation about +Y).

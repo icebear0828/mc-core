@@ -344,6 +344,7 @@ public:
         const int pts = totalArmorPoints();
         return std::clamp(static_cast<float>(pts) * 0.04f, 0.0f, 0.80f);
     }
+    [[nodiscard]] float defenseReductionRatio() const { return damageReductionRatio(); }
 
     [[nodiscard]] float applyDamageReduction(float incoming_damage) const {
         const float ratio = damageReductionRatio();
