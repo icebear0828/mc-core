@@ -3288,6 +3288,14 @@ DWORD WINAPI KeyThread(LPVOID) {
             }
         }
         if (fg && !inv_open && WantSuppress()) {
+            static bool prev_gameplay_f = false;
+            const bool f_down = (GetAsyncKeyState('F') & 0x8000) != 0;
+            if (f_down && !prev_gameplay_f) {
+                std::lock_guard<std::mutex> g(g_melee_mutex);
+                g_melee.inventory().swapMainAndOffhand(g_melee.selectedSlot());
+                Log("inventory: swapped main and offhand via F key (slot %d)", g_melee.selectedSlot());
+            }
+            prev_gameplay_f = f_down;
             for (int i = 0; i < MeleeController::kSlots; ++i) {
                 const bool d = (GetAsyncKeyState('1' + i) & 0x8000) != 0;
                 if (d && !prev_digit[i]) {
