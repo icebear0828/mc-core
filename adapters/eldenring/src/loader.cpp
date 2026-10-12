@@ -2201,7 +2201,61 @@ void BlocksCollisionStep() {
         g_sneak_clamped_z.store(false, std::memory_order_relaxed);
     }
 
-    if (module != 0 && (pinned || sneak_clamped)) {
+    // Direct position drive on blocks:
+    // When standing on a block, the game has no native Havok ground under it, so Havok will not translate +0x120 velocity into world displacement.
+    // Instead, just like FlightStep and McJumpStep, we directly step the horizontal position along the input direction,
+    // verify swept collision and sneak ledge safety, write to +0x70/+0x80, and set kPhysicsProxySyncRequest (+0x91 = 1).
+    static LARGE_INTEGER last_block_qpc{};
+    LARGE_INTEGER now_block_qpc, freq_block;
+    QueryPerformanceCounter(&now_block_qpc);
+    QueryPerformanceFrequency(&freq_block);
+    const float block_dt = last_block_qpc.QuadPart != 0 ? std::clamp(static_cast<float>(now_block_qpc.QuadPart - last_block_qpc.QuadPart) / static_cast<float>(freq_block.QuadPart), 0.f, 0.05f) : 0.016f;
+    last_block_qpc = now_block_qpc;
+
+    bool direct_moved = false;
+    if (supported && !pinned && fg) {
+        const float fwd_key = (key_w ? 1.f : 0.f) - (key_s ? 1.f : 0.f);
+        const float right_key = (key_d ? 1.f : 0.f) - (key_a ? 1.f : 0.f);
+        const bool sprinting = !sneaking && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        const float target_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
+                                  : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
+                                  : g_block_walk_speed.load(std::memory_order_relaxed);
+
+        const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+        CameraPose cam;
+        if (world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
+            float dir[2] = {0.f, 0.f};
+            if (eldenring::motion::computeInputDirection(fwd_key, right_key, cam.forward, cam.right, dir)) {
+                float stepped_feet[3] = {};
+                if (blocks::stepBlockMovement(final_feet, dir, target_speed, block_dt, true, stepped_feet)) {
+                    // Check sneak edge clamp on stepped position
+                    if (sneaking) {
+                        const float desired_dx = stepped_feet[0] - final_feet[0];
+                        const float desired_dz = stepped_feet[2] - final_feet[2];
+                        blocks::SneakMoveResult sneak_res;
+                        {
+                            std::lock_guard<std::mutex> g(g_blocks_mutex);
+                            sneak_res = blocks::clampSneakEdgeMovement(g_blocks, final_feet, desired_dx, desired_dz);
+                        }
+                        stepped_feet[0] = final_feet[0] + sneak_res.dx;
+                        stepped_feet[2] = final_feet[2] + sneak_res.dz;
+                    }
+                    // Check swept block collision for stepped position
+                    blocks::Resolve step_r;
+                    {
+                        std::lock_guard<std::mutex> g(g_blocks_mutex);
+                        step_r = blocks::resolvePlayerSwept(g_blocks, final_feet, stepped_feet);
+                    }
+                    final_feet[0] = step_r.feet[0];
+                    final_feet[1] = step_r.feet[1];
+                    final_feet[2] = step_r.feet[2];
+                    direct_moved = true;
+                }
+            }
+        }
+    }
+
+    if (module != 0 && (pinned || sneak_clamped || direct_moved)) {
         WriteBytesSafe(module + layout::kPhysicsPosition, final_feet, sizeof(final_feet));
         WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, final_feet, sizeof(final_feet));
         const uint8_t one = 1;
@@ -2228,6 +2282,7 @@ void BlocksCollisionStep() {
         WriteBytesSafe(module + 0x1B8, &zero, sizeof(zero)); // Suppress fall dynamics scalar (+0x1B8)
     }
     std::memcpy(prev, final_feet, sizeof(prev));
+
     have_prev = true;
     if (r.moved && (++pushes <= 20 || pushes % 500 == 0)) {
         Log("blocks: pushed the player out (%.2f %.2f %.2f) -> (%.2f %.2f %.2f)%s, %u so far", feet[0], feet[1], feet[2], r.feet[0], r.feet[1], r.feet[2],

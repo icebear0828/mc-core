@@ -373,5 +373,20 @@ TEST(Blocks, ShouldSyncPhysicsProxyTriggersOnMovedOrDirectDriven) {
     EXPECT_FALSE(shouldSyncPhysicsProxy(false, false, false, false));
 }
 
+TEST(Blocks, StepBlockMovementAdvancesDiagonally) {
+    const float feet[3] = {5.0f, 2.0f, 5.0f};
+    const float dir[2] = {0.7071f, 0.7071f};
+    const float speed = 5.612f; // sprint
+    const float dt = 0.016f;
+
+    float out_feet[3] = {};
+    const bool moved = stepBlockMovement(feet, dir, speed, dt, true, out_feet);
+    EXPECT_TRUE(moved);
+    EXPECT_NEAR(out_feet[0], 5.0f + 0.7071f * speed * dt, 1e-4f);
+    EXPECT_FLOAT_EQ(out_feet[1], 2.0f);
+    EXPECT_NEAR(out_feet[2], 5.0f + 0.7071f * speed * dt, 1e-4f);
+}
+
+
 
 
