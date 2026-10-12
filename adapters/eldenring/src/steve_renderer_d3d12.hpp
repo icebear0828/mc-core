@@ -101,6 +101,13 @@ public:
               unsigned width, unsigned height, const mc::rig::Mat4& view_proj, const eldenring::render::PartMatrices& parts,
               const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv);
 
+    // Inventory screen: 3D character preview in a cropped viewport/scissor rect, mode 0 (no scene occlusion).
+    void drawInventoryPreview(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
+                              D3D12_GPU_DESCRIPTOR_HANDLE skin_table, const D3D12_VIEWPORT& vp,
+                              const D3D12_RECT& sc, const mc::rig::Mat4& view_proj,
+                              const eldenring::render::PartMatrices& parts, const SteveParams& params,
+                              D3D12_CPU_DESCRIPTOR_HANDLE rtv);
+
     // A model read from a Bedrock geometry file (mc::model::EntityModel), drawn with the mobs' skin: one mesh per bone built in the game's axes
     // (feet at the origin, rest pose), one matrix per bone from mc::model::boneMatrices. Returns false when the buffers cannot be created.
     bool setMobModel(ID3D12Device* device, const mc::model::EntityModel& model);

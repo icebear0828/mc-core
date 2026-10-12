@@ -35,9 +35,22 @@
 #include "overlay_d3d12.hpp"
 #include "png_wic.hpp"
 #include "steve_renderer_d3d12.hpp"
+#include "eldenring_inventory_preview.hpp"
 
 namespace erov {
 namespace {
+
+struct PreviewState {
+    bool active{false};
+    mc::HudRect rect{};
+    float mouse_x{0.f};
+    float mouse_y{0.f};
+    float scale{1.f};
+    uint16_t held_item{0};
+    uint16_t offhand_item{0};
+};
+static PreviewState g_inv_preview{};
+static D3D12_CPU_DESCRIPTOR_HANDLE g_current_rtv{};
 
 constexpr UINT kMaxFrames = 8;
 constexpr UINT kVtblPresent = 8;
@@ -616,20 +629,47 @@ void DrawInventory(const HudState& hud, float w, float h) {
         dl->AddLine({prev.x, prev.y + prev.h}, {prev.x + prev.w, prev.y + prev.h}, IM_COL32(255, 255, 255, 180), gs);
         dl->AddLine({prev.x + prev.w, prev.y}, {prev.x + prev.w, prev.y + prev.h}, IM_COL32(255, 255, 255, 180), gs);
 
-        // Character silhouette in preview box
-        const float pcx = prev.x + prev.w * 0.5f, pcy = prev.y + 10.f * gs;
-        dl->AddRectFilled({pcx - 8.f * gs, pcy}, {pcx + 8.f * gs, pcy + 16.f * gs}, IM_COL32(180, 140, 105, 255));
-        dl->AddRectFilled({pcx - 8.f * gs, pcy + 16.f * gs}, {pcx + 8.f * gs, pcy + 38.f * gs}, IM_COL32(0, 150, 150, 255));
-        dl->AddRectFilled({pcx - 16.f * gs, pcy + 16.f * gs}, {pcx - 8.f * gs, pcy + 38.f * gs}, IM_COL32(0, 150, 150, 255));
-        dl->AddRectFilled({pcx + 8.f * gs, pcy + 16.f * gs}, {pcx + 16.f * gs, pcy + 38.f * gs}, IM_COL32(0, 150, 150, 255));
-        dl->AddRectFilled({pcx - 8.f * gs, pcy + 38.f * gs}, {pcx, pcy + 56.f * gs}, IM_COL32(40, 50, 130, 255));
-        dl->AddRectFilled({pcx, pcy + 38.f * gs}, {pcx + 8.f * gs, pcy + 56.f * gs}, IM_COL32(40, 50, 130, 255));
+        // Queue real 3D Steve character rendering inside the preview window
+        g_inv_preview.active = true;
+        g_inv_preview.rect = prev;
+        g_inv_preview.mouse_x = hud.mouse_x;
+        g_inv_preview.mouse_y = hud.mouse_y;
+        g_inv_preview.scale = gs;
+        const int sel = std::clamp(hud.selected_slot, 0, 8);
+        g_inv_preview.held_item = static_cast<uint16_t>(hud.hotbar[sel]);
+        g_inv_preview.offhand_item = static_cast<uint16_t>(hud.offhand_item);
 
-        // Highlight armor pieces worn on silhouette with diamond aqua
-        if (hud.armor_item[0] != 0) dl->AddRect({pcx - 9.f * gs, pcy - gs}, {pcx + 9.f * gs, pcy + 17.f * gs}, IM_COL32(43, 235, 235, 255), 0.f, 0, gs);
-        if (hud.armor_item[1] != 0) dl->AddRect({pcx - 17.f * gs, pcy + 15.f * gs}, {pcx + 17.f * gs, pcy + 39.f * gs}, IM_COL32(43, 235, 235, 255), 0.f, 0, gs);
-        if (hud.armor_item[2] != 0) dl->AddRect({pcx - 9.f * gs, pcy + 37.f * gs}, {pcx + 9.f * gs, pcy + 49.f * gs}, IM_COL32(43, 235, 235, 255), 0.f, 0, gs);
-        if (hud.armor_item[3] != 0) dl->AddRect({pcx - 9.f * gs, pcy + 49.f * gs}, {pcx + 9.f * gs, pcy + 57.f * gs}, IM_COL32(43, 235, 235, 255), 0.f, 0, gs);
+        dl->AddCallback([](const ImDrawList*, const ImDrawCmd*) {
+            if (!g_inv_preview.active || !g_steve.ready() || g_current_rtv.ptr == 0) return;
+            const float cx = g_inv_preview.rect.x + g_inv_preview.rect.w * 0.5f;
+            const float cy = g_inv_preview.rect.y + g_inv_preview.rect.h * 0.5f;
+            float look_yaw = 0.f, look_pitch = 0.f, body_yaw = 0.f;
+            eldenring::preview::computePreviewTracking(g_inv_preview.mouse_x, g_inv_preview.mouse_y, cx, cy,
+                                                       g_inv_preview.scale, look_yaw, look_pitch, body_yaw);
+            const auto parts = eldenring::preview::computePreviewPartMatrices(look_yaw, look_pitch, body_yaw);
+            const mc::rig::Mat4 vp = eldenring::preview::computePreviewViewProjection(g_inv_preview.rect.w / g_inv_preview.rect.h);
+
+            const D3D12_VIEWPORT pvp{g_inv_preview.rect.x, g_inv_preview.rect.y, g_inv_preview.rect.w, g_inv_preview.rect.h, 0.f, 1.f};
+            const D3D12_RECT psc{static_cast<LONG>(g_inv_preview.rect.x), static_cast<LONG>(g_inv_preview.rect.y),
+                                static_cast<LONG>(g_inv_preview.rect.x + g_inv_preview.rect.w),
+                                static_cast<LONG>(g_inv_preview.rect.y + g_inv_preview.rect.h)};
+
+            SteveParams sp;
+            sp.mode = 0.f; // 0: no scene occlusion
+            sp.depth_const = 0.0501f;
+            sp.rel_bias = 0.f;
+            sp.abs_bias = 0.f;
+            sp.tint[0] = sp.tint[1] = sp.tint[2] = sp.tint[3] = 0.f;
+            sp.keep_depth = false;
+            sp.held_item = g_inv_preview.held_item;
+            sp.offhand_item = g_inv_preview.offhand_item;
+            sp.shield_blocking = false;
+            sp.block_offhand = false;
+            sp.held_table = g_atlas_ready ? g_held_table_gpu : D3D12_GPU_DESCRIPTOR_HANDLE{};
+
+            g_steve.drawInventoryPreview(g_s.list, g_s.srv_heap, g_depth_gpu, pvp, psc, vp, parts, sp, g_current_rtv);
+        }, nullptr);
+        dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
 
         // 2x2 Crafting grid and result
         dl->AddText(ImGui::GetFont(), fs, {lay.titleCrafting().x, lay.titleCrafting().y}, label, "Crafting");
@@ -1232,7 +1272,13 @@ void RenderFrame(IDXGISwapChain* sc) {
         }
         g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr); // ImGui draws without a depth view
     }
+    if (hud.inv_open && g_steve.ready()) {
+        g_steve.ensureDepth(g_s.device, g_s.width, g_s.height);
+    }
+    g_current_rtv = f.rtv;
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_s.list);
+    g_inv_preview.active = false;
+    g_current_rtv = {};
     // A screenshot (F4): the finished back buffer is copied into a read-back buffer in the same command list.
     ID3D12Resource* shot_buf = nullptr;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT shot_fp{};

@@ -26,11 +26,12 @@ def main():
         root / "build" / "bin" / "Release" / "dinput8.dll",
         root / "build" / "bin" / "eldenring" / "dinput8.dll",
     ]
-    src_dll = None
-    for p in candidate_paths:
-        if p.is_file():
-            src_dll = p
-            break
+    existing_candidates = [p for p in candidate_paths if p.is_file()]
+    if not existing_candidates:
+        src_dll = None
+    else:
+        existing_candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        src_dll = existing_candidates[0]
 
     game_dir = Path(r"C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game")
     target_dll = game_dir / "dinput8.dll"

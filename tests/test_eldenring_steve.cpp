@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "eldenring_steve.hpp"
+#include "eldenring_inventory_preview.hpp"
 
 #include <cmath>
 
@@ -333,4 +334,90 @@ TEST(EldenRingHead, DegenerateCameraVectorLeavesTheHeadStraight) {
     h.update(std::nanf(""), 0.f, 1.f, 0.f, in);
     EXPECT_EQ(in.look_yaw, 0.f);
     EXPECT_EQ(in.look_pitch, 0.f);
+}
+
+TEST(EldenRingInventoryPreview, MouseTrackingComputesYawAndPitchWithinLimits) {
+    using namespace eldenring::preview;
+    // Preview centered at (200, 200) with GUI scale 2.0
+    const float cx = 200.f, cy = 200.f, scale = 2.0f;
+    float look_yaw = 0.f, look_pitch = 0.f, body_yaw = 0.f;
+
+    // Center mouse
+    computePreviewTracking(cx, cy, cx, cy, scale, look_yaw, look_pitch, body_yaw);
+    EXPECT_NEAR(look_yaw, 0.f, 1e-4f);
+    EXPECT_NEAR(look_pitch, 0.f, 1e-4f);
+    EXPECT_NEAR(body_yaw, kDefaultPreviewBodyYaw, 1e-4f);
+
+    // Mouse to the right (mx > cx) -> head turns right (look_yaw < 0 in MC canonical coordinate, facing right)
+    computePreviewTracking(cx + 100.f, cy, cx, cy, scale, look_yaw, look_pitch, body_yaw);
+    EXPECT_LT(look_yaw, 0.f);
+    EXPECT_GE(look_yaw, -kMaxPreviewHeadYaw);
+
+    // Mouse to the left (mx < cx) -> head turns left (look_yaw > 0)
+    computePreviewTracking(cx - 100.f, cy, cx, cy, scale, look_yaw, look_pitch, body_yaw);
+    EXPECT_GT(look_yaw, 0.f);
+    EXPECT_LE(look_yaw, kMaxPreviewHeadYaw);
+
+    // Mouse above (my < cy) -> looks up (look_pitch < 0 in MC convention where positive is down)
+    computePreviewTracking(cx, cy - 100.f, cx, cy, scale, look_yaw, look_pitch, body_yaw);
+    EXPECT_LT(look_pitch, 0.f);
+    EXPECT_GE(look_pitch, -kMaxPreviewHeadPitch);
+
+    // Mouse below (my > cy) -> looks down (look_pitch > 0)
+    computePreviewTracking(cx, cy + 100.f, cx, cy, scale, look_yaw, look_pitch, body_yaw);
+    EXPECT_GT(look_pitch, 0.f);
+    EXPECT_LE(look_pitch, kMaxPreviewHeadPitch);
+}
+
+TEST(EldenRingInventoryPreview, CameraMatrixProjectsSteveInsideViewportNDC) {
+    using namespace eldenring::preview;
+    const float aspect = 51.f / 72.f; // vanilla preview rect aspect ratio
+    const mc::rig::Mat4 vp = computePreviewViewProjection(aspect);
+
+    // Helper: transform a 3D point by row-major Mat4 and perform perspective divide
+    auto projectPoint = [&](const mc::Vec3& p) -> mc::Vec3 {
+        const auto& m = vp.m;
+        const float x = p.x * m[0] + p.y * m[4] + p.z * m[8] + m[12];
+        const float y = p.x * m[1] + p.y * m[5] + p.z * m[9] + m[13];
+        const float z = p.x * m[2] + p.y * m[6] + p.z * m[10] + m[14];
+        const float w = p.x * m[3] + p.y * m[7] + p.z * m[11] + m[15];
+        EXPECT_GT(w, 0.01f);
+        return {x / w, y / w, z / w};
+    };
+
+    // Center of Steve body around y = 0.95m
+    const mc::Vec3 center_ndc = projectPoint({0.f, 0.95f, 0.f});
+    EXPECT_NEAR(center_ndc.x, 0.f, 0.1f);
+    EXPECT_NEAR(center_ndc.y, 0.f, 0.15f);
+
+    // Top of head around y = 1.85m
+    const mc::Vec3 head_top_ndc = projectPoint({0.f, 1.85f, 0.f});
+    EXPECT_GT(head_top_ndc.y, 0.5f);
+    EXPECT_LT(head_top_ndc.y, 0.95f); // stays well within NDC top bound
+
+    // Feet at ground y = 0.0m
+    const mc::Vec3 feet_ndc = projectPoint({0.f, 0.0f, 0.f});
+    EXPECT_LT(feet_ndc.y, -0.5f);
+    EXPECT_GT(feet_ndc.y, -0.95f); // stays well within NDC bottom bound
+}
+
+TEST(EldenRingInventoryPreview, PosedMatricesInInventoryPreviewStandOnGroundAndAreFinite) {
+    using namespace eldenring::preview;
+    const auto parts = computePreviewPartMatrices(0.2f, -0.1f, kDefaultPreviewBodyYaw);
+    ASSERT_EQ(parts.size(), static_cast<size_t>(mc::StevePart::Count));
+
+    for (const auto& part : parts) {
+        for (float v : part.m) {
+            EXPECT_TRUE(std::isfinite(v));
+        }
+    }
+
+    // Verify feet bottom vertex rests at ground y = 0
+    const mc::rig::RigMesh right_leg = mc::rig::buildPartMesh(mc::StevePart::RightLeg, kBasis);
+    float lowest = 1e9f;
+    for (const auto& v : right_leg.vertices) {
+        const mc::Vec3 p = mc::rig::transformPoint(parts[static_cast<size_t>(mc::StevePart::RightLeg)], {v.x, v.y, v.z});
+        lowest = std::min(lowest, p.y);
+    }
+    EXPECT_NEAR(lowest, 0.f, 1e-3f);
 }

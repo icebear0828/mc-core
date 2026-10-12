@@ -1021,4 +1021,61 @@ void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* 
     }
 }
 
+void SteveRenderer::drawInventoryPreview(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
+                                        D3D12_GPU_DESCRIPTOR_HANDLE skin_table, const D3D12_VIEWPORT& vp,
+                                        const D3D12_RECT& sc, const mc::rig::Mat4& view_proj,
+                                        const eldenring::render::PartMatrices& parts, const SteveParams& params,
+                                        D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
+    if (!ready() || !own_depth_ || !dsv_heap_) return;
+    RecordSkinUpload(list, skin_);
+    RecordSkinUpload(list, mob_skin_);
+    list->RSSetViewports(1, &vp);
+    list->RSSetScissorRects(1, &sc);
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
+    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+    list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 1, &sc);
+
+    list->SetPipelineState(pso_);
+    list->SetGraphicsRootSignature(root_);
+    ID3D12DescriptorHeap* heaps[] = {srv_heap};
+    list->SetDescriptorHeaps(1, heaps);
+    list->SetGraphicsRootDescriptorTable(1, skin_table);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->IASetVertexBuffers(0, 1, &vbv_);
+    list->IASetIndexBuffer(&ibv_);
+
+    list->SetGraphicsRoot32BitConstants(0, 16, view_proj.m.data(), 0);
+    const float extra[8] = {0.0501f, 0.f, 0.f, 0.f /* mode 0: no occlusion */, 0.f, 0.f, vp.Width, vp.Height};
+    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
+    list->SetGraphicsRoot32BitConstants(0, 4, params.tint, 40);
+
+    for (size_t p = 0; p < static_cast<size_t>(mc::StevePart::Count); ++p) {
+        list->SetGraphicsRoot32BitConstants(0, 16, parts[p].m.data(), 16);
+        list->DrawIndexedInstanced(index_count_[p], 1, first_index_[p], base_vertex_[p], 0);
+    }
+
+    if (params.held_item != 0 && held_vertices_ && params.held_table.ptr != 0) {
+        const bool held_raised = params.held_item == static_cast<uint16_t>(mc::ItemId::Shield) && params.shield_blocking && !params.block_offhand;
+        const auto it = held_items_.find(static_cast<uint16_t>(params.held_item | (held_raised ? kBlockingKeyBit : 0)));
+        if (it != held_items_.end()) {
+            list->SetGraphicsRootDescriptorTable(1, params.held_table);
+            list->IASetVertexBuffers(0, 1, &held_vbv_);
+            list->IASetIndexBuffer(&held_ibv_);
+            list->SetGraphicsRoot32BitConstants(0, 16, parts[static_cast<size_t>(mc::StevePart::RightArm)].m.data(), 16);
+            list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
+        }
+    }
+    if (params.offhand_item != 0 && offhand_vertices_ && params.held_table.ptr != 0) {
+        const bool off_raised = params.offhand_item == static_cast<uint16_t>(mc::ItemId::Shield) && params.shield_blocking && params.block_offhand;
+        const auto it = offhand_items_.find(static_cast<uint16_t>(params.offhand_item | (off_raised ? kBlockingKeyBit : 0)));
+        if (it != offhand_items_.end()) {
+            list->SetGraphicsRootDescriptorTable(1, params.held_table);
+            list->IASetVertexBuffers(0, 1, &offhand_vbv_);
+            list->IASetIndexBuffer(&offhand_ibv_);
+            list->SetGraphicsRoot32BitConstants(0, 16, parts[static_cast<size_t>(mc::StevePart::LeftArm)].m.data(), 16);
+            list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
+        }
+    }
+}
+
 } // namespace erov
