@@ -150,3 +150,23 @@ TEST(EldenRingFeedback, ArmorDamageToastTracksValuesAndFades) {
     f.tick(2.0f);
     EXPECT_FLOAT_EQ(f.armorToast().timer, 0.f);
 }
+
+TEST(EldenRingSurvival, InventoryArmorPointsAlwaysReflectsEquippedItems) {
+    mc::Inventory inv;
+    EXPECT_EQ(inv.totalArmorPoints(), 0);
+
+    // Equip diamond helmet (3 pts)
+    inv.setArmor(0, {mc::ItemId::DiamondHelmet, 1});
+    EXPECT_EQ(inv.totalArmorPoints(), 3);
+
+    // Equip diamond chestplate (8 pts), leggings (6 pts), boots (3 pts)
+    inv.setArmor(1, {mc::ItemId::DiamondChestplate, 1});
+    inv.setArmor(2, {mc::ItemId::DiamondLeggings, 1});
+    inv.setArmor(3, {mc::ItemId::DiamondBoots, 1});
+    EXPECT_EQ(inv.totalArmorPoints(), 20);
+
+    // Unequip chestplate -> immediately drops by 8 pts
+    inv.setArmor(1, {});
+    EXPECT_EQ(inv.totalArmorPoints(), 12);
+}
+

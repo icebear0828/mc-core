@@ -67,6 +67,19 @@ def main():
         print("[ERROR] SHA256 mismatch after copy!")
         sys.exit(1)
 
+    # Deploy mc_hud_atlas.png if present
+    src_atlas = root / "assets" / "source" / "textures" / "mc_hud_atlas.png"
+    if src_atlas.is_file():
+        target_atlas = game_dir / "mc_hud_atlas.png"
+        src_atlas_hash = get_sha256(src_atlas)
+        shutil.copy2(src_atlas, target_atlas)
+        dest_atlas_hash = get_sha256(target_atlas)
+        print(f"[ATLAS DEPLOY] Copied to: {target_atlas}")
+        print(f"[ATLAS DEST] SHA256: {dest_atlas_hash}")
+        if src_atlas_hash != dest_atlas_hash:
+            print("[ERROR] Atlas SHA256 mismatch after copy!")
+            sys.exit(1)
+
     print("[SUCCESS] Physical deployment verified! SHA256 matched 100%.")
 
 

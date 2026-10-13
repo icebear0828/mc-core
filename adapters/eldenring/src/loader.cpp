@@ -4385,6 +4385,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
             out.armor_item[i] = static_cast<uint16_t>(inv.armor(i).item);
             out.armor_count[i] = static_cast<uint8_t>(std::min(255u, inv.armor(i).count));
         }
+        out.armor_points = inv.totalArmorPoints();
     }
     out.inv_open = g_inv_open.load();
     out.mouse_x = g_inv_mx.load();

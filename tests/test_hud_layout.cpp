@@ -99,3 +99,17 @@ TEST(HudLayoutTest, ExperienceBarSitsAboveTheHotbarAtVanillaHeight) {
     EXPECT_FLOAT_EQ(l.xpLevelTextTop(), 1080.f - 35.f * 3);
     EXPECT_FLOAT_EQ(l.xpLevelCentreX(), 960.f);
 }
+
+TEST(HudLayoutTest, ArmorBarSitsAboveHeartsAndAvoidsAbsorptionRow) {
+    const HudLayout l(1920.f, 1080.f);
+    // 1. Without absorption hearts: armor bar sits exactly 10 GUI px above hearts row (1080 - (39 + 10)*3 = 933)
+    expectRect(l.armor(0, false), 687.f, 933.f, 27.f, 27.f);
+    EXPECT_FLOAT_EQ(l.armor(1, false).x - l.armor(0, false).x, 24.f); // 8 GUI px pitch
+    EXPECT_FLOAT_EQ(l.armor(9, false).x, 687.f + 216.f);
+    EXPECT_LT(l.armor(0, false).y, l.heart(0).y); // strictly above hearts
+
+    // 2. With absorption hearts: armor bar is shifted up another 10 GUI px to avoid golden hearts (1080 - (39 + 20)*3 = 903)
+    expectRect(l.armor(0, true), 687.f, 903.f, 27.f, 27.f);
+    EXPECT_LT(l.armor(0, true).y, l.armor(0, false).y); // strictly above normal armor bar row
+    EXPECT_FLOAT_EQ(l.armor(0, false).y - l.armor(0, true).y, 30.f); // exactly 10 GUI px at scale 3
+}

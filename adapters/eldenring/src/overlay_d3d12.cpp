@@ -908,6 +908,19 @@ void DrawHud(const HudState& hud, float w, float h) {
                 sprite(r, i < full ? mc::hud::kUV_HEART_ABSORB_FULL : mc::hud::kUV_HEART_ABSORB_HALF);
             }
         }
+        // armor bar: 10 chestplate icons in a row above the hearts (or above golden absorption hearts)
+        if (!hud.creative && hud.armor_points > 0) {
+            const bool has_absorb = hud.absorption_mc > 0.f;
+            for (int i = 0; i < 10; ++i) {
+                const mc::HudRect r = layout.armor(i, has_absorb);
+                sprite(r, mc::hud::kUV_ARMOR_EMPTY);
+                if (2 * i + 1 < hud.armor_points) {
+                    sprite(r, mc::hud::kUV_ARMOR_FULL);
+                } else if (2 * i + 1 == hud.armor_points) {
+                    sprite(r, mc::hud::kUV_ARMOR_HALF);
+                }
+            }
+        }
     }
     // hotbar
     for (int i = 0; i < 9 && !g_atlas_ready; ++i) {
@@ -930,6 +943,21 @@ void DrawHud(const HudState& hud, float w, float h) {
             dl->AddRectFilled({x, y_hearts}, {x + fw, y_hearts + cell}, IM_COL32(205, 30, 30, 255));
         }
         dl->AddRect({x, y_hearts}, {x + cell, y_hearts + cell}, IM_COL32(0, 0, 0, 255), 0.f, 0, 1.5f * scale);
+    }
+    // armor bar fallback (drawn above hearts when atlas is not present)
+    if (!g_atlas_ready && !hud.creative && hud.armor_points > 0) {
+        const bool has_absorb = hud.absorption_mc > 0.f;
+        const float y_armor = y_hearts - (has_absorb ? 2.f : 1.f) * (cell + 4.f * scale);
+        for (int i = 0; i < 10; ++i) {
+            const float x = x0 + static_cast<float>(i) * (cell + gap);
+            dl->AddRectFilled({x, y_armor}, {x + cell, y_armor + cell}, IM_COL32(35, 35, 35, 200));
+            const int fill = std::clamp(hud.armor_points - i * 2, 0, 2);
+            if (fill >= 1) {
+                const float fw = fill == 2 ? cell : cell * 0.5f;
+                dl->AddRectFilled({x, y_armor}, {x + fw, y_armor + cell}, IM_COL32(180, 200, 220, 255));
+            }
+            dl->AddRect({x, y_armor}, {x + cell, y_armor + cell}, IM_COL32(0, 0, 0, 255), 0.f, 0, 1.5f * scale);
+        }
     }
     // crosshair
     const float cx = w * 0.5f, cy = h * 0.5f, arm = 10.f * scale;

@@ -48,6 +48,8 @@ struct HudState {
     bool regen{false};
     int xp_level{0};
     float xp_progress{0.f};
+    // Armor points (0..20) continuously synchronized for HUD armor bar
+    int armor_points{0};
     // Armor damage reduction toast notification for live verification
     float armor_toast_timer{0.f};
     int armor_toast_raw{0};

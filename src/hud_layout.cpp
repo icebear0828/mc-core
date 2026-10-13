@@ -53,6 +53,11 @@ HudRect HudLayout::heart(int index) const {
     return box(kIconPitch * static_cast<float>(index), -kStatusRowFromBottom, kIconSize, kIconSize);
 }
 
+HudRect HudLayout::armor(int index, bool has_absorption) const {
+    const float offset_y = has_absorption ? (kStatusRowFromBottom + 20.f) : (kStatusRowFromBottom + 10.f);
+    return box(kIconPitch * static_cast<float>(index), -offset_y, kIconSize, kIconSize);
+}
+
 HudRect HudLayout::food(int index) const {
     return box(kHotbarWidth - kIconSize - kIconPitch * static_cast<float>(index), -kStatusRowFromBottom, kIconSize, kIconSize);
 }

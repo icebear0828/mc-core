@@ -696,6 +696,41 @@ def create_canonical_sprite(name: str) -> Image.Image:
             for y in range(7, 12):
                 for x in range(3, 13):
                     if x in (3, 4, 5, 10, 11, 12): img.putpixel((x, y), c_wm)
+    elif name in ("armor_empty", "armor_half", "armor_full"):
+        img = Image.new("RGBA", (9, 9), (0, 0, 0, 0))
+        c_out = (30, 30, 30, 255)
+        c_iron = (230, 230, 230, 255)
+        c_iron_d = (160, 160, 160, 255)
+        c_bg = (50, 50, 50, 180)
+        for y in range(9):
+            for x in range(9):
+                is_pixel = False
+                if y == 0 and (x in (1, 2, 6, 7)): is_pixel = True
+                elif y in (1, 2) and (1 <= x <= 7): is_pixel = True
+                elif y in (3, 4) and (0 <= x <= 8): is_pixel = True
+                elif y in (5, 6) and (1 <= x <= 7): is_pixel = True
+                elif y == 7 and (2 <= x <= 6): is_pixel = True
+                elif y == 8 and (3 <= x <= 5): is_pixel = True
+                if not is_pixel: continue
+                is_outline = (y == 0 or y == 8 or x == 0 or x == 8 or
+                              (y in (1, 2) and x in (1, 7)) or
+                              (y in (3, 4) and x in (0, 8)) or
+                              (y in (5, 6) and x in (1, 7)) or
+                              (y == 7 and x in (2, 6)) or
+                              (y == 8 and x in (3, 5)) or
+                              (y == 1 and x in (3, 4, 5)))
+                if is_outline:
+                    img.putpixel((x, y), c_out)
+                else:
+                    if name == "armor_empty":
+                        img.putpixel((x, y), c_bg)
+                    elif name == "armor_full":
+                        img.putpixel((x, y), c_iron if (x + y) % 2 == 0 else c_iron_d)
+                    elif name == "armor_half":
+                        if x <= 4:
+                            img.putpixel((x, y), c_iron if (x + y) % 2 == 0 else c_iron_d)
+                        else:
+                            img.putpixel((x, y), c_bg)
     elif name.startswith("block_") and name in _PLACEHOLDER_ITEM_COLORS:  # a flat coloured square
         img = Image.new("RGBA", (16, 16), _PLACEHOLDER_ITEM_COLORS[name] + (255,))
     elif name in _PLACEHOLDER_ITEM_COLORS:  # a plain coloured disc; the real icon replaces it when a client.jar is given
@@ -786,6 +821,10 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("empty_armor_slot_chestplate", (16, 16)),
     ("empty_armor_slot_leggings", (16, 16)),
     ("empty_armor_slot_boots", (16, 16)),
+    # HUD armor bar sprites
+    ("armor_empty", (9, 9)),
+    ("armor_half", (9, 9)),
+    ("armor_full", (9, 9)),
 ]
 
 _JAR_HUD_SPRITES = {
@@ -797,6 +836,9 @@ _JAR_HUD_SPRITES = {
     "empty_armor_slot_chestplate": "gui/sprites/container/slot/chestplate.png",
     "empty_armor_slot_leggings": "gui/sprites/container/slot/leggings.png",
     "empty_armor_slot_boots": "gui/sprites/container/slot/boots.png",
+    "armor_empty": "gui/sprites/hud/armor_empty.png",
+    "armor_half": "gui/sprites/hud/armor_half.png",
+    "armor_full": "gui/sprites/hud/armor_full.png",
     "entity_shield": "entity/shield_base_nopattern.png",
     "crosshair": "gui/sprites/hud/crosshair.png",
     "heart_container": "gui/sprites/hud/heart/container.png",

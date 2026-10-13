@@ -264,6 +264,7 @@ HUD_KEYS = [
     "hotbar_offhand_left", "item_shield", "entity_shield",
     "item_diamond_helmet", "item_diamond_chestplate", "item_diamond_leggings", "item_diamond_boots",
     "empty_armor_slot_helmet", "empty_armor_slot_chestplate", "empty_armor_slot_leggings", "empty_armor_slot_boots",
+    "armor_empty", "armor_half", "armor_full",
 ]
 HUD_SIZES = {
     "heart_absorb_full": (9, 9), "heart_absorb_half": (9, 9), "particle_crit": (8, 8), "particle_damage": (8, 8),
@@ -272,6 +273,7 @@ HUD_SIZES = {
     "hotbar_offhand_left": (29, 24), "entity_shield": (64, 64),
     "heart_container": (9, 9), "heart_full": (9, 9), "heart_half": (9, 9),
     "hunger_container": (9, 9), "hunger_full": (9, 9), "hunger_half": (9, 9),
+    "armor_empty": (9, 9), "armor_half": (9, 9), "armor_full": (9, 9),
     "container_top": (176, 71), "container_bottom": (176, 96),
     "xp_bar_background": (182, 5), "xp_bar_progress": (182, 5),
     "heart_container_blinking": (9, 9), "heart_full_blinking": (9, 9), "heart_half_blinking": (9, 9),
@@ -333,6 +335,9 @@ def _sprite_colors():
         "gui/sprites/container/slot/chestplate.png": _solid((16, 16), (101, 102, 103, 255)),
         "gui/sprites/container/slot/leggings.png": _solid((16, 16), (104, 105, 106, 255)),
         "gui/sprites/container/slot/boots.png": _solid((16, 16), (107, 108, 109, 255)),
+        "gui/sprites/hud/armor_empty.png": _solid((9, 9), (110, 111, 112, 255)),
+        "gui/sprites/hud/armor_half.png": _solid((9, 9), (113, 114, 115, 255)),
+        "gui/sprites/hud/armor_full.png": _solid((9, 9), (116, 117, 118, 255)),
     }
 
 
@@ -849,3 +854,17 @@ def test_shield_entity_placeholder_has_a_riveted_front_a_plain_back_and_a_handle
     assert front.tobytes() != back.tobytes(), "the two faces of the shield must not look the same"
     handle = sheet.crop((26, 0, 38, 12))  # the handle box texOffs (26, 0): 2x6x6
     assert any(handle.getpixel((x, y))[3] == 255 for x in range(12) for y in range(12))
+
+
+def test_hud_atlas_contains_armor_icons(tmp_path):
+    from extract_mc_assets import build_hud_atlas, create_canonical_sprite
+
+    jar = _hud_jar(tmp_path / "client.jar")
+    atlas, uv = build_hud_atlas(jar)
+
+    for name in ("armor_empty", "armor_half", "armor_full"):
+        assert name in uv, f"{name} must be present in HUD atlas UV mapping"
+        sprite = create_canonical_sprite(name)
+        assert sprite.size == (9, 9), f"{name} must be standard 9x9 HUD icon"
+        # Check non-empty pixels
+        assert any(sprite.getpixel((x, y))[3] > 0 for x in range(9) for y in range(9))
