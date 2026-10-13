@@ -4386,6 +4386,12 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
             out.armor_count[i] = static_cast<uint8_t>(std::min(255u, inv.armor(i).count));
         }
         out.armor_points = inv.totalArmorPoints();
+        static int last_logged_armor_pts = -1;
+        if (out.armor_points != last_logged_armor_pts) {
+            Log("ARMOR-HUD: total_armor_points=%d (reduction=%.1f%%, inv_open=%d)",
+                out.armor_points, std::min(80.f, out.armor_points * 4.0f), g_inv_open.load());
+            last_logged_armor_pts = out.armor_points;
+        }
     }
     out.inv_open = g_inv_open.load();
     out.mouse_x = g_inv_mx.load();
@@ -4543,7 +4549,9 @@ void SetupOverlay() {
         {
             std::vector<uint8_t> atlas;
             unsigned aw = 0, ah = 0;
-            const std::string atlas_path = g_game_dir + "mods\\mc_adapter\\mc_hud_atlas.png";
+            const std::string atlas_path_sub = g_game_dir + "mods\\mc_adapter\\mc_hud_atlas.png";
+            const std::string atlas_path_root = g_game_dir + "mc_hud_atlas.png";
+            const std::string atlas_path = FileExists(atlas_path_sub) ? atlas_path_sub : atlas_path_root;
             if (erov::DecodePngFile(atlas_path, atlas, aw, ah) && aw == mc::hud::kHudAtlasWidth && ah == mc::hud::kHudAtlasHeight) {
                 erov::SetHudAtlas(atlas.data(), aw, ah);
                 Log("hud atlas: external file %s (%ux%u)", atlas_path.c_str(), aw, ah);

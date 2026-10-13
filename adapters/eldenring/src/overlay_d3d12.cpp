@@ -607,6 +607,15 @@ void DrawInventory(const HudState& hud, float w, float h) {
     dl->AddLine({p.x + p.w, p.y}, {p.x + p.w, p.y + p.h}, IM_COL32(85, 85, 85, 255), 2.f * gs);
 
     dl->AddText(ImGui::GetFont(), fs, {p.x, p.y - 10.f * gs}, IM_COL32(255, 255, 255, 230), hud.creative ? "Creative Mode" : "Survival Mode");
+    if (!hud.creative && hud.armor_points > 0) {
+        char arm_label[48];
+        const float red = std::min(80.f, static_cast<float>(hud.armor_points) * 4.0f);
+        snprintf(arm_label, sizeof(arm_label), "Armor: %d (-%.0f%%)", hud.armor_points, red);
+        const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, 1e9f, 0.f, arm_label);
+        const ImVec2 pos{p.x + p.w - sz.x - 2.f * gs, p.y - 10.f * gs};
+        dl->AddText(ImGui::GetFont(), fs, {pos.x + 1.f, pos.y + 1.f}, IM_COL32(0, 0, 0, 200), arm_label);
+        dl->AddText(ImGui::GetFont(), fs, pos, IM_COL32(85, 255, 255, 255), arm_label);
+    }
 
     const auto& palette = mc::paletteItems();
 

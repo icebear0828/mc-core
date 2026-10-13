@@ -170,3 +170,16 @@ TEST(EldenRingSurvival, InventoryArmorPointsAlwaysReflectsEquippedItems) {
     EXPECT_EQ(inv.totalArmorPoints(), 12);
 }
 
+TEST(EldenRingSurvival, InventoryDefenseReductionRatioMatchesFormula) {
+    mc::Inventory inv;
+    EXPECT_FLOAT_EQ(inv.defenseReductionRatio(), 0.0f);
+
+    inv.setArmor(0, {mc::ItemId::DiamondHelmet, 1}); // 3 pts -> 12%
+    EXPECT_FLOAT_EQ(inv.defenseReductionRatio(), 0.12f);
+
+    inv.setArmor(1, {mc::ItemId::DiamondChestplate, 1}); // +8 = 11 pts -> 44%
+    inv.setArmor(2, {mc::ItemId::DiamondLeggings, 1});   // +6 = 17 pts -> 68%
+    inv.setArmor(3, {mc::ItemId::DiamondBoots, 1});      // +3 = 20 pts -> 80% (cap)
+    EXPECT_FLOAT_EQ(inv.defenseReductionRatio(), 0.80f);
+}
+
