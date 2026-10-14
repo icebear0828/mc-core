@@ -67,8 +67,10 @@ def main():
         print("[ERROR] SHA256 mismatch after copy!")
         sys.exit(1)
 
-    # Deploy mc_hud_atlas.png to both root and mods/mc_adapter (where loader.cpp loads it from!)
-    src_atlas = root / "assets" / "source" / "textures" / "mc_hud_atlas.png"
+    # Deploy authentic mc_hud_atlas.png to both root and mods/mc_adapter (where loader.cpp loads it from!)
+    src_atlas = root / "assets" / "source" / "textures" / "mc_hud_atlas.authentic.png"
+    if not src_atlas.is_file():
+        src_atlas = root / "assets" / "source" / "textures" / "mc_hud_atlas.png"
     if src_atlas.is_file():
         src_atlas_hash = get_sha256(src_atlas)
         for target_rel in [
@@ -84,6 +86,13 @@ def main():
             if src_atlas_hash != dest_atlas_hash:
                 print(f"[ERROR] Atlas SHA256 mismatch for {target_atlas}!")
                 sys.exit(1)
+
+    # Deploy authentic creeper texture
+    src_creeper = root / "assets" / "source" / "models" / "entities" / "creeper.authentic.png"
+    if src_creeper.is_file():
+        target_creeper = game_dir / "mods" / "mc_adapter" / "creeper.png"
+        shutil.copy2(src_creeper, target_creeper)
+        print(f"[CREEPER DEPLOY] Copied authentic creeper skin to: {target_creeper}")
 
     print("[SUCCESS] Physical deployment verified! SHA256 matched 100%.")
 
