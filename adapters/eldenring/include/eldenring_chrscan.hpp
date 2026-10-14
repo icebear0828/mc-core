@@ -69,11 +69,28 @@ namespace summon {
 inline constexpr uint8_t kTeam = 47;                  // teamType of the spirit-ash summons seen so far (wolves, npc 4070)
 inline constexpr uintptr_t kDispFlags1 = 0x20;        // CSModelDispEntity: the same word the player's parts use (eldenring_model.hpp)
 inline constexpr uintptr_t kDispFlags2 = 0x24;
+inline constexpr uintptr_t kDispFlags3 = 0x220;       // CSModelDispEntity: draw enable controlled by CSChrModelIns (RVA 0x9F26D0)
 inline constexpr uint32_t kDrawnBit = 1u;             // set while the part is drawn (wolf 0xA7, player part 0x100A1)
 // Mask to clear all rendering and spirit particle / phantom overlay effects:
 // 0x1 (drawn), 0x2, 0x4 (mesh pass), 0x20 (shadow/aura), 0x80 (spirit phantom shader & particles), 0x10000 (visible)
 inline constexpr uint32_t kHideMask1 = 0x000100A7u;
 inline constexpr uint32_t kHideMask2 = 0x00000001u;
+inline constexpr uint32_t kHideMask3 = 0x00000001u;
+
+// ChrConditionSfxSeSlot offsets (RVA 0x4A2480 / 0x4A23A0):
+inline constexpr uintptr_t kSlotCtrlWord = 0x5A;      // word ptr [slot + 0x5a]
+inline constexpr uint16_t kSlotSkipBit = 0x0080u;     // bit 7 (sign bit of low byte): skips SFX/SE update when set
+inline constexpr uintptr_t kSlotActiveSfx = 0x48;     // ptr to active Sfx container
+inline constexpr uintptr_t kSlotActiveSe = 0x50;      // ptr to active Se container
+
+// SpecialEffect container offsets (RVA 0x4FA370):
+inline constexpr uintptr_t kChrSpecialEffect = 0x178; // chr + 0x178
+inline constexpr uintptr_t kSpEffectListHead = 0x08;  // container + 0x08
+inline constexpr uintptr_t kSpEffectBloomMask = 0x28; // container + 0x28
+
+// Phantom shader SpEffect:
+inline constexpr int kPhantomShaderSpEffect = 0x182;  // 386 checked at RVA 0x2C7220
+
 inline constexpr uintptr_t kChrScanEnd = 0xA00;       // the wolves' CSChrModelIns sit at chr+0x50 and chr+0x640
 inline constexpr uintptr_t kModelScanEnd = 0x300;     // their CSModelDispEntity at model+0x18 and +0x188
 } // namespace summon
@@ -81,6 +98,40 @@ inline constexpr uintptr_t kModelScanEnd = 0x300;     // their CSModelDispEntity
 inline uint32_t hideDrawnBit(uint32_t flags) { return flags & ~summon::kHideMask1; }
 inline uint32_t showDrawnBit(uint32_t flags, uint32_t orig = 0xA7u) { return flags | (orig & summon::kHideMask1); }
 inline bool needsHiding(uint32_t flags) { return (flags & summon::kHideMask1) != 0; }
+
+inline bool isSpiritSpEffectId(int id) {
+    if (id == summon::kPhantomShaderSpEffect) return true;
+    if (id >= 20200000 && id <= 20300000) return true; // Spirit summon modifiers in SpEffectParam
+    if (id >= 231000 && id <= 233999) return true;     // Goods / request based summon SpEffects
+    return false;
+}
+
+inline uint16_t suppressSfxSlotFlags(uint16_t flags) {
+    return static_cast<uint16_t>(flags | summon::kSlotSkipBit);
+}
+
+inline uint16_t restoreSfxSlotFlags(uint16_t flags) {
+    return static_cast<uint16_t>(flags & ~summon::kSlotSkipBit);
+}
+
+inline bool needsSfxSuppression(uint16_t flags) {
+    return (flags & summon::kSlotSkipBit) == 0;
+}
+
+// Collects pointers to ChrConditionSfxSeSlot objects from EnemyIns
+inline std::vector<uintptr_t> collectChrConditionSfxSlots(const IMemoryReader& reader, uintptr_t image_base, uintptr_t chr) {
+    std::vector<uintptr_t> out;
+    if (chr == 0) return out;
+    for (const ScanHit& h : scanForClasses(reader, image_base, chr, 0, summon::kChrScanEnd, 64)) {
+        if (h.cls.find("ChrConditionSfxSeSlot") != std::string::npos) {
+            bool seen = false;
+            for (uintptr_t s : out) seen = seen || s == h.object;
+            if (!seen) out.push_back(h.object);
+        }
+    }
+    return out;
+}
+
 
 // The addresses of the disp_flags1 word of every CSModelDispEntity behind every CSChrModelIns of a character (a wolf has one or two models
 // with one or two entities each; the offsets differ between entities, so this goes by RTTI class name). Reading only.

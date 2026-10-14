@@ -646,7 +646,20 @@ uint64_t __fastcall CreativeEventDetour(void* self, void* event) {
     return g_cr_event_orig(self, event);
 }
 
+std::atomic<bool> g_summon_hide{false};
+std::mutex g_summon_speffect_mutex;
+std::set<uintptr_t> g_summon_speffect_containers;
+
 bool __fastcall CreativeSpEffectDetour(void* container, int sp_effect) {
+    if (g_summon_hide.load(std::memory_order_relaxed)) {
+        if (isSpiritSpEffectId(sp_effect)) {
+            const uintptr_t c_addr = reinterpret_cast<uintptr_t>(container);
+            std::lock_guard<std::mutex> g(g_summon_speffect_mutex);
+            if (g_summon_speffect_containers.count(c_addr) != 0) {
+                return false;
+            }
+        }
+    }
     const bool answer = g_cr_sp_orig(container, sp_effect);
     if (sp_effect == creative::kLandingSkipSpEffect) {
         const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base;
@@ -732,13 +745,13 @@ bool WriteBytesSafe(uintptr_t address, const void* src, size_t n) {
 // Summons (team 47) are drawn by us in the end: their own model is hidden by clearing the "drawn" bit of every CSModelDispEntity they own, every
 // frame before the draw, the way the player's parts are hidden. mc_er_summonhide.txt turns it on. Everything is looked up afresh each frame (no
 // cached pointers: a summon that disappears meanwhile is simply not enumerated any more).
-std::atomic<bool> g_summon_hide{false};
 std::mutex g_summon_mutex;
 std::vector<eldenring::mobs::MobSnapshot> g_summon_list; // the team 47 summons seen by the last HideSummonModels (render thread), read by the HUD provider
 float g_mob_yaw_offset = 3.14159265f;                   // like the player's: the orientation quaternion faces opposite to the model (mob_yaw_offset_deg)
 eldenring::creeper::CreeperManager g_creeper_mgr;
 
 std::set<uintptr_t> g_hidden_flag_addresses; // the disp_flags words whose drawn bit we cleared (render thread only), to put it back
+std::map<uintptr_t, uint16_t> g_suppressed_sfx_slots; // the sfx slot control words whose skip bit we set, to restore on exit
 
 void HideSummonChr(uintptr_t chr) {
     if (chr == 0) return;
@@ -758,13 +771,42 @@ void HideSummonChr(uintptr_t chr) {
                 g_hidden_flag_addresses.insert(at2);
             }
         }
+        const uintptr_t at3 = at + (summon::kDispFlags3 - summon::kDispFlags1);
+        uint32_t flags3 = 0;
+        if (SafeCopy(at3, &flags3, sizeof(flags3)) && (flags3 & summon::kHideMask3) != 0) {
+            const uint32_t hidden3 = flags3 & ~summon::kHideMask3;
+            if (WriteBytesSafe(at3, &hidden3, sizeof(hidden3))) {
+                g_hidden_flag_addresses.insert(at3);
+            }
+        }
+    }
+
+    // Suppress ChrConditionSfxSeSlot to eliminate spirit particles and audio
+    for (const uintptr_t slot : collectChrConditionSfxSlots(g_reader, g_img.base, chr)) {
+        uint16_t ctrl = 0;
+        const uintptr_t ctrl_addr = slot + summon::kSlotCtrlWord;
+        if (SafeCopy(ctrl_addr, &ctrl, sizeof(ctrl)) && needsSfxSuppression(ctrl)) {
+            g_suppressed_sfx_slots[ctrl_addr] = ctrl;
+            const uint16_t suppressed = suppressSfxSlotFlags(ctrl);
+            WriteBytesSafe(ctrl_addr, &suppressed, sizeof(suppressed));
+        }
+        uintptr_t null_ptr = 0;
+        WriteBytesSafe(slot + summon::kSlotActiveSfx, &null_ptr, sizeof(null_ptr));
+        WriteBytesSafe(slot + summon::kSlotActiveSe, &null_ptr, sizeof(null_ptr));
+    }
+
+    // Register SpecialEffect container for phantom shader suppression
+    uint64_t sp_container = 0;
+    if (SafeCopy(chr + summon::kChrSpecialEffect, &sp_container, sizeof(sp_container)) && sp_container != 0) {
+        std::lock_guard<std::mutex> g(g_summon_speffect_mutex);
+        g_summon_speffect_containers.insert(static_cast<uintptr_t>(sp_container));
     }
 }
 
 void HideSummonModels() {
     if (!g_summon_hide.load(std::memory_order_relaxed)) return;
     const bool mc_on = g_mc_mode.load(std::memory_order_relaxed);
-    if (!mc_on && g_hidden_flag_addresses.empty()) {
+    if (!mc_on && g_hidden_flag_addresses.empty() && g_suppressed_sfx_slots.empty()) {
         std::lock_guard<std::mutex> g(g_summon_mutex);
         g_summon_list.clear();
         return;
@@ -792,13 +834,19 @@ void HideSummonModels() {
                 seen.push_back(snap);
             }
         }
-        for (const uintptr_t at : collectChrDispFlagAddresses(g_reader, g_img.base, e.chr)) {
-            uint32_t flags = 0;
-            if (!SafeCopy(at, &flags, sizeof(flags))) continue;
-            const uintptr_t at2 = at + (layout::kDispFlags2 - layout::kDispFlags1);
-            uint32_t flags2 = 0;
-            SafeCopy(at2, &flags2, sizeof(flags2));
-            if (!mc_on) { // MC mode is off: put the drawn bit back where we cleared it, the wolves are drawn by the game again
+        if (mc_on) {
+            HideSummonChr(e.chr);
+        } else {
+            // Restore model display flags when MC mode is turned off
+            for (const uintptr_t at : collectChrDispFlagAddresses(g_reader, g_img.base, e.chr)) {
+                uint32_t flags = 0;
+                if (!SafeCopy(at, &flags, sizeof(flags))) continue;
+                const uintptr_t at2 = at + (layout::kDispFlags2 - layout::kDispFlags1);
+                uint32_t flags2 = 0;
+                SafeCopy(at2, &flags2, sizeof(flags2));
+                const uintptr_t at3 = at + (summon::kDispFlags3 - summon::kDispFlags1);
+                uint32_t flags3 = 0;
+                SafeCopy(at3, &flags3, sizeof(flags3));
                 if (g_hidden_flag_addresses.count(at) != 0 && !needsHiding(flags)) {
                     const uint32_t shown = showDrawnBit(flags);
                     if (WriteBytesSafe(at, &shown, sizeof(shown)) && ++logged <= 24) Log("summon hide: MC mode off, restored flags at %p 0x%X -> 0x%X", reinterpret_cast<void*>(at), flags, shown);
@@ -807,21 +855,25 @@ void HideSummonModels() {
                     const uint32_t shown2 = flags2 | summon::kHideMask2;
                     WriteBytesSafe(at2, &shown2, sizeof(shown2));
                 }
-                continue;
+                if (g_hidden_flag_addresses.count(at3) != 0 && (flags3 & summon::kHideMask3) == 0) {
+                    const uint32_t shown3 = flags3 | summon::kHideMask3;
+                    WriteBytesSafe(at3, &shown3, sizeof(shown3));
+                }
             }
-            if (needsHiding(flags)) {
-                const uint32_t hidden = hideDrawnBit(flags);
-                const bool ok = WriteBytesSafe(at, &hidden, sizeof(hidden));
-                if (ok) g_hidden_flag_addresses.insert(at);
-                if (++logged <= 12) Log("summon hide: chr=%p npc=%d flags at %p 0x%X -> 0x%X (%s)", reinterpret_cast<void*>(e.chr), e.npc_id, reinterpret_cast<void*>(at), flags, hidden, ok ? "ok" : "write failed");
-            }
-            if ((flags2 & summon::kHideMask2) != 0) {
-                const uint32_t hidden2 = flags2 & ~summon::kHideMask2;
-                if (WriteBytesSafe(at2, &hidden2, sizeof(hidden2))) {
-                    g_hidden_flag_addresses.insert(at2);
+            // Restore Sfx slot control words
+            for (const uintptr_t slot : collectChrConditionSfxSlots(g_reader, g_img.base, e.chr)) {
+                const uintptr_t ctrl_addr = slot + summon::kSlotCtrlWord;
+                const auto it = g_suppressed_sfx_slots.find(ctrl_addr);
+                if (it != g_suppressed_sfx_slots.end()) {
+                    const uint16_t orig_ctrl = it->second;
+                    WriteBytesSafe(ctrl_addr, &orig_ctrl, sizeof(orig_ctrl));
                 }
             }
         }
+    }
+    if (!mc_on) {
+        std::lock_guard<std::mutex> g(g_summon_speffect_mutex);
+        g_summon_speffect_containers.clear();
     }
     {   // Diagnostic: what a summon's hit points do when it is hit and when it dies, and how it leaves (does it stay at 0 hp for a while, or just vanish?)
         static std::map<uintptr_t, int> last_hp;

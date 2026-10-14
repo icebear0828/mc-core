@@ -179,6 +179,47 @@ TEST(EldenRingChrScan, SummonsAreTheTeamTheWolvesWereSeenWith) {
     EXPECT_EQ(summon::kTeam, 47);
     EXPECT_EQ(summon::kDispFlags1, 0x20u); // same word as the player's parts (eldenring_model.hpp layout::kDispFlags1)
     EXPECT_EQ(summon::kDispFlags2, 0x24u);
+    EXPECT_EQ(summon::kDispFlags3, 0x220u);
     EXPECT_EQ(summon::kHideMask1, 0x000100A7u);
     EXPECT_EQ(summon::kHideMask2, 0x00000001u);
+    EXPECT_EQ(summon::kHideMask3, 0x00000001u);
 }
+
+TEST(EldenRingChrScan, IdentifiesSpiritSpEffectIds) {
+    // 0x182 (386) is the phantom/ghost shader flag checked by the D3D12 pipeline at 0x1402C722C
+    EXPECT_TRUE(isSpiritSpEffectId(summon::kPhantomShaderSpEffect));
+    EXPECT_TRUE(isSpiritSpEffectId(0x182));
+    // Spirit summon modifiers in SpEffectParam
+    EXPECT_TRUE(isSpiritSpEffectId(20297130)); // Lone Wolf
+    EXPECT_TRUE(isSpiritSpEffectId(20297320)); // Kaiden Sellsword
+    EXPECT_TRUE(isSpiritSpEffectId(231000));   // Request based
+    EXPECT_TRUE(isSpiritSpEffectId(232000));
+    // Non-spirit SpEffects must not be suppressed
+    EXPECT_FALSE(isSpiritSpEffectId(0x8F));    // creative::kLandingSkipSpEffect
+    EXPECT_FALSE(isSpiritSpEffectId(0));
+    EXPECT_FALSE(isSpiritSpEffectId(1000));
+}
+
+TEST(EldenRingChrScan, SuppressSfxSlotSetsSkipBit) {
+    // Bit 7 of slot + 0x5a causes ChrConditionSfxSeSlot::Update (0x1404A2480) to jump to early exit (0x1404A2A4D)
+    EXPECT_EQ(suppressSfxSlotFlags(0x0000u), 0x0080u);
+    EXPECT_EQ(suppressSfxSlotFlags(0x0005u), 0x0085u);
+    EXPECT_TRUE(needsSfxSuppression(0x0005u));
+    EXPECT_FALSE(needsSfxSuppression(0x0085u));
+    EXPECT_EQ(restoreSfxSlotFlags(0x0085u), 0x0005u);
+}
+
+TEST(EldenRingChrScan, CollectsChrConditionSfxSlotsFromEnemyIns) {
+    Mem m;
+    addRttiClass(m, 0x2A428B0, 0x32D6558, 0x3C844E8, ".?AVChrConditionSfxSeSlot@CS@@");
+    const uintptr_t chr = 0x7ff600001000ull, slot = 0x7ff600009000ull;
+    m.region(chr, 0xA00);
+    m.region(slot, 0x100);
+    m.put<uint64_t>(slot, kBase + 0x2A428B0); // vtable
+    m.put<uint64_t>(chr + 0x318, slot);       // wolf ChrConditionSfxSeSlot pointer #1
+    m.put<uint64_t>(chr + 0x908, slot);       // wolf ChrConditionSfxSeSlot pointer #2
+    const auto slots = collectChrConditionSfxSlots(m, kBase, chr);
+    ASSERT_EQ(slots.size(), 1u); // De-duplicated
+    EXPECT_EQ(slots[0], slot);
+}
+
