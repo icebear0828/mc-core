@@ -3469,7 +3469,7 @@ void InventoryTick(bool fg) {
     static bool prev_digit[mc::Inventory::kHotbar] = {};
     const bool want = fg && WantSuppress() && g_mc_mode.load() && !PlayerDead();
     bool open = g_inv_open.load();
-    const bool key = fg && ((GetAsyncKeyState(g_inv_vk.load()) | GetAsyncKeyState('E')) & 0x8000) != 0;
+    const bool key = fg && (GetAsyncKeyState(g_inv_vk.load()) & 0x8000) != 0;
     const bool esc = fg && (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
     auto closeIt = [&](const char* why) {
         {
