@@ -112,8 +112,15 @@ def test_build_distribution_package_e2e(tmp_path: Path):
         assert "mc_er_summonhide.txt" in namelist
         assert "mc_er_bulletfire.txt" in namelist
         assert "README.md" in namelist
+        assert "README_CN.md" in namelist
         assert "README_INSTALL.txt" in namelist
+        assert "使用说明_中文.txt" in namelist
         assert "SHA256SUMS.txt" in namelist
+
+        # Verify Chinese documentation contents
+        readme_cn_bytes = zf.read("README_CN.md")
+        assert len(readme_cn_bytes) > 2000
+        assert "艾尔登法环 Minecraft Mod" in readme_cn_bytes.decode("utf-8")
 
         # Essential mod assets
         assert "mods/mc_adapter/mc_hud_atlas.png" in namelist
