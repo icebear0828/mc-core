@@ -13,6 +13,7 @@ TEST(EldenRingSprintTest, InitialStateIsIdleWithDefaultFovAndAnim) {
 
 TEST(EldenRingSprintTest, DoubleTapWWithinThresholdActivatesSprint) {
     SprintController ctrl;
+    ctrl.enable_double_tap = true;
 
     // First tap of W
     ctrl.update(/*dt=*/0.016f, /*w_down=*/true, /*s_down=*/false, /*ctrl_down=*/false, /*food_level=*/20);
@@ -33,6 +34,7 @@ TEST(EldenRingSprintTest, DoubleTapWWithinThresholdActivatesSprint) {
 
 TEST(EldenRingSprintTest, DoubleTapExceedingTimeoutFailsToSprint) {
     SprintController ctrl;
+    ctrl.enable_double_tap = true;
 
     // First tap of W
     ctrl.update(0.016f, /*w_down=*/true, false, false, 20);
@@ -138,4 +140,17 @@ TEST(EldenRingSprintTest, AnimSpeedScalesDuringSprint) {
     ctrl.update(0.016f, /*w_down=*/false, false, false, 20);
     EXPECT_FALSE(ctrl.isSprinting());
     EXPECT_FLOAT_EQ(ctrl.animSpeedMultiplier(), 1.0f);
+}
+
+TEST(EldenRingSprintTest, BoostSpeedReturnsActiveSpeedOnSprint) {
+    SprintController ctrl;
+    EXPECT_FLOAT_EQ(ctrl.boostSpeed(), 0.0f);
+
+    ctrl.update(0.016f, /*w_down=*/true, false, /*ctrl_down=*/true, 20);
+    EXPECT_TRUE(ctrl.isSprinting());
+    EXPECT_FLOAT_EQ(ctrl.boostSpeed(), 2.5f);
+
+    ctrl.update(0.016f, /*w_down=*/false, false, false, 20);
+    EXPECT_FALSE(ctrl.isSprinting());
+    EXPECT_FLOAT_EQ(ctrl.boostSpeed(), 0.0f);
 }

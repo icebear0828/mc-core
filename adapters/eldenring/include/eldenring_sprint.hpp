@@ -21,6 +21,9 @@ public:
     static constexpr float kFovLerpSpeed = 15.0f;        // Smooth transition speed
     static constexpr float kAnimSprintMultiplier = 1.4f; // 1.4x swing frequency
 
+    static constexpr float kDefaultSprintBoostSpeed = 2.5f; // extra speed boost in m/s
+    bool enable_double_tap{false}; // "先只添加Ctrl奔跑": disabled by default for pure, responsive Ctrl sprint
+
     SprintController() = default;
 
     void update(float dt, bool w_down, bool s_down, bool ctrl_down, int food_level) {
@@ -32,35 +35,35 @@ public:
             is_sprinting_ = false;
         }
 
-        // Double-tap W detection
-        if (!prev_w_down_ && w_down) {
-            // W Key Down event
-            if (w_tapped_once_ && (time_since_w_released_ <= kDoubleTapWindowSec) && hunger_allows && !moving_backward) {
-                is_sprinting_ = true;
-                w_tapped_once_ = false;
-            }
-        } else if (prev_w_down_ && !w_down) {
-            // W Key Up event
-            if (!is_sprinting_) {
-                w_tapped_once_ = true;
-                time_since_w_released_ = 0.0f;
-            } else {
-                is_sprinting_ = false;
-                w_tapped_once_ = false;
-            }
-        }
-
-        // Tapped timeout tracking
-        if (w_tapped_once_) {
-            time_since_w_released_ += dt;
-            if (time_since_w_released_ > kDoubleTapWindowSec) {
-                w_tapped_once_ = false;
-            }
-        }
-
-        // Ctrl single key override
+        // Direct Ctrl sprint trigger
         if (ctrl_down && w_down && !moving_backward && hunger_allows) {
             is_sprinting_ = true;
+        } else if (!ctrl_down && !enable_double_tap) {
+            is_sprinting_ = false;
+        }
+
+        // Optional double-tap W detection (when enabled)
+        if (enable_double_tap) {
+            if (!prev_w_down_ && w_down) {
+                if (w_tapped_once_ && (time_since_w_released_ <= kDoubleTapWindowSec) && hunger_allows && !moving_backward) {
+                    is_sprinting_ = true;
+                    w_tapped_once_ = false;
+                }
+            } else if (prev_w_down_ && !w_down) {
+                if (!is_sprinting_) {
+                    w_tapped_once_ = true;
+                    time_since_w_released_ = 0.0f;
+                } else {
+                    is_sprinting_ = false;
+                    w_tapped_once_ = false;
+                }
+            }
+            if (w_tapped_once_) {
+                time_since_w_released_ += dt;
+                if (time_since_w_released_ > kDoubleTapWindowSec) {
+                    w_tapped_once_ = false;
+                }
+            }
         }
 
         prev_w_down_ = w_down;
@@ -75,6 +78,9 @@ public:
     [[nodiscard]] float fovMultiplier() const { return fov_multiplier_; }
     [[nodiscard]] float animSpeedMultiplier() const {
         return is_sprinting_ ? kAnimSprintMultiplier : 1.0f;
+    }
+    [[nodiscard]] float boostSpeed() const {
+        return is_sprinting_ ? kDefaultSprintBoostSpeed : 0.0f;
     }
 
     void reset() {

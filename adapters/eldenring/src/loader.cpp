@@ -714,6 +714,8 @@ void ShadowGroundStep();    // the same
 void McJumpStep();          // defined after them
 void FlightStep();          // defined after them
 void DriveVelocityFromKeys(uintptr_t module, bool force_zero);
+void GroundSprintStep(float dt);
+extern std::atomic<bool> g_flying;
 std::atomic<unsigned> g_camstep_calls{0}, g_camstep_changed{0};
 
 bool WriteBytesSafe(uintptr_t address, const void* src, size_t n) {
@@ -861,6 +863,7 @@ uint64_t __fastcall CameraStepDetour(uint64_t self, float dt, uint64_t chr, uint
     FlightStep();
     BlocksCollisionStep();
     McJumpStep();
+    GroundSprintStep(dt);
     ShadowGroundStep();
     RestoreCamKeep();
     {
@@ -2715,6 +2718,57 @@ void BlocksCollisionStep() {
     }
 
     EnemiesBlockCollisionStep(final_feet);
+}
+
+std::atomic<float> g_sprint_boost{2.5f}; // mc_er_steve.txt: sprint_boost=<m/s> (extra speed boost applied while sprinting on ground, default 2.5 m/s)
+
+void GroundSprintStep(float dt) {
+    if (!g_sprint_active.load(std::memory_order_relaxed) || !g_mc_mode.load()) return;
+    if (g_flying.load(std::memory_order_relaxed) || PlayerAirborne() || PlayerDead()) return;
+    if (!GameInForeground() || !WantSuppress()) return;
+
+    const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
+    const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
+    if (std::abs(fwd_key) < 0.1f && std::abs(right_key) < 0.1f) return;
+
+    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    CameraPose cam;
+    if (world == 0 || !readCamera(g_reader, g_img.base, world, cam)) return;
+
+    float dir[2] = {0.f, 0.f};
+    if (!eldenring::motion::computeInputDirection(fwd_key, right_key, cam.forward, cam.right, dir)) return;
+
+    const uintptr_t player = PlayerChrPtr();
+    if (player == 0) return;
+    const uintptr_t module = detail::readPhysicsModule(g_reader, g_img.base, player);
+    if (module == 0) return;
+
+    float feet[3] = {};
+    if (!SafeCopy(module + layout::kPhysicsPosition, feet, sizeof(feet))) return;
+
+    const float boost = g_sprint_boost.load(std::memory_order_relaxed);
+    const float clamped_dt = std::clamp(dt, 0.001f, 0.05f);
+    const float dx = dir[0] * boost * clamped_dt;
+    const float dz = dir[1] * boost * clamped_dt;
+
+    // Check if target position collides with placed blocks
+    const float target_x = feet[0] + dx;
+    const float target_z = feet[2] + dz;
+    {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        const auto c_low = blocks::cellOf(target_x, feet[1] + 0.1f, target_z);
+        const auto c_high = blocks::cellOf(target_x, feet[1] + 1.1f, target_z);
+        if (g_blocks.get(c_low) != mc::BlockId::Air || g_blocks.get(c_high) != mc::BlockId::Air) {
+            return;
+        }
+    }
+
+    feet[0] = target_x;
+    feet[2] = target_z;
+    WriteBytesSafe(module + layout::kPhysicsPosition, feet, sizeof(feet));
+    WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, feet, sizeof(feet));
+    const uint8_t one = 1;
+    WriteBytesSafe(module + layout::kPhysicsProxySyncRequest, &one, sizeof(one));
 }
 
 // Pending TNT explosion damage intents to be safely evaluated on the game thread.
@@ -4635,6 +4689,7 @@ void SetupOverlay() {
                 else if (key == "block_speed" || key == "walk_speed") g_block_walk_speed.store(std::clamp(value, 0.5f, 15.f));
                 else if (key == "sneak_speed") g_sneak_speed.store(std::clamp(value, 0.2f, 10.f));
                 else if (key == "sprint_speed") g_sprint_speed.store(std::clamp(value, 0.5f, 20.f));
+                else if (key == "sprint_boost") g_sprint_boost.store(std::clamp(value, 0.0f, 20.f));
                 else if (key == "sneak_key") g_sneak_vk.store(static_cast<int>(value));
                 else if (key == "disable_vanilla_roll" || key == "disable_roll") g_disable_vanilla_roll.store(value != 0.f);
                 else if (key == "roll_key") g_roll_vk.store(static_cast<int>(value));
