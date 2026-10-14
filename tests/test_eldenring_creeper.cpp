@@ -192,3 +192,47 @@ TEST(EldenRingCreeper, WhiteFlashTogglesPeriodicallyDuringFuse) {
     bool f2 = mgr.isWhiteFlash(0x1000);
     EXPECT_NE(f1, f2);
 }
+
+TEST(EldenRingCreeper, DetonationEventCarriesKillFlagAndPosForAudioAndCleanup) {
+    CreeperManager mgr;
+    CreeperTarget summon;
+    summon.id = 0x5000;
+    summon.feet[0] = 12.0f;
+    summon.feet[1] = 3.0f;
+    summon.feet[2] = -4.0f;
+    summon.hp = 100;
+    summon.max_hp = 100;
+    summon.is_creeper = true;
+
+    mgr.ignite(0x5000);
+    auto events = mgr.update(1.6f, {summon}, {});
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0].kind, CreeperEventKind::Explosion);
+    EXPECT_EQ(events[0].creeper_id, 0x5000);
+    EXPECT_TRUE(events[0].kill_creeper);
+    EXPECT_FALSE(mgr.isPrimed(0x5000));
+    EXPECT_FLOAT_EQ(mgr.getSwell(0x5000), 0.0f);
+
+    // After explosion, further updates produce no events
+    auto next_events = mgr.update(0.1f, {summon}, {});
+    EXPECT_TRUE(next_events.empty());
+}
+
+TEST(EldenRingCreeper, CreeperDetonationRemovalWorkflow) {
+    CreeperManager mgr;
+    std::vector<CreeperTarget> summons = {
+        {0x5001, {0.0f, 0.0f, 0.0f}, 100, 100, true}
+    };
+    mgr.ignite(0x5001);
+    auto events = mgr.update(1.6f, summons, {});
+    for (const auto& ev : events) {
+        if (ev.kind == CreeperEventKind::Explosion && ev.kill_creeper) {
+            for (auto it = summons.begin(); it != summons.end(); ) {
+                if (it->id == ev.creeper_id) it = summons.erase(it);
+                else ++it;
+            }
+        }
+    }
+    EXPECT_TRUE(summons.empty());
+}
+

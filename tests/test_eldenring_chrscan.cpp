@@ -160,20 +160,25 @@ TEST(EldenRingChrScan, NothingToCollectForAnObjectWithoutAModel) {
 }
 
 TEST(EldenRingChrScan, ShowingAgainSetsOnlyTheBitWeCleared) {
-    EXPECT_EQ(showDrawnBit(0x000000A6u), 0x000000A7u);
-    EXPECT_EQ(showDrawnBit(hideDrawnBit(0x000100A1u)), 0x000100A1u); // hide then show gives the original
-    EXPECT_EQ(showDrawnBit(0x000000A7u), 0x000000A7u);
+    EXPECT_EQ(showDrawnBit(0x00000000u, 0x000000A7u), 0x000000A7u);
+    EXPECT_EQ(showDrawnBit(hideDrawnBit(0x000100A1u), 0x000100A1u), 0x000100A1u); // hide then show gives the original
+    EXPECT_EQ(showDrawnBit(0x000000A7u, 0x000000A7u), 0x000000A7u);
 }
 
-TEST(EldenRingChrScan, TheDrawnBitIsTheLowestBitOnly) {
-    EXPECT_EQ(hideDrawnBit(0x000000A7u), 0x000000A6u);
-    EXPECT_EQ(hideDrawnBit(0x000100A1u), 0x000100A0u);
-    EXPECT_EQ(hideDrawnBit(0x000000A6u), 0x000000A6u); // already hidden: nothing to write
+TEST(EldenRingChrScan, HideMaskClearsModelDrawnShadowAndGhostParticles) {
+    // Wolf display flags 0xA7 contains drawn (1), model (2, 4), shadow (0x20), spirit particle/phantom (0x80)
+    EXPECT_EQ(hideDrawnBit(0x000000A7u), 0x00000000u);
+    EXPECT_EQ(hideDrawnBit(0x000100A1u), 0x00000000u);
+    EXPECT_EQ(hideDrawnBit(0x00000000u), 0x00000000u); // already hidden: nothing to write
     EXPECT_TRUE(needsHiding(0x000000A7u));
-    EXPECT_FALSE(needsHiding(0x000000A6u));
+    EXPECT_TRUE(needsHiding(0x000000A6u)); // 0xA6 still had ghost/particle bits; now needsHiding is true
+    EXPECT_FALSE(needsHiding(0x00000000u));
 }
 
 TEST(EldenRingChrScan, SummonsAreTheTeamTheWolvesWereSeenWith) {
     EXPECT_EQ(summon::kTeam, 47);
     EXPECT_EQ(summon::kDispFlags1, 0x20u); // same word as the player's parts (eldenring_model.hpp layout::kDispFlags1)
+    EXPECT_EQ(summon::kDispFlags2, 0x24u);
+    EXPECT_EQ(summon::kHideMask1, 0x000100A7u);
+    EXPECT_EQ(summon::kHideMask2, 0x00000001u);
 }

@@ -740,6 +740,27 @@ eldenring::creeper::CreeperManager g_creeper_mgr;
 
 std::set<uintptr_t> g_hidden_flag_addresses; // the disp_flags words whose drawn bit we cleared (render thread only), to put it back
 
+void HideSummonChr(uintptr_t chr) {
+    if (chr == 0) return;
+    for (const uintptr_t at : collectChrDispFlagAddresses(g_reader, g_img.base, chr)) {
+        uint32_t flags = 0;
+        if (SafeCopy(at, &flags, sizeof(flags)) && needsHiding(flags)) {
+            const uint32_t hidden = hideDrawnBit(flags);
+            if (WriteBytesSafe(at, &hidden, sizeof(hidden))) {
+                g_hidden_flag_addresses.insert(at);
+            }
+        }
+        const uintptr_t at2 = at + (layout::kDispFlags2 - layout::kDispFlags1);
+        uint32_t flags2 = 0;
+        if (SafeCopy(at2, &flags2, sizeof(flags2)) && (flags2 & summon::kHideMask2) != 0) {
+            const uint32_t hidden2 = flags2 & ~summon::kHideMask2;
+            if (WriteBytesSafe(at2, &hidden2, sizeof(hidden2))) {
+                g_hidden_flag_addresses.insert(at2);
+            }
+        }
+    }
+}
+
 void HideSummonModels() {
     if (!g_summon_hide.load(std::memory_order_relaxed)) return;
     const bool mc_on = g_mc_mode.load(std::memory_order_relaxed);
@@ -774,18 +795,32 @@ void HideSummonModels() {
         for (const uintptr_t at : collectChrDispFlagAddresses(g_reader, g_img.base, e.chr)) {
             uint32_t flags = 0;
             if (!SafeCopy(at, &flags, sizeof(flags))) continue;
+            const uintptr_t at2 = at + (layout::kDispFlags2 - layout::kDispFlags1);
+            uint32_t flags2 = 0;
+            SafeCopy(at2, &flags2, sizeof(flags2));
             if (!mc_on) { // MC mode is off: put the drawn bit back where we cleared it, the wolves are drawn by the game again
                 if (g_hidden_flag_addresses.count(at) != 0 && !needsHiding(flags)) {
                     const uint32_t shown = showDrawnBit(flags);
                     if (WriteBytesSafe(at, &shown, sizeof(shown)) && ++logged <= 24) Log("summon hide: MC mode off, restored flags at %p 0x%X -> 0x%X", reinterpret_cast<void*>(at), flags, shown);
                 }
+                if (g_hidden_flag_addresses.count(at2) != 0 && (flags2 & summon::kHideMask2) == 0) {
+                    const uint32_t shown2 = flags2 | summon::kHideMask2;
+                    WriteBytesSafe(at2, &shown2, sizeof(shown2));
+                }
                 continue;
             }
-            if (!needsHiding(flags)) continue;
-            const uint32_t hidden = hideDrawnBit(flags);
-            const bool ok = WriteBytesSafe(at, &hidden, sizeof(hidden));
-            if (ok) g_hidden_flag_addresses.insert(at);
-            if (++logged <= 12) Log("summon hide: chr=%p npc=%d flags at %p 0x%X -> 0x%X (%s)", reinterpret_cast<void*>(e.chr), e.npc_id, reinterpret_cast<void*>(at), flags, hidden, ok ? "ok" : "write failed");
+            if (needsHiding(flags)) {
+                const uint32_t hidden = hideDrawnBit(flags);
+                const bool ok = WriteBytesSafe(at, &hidden, sizeof(hidden));
+                if (ok) g_hidden_flag_addresses.insert(at);
+                if (++logged <= 12) Log("summon hide: chr=%p npc=%d flags at %p 0x%X -> 0x%X (%s)", reinterpret_cast<void*>(e.chr), e.npc_id, reinterpret_cast<void*>(at), flags, hidden, ok ? "ok" : "write failed");
+            }
+            if ((flags2 & summon::kHideMask2) != 0) {
+                const uint32_t hidden2 = flags2 & ~summon::kHideMask2;
+                if (WriteBytesSafe(at2, &hidden2, sizeof(hidden2))) {
+                    g_hidden_flag_addresses.insert(at2);
+                }
+            }
         }
     }
     {   // Diagnostic: what a summon's hit points do when it is hit and when it dies, and how it leaves (does it stay at 0 hp for a while, or just vanish?)
@@ -1222,6 +1257,26 @@ bool GiveHp(uintptr_t data_module, int amount) {
         g_apply_hp = nullptr; // never call it again after a fault
         return false;
     }
+}
+
+// Sets character HP through the game's SetHP / ApplyHpChange function (0x140437450), or direct memory write.
+bool SetChrHp(uintptr_t chr, int32_t new_hp) {
+    if (chr == 0) return false;
+    const uintptr_t data = DataModuleOfChr(chr);
+    if (data == 0) return false;
+    if (g_apply_hp) {
+        __try {
+            g_apply_hp(reinterpret_cast<void*>(data), new_hp, 1);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            g_apply_hp = nullptr;
+        }
+    }
+    SafeWrite32(data + layout::kDataHp, new_hp);
+    return true;
+}
+
+bool KillChr(uintptr_t chr) {
+    return SetChrHp(chr, 0);
 }
 
 std::atomic<bool> g_shield_blocking{false};
@@ -2889,10 +2944,14 @@ void ProcessCreeperExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies,
     const float c_dt = std::clamp(static_cast<float>(now_tick_ms - last_creeper_tick_ms) / 1000.f, 0.001f, 0.1f);
     last_creeper_tick_ms = now_tick_ms;
 
+    for (const auto& s : creeper_targets) {
+        HideSummonChr(s.id);
+    }
+
     auto c_events = g_creeper_mgr.update(c_dt, creeper_targets, enemy_targets);
     for (const auto& cev : c_events) {
         if (cev.kind == eldenring::creeper::CreeperEventKind::Hiss) {
-            eraudio::Play("entity.tnt.primed", 1.0f);
+            eraudio::Play("entity.creeper.primed", 1.0f);
             Log("creeper: %p started hissing (fuse primed)!", reinterpret_cast<void*>(cev.creeper_id));
         } else if (cev.kind == eldenring::creeper::CreeperEventKind::Defuse) {
             Log("creeper: %p defused", reinterpret_cast<void*>(cev.creeper_id));
@@ -2905,7 +2964,14 @@ void ProcessCreeperExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies,
             }
             const int p_dmg = eldenring::tnt::computeTntExplosionDamage(cev.pos, player_feet, cev.radius, 350.0f);
             if (p_dmg > 0 && CurrentGameMode() == creative::GameMode::Survival) {
-                GiveHp(PlayerChrPtr(), -p_dmg);
+                const uintptr_t p_chr = PlayerChrPtr();
+                const uintptr_t p_data = DataModuleOfChr(p_chr);
+                if (p_data != 0) {
+                    int32_t cur_hp = 0;
+                    if (SafeCopy(p_data + layout::kDataHp, &cur_hp, sizeof(cur_hp))) {
+                        SetChrHp(p_chr, std::max(0, cur_hp - p_dmg));
+                    }
+                }
                 eraudio::Play("entity.player.hurt");
             }
             {
@@ -2916,7 +2982,18 @@ void ProcessCreeperExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies,
                 }
             }
             if (cev.kill_creeper && cev.creeper_id != 0) {
-                GiveHp(cev.creeper_id, -99999);
+                KillChr(cev.creeper_id);
+                {
+                    std::lock_guard<std::mutex> gs(g_summon_mutex);
+                    for (auto it = g_summon_list.begin(); it != g_summon_list.end(); ) {
+                        if (it->id == cev.creeper_id) {
+                            it = g_summon_list.erase(it);
+                        } else {
+                            ++it;
+                        }
+                    }
+                }
+                Log("creeper: %p killed and removed after explosion", reinterpret_cast<void*>(cev.creeper_id));
             }
         }
     }
@@ -4422,8 +4499,8 @@ void SetupDamage() {
         } else {
             Log("first person: render camera copy hooked at %p (RVA 0x%llX); first_person=1 or F10 turns the experiment on", reinterpret_cast<void*>(rcc),
                 static_cast<unsigned long long>(rcc - g_img.base));
-            g_summon_hide.store(FileExists(g_game_dir + "mc_er_summonhide.txt"));
-            if (g_summon_hide.load()) Log("summon hide: on (mc_er_summonhide.txt): the drawn bit of every team 47 model is cleared before each frame");
+            g_summon_hide.store(!FileExists(g_game_dir + "mc_er_nosummonhide.txt"));
+            if (g_summon_hide.load()) Log("summon hide: on: team 47 models, shadows, and spirit particles are cleared before each frame");
         }
     }
     {

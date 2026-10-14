@@ -68,14 +68,19 @@ inline bool looksLikeModelClass(const std::string& cls) {
 namespace summon {
 inline constexpr uint8_t kTeam = 47;                  // teamType of the spirit-ash summons seen so far (wolves, npc 4070)
 inline constexpr uintptr_t kDispFlags1 = 0x20;        // CSModelDispEntity: the same word the player's parts use (eldenring_model.hpp)
+inline constexpr uintptr_t kDispFlags2 = 0x24;
 inline constexpr uint32_t kDrawnBit = 1u;             // set while the part is drawn (wolf 0xA7, player part 0x100A1)
+// Mask to clear all rendering and spirit particle / phantom overlay effects:
+// 0x1 (drawn), 0x2, 0x4 (mesh pass), 0x20 (shadow/aura), 0x80 (spirit phantom shader & particles), 0x10000 (visible)
+inline constexpr uint32_t kHideMask1 = 0x000100A7u;
+inline constexpr uint32_t kHideMask2 = 0x00000001u;
 inline constexpr uintptr_t kChrScanEnd = 0xA00;       // the wolves' CSChrModelIns sit at chr+0x50 and chr+0x640
 inline constexpr uintptr_t kModelScanEnd = 0x300;     // their CSModelDispEntity at model+0x18 and +0x188
 } // namespace summon
 
-inline uint32_t hideDrawnBit(uint32_t flags) { return flags & ~summon::kDrawnBit; }
-inline uint32_t showDrawnBit(uint32_t flags) { return flags | summon::kDrawnBit; }
-inline bool needsHiding(uint32_t flags) { return (flags & summon::kDrawnBit) != 0; }
+inline uint32_t hideDrawnBit(uint32_t flags) { return flags & ~summon::kHideMask1; }
+inline uint32_t showDrawnBit(uint32_t flags, uint32_t orig = 0xA7u) { return flags | (orig & summon::kHideMask1); }
+inline bool needsHiding(uint32_t flags) { return (flags & summon::kHideMask1) != 0; }
 
 // The addresses of the disp_flags1 word of every CSModelDispEntity behind every CSChrModelIns of a character (a wolf has one or two models
 // with one or two entities each; the offsets differ between entities, so this goes by RTTI class name). Reading only.
