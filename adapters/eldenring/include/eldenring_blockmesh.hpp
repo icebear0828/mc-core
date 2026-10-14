@@ -24,7 +24,31 @@ inline FaceCells faceCellsFor(mc::BlockId id) {
     }
 }
 
-inline mc::rig::RigMesh buildBlockMesh(const BlockGrid& grid, const std::vector<std::array<float, 3>>& primed_tnt_positions = {}) {
+struct MiningOverlay {
+
+    Cell cell{};
+    int stage{-1}; // -1 = none, 0..9 = crack stage
+};
+
+inline const mc::hud::HudUV* crackUVForStage(int stage) {
+    switch (stage) {
+        case 0: return &mc::hud::kUV_DESTROY_STAGE_0;
+        case 1: return &mc::hud::kUV_DESTROY_STAGE_1;
+        case 2: return &mc::hud::kUV_DESTROY_STAGE_2;
+        case 3: return &mc::hud::kUV_DESTROY_STAGE_3;
+        case 4: return &mc::hud::kUV_DESTROY_STAGE_4;
+        case 5: return &mc::hud::kUV_DESTROY_STAGE_5;
+        case 6: return &mc::hud::kUV_DESTROY_STAGE_6;
+        case 7: return &mc::hud::kUV_DESTROY_STAGE_7;
+        case 8: return &mc::hud::kUV_DESTROY_STAGE_8;
+        case 9: return &mc::hud::kUV_DESTROY_STAGE_9;
+        default: return nullptr;
+    }
+}
+
+inline mc::rig::RigMesh buildBlockMesh(const BlockGrid& grid,
+                                       const std::vector<std::array<float, 3>>& primed_tnt_positions = {},
+                                       const std::optional<MiningOverlay>& mining = std::nullopt) {
     mc::rig::RigMesh mesh;
     // a quarter of a source pixel inside the cell: the 4x enlarged atlas never samples a neighbouring sprite
     const float inset = 0.25f / static_cast<float>(mc::hud::kHudAtlasWidth);
@@ -79,8 +103,34 @@ inline mc::rig::RigMesh buildBlockMesh(const BlockGrid& grid, const std::vector<
         }
     }
 
+    // Render progressive crack overlay on the block being mined
+    if (mining.has_value() && mining->stage >= 0 && mining->stage <= 9 && grid.get(mining->cell) != mc::BlockId::Air) {
+        const mc::hud::HudUV* crack_uv = crackUVForStage(mining->stage);
+        if (crack_uv != nullptr) {
+            for (const Face& f : faces) {
+                if (grid.get({mining->cell.x + f.dx, mining->cell.y + f.dy, mining->cell.z + f.dz}) != mc::BlockId::Air) continue;
+                if (mesh.vertices.size() + 4 > 65535) return mesh;
+                const float us[4] = {crack_uv->u0 + inset, crack_uv->u1 - inset, crack_uv->u1 - inset, crack_uv->u0 + inset};
+                const float vs[4] = {crack_uv->v0 + inset, crack_uv->v0 + inset, crack_uv->v1 - inset, crack_uv->v1 - inset};
+                const float nx = static_cast<float>(f.dx) * 0.001f;
+                const float ny = static_cast<float>(f.dy) * 0.001f;
+                const float nz = static_cast<float>(f.dz) * 0.001f;
+                const uint16_t base = static_cast<uint16_t>(mesh.vertices.size());
+                for (int k = 0; k < 4; ++k) {
+                    mesh.vertices.push_back({static_cast<float>(mining->cell.x) + f.c[k][0] + nx,
+                                             static_cast<float>(mining->cell.y) + f.c[k][1] + ny,
+                                             static_cast<float>(mining->cell.z) + f.c[k][2] + nz,
+                                             us[k], vs[k]});
+                }
+                static constexpr uint16_t kQuad[6] = {0, 1, 2, 0, 2, 3};
+                for (uint16_t i : kQuad) mesh.indices.push_back(static_cast<uint16_t>(base + i));
+            }
+        }
+    }
+
     return mesh;
 }
+
 
 // A block as an item in the hand: the unit cube centred on the origin (first person; 1 unit = 1 block, y up, +z towards the viewer).
 inline mc::rig::RigMesh buildCubeMesh(mc::BlockId id) {

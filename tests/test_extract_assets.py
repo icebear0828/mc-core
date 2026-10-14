@@ -265,7 +265,9 @@ HUD_KEYS = [
     "item_diamond_helmet", "item_diamond_chestplate", "item_diamond_leggings", "item_diamond_boots",
     "empty_armor_slot_helmet", "empty_armor_slot_chestplate", "empty_armor_slot_leggings", "empty_armor_slot_boots",
     "armor_empty", "armor_half", "armor_full",
+    *[f"destroy_stage_{i}" for i in range(10)],
 ]
+
 HUD_SIZES = {
     "heart_absorb_full": (9, 9), "heart_absorb_half": (9, 9), "particle_crit": (8, 8), "particle_damage": (8, 8),
     **{f"particle_sweep_{i}": (32, 32) for i in range(8)},
@@ -338,7 +340,9 @@ def _sprite_colors():
         "gui/sprites/hud/armor_empty.png": _solid((9, 9), (110, 111, 112, 255)),
         "gui/sprites/hud/armor_half.png": _solid((9, 9), (113, 114, 115, 255)),
         "gui/sprites/hud/armor_full.png": _solid((9, 9), (116, 117, 118, 255)),
+        **{f"block/destroy_stage_{i}.png": _solid((16, 16), (120 + i * 5, 120, 120, 255)) for i in range(10)},
     }
+
 
 
 def _hud_jar(path: Path) -> Path:

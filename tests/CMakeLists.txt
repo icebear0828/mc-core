@@ -65,7 +65,9 @@ add_executable(mc_tests
     test_eldenring_d3dstate.cpp
     test_tnt.cpp
     test_eldenring_tnt.cpp
+    test_eldenring_mining.cpp
 )
+
 
 target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source")
 

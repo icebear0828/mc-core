@@ -40,7 +40,9 @@
 #include "eldenring_audio_data.hpp"
 #include "eldenring_blockmesh.hpp"
 #include "eldenring_blocks.hpp"
+#include "eldenring_mining.hpp"
 #include "eldenring_tnt.hpp"
+
 #include "eldenring_buddy.hpp"
 #include "eldenring_chrscan.hpp"
 #include "eldenring_mobs.hpp"
@@ -2003,15 +2005,23 @@ bool BlocksPresent() {
 }
 
 static size_t g_tnt_prev_active_count = 0;
+static int g_prev_mining_stage = -1;
+static blocks::Cell g_prev_mining_cell{};
 
-void SendBlockMesh() {
+void SendBlockMesh(const std::optional<blocks::MiningOverlay>& mining = std::nullopt) {
     std::lock_guard<std::mutex> g(g_blocks_mutex);
     const size_t tnt_count = g_tnt_mgr.activeCount();
-    if (g_blocks_sent_version == g_blocks.version() && tnt_count == 0 && g_tnt_prev_active_count == 0) return;
+    const int stage = mining.has_value() ? mining->stage : -1;
+    const blocks::Cell cell = mining.has_value() ? mining->cell : blocks::Cell{};
+    if (g_blocks_sent_version == g_blocks.version() && tnt_count == 0 && g_tnt_prev_active_count == 0 &&
+        stage == g_prev_mining_stage && cell == g_prev_mining_cell) return;
     g_blocks_sent_version = g_blocks.version();
     g_tnt_prev_active_count = tnt_count;
-    erov::SetBlockMesh(blocks::buildBlockMesh(g_blocks, g_tnt_mgr.activePositions()));
+    g_prev_mining_stage = stage;
+    g_prev_mining_cell = cell;
+    erov::SetBlockMesh(blocks::buildBlockMesh(g_blocks, g_tnt_mgr.activePositions(), mining));
 }
+
 
 struct BlockTarget {
     bool have{false};
@@ -2191,29 +2201,69 @@ bool TryPlaceBlock() {
     return true;
 }
 
-// Left click on a placed block within reach: breaks it and puts the block in the inventory. Returns true when a block was broken.
-bool TryBreakBlock() {
-    if (!g_blocks_enabled.load()) return false;
-    const BlockTarget t = FindBlockTarget();
-    if (!t.have || !t.on_block) return false;
+static eldenring::mining::MiningController g_mining;
 
-    mc::BlockId id;
-    {
+// Progressive block mining: called every tick in KeyThread.
+// When left mouse is held on a placed block within reach, accumulates mining progress,
+// updates crack overlay mesh, plays periodic hit sounds, and finally breaks the block.
+// Returns true when the left click is consumed by mining (so it does not swing as an air attack).
+bool StepMining(float dt, bool left_held) {
+    if (!g_blocks_enabled.load()) {
+        g_mining.reset();
+        SendBlockMesh(std::nullopt);
+        return false;
+    }
+    const BlockTarget t = FindBlockTarget();
+    mc::BlockId id = mc::BlockId::Air;
+    if (t.have && t.on_block) {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         id = g_blocks.get(t.cell);
-        if (id == mc::BlockId::Air) return false;
-        if (!g_blocks.remove(t.cell)) return false;
     }
+
+    mc::ItemId held = mc::ItemId::None;
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
-        g_melee.inventory().add({blocks::itemForBlock(id), 1});
-        g_melee.startSwing();
+        held = g_melee.heldItem();
     }
-    SendBlockMesh();
-    eraudio::Play(BlockSound(id), 0.9f);
-    Log("blocks: broke %d at (%d %d %d)", static_cast<int>(id), t.cell.x, t.cell.y, t.cell.z);
-    return true;
+    const bool is_creative = (CurrentGameMode() == creative::GameMode::Creative);
+
+
+    g_mining.update(dt, left_held, t.have && t.on_block, t.cell, id, held, is_creative);
+    const eldenring::mining::MiningState& s = g_mining.state();
+
+    if (s.is_mining) {
+        if (s.hit_sound) {
+            std::lock_guard<std::mutex> g(g_melee_mutex);
+            g_melee.startSwing();
+            eraudio::Play(BlockSound(id), 0.6f);
+        }
+        SendBlockMesh(blocks::MiningOverlay{s.target_cell, s.stage});
+        return true;
+    }
+
+    if (s.broken) {
+        bool harvested = false;
+        {
+            std::lock_guard<std::mutex> g(g_blocks_mutex);
+            g_blocks.remove(s.target_cell);
+        }
+        if (eldenring::mining::MiningController::canHarvest(id, held, is_creative)) {
+            std::lock_guard<std::mutex> g(g_melee_mutex);
+            g_melee.inventory().add({blocks::itemForBlock(id), 1});
+            harvested = true;
+        }
+        SendBlockMesh(std::nullopt);
+        eraudio::Play(BlockSound(id), 0.95f);
+        Log("blocks: broke %d at (%d %d %d) with tool %d (harvested=%d)",
+            static_cast<int>(id), s.target_cell.x, s.target_cell.y, s.target_cell.z,
+            static_cast<int>(held), harvested ? 1 : 0);
+        return true;
+    }
+
+    SendBlockMesh(std::nullopt);
+    return false;
 }
+
 
 // The game keeps the horizontal velocity it had in the air (+0x120, constant for seconds in the log) and moves the player with it whatever
 // key is down. While the player is held in the air state by us (standing on a block, or in our own jump) the velocity is written here: from
@@ -3523,12 +3573,14 @@ DWORD WINAPI KeyThread(LPVOID) {
         // A dead player cannot swing, eat or hit anything (the click edges are still taken so they do not pile up).
         const bool alive = !PlayerDead();
         const bool click_edge = !inv_open && g_input_enabled.load() && erin::TakeLeftClick() && alive;
-        const bool want_suppress = click_edge ? WantSuppress() : false;
+        const bool left_held = !inv_open && g_input_enabled.load() && (erin::LeftHeld() || (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) && alive;
+        const bool want_suppress = (click_edge || left_held) ? WantSuppress() : false;
         if (click_edge && !(fg && g_click_attack.load() && want_suppress) && g_mc_mode.load()) {
             Log("click dropped: fg=%d click_attack=%d suppress=%d", fg ? 1 : 0, g_click_attack.load() ? 1 : 0, want_suppress ? 1 : 0);
         }
-        if (click_edge && fg && g_click_attack.load() && want_suppress && TryBreakBlock()) {
-            // a placed block was broken: the click is used up
+        const bool mining_consumed = fg && g_click_attack.load() && want_suppress && StepMining(dt, left_held);
+        if (mining_consumed) {
+            // Block is actively being mined or was broken: do not swing as an air attack
         } else if (click_edge && fg && g_click_attack.load() && want_suppress) {
             float charged;
             {
@@ -3539,6 +3591,7 @@ DWORD WINAPI KeyThread(LPVOID) {
             Log("swing: charged=%.2f jumping=%d airborne=%d", charged, g_jump.jumping() ? 1 : 0, PlayerAirborne() ? 1 : 0);
             if (g_damage_enabled.load()) ClickAttack(charged);
         }
+
         const bool d8 = fg && (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
         const bool d6 = fg && (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
         if (d8 && !prev8 && g_damage_enabled.load()) EnqueueNearestHostile();

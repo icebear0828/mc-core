@@ -731,6 +731,17 @@ def create_canonical_sprite(name: str) -> Image.Image:
                             img.putpixel((x, y), c_iron if (x + y) % 2 == 0 else c_iron_d)
                         else:
                             img.putpixel((x, y), c_bg)
+    elif name.startswith("destroy_stage_"):
+        stage = int(name.split("_")[-1])
+        img = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+        target_count = 6 + stage * 12
+        coords = list(dict.fromkeys([( (x * 7 + y * 13) % 16, (x * 11 + y * 3) % 16 ) for y in range(16) for x in range(16)]))
+        for y in range(16):
+            for x in range(16):
+                if (x, y) not in coords:
+                    coords.append((x, y))
+        for x, y in coords[:target_count]:
+            img.putpixel((x, y), (50, 50, 50, 255))
     elif name.startswith("block_") and name in _PLACEHOLDER_ITEM_COLORS:  # a flat coloured square
         img = Image.new("RGBA", (16, 16), _PLACEHOLDER_ITEM_COLORS[name] + (255,))
     elif name in _PLACEHOLDER_ITEM_COLORS:  # a plain coloured disc; the real icon replaces it when a client.jar is given
@@ -741,6 +752,7 @@ def create_canonical_sprite(name: str) -> Image.Image:
                     img.putpixel((x, y), col)
 
     return img
+
 
 
 _JAR_TEXTURES = "assets/minecraft/textures/"
@@ -825,7 +837,10 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("armor_empty", (9, 9)),
     ("armor_half", (9, 9)),
     ("armor_full", (9, 9)),
+    # 10 stages of block destruction (cracking) overlay
+    *[(f"destroy_stage_{i}", (16, 16)) for i in range(10)],
 ]
+
 
 _JAR_HUD_SPRITES = {
     "item_diamond_helmet": "item/diamond_helmet.png",
@@ -882,7 +897,9 @@ _JAR_HUD_SPRITES = {
     "heart_half_blinking": "gui/sprites/hud/heart/half_blinking.png",
     "xp_bar_background": "gui/sprites/hud/experience_bar_background.png",
     "xp_bar_progress": "gui/sprites/hud/experience_bar_progress.png",
+    **{f"destroy_stage_{i}": f"block/destroy_stage_{i}.png" for i in range(10)},
 }
+
 
 # The 3-row container background (gui/container/generic_54.png): its top part is 17 + 3 * 18 rows, its bottom part (the
 # player's inventory) starts at row 126, as in Minecraft's ContainerScreen.
@@ -1017,14 +1034,27 @@ def _read_real_hud_sprite(jar_zip: zipfile.ZipFile, name: str, size: tuple[int, 
         icon = Image.new("RGBA", size, (0, 0, 0, 0))
         icon.paste(scaled, ((size[0] - scaled.width) // 2, 0))
         return icon
-    if name == "item_enchanted_golden_apple":
-        apple = _open_jar_png(jar_zip, "item/golden_apple.png")
-        return None if apple is None else _tint(_fit_exact(apple, size), _GLINT, 0.35)
+    if name.startswith("destroy_stage_"):
+        relative = _JAR_HUD_SPRITES.get(name)
+        if relative is None:
+            return None
+        src = _open_jar_png(jar_zip, relative)
+        if src is None:
+            return None
+        rgba = src.convert("RGBA")
+        px = rgba.load()
+        for y in range(rgba.height):
+            for x in range(rgba.width):
+                r, g, b, a = px[x, y]
+                if a <= 1:
+                    px[x, y] = (0, 0, 0, 0)
+        return _fit_exact(rgba, size)
     relative = _JAR_HUD_SPRITES.get(name)
     if relative is None:
         return None
     src = _open_jar_png(jar_zip, relative)
     return None if src is None else _fit_exact(src, size)
+
 
 
 def build_hud_atlas(client_jar: Path | None = None) -> tuple[Image.Image, dict[str, tuple[float, float, float, float]]]:

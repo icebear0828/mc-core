@@ -25,8 +25,10 @@ void OnDirectInputCreated(REFIID riid, void* iface);
 void SetSuppressMouseButtons(bool on);
 Counters TakeCounters(); // returns the counts since the last call and resets them
 // True once per left-button press seen at the DirectInput layer (read before any clearing). GetAsyncKeyState cannot be
-// used for this: with exclusive DirectInput the system no longer reports the mouse buttons.
 bool TakeLeftClick();
+// True while the left button is down at the DirectInput layer
+bool LeftHeld();
+
 // Same for the right button (read before it is cleared); used to eat food.
 bool TakeRightClick();
 // True while the right button is down (as of the last mouse read at the DirectInput layer, before any clearing); the bow draws while it is held.
