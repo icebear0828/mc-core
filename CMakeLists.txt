@@ -30,6 +30,11 @@ add_library(mc_core STATIC
     include/mc/item_model.hpp
     include/mc/entity_model.hpp
     include/mc/tnt.hpp
+    include/mc/hunger.hpp
+    include/mc/xp.hpp
+    include/mc/heart_anim.hpp
+    include/mc/mining.hpp
+    include/mc/shield.hpp
     include/mc/contracts/physics_adapter.hpp
     include/mc/contracts/render_adapter.hpp
     include/mc/contracts/combat_adapter.hpp

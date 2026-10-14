@@ -1,10 +1,8 @@
 #pragma once
 
+// Forwarding wrapper for mc::MiningController to maintain backward compatibility with eldenring::blocks::Cell.
 #include "eldenring_blocks.hpp"
-#include "mc/types.hpp"
-
-#include <algorithm>
-#include <cmath>
+#include "mc/mining.hpp"
 
 namespace eldenring::mining {
 
@@ -21,104 +19,37 @@ struct MiningState {
 class MiningController {
 public:
     static float computeBreakTime(mc::BlockId block_id, mc::ItemId held_tool, bool is_creative) {
-        if (is_creative) {
-            return 0.0f; // Instant break in creative mode
-        }
-        if (block_id == mc::BlockId::Tnt) {
-            return 0.05f; // Extremely fast / near-instant break
-        }
-        if (block_id == mc::BlockId::Stone) {
-            return (held_tool == mc::ItemId::DiamondPickaxe) ? 0.3f : 7.5f;
-        }
-        if (block_id == mc::BlockId::Dirt) {
-            return 0.75f;
-        }
-        return 1.0f;
+        return mc::MiningController::computeBreakTime(block_id, held_tool, is_creative);
     }
 
     static bool canHarvest(mc::BlockId block_id, mc::ItemId held_tool, bool is_creative) {
-        if (is_creative) {
-            return false; // Creative mode breaks blocks without dropping items
-        }
-        if (block_id == mc::BlockId::Stone) {
-            return held_tool == mc::ItemId::DiamondPickaxe;
-        }
-        if (block_id == mc::BlockId::Dirt || block_id == mc::BlockId::Tnt) {
-            return true;
-        }
-        return false;
+        return mc::MiningController::canHarvest(block_id, held_tool, is_creative);
     }
 
     void update(float dt, bool left_down, bool has_target, const blocks::Cell& target_cell,
                 mc::BlockId target_block, mc::ItemId held_tool, bool is_creative) {
-        state_.broken = false;
-        state_.hit_sound = false;
-
-        if (!left_down || !has_target || target_block == mc::BlockId::Air) {
-            reset();
-            return;
-        }
-
-        // If target cell changed, reset progress to start mining the new block
-        if (state_.is_mining && !(state_.target_cell == target_cell)) {
-            reset();
-        }
-
-        const float break_time = computeBreakTime(target_block, held_tool, is_creative);
-
-        if (!state_.is_mining) {
-            state_.is_mining = true;
-            state_.target_cell = target_cell;
-            state_.block_id = target_block;
-            state_.progress = 0.0f;
-            state_.stage = 0;
-            state_.hit_sound = true; // Initial strike sound
-            hit_timer_ = 0.0f;
-        }
-
-        if (break_time <= 0.001f) {
-            state_.progress = 1.0f;
-            state_.stage = 9;
-            state_.broken = true;
-            state_.is_mining = false;
-            return;
-        }
-
-        state_.progress += (dt / break_time);
-
-        if (state_.progress >= 1.0f) {
-            state_.broken = true;
-            state_.stage = 9;
-            state_.is_mining = false;
-            state_.progress = 1.0f;
-            return;
-        }
-
-        state_.stage = std::clamp(static_cast<int>(state_.progress * 10.0f), 0, 9);
-
-        hit_timer_ += dt;
-        if (hit_timer_ >= 0.25f) {
-            state_.hit_sound = true;
-            hit_timer_ = std::fmod(hit_timer_, 0.25f);
-        }
+        mc_controller_.update(dt, left_down, has_target, {target_cell.x, target_cell.y, target_cell.z},
+                              target_block, held_tool, is_creative);
+        const auto& s = mc_controller_.state();
+        state_.is_mining = s.is_mining;
+        state_.target_cell = {s.target_cell.x, s.target_cell.y, s.target_cell.z};
+        state_.block_id = s.block_id;
+        state_.progress = s.progress;
+        state_.stage = s.stage;
+        state_.broken = s.broken;
+        state_.hit_sound = s.hit_sound;
     }
 
     void reset() {
-        state_.is_mining = false;
-        state_.target_cell = {};
-        state_.block_id = mc::BlockId::Air;
-        state_.progress = 0.0f;
-        state_.stage = -1;
-        state_.broken = false;
-        state_.hit_sound = false;
-        hit_timer_ = 0.0f;
+        mc_controller_.reset();
+        state_ = {};
     }
 
     [[nodiscard]] const MiningState& state() const { return state_; }
 
 private:
+    mc::MiningController mc_controller_;
     MiningState state_;
-    float hit_timer_{0.0f};
 };
 
 } // namespace eldenring::mining

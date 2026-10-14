@@ -69,6 +69,7 @@ add_executable(mc_tests
     test_eldenring_combat_balance.cpp
     test_eldenring_sprint.cpp
     test_eldenring_creeper.cpp
+    test_mc_core_modules.cpp
 )
 
 

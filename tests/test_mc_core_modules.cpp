@@ -1,0 +1,200 @@
+#include <gtest/gtest.h>
+
+#include "mc/heart_anim.hpp"
+#include "mc/hunger.hpp"
+#include "mc/mining.hpp"
+#include "mc/shield.hpp"
+#include "mc/xp.hpp"
+
+// ============================================================================
+// 1. HungerModel Tests
+// ============================================================================
+TEST(McCoreHungerTest, InitialStateIsFullFoodAndSaturation) {
+    mc::HungerModel hunger;
+    EXPECT_EQ(hunger.food(), 20);
+    EXPECT_FLOAT_EQ(hunger.saturation(), 5.0f);
+    EXPECT_FALSE(hunger.shaking());
+    EXPECT_FALSE(hunger.canEat(mc::ItemId::Bread));
+    EXPECT_TRUE(hunger.canEat(mc::ItemId::GoldenApple)); // always edible
+}
+
+TEST(McCoreHungerTest, ExhaustionDrainsSaturationThenFood) {
+    mc::HungerModel hunger;
+    // 5.0 saturation -> takes 5 * 4.0 = 20.0 exhaustion to drain saturation to 0
+    hunger.addExhaustion(20.0f);
+    EXPECT_EQ(hunger.food(), 20);
+    EXPECT_FLOAT_EQ(hunger.saturation(), 0.0f);
+    EXPECT_TRUE(hunger.shaking());
+
+    // Next 4.0 exhaustion drains food by 1
+    hunger.addExhaustion(4.0f);
+    EXPECT_EQ(hunger.food(), 19);
+    EXPECT_TRUE(hunger.canEat(mc::ItemId::Bread));
+}
+
+TEST(McCoreHungerTest, EatingFoodRestoresNutritionAndSaturationCappedByFood) {
+    mc::HungerModel hunger;
+    hunger.addExhaustion(40.0f); // drains saturation (5.0) and food by 5 -> food 15, sat 0
+    EXPECT_EQ(hunger.food(), 15);
+
+    hunger.eat(mc::ItemId::Bread); // +5 food, +6.0 sat (capped at food 20)
+    EXPECT_EQ(hunger.food(), 20);
+    EXPECT_FLOAT_EQ(hunger.saturation(), 6.0f);
+}
+
+TEST(McCoreHungerTest, NaturalRegenerationTicksHealHurtPlayer) {
+    mc::HungerModel hunger;
+    // Food full (20) and saturation > 0: heals every 10 ticks (0.5s)
+    float healed = 0.0f;
+    for (int i = 0; i < 10; ++i) {
+        healed += hunger.tick(0.05f, true /* hurt */);
+    }
+    EXPECT_GT(healed, 0.5f);
+    EXPECT_LT(hunger.saturation(), 5.0f); // exhaustion applied
+}
+
+// ============================================================================
+// 2. XpModel Tests
+// ============================================================================
+TEST(McCoreXpTest, PointsForNextLevelFollowsVanillaFormula) {
+    EXPECT_EQ(mc::XpModel::pointsForNextLevel(0), 7);
+    EXPECT_EQ(mc::XpModel::pointsForNextLevel(14), 7 + 14 * 2); // 35
+    EXPECT_EQ(mc::XpModel::pointsForNextLevel(15), 37);
+    EXPECT_EQ(mc::XpModel::pointsForNextLevel(29), 37 + (29 - 15) * 5); // 107
+    EXPECT_EQ(mc::XpModel::pointsForNextLevel(30), 112);
+}
+
+TEST(McCoreXpTest, AddingPointsLevelsUpAndMaintainsProgress) {
+    mc::XpModel xp;
+    EXPECT_EQ(xp.level(), 0);
+    EXPECT_FLOAT_EQ(xp.progress(), 0.0f);
+
+    int levels = xp.add(7); // exactly level 0 -> 1
+    EXPECT_EQ(levels, 1);
+    EXPECT_EQ(xp.level(), 1);
+    EXPECT_FLOAT_EQ(xp.progress(), 0.0f);
+
+    xp.add(9); // level 1 needs 9 points -> level 2
+    EXPECT_EQ(xp.level(), 2);
+
+    xp.add(5); // level 2 needs 11 points -> 5 / 11 progress
+    EXPECT_NEAR(xp.progress(), 5.0f / 11.0f, 1e-4f);
+}
+
+TEST(McCoreXpTest, XpForKillScaling) {
+    EXPECT_EQ(mc::xpForKill(100), 5);
+    EXPECT_EQ(mc::xpForKill(3500), 20);
+    EXPECT_EQ(mc::xpForKill(12000), 50);
+}
+
+// ============================================================================
+// 3. HeartAnimator Tests
+// ============================================================================
+TEST(McCoreHeartAnimTest, LowHealthTriggersHeartShaking) {
+    mc::HeartAnimator anim;
+    anim.update(0.1f, 4 /* <= 4 half hearts */, 0, false);
+    bool any_shaking = false;
+    for (int h = 0; h < mc::HeartAnimator::kHearts; ++h) {
+        if (anim.shake(h) != 0) any_shaking = true;
+    }
+    EXPECT_TRUE(any_shaking);
+
+    // Full health -> shake stops
+    anim.update(0.1f, 20, 0, false);
+    for (int h = 0; h < mc::HeartAnimator::kHearts; ++h) {
+        EXPECT_EQ(anim.shake(h), 0);
+    }
+}
+
+TEST(McCoreHeartAnimTest, TakingDamageTriggersPeriodicWhiteBlink) {
+    mc::HeartAnimator anim;
+    anim.update(0.05f, 20, 0, false);
+    EXPECT_FALSE(anim.blink());
+
+    // Take damage: blink window opens
+    anim.update(0.05f, 14, 0, false);
+    EXPECT_EQ(anim.displayHealth(), 20); // flashes old health
+
+    // Over next 20 ticks (1 second), blink should flip periodically
+    int blink_on_ticks = 0;
+    int flips = 0;
+    bool prev = anim.blink();
+    for (int i = 0; i < 20; ++i) {
+        anim.update(0.05f, 14, 0, false);
+        if (anim.blink()) ++blink_on_ticks;
+        if (anim.blink() != prev) {
+            ++flips;
+            prev = anim.blink();
+        }
+    }
+    EXPECT_GT(blink_on_ticks, 6);
+    EXPECT_GT(flips, 4);
+}
+
+// ============================================================================
+// 4. MiningController Tests
+// ============================================================================
+TEST(McCoreMiningTest, ComputeBreakTimeAndCanHarvestRules) {
+    // Stone
+    EXPECT_FLOAT_EQ(mc::MiningController::computeBreakTime(mc::BlockId::Stone, mc::ItemId::DiamondPickaxe, false), 0.3f);
+    EXPECT_FLOAT_EQ(mc::MiningController::computeBreakTime(mc::BlockId::Stone, mc::ItemId::DiamondSword, false), 7.5f);
+    EXPECT_TRUE(mc::MiningController::canHarvest(mc::BlockId::Stone, mc::ItemId::DiamondPickaxe, false));
+    EXPECT_FALSE(mc::MiningController::canHarvest(mc::BlockId::Stone, mc::ItemId::DiamondSword, false));
+
+    // Creative mode: instant break, no drops
+    EXPECT_FLOAT_EQ(mc::MiningController::computeBreakTime(mc::BlockId::Stone, mc::ItemId::DiamondSword, true), 0.0f);
+    EXPECT_FALSE(mc::MiningController::canHarvest(mc::BlockId::Stone, mc::ItemId::DiamondPickaxe, true));
+}
+
+TEST(McCoreMiningTest, ProgressiveCrackStagesAndBreakEvent) {
+    mc::MiningController controller;
+    const mc::GridPos cell{10, 5, 20};
+
+    // Update with left click down on Stone using Diamond Pickaxe (0.3s break time)
+    controller.update(0.15f, true, true, cell, mc::BlockId::Stone, mc::ItemId::DiamondPickaxe, false);
+    EXPECT_TRUE(controller.state().is_mining);
+    EXPECT_EQ(controller.state().stage, 5); // 0.15 / 0.3 = 0.5 progress -> stage 5
+    EXPECT_FALSE(controller.state().broken);
+
+    // Finish mining
+    controller.update(0.16f, true, true, cell, mc::BlockId::Stone, mc::ItemId::DiamondPickaxe, false);
+    EXPECT_TRUE(controller.state().broken);
+    EXPECT_FALSE(controller.state().is_mining);
+}
+
+// ============================================================================
+// 5. ShieldController & Blocking Logic Tests
+// ============================================================================
+TEST(McCoreShieldTest, FrontDotCalculationIdentifiesAttackDirection) {
+    const float player_pos[3] = {0.0f, 0.0f, 0.0f};
+    const float player_yaw = 0.0f; // facing +Z
+
+    const float attacker_ahead[3] = {0.0f, 0.0f, 10.0f};
+    EXPECT_NEAR(mc::frontDot(player_pos, player_yaw, attacker_ahead), 1.0f, 1e-4f);
+
+    const float attacker_behind[3] = {0.0f, 0.0f, -10.0f};
+    EXPECT_NEAR(mc::frontDot(player_pos, player_yaw, attacker_behind), -1.0f, 1e-4f);
+
+    EXPECT_TRUE(mc::isAttackBlocked(player_pos, player_yaw, attacker_ahead));
+    EXPECT_FALSE(mc::isAttackBlocked(player_pos, player_yaw, attacker_behind));
+}
+
+TEST(McCoreShieldTest, ShieldControllerRequiresHoldingForRaiseDelay) {
+    mc::ShieldController shield;
+    EXPECT_FALSE(shield.isBlocking());
+    EXPECT_FLOAT_EQ(shield.raiseProgress(), 0.0f);
+
+    // Hold for 0.1s (less than 0.25s)
+    shield.update(0.1f, true, true);
+    EXPECT_FALSE(shield.isBlocking());
+    EXPECT_NEAR(shield.raiseProgress(), 0.4f, 1e-4f);
+
+    // Complete 0.25s raise
+    shield.update(0.16f, true, true);
+    EXPECT_TRUE(shield.isBlocking());
+    EXPECT_FLOAT_EQ(shield.raiseProgress(), 1.0f);
+
+    // Releasing cancels block
+    shield.update(0.01f, false, true);
+    EXPECT_FALSE(shield.isBlocking());
+}
