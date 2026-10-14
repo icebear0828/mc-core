@@ -1651,10 +1651,21 @@ void DrainOnce(uintptr_t updating_data_module) {
 
 // Experiment (mc_er_summon.txt + F2): asks the ash manager for a Wolf Pack summon the way the item code does (tablet id and
 // request together). Runs on the game thread. Logs the manager before and after, so a failure is visible either way.
+bool ReadFileAll(const std::string& path, std::vector<uint8_t>& out); // defined below
 void LogPlayerPoseForBuddy(); // defined below
 
 void RunSummonExperiment() {
-    constexpr int32_t kWolfPackRequest = 232000;     // ash 2320 * 100 + level 0, observed live
+    int32_t summon_request = eldenring::buddy::kKaidenWarriorRequest; // default to 1.95m humanoid for correct hitbox
+    std::vector<uint8_t> summon_txt;
+    if (ReadFileAll(g_game_dir + "mc_er_summon.txt", summon_txt) && !summon_txt.empty()) {
+        std::string content(reinterpret_cast<const char*>(summon_txt.data()), summon_txt.size());
+        size_t first = content.find_first_not_of(" \t\r\n");
+        size_t last = content.find_last_not_of(" \t\r\n");
+        if (first != std::string::npos && last != std::string::npos) {
+            std::string token = content.substr(first, last - first + 1);
+            summon_request = eldenring::buddy::resolveSummonRequest(token);
+        }
+    }
     constexpr int32_t kTabletEntityId = 1042360100;  // the tablet entity observed with it (Limgrave tile 42_36)
     using eldenring::buddy::sample;
     const auto before = sample(g_reader, g_img.base);
@@ -1671,11 +1682,12 @@ void RunSummonExperiment() {
         return;
     }
     const auto spawn = eldenring::buddy::spawnPointAhead(pos, eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]));
-    const auto plan = eldenring::buddy::planSummon(before, kWolfPackRequest, kTabletEntityId, spawn);
+    const auto plan = eldenring::buddy::planSummon(before, summon_request, kTabletEntityId, spawn);
     if (!plan) {
-        Log("summon: no plan");
+        Log("summon: no plan for request %d", summon_request);
         return;
     }
+
     bool sp_ok = true;
     for (int i = 0; i < 4; ++i) {
         uint32_t bits;

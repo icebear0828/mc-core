@@ -14,6 +14,7 @@
 #include "eldenring_live.hpp"
 
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cmath>
@@ -21,9 +22,58 @@
 #include <optional>
 #include <algorithm>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace eldenring::buddy {
+
+// Known spirit ash request IDs: request = ash_id * 100 + level
+inline constexpr int32_t kWolfPackRequest       = 232000; // Lone Wolf Ashes (3 wolves, npc 4070, quadrupeds)
+inline constexpr int32_t kKaidenWarriorRequest   = 231000; // Kaiden Sellsword (1 warrior, npc 4050, 1.95m tall humanoid)
+inline constexpr int32_t kMimicTearRequest       = 207000; // Mimic Tear (1 player clone, humanoid)
+inline constexpr int32_t kBlackKnifeTicheRequest = 222000; // Black Knife Tiche (1 assassin, humanoid)
+inline constexpr int32_t kSkeletalMilitiaRequest = 214000; // Skeletal Militiaman (2 skeletons, humanoid)
+inline constexpr int32_t kGodrickSoldierRequest  = 250000; // Godrick Soldier (2 soldiers, humanoid)
+
+inline int32_t resolveSummonRequest(std::string_view name) {
+    if (name.empty()) return kKaidenWarriorRequest; // default to single humanoid for 1.95m hitbox
+    int32_t parsed = 0;
+    bool is_digit = true;
+    for (char c : name) {
+        if (c < '0' || c > '9') {
+            is_digit = false;
+            break;
+        }
+        parsed = parsed * 10 + (c - '0');
+    }
+    if (is_digit && parsed > 0) return parsed;
+
+    std::string lower;
+    lower.reserve(name.size());
+    for (char c : name) lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+
+    if (lower == "kaiden" || lower == "warrior") return kKaidenWarriorRequest;
+    if (lower == "wolf" || lower == "wolves" || lower == "pack") return kWolfPackRequest;
+    if (lower == "mimic" || lower == "tear") return kMimicTearRequest;
+    if (lower == "skeleton" || lower == "militia" || lower == "skeletons") return kSkeletalMilitiaRequest;
+    if (lower == "tiche" || lower == "blackknife") return kBlackKnifeTicheRequest;
+    if (lower == "soldier" || lower == "godrick") return kGodrickSoldierRequest;
+
+    return kKaidenWarriorRequest; // safe fallback
+}
+
+inline bool isHumanoidSummon(int32_t request) {
+    const int32_t ash = request / 100;
+    return ash == 2310 || ash == 2070 || ash == 2140 || ash == 2220 || ash == 2500;
+}
+
+inline int expectedSpawnCount(int32_t request) {
+    const int32_t ash = request / 100;
+    if (ash == 2320) return 3; // 3 wolves
+    if (ash == 2140 || ash == 2500) return 2; // 2 skeletons / soldiers
+    return 1; // 1 warrior / mimic / tiche
+}
+
 
 namespace layout {
 inline constexpr uintptr_t kBuddyManInWorldChrMan = 0x1E538; // A

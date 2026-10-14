@@ -266,3 +266,31 @@ TEST(EldenRingMobs, TheDrawCarriesTheFeetSoTheShadowCanBePlacedUnderIt) {
     EXPECT_FLOAT_EQ(draws[0].feet[1], 7.f);
     EXPECT_FLOAT_EQ(draws[0].feet[2], 2.f);
 }
+
+TEST(EldenRingMobs, MultiModelRegistrySupportsDifferentEntityModelsConcurrently) {
+    const auto zombie = loadZombie();
+    std::ifstream skel_file(std::string(MC_ASSET_DIR) + "/models/entities/skeleton.geo.json");
+    std::stringstream ss;
+    ss << skel_file.rdbuf();
+    const auto skeleton = mc::model::EntityModel::fromJson(ss.str()).value();
+
+    MobRegistry r;
+    r.registerModel("zombie", &zombie);
+    r.registerModel("skeleton", &skeleton);
+
+    MobSnapshot s1 = at(1, 2.f, 3.f);
+    s1.model_type = "zombie";
+    MobSnapshot s2 = at(2, 5.f, 6.f);
+    s2.model_type = "skeleton";
+
+    const auto draws = r.update(1.f / 60.f, {s1, s2});
+    ASSERT_EQ(draws.size(), 2u);
+    EXPECT_EQ(draws[0].id, 1u);
+    EXPECT_EQ(draws[0].model_type, "zombie");
+    EXPECT_EQ(draws[0].bones.size(), zombie.bones.size());
+
+    EXPECT_EQ(draws[1].id, 2u);
+    EXPECT_EQ(draws[1].model_type, "skeleton");
+    EXPECT_EQ(draws[1].bones.size(), skeleton.bones.size());
+}
+
