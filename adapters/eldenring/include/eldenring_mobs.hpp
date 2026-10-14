@@ -130,7 +130,14 @@ private:
     static std::vector<mc::rig::Mat4> poseFromAnimator(const mc::model::EntityModel& model, const mc::SteveAnimator::PartTransforms& t, const MobSnapshot& s) {
         std::vector<mc::Quat> extra(model.bones.size());
         for (size_t i = 0; i < model.bones.size(); ++i) {
-            if (const auto part = mc::model::humanoidPartForBone(model.bones[i].name)) extra[i] = eldenring::render::hostQuat(t[static_cast<size_t>(*part)].rot);
+            const std::string& name = model.bones[i].name;
+            if (const auto part = mc::model::humanoidPartForBone(name)) {
+                extra[i] = eldenring::render::hostQuat(t[static_cast<size_t>(*part)].rot);
+            } else if (name == "leg0" || name == "leg3") {
+                extra[i] = eldenring::render::hostQuat(t[static_cast<size_t>(mc::StevePart::RightLeg)].rot);
+            } else if (name == "leg1" || name == "leg2") {
+                extra[i] = eldenring::render::hostQuat(t[static_cast<size_t>(mc::StevePart::LeftLeg)].rot);
+            }
         }
         return mc::model::boneMatrices(model, extra, {s.feet[0], s.feet[1], s.feet[2]}, s.yaw, eldenring::render::kBasis);
     }
