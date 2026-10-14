@@ -56,6 +56,7 @@
 #include "eldenring_xp.hpp"
 #include "eldenring_hunger.hpp"
 #include "eldenring_jump.hpp"
+#include "eldenring_sprint.hpp"
 #include "eldenring_orientation.hpp"
 #include "eldenring_action_lock.hpp"
 #include "eldenring_roll.hpp"
@@ -341,6 +342,10 @@ mc::CombatEngine g_combat_engine{g_no_combat_port};
 std::mutex g_melee_mutex; // KeyThread writes, the Present thread reads
 MeleeController g_melee;
 JumpTracker g_jump; // KeyThread only
+eldenring::sprint::SprintController g_sprint; // KeyThread only
+std::atomic<bool> g_sprint_active{false};
+std::atomic<float> g_sprint_fov{1.0f};
+std::atomic<float> g_sprint_anim{1.0f};
 SurvivalState g_survival;          // regeneration / absorption, guarded by g_melee_mutex
 HungerModel g_hunger;              // food level, saturation, exhaustion (guarded by g_melee_mutex)
 XpModel g_xp;                      // experience level and bar (guarded by g_melee_mutex)
@@ -2308,7 +2313,7 @@ void DriveVelocityFromKeys(uintptr_t module, bool force_zero) {
         const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
         const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
         const bool sneaking = (GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0;
-        const bool sprinting = !sneaking && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        const bool sprinting = !sneaking && g_sprint_active.load(std::memory_order_relaxed);
         g_sneak_active.store(sneaking, std::memory_order_relaxed);
 
         const float target_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
@@ -2617,7 +2622,7 @@ void BlocksCollisionStep() {
     if (supported && !pinned && fg) {
         const float fwd_key = (key_w ? 1.f : 0.f) - (key_s ? 1.f : 0.f);
         const float right_key = (key_d ? 1.f : 0.f) - (key_a ? 1.f : 0.f);
-        const bool sprinting = !sneaking && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        const bool sprinting = !sneaking && g_sprint_active.load(std::memory_order_relaxed);
         const float target_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
                                   : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
                                   : g_block_walk_speed.load(std::memory_order_relaxed);
@@ -2949,7 +2954,7 @@ void McJumpStep() {
             const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
             const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
             const bool sneaking = (GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0;
-            const bool sprinting = !sneaking && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            const bool sprinting = !sneaking && g_sprint_active.load(std::memory_order_relaxed);
             const float target_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
                                       : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
                                       : g_block_walk_speed.load(std::memory_order_relaxed);
@@ -2983,7 +2988,7 @@ void McJumpStep() {
     const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
     const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
     const bool sneaking = (GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0;
-    const bool sprinting = !sneaking && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool sprinting = !sneaking && g_sprint_active.load(std::memory_order_relaxed);
     const float steer_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
                             : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
                             : g_block_walk_speed.load(std::memory_order_relaxed);
@@ -3425,6 +3430,23 @@ DWORD WINAPI KeyThread(LPVOID) {
             g_melee.tick(dt);
             g_feedback.tick(dt);
         }
+        if (fg) {
+            const bool key_w = (GetAsyncKeyState('W') & 0x8000) != 0;
+            const bool key_s = (GetAsyncKeyState('S') & 0x8000) != 0;
+            const bool key_ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            int food_lvl = 20;
+            {
+                std::lock_guard<std::mutex> g(g_melee_mutex);
+                food_lvl = g_hunger.food();
+            }
+            g_sprint.update(dt, key_w, key_s, key_ctrl, food_lvl);
+        } else {
+            g_sprint.reset();
+        }
+        g_sprint_active.store(g_sprint.isSprinting(), std::memory_order_relaxed);
+        g_sprint_fov.store(g_sprint.fovMultiplier(), std::memory_order_relaxed);
+        g_sprint_anim.store(g_sprint.animSpeedMultiplier(), std::memory_order_relaxed);
+
         if (g_mc_mode.load()) LogGroundBytesOnChange();
         if (g_mc_mode.load() && FileExists(g_game_dir + "mc_er_physlog.txt")) LogPhysicsVectors();
         if (g_mc_mode.load() && fg) {
@@ -4517,7 +4539,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         } else {
             steve.cam.position = {cam.position[0], cam.position[1], cam.position[2]};
         }
-        steve.fov_y = cam.fov_y;
+        steve.fov_y = cam.fov_y * g_sprint_fov.load(std::memory_order_relaxed);
         steve.feet[0] = feet[0];
         steve.feet[1] = feet[1];
         steve.feet[2] = feet[2];
