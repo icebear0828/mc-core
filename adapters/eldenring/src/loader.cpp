@@ -324,6 +324,9 @@ std::atomic<float> g_turn_speed{15.0f};  // mc_er_steve.txt: turn_speed=<rad/s> 
 std::atomic<bool> g_disable_vanilla_roll{true}; // mc_er_steve.txt: disable_vanilla_roll=1 (also disable_roll=1)
 std::atomic<int> g_roll_vk{VK_SHIFT};            // mc_er_steve.txt: roll_key=<virtual key code> (default Shift)
 std::atomic<bool> g_require_victim_updating{false};
+std::atomic<float> g_damage_scale{20.0f};          // mc_er_steve.txt: damage_scale (base flat portion, default 20.0f)
+std::atomic<float> g_damage_hp_percent{0.02f};     // mc_er_steve.txt: damage_hp_percent (boss max hp ratio, default 0.02f)
+std::atomic<float> g_sweep_radius{3.0f};           // mc_er_steve.txt: sweep_radius (meters for sweeping edge splash, default 3.0f)
 DamageQueue g_queue;
 
 // Attack rules come from mc::CombatEngine; hits are applied through g_queue, so this port only exists to build the engine.
@@ -1806,12 +1809,43 @@ void ClickAttack(float charged) {
         intent = g_melee.makeIntent(g_combat_engine, mc::EntityId::LocalPlayer, mc::EntityId::None, charged, falling, !falling,
                                     {}, {cam.forward[0], cam.forward[1], cam.forward[2]});
     }
-    const int dmg = erDamage(intent, e.max_hp);
+    const float dmg_scale = g_damage_scale.load();
+    const float hp_pct = g_damage_hp_percent.load();
+    const int dmg = erDamage(intent, e.max_hp, dmg_scale, hp_pct);
     const bool ok = dmg > 0 && g_queue.enqueue(e.chr, dmg, NowTick(), (intent.is_critical ? 1u : 0u) | (intent.is_sweeping ? 2u : 0u) | (charged > 0.848f ? 4u : 0u) |
                                                           (static_cast<uint32_t>(std::min(255.f, std::floor(intent.damage))) << 8));
     Log("click: item=%d charged=%.2f falling=%d crit=%d sweep=%d mc_dmg=%.2f -> %d on chr=%p npc=%d team=%u (%s) hp=%d/%d (%s)", static_cast<int>(held),
         charged, falling ? 1 : 0, intent.is_critical ? 1 : 0, intent.is_sweeping ? 1 : 0, intent.damage, dmg,
         reinterpret_cast<void*>(e.chr), e.npc_id, static_cast<unsigned>(e.team), e.hostile ? "hostile" : "neutral", e.hp, e.max_hp, ok ? "ok" : "not queued");
+
+    if (intent.is_sweeping) {
+        int sweep_count = 0;
+        const float r_max = g_sweep_radius.load();
+        const float r2_max = r_max * r_max;
+        for (size_t i = 0; i < list.size(); ++i) {
+            if (i == static_cast<size_t>(idx)) continue;
+            const EnemyInfo& sec = list[i];
+            if (!sec.hostile || sec.chr == 0 || sec.hp <= 0) continue;
+            const float dx = sec.rel_x - e.rel_x;
+            const float dy = sec.rel_y - e.rel_y;
+            const float dz = sec.rel_z - e.rel_z;
+            if (dx * dx + dy * dy + dz * dz <= r2_max) {
+                mc::HitIntent sweep_intent = intent;
+                sweep_intent.damage = std::max(1.0f, intent.damage * 0.4f);
+                sweep_intent.is_sweeping = true;
+                const int sec_dmg = erDamage(sweep_intent, sec.max_hp, dmg_scale, hp_pct);
+                if (sec_dmg > 0) {
+                    const uint32_t sec_tag = 2u | (static_cast<uint32_t>(std::min(255.f, std::floor(sweep_intent.damage))) << 8);
+                    if (g_queue.enqueue(sec.chr, sec_dmg, NowTick(), sec_tag)) {
+                        ++sweep_count;
+                    }
+                }
+            }
+        }
+        if (sweep_count > 0) {
+            Log("click: sweep splash hit %d secondary targets within %.1fm", sweep_count, r_max);
+        }
+    }
 }
 
 // Should the native character ignore the mouse buttons right now? Only while the MC HUD is on and the game shows no UI.
@@ -4591,6 +4625,9 @@ void SetupOverlay() {
                 else if (key == "inv_key") g_inv_vk.store(static_cast<int>(value));
                 else if (key == "inv_sens") g_inv_sens.store(std::max(0.1f, value));
                 else if (key == "kb_force") g_kb_force.store(value);
+                else if (key == "damage_scale") g_damage_scale.store(std::clamp(value, 0.0f, 200.0f));
+                else if (key == "damage_hp_percent") g_damage_hp_percent.store(std::clamp(value, 0.0f, 1.0f));
+                else if (key == "sweep_radius") g_sweep_radius.store(std::clamp(value, 0.5f, 10.0f));
                 else if (key == "hide_slots") g_hide_slots.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));
                 else if (key == "hide_mask1") g_hide_mask1.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));
                 else if (key == "hide_mask2") g_hide_mask2.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));

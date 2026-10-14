@@ -146,11 +146,17 @@ inline bool templateChanged(const uint8_t* old_body, const uint8_t* new_body) {
 // MC: a crossbow bolt does 9; a bow arrow 6 at full power plus a critical bonus (eldenring_bow.hpp). Converted like the melee hits (a 7-damage diamond sword
 // hit is 5% of the victim's maximum health), so the balance of the weapons is the same.
 inline constexpr float kCrossbowDamage = 9.f;
-inline int boltDamageEr(int victim_max_hp, float mc_damage = kCrossbowDamage) {
+inline int boltDamageEr(int victim_max_hp, float mc_damage = kCrossbowDamage, float base_scale = 0.0f) {
     mc::HitIntent intent;
     intent.damage = mc_damage;
     intent.max_hp_percent = 0.05f;
-    return live::erDamage(intent, victim_max_hp);
+    if (victim_max_hp <= 0) return 0;
+    if (base_scale == 0.0f) {
+        constexpr float kReferenceDamage = 7.f;
+        const float hp = static_cast<float>(victim_max_hp) * intent.max_hp_percent * (intent.damage / kReferenceDamage);
+        return std::max(1, static_cast<int>(std::lround(hp)));
+    }
+    return live::erDamage(intent, victim_max_hp, base_scale);
 }
 
 inline constexpr uint32_t kBoltBulletId = 56; // request +0x1C of a crossbow shot with normal bolts (REVERSE 35.1)
