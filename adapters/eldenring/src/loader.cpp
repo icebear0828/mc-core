@@ -647,19 +647,8 @@ uint64_t __fastcall CreativeEventDetour(void* self, void* event) {
 }
 
 std::atomic<bool> g_summon_hide{false};
-std::mutex g_summon_speffect_mutex;
-std::set<uintptr_t> g_summon_speffect_containers;
 
 bool __fastcall CreativeSpEffectDetour(void* container, int sp_effect) {
-    if (g_summon_hide.load(std::memory_order_relaxed)) {
-        if (isSpiritSpEffectId(sp_effect)) {
-            const uintptr_t c_addr = reinterpret_cast<uintptr_t>(container);
-            std::lock_guard<std::mutex> g(g_summon_speffect_mutex);
-            if (g_summon_speffect_containers.count(c_addr) != 0) {
-                return false;
-            }
-        }
-    }
     const bool answer = g_cr_sp_orig(container, sp_effect);
     if (sp_effect == creative::kLandingSkipSpEffect) {
         const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base;
@@ -747,7 +736,7 @@ bool WriteBytesSafe(uintptr_t address, const void* src, size_t n) {
 // cached pointers: a summon that disappears meanwhile is simply not enumerated any more).
 std::mutex g_summon_mutex;
 std::vector<eldenring::mobs::MobSnapshot> g_summon_list; // the team 47 summons seen by the last HideSummonModels (render thread), read by the HUD provider
-float g_mob_yaw_offset = 3.14159265f;                   // like the player's: the orientation quaternion faces opposite to the model (mob_yaw_offset_deg)
+float g_mob_yaw_offset = eldenring::live::summon::kDefaultMobYawOffset; // monster/wolf orientation quaternion aligns forward; default 0 (mob_yaw_offset_deg)
 eldenring::creeper::CreeperManager g_creeper_mgr;
 
 std::set<uintptr_t> g_hidden_flag_addresses; // the disp_flags words whose drawn bit we cleared (render thread only), to put it back
@@ -763,26 +752,11 @@ void HideSummonChr(uintptr_t chr) {
                 g_hidden_flag_addresses.insert(at);
             }
         }
-        const uintptr_t at2 = at + (layout::kDispFlags2 - layout::kDispFlags1);
-        uint32_t flags2 = 0;
-        if (SafeCopy(at2, &flags2, sizeof(flags2)) && (flags2 & summon::kHideMask2) != 0) {
-            const uint32_t hidden2 = flags2 & ~summon::kHideMask2;
-            if (WriteBytesSafe(at2, &hidden2, sizeof(hidden2))) {
-                g_hidden_flag_addresses.insert(at2);
-            }
-        }
-        const uintptr_t at3 = at + (summon::kDispFlags3 - summon::kDispFlags1);
-        uint32_t flags3 = 0;
-        if (SafeCopy(at3, &flags3, sizeof(flags3)) && (flags3 & summon::kHideMask3) != 0) {
-            const uint32_t hidden3 = flags3 & ~summon::kHideMask3;
-            if (WriteBytesSafe(at3, &hidden3, sizeof(hidden3))) {
-                g_hidden_flag_addresses.insert(at3);
-            }
-        }
     }
 
-    // Suppress ChrConditionSfxSeSlot to eliminate spirit particles and audio
-    for (const uintptr_t slot : collectChrConditionSfxSlots(g_reader, g_img.base, chr)) {
+    // Suppress all character SFX slots (ChrConditionSfxSeSlot, ChrMultiSfxSlot, ChrSingleSfxSlot)
+    // to eliminate spirit particles, auras and attached audio emitters
+    for (const uintptr_t slot : collectChrSfxSlots(g_reader, g_img.base, chr)) {
         uint16_t ctrl = 0;
         const uintptr_t ctrl_addr = slot + summon::kSlotCtrlWord;
         if (SafeCopy(ctrl_addr, &ctrl, sizeof(ctrl)) && needsSfxSuppression(ctrl)) {
@@ -790,16 +764,19 @@ void HideSummonChr(uintptr_t chr) {
             const uint16_t suppressed = suppressSfxSlotFlags(ctrl);
             WriteBytesSafe(ctrl_addr, &suppressed, sizeof(suppressed));
         }
-        uintptr_t null_ptr = 0;
-        WriteBytesSafe(slot + summon::kSlotActiveSfx, &null_ptr, sizeof(null_ptr));
-        WriteBytesSafe(slot + summon::kSlotActiveSe, &null_ptr, sizeof(null_ptr));
-    }
 
-    // Register SpecialEffect container for phantom shader suppression
-    uint64_t sp_container = 0;
-    if (SafeCopy(chr + summon::kChrSpecialEffect, &sp_container, sizeof(sp_container)) && sp_container != 0) {
-        std::lock_guard<std::mutex> g(g_summon_speffect_mutex);
-        g_summon_speffect_containers.insert(static_cast<uintptr_t>(sp_container));
+        // Mask visibility flag on any active particle emitter (CSFD4SfxIns) to hide existing particles
+        // safely without invoking mutating intrusive destructor methods cross-thread!
+        uintptr_t sfx_ins = 0;
+        if (SafeCopy(slot + summon::kSlotActiveSfx, &sfx_ins, sizeof(sfx_ins)) &&
+            sfx_ins >= 0x10000 && sfx_ins < 0x00007FFFFFFEFFFF && (sfx_ins & 7) == 0) {
+            uint32_t sfx_flags = 0;
+            const uintptr_t flags_addr = sfx_ins + summon::kSfxFlagsOffset;
+            if (SafeCopy(flags_addr, &sfx_flags, sizeof(sfx_flags)) && (sfx_flags & summon::kSfxVisibleBit) != 0) {
+                const uint32_t hidden_sfx = summon::hideSfxBitmask(sfx_flags);
+                WriteBytesSafe(flags_addr, &hidden_sfx, sizeof(hidden_sfx));
+            }
+        }
     }
 }
 
@@ -841,27 +818,13 @@ void HideSummonModels() {
             for (const uintptr_t at : collectChrDispFlagAddresses(g_reader, g_img.base, e.chr)) {
                 uint32_t flags = 0;
                 if (!SafeCopy(at, &flags, sizeof(flags))) continue;
-                const uintptr_t at2 = at + (layout::kDispFlags2 - layout::kDispFlags1);
-                uint32_t flags2 = 0;
-                SafeCopy(at2, &flags2, sizeof(flags2));
-                const uintptr_t at3 = at + (summon::kDispFlags3 - summon::kDispFlags1);
-                uint32_t flags3 = 0;
-                SafeCopy(at3, &flags3, sizeof(flags3));
                 if (g_hidden_flag_addresses.count(at) != 0 && !needsHiding(flags)) {
                     const uint32_t shown = showDrawnBit(flags);
                     if (WriteBytesSafe(at, &shown, sizeof(shown)) && ++logged <= 24) Log("summon hide: MC mode off, restored flags at %p 0x%X -> 0x%X", reinterpret_cast<void*>(at), flags, shown);
                 }
-                if (g_hidden_flag_addresses.count(at2) != 0 && (flags2 & summon::kHideMask2) == 0) {
-                    const uint32_t shown2 = flags2 | summon::kHideMask2;
-                    WriteBytesSafe(at2, &shown2, sizeof(shown2));
-                }
-                if (g_hidden_flag_addresses.count(at3) != 0 && (flags3 & summon::kHideMask3) == 0) {
-                    const uint32_t shown3 = flags3 | summon::kHideMask3;
-                    WriteBytesSafe(at3, &shown3, sizeof(shown3));
-                }
             }
             // Restore Sfx slot control words
-            for (const uintptr_t slot : collectChrConditionSfxSlots(g_reader, g_img.base, e.chr)) {
+            for (const uintptr_t slot : collectChrSfxSlots(g_reader, g_img.base, e.chr)) {
                 const uintptr_t ctrl_addr = slot + summon::kSlotCtrlWord;
                 const auto it = g_suppressed_sfx_slots.find(ctrl_addr);
                 if (it != g_suppressed_sfx_slots.end()) {
@@ -871,10 +834,7 @@ void HideSummonModels() {
             }
         }
     }
-    if (!mc_on) {
-        std::lock_guard<std::mutex> g(g_summon_speffect_mutex);
-        g_summon_speffect_containers.clear();
-    }
+
     {   // Diagnostic: what a summon's hit points do when it is hit and when it dies, and how it leaves (does it stay at 0 hp for a while, or just vanish?)
         static std::map<uintptr_t, int> last_hp;
         static unsigned traced = 0;
@@ -2996,9 +2956,6 @@ void ProcessCreeperExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies,
     const float c_dt = std::clamp(static_cast<float>(now_tick_ms - last_creeper_tick_ms) / 1000.f, 0.001f, 0.1f);
     last_creeper_tick_ms = now_tick_ms;
 
-    for (const auto& s : creeper_targets) {
-        HideSummonChr(s.id);
-    }
 
     auto c_events = g_creeper_mgr.update(c_dt, creeper_targets, enemy_targets);
     for (const auto& cev : c_events) {
@@ -4095,8 +4052,8 @@ void SetupCreativeProbes() {
         return;
     }
     for (const Probe& p : probes) {
-        const bool acts = p.orig == reinterpret_cast<void**>(&g_cr_fall_orig) || p.orig == reinterpret_cast<void**>(&g_cr_kill_orig) || p.orig == reinterpret_cast<void**>(&g_cr_exceeded_orig);
-        if (!g_cr_log.load() && !acts) continue; // without mc_er_creativelog.txt only the two hooks that act in creative mode are installed
+        const bool acts = eldenring::live::isProbeActiveWithoutLog(p.name);
+        if (!g_cr_log.load() && !acts) continue; // without mc_er_creativelog.txt only active hooks are installed
         uintptr_t target = 0;
         if (!LocateByPrefix(g_img, p.sig, target)) {
             Log("creative: %s signature not unique, probe not installed", p.name);

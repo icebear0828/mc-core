@@ -68,9 +68,9 @@ def main():
         sys.exit(1)
 
     # Deploy authentic mc_hud_atlas.png to both root and mods/mc_adapter (where loader.cpp loads it from!)
-    src_atlas = root / "assets" / "source" / "textures" / "mc_hud_atlas.authentic.png"
+    src_atlas = root / "build" / "authentic_atlas" / "mc_hud_atlas.png"
     if not src_atlas.is_file():
-        src_atlas = root / "assets" / "source" / "textures" / "mc_hud_atlas.png"
+        src_atlas = root / "assets" / "source" / "textures" / "mc_hud_atlas.authentic.png"
     if src_atlas.is_file():
         src_atlas_hash = get_sha256(src_atlas)
         for target_rel in [

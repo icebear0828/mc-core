@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""
+inspect_speffect_owner.py
+Check where SpecialEffect container stores its owner ChrIns pointer.
+"""
 from pathlib import Path
 import pefile
 import capstone
@@ -18,11 +22,9 @@ with open(EXE_PATH, "rb") as f:
 
 cs = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
 
-# Disassemble 0x1404F4030 (the destructor/cleanup called in 0x1404F4450)
-rva = 0x4F4030
-off = rva_to_offset(rva)
-if off:
-    code = raw_data[off : off + 100]
-    print(f"\nDisassembly of SpecialEffect cleanup at 0x{base + rva:X} (RVA 0x{rva:X}):")
-    for ins in list(cs.disasm(code, base + rva))[:20]:
-        print(f"  0x{ins.address:X}: {ins.mnemonic:<8} {ins.op_str}")
+# Disassemble SpecialEffect constructor at RVA 0x4F4450 (vfunc[0])
+off = rva_to_offset(0x4F4450)
+code = raw_data[off : off + 100]
+print("Disassembly of SpecialEffect vfunc[0] (0x1404F4450):")
+for ins in cs.disasm(code, base + 0x4F4450):
+    print(f"  0x{ins.address:X}: {ins.mnemonic:<8} {ins.op_str}")

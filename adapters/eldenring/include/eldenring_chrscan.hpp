@@ -21,14 +21,15 @@ struct ScanHit {
 };
 
 // Every aligned qword in [from, to) of `object` that points to an object whose vtable has x64 RTTI.
-inline std::vector<ScanHit> scanForClasses(const IMemoryReader& reader, uintptr_t image_base, uintptr_t object, uintptr_t from, uintptr_t to, size_t max_hits = 96) {
+inline std::vector<ScanHit> scanForClasses(const IMemoryReader& reader, uintptr_t image_base, uintptr_t object, uintptr_t from, uintptr_t to, size_t max_hits = 96, size_t image_size = 0x10000000) {
     std::vector<ScanHit> out;
     if (object == 0) return out;
     for (uintptr_t off = from; off + sizeof(uint64_t) <= to && out.size() < max_hits; off += sizeof(uint64_t)) {
         uint64_t p = 0, vtable = 0;
-        if (!reader.read(object + off, &p, sizeof(p)) || p < 0x10000) continue;
+        if (!reader.read(object + off, &p, sizeof(p)) || p < 0x10000 || p >= 0x00007FFFFFFEFFFF || (p & 7) != 0) continue;
         if (!reader.read(static_cast<uintptr_t>(p), &vtable, sizeof(vtable)) || vtable < 0x10000) continue;
-        if (const auto name = readTypeNameOfVtable(reader, image_base, vtable)) out.push_back({off, static_cast<uintptr_t>(p), *name});
+        if (image_base != 0 && (vtable < image_base || vtable >= image_base + image_size)) continue;
+        if (const auto name = readTypeNameOfVtable(reader, image_base, vtable, image_size)) out.push_back({off, static_cast<uintptr_t>(p), *name});
     }
     return out;
 }
@@ -69,19 +70,23 @@ namespace summon {
 inline constexpr uint8_t kTeam = 47;                  // teamType of the spirit-ash summons seen so far (wolves, npc 4070)
 inline constexpr uintptr_t kDispFlags1 = 0x20;        // CSModelDispEntity: the same word the player's parts use (eldenring_model.hpp)
 inline constexpr uintptr_t kDispFlags2 = 0x24;
-inline constexpr uintptr_t kDispFlags3 = 0x220;       // CSModelDispEntity: draw enable controlled by CSChrModelIns (RVA 0x9F26D0)
 inline constexpr uint32_t kDrawnBit = 1u;             // set while the part is drawn (wolf 0xA7, player part 0x100A1)
 // Mask to clear all rendering and spirit particle / phantom overlay effects:
 // 0x1 (drawn), 0x2, 0x4 (mesh pass), 0x20 (shadow/aura), 0x80 (spirit phantom shader & particles), 0x10000 (visible)
 inline constexpr uint32_t kHideMask1 = 0x000100A7u;
-inline constexpr uint32_t kHideMask2 = 0x00000001u;
-inline constexpr uint32_t kHideMask3 = 0x00000001u;
 
 // ChrConditionSfxSeSlot offsets (RVA 0x4A2480 / 0x4A23A0):
 inline constexpr uintptr_t kSlotCtrlWord = 0x5A;      // word ptr [slot + 0x5a]
 inline constexpr uint16_t kSlotSkipBit = 0x0080u;     // bit 7 (sign bit of low byte): skips SFX/SE update when set
 inline constexpr uintptr_t kSlotActiveSfx = 0x48;     // ptr to active Sfx container
 inline constexpr uintptr_t kSlotActiveSe = 0x50;      // ptr to active Se container
+inline constexpr size_t kSlotClearVfuncIndex = 6;     // ChrConditionSfxSeSlot::ClearSfxSe at vfunc[6]
+inline constexpr uintptr_t kSlotClearRva = 0x4A23A0;  // RVA of ChrConditionSfxSeSlot::ClearSfxSe (0x1404A23A0)
+
+// CSFD4SfxIns flags (RVA 0x140D8B840):
+inline constexpr uintptr_t kSfxFlagsOffset = 0x14;    // dword ptr [sfx + 0x14]
+inline constexpr uint32_t kSfxVisibleBit = 0x0040u;   // bit 6: controls visibility in SetVisible (0x140D8B840)
+inline uint32_t hideSfxBitmask(uint32_t flags) { return flags & ~kSfxVisibleBit; }
 
 // SpecialEffect container offsets (RVA 0x4FA370):
 inline constexpr uintptr_t kChrSpecialEffect = 0x178; // chr + 0x178
@@ -93,6 +98,7 @@ inline constexpr int kPhantomShaderSpEffect = 0x182;  // 386 checked at RVA 0x2C
 
 inline constexpr uintptr_t kChrScanEnd = 0xA00;       // the wolves' CSChrModelIns sit at chr+0x50 and chr+0x640
 inline constexpr uintptr_t kModelScanEnd = 0x300;     // their CSModelDispEntity at model+0x18 and +0x188
+inline constexpr float kDefaultMobYawOffset = 0.0f;   // Monsters/wolves have Havok orientation aligned forward
 } // namespace summon
 
 inline uint32_t hideDrawnBit(uint32_t flags) { return flags & ~summon::kHideMask1; }
@@ -100,9 +106,15 @@ inline uint32_t showDrawnBit(uint32_t flags, uint32_t orig = 0xA7u) { return fla
 inline bool needsHiding(uint32_t flags) { return (flags & summon::kHideMask1) != 0; }
 
 inline bool isSpiritSpEffectId(int id) {
-    if (id == summon::kPhantomShaderSpEffect) return true;
-    if (id >= 20200000 && id <= 20300000) return true; // Spirit summon modifiers in SpEffectParam
-    if (id >= 231000 && id <= 233999) return true;     // Goods / request based summon SpEffects
+    // 0x182 (386) is the ghost/phantom overlay shader SpEffect checked by the engine at 0x1402C722C.
+    // Suppressing 386 removes the translucent blue ghost aura without disrupting summon creation/lifecycle.
+    return id == summon::kPhantomShaderSpEffect;
+}
+
+inline bool isProbeActiveWithoutLog(const char* name) {
+    if (std::strcmp(name, "fall height") == 0) return true;
+    if (std::strcmp(name, "kill wrapper") == 0) return true;
+    if (std::strcmp(name, "fall time exceeded") == 0) return true;
     return false;
 }
 
@@ -118,12 +130,32 @@ inline bool needsSfxSuppression(uint16_t flags) {
     return (flags & summon::kSlotSkipBit) == 0;
 }
 
+inline bool isChrSfxSlotClass(const std::string& cls) {
+    return cls.find("ChrConditionSfxSeSlot") != std::string::npos ||
+           cls.find("ChrMultiSfxSlot") != std::string::npos ||
+           cls.find("ChrSingleSfxSlot") != std::string::npos;
+}
+
 // Collects pointers to ChrConditionSfxSeSlot objects from EnemyIns
 inline std::vector<uintptr_t> collectChrConditionSfxSlots(const IMemoryReader& reader, uintptr_t image_base, uintptr_t chr) {
     std::vector<uintptr_t> out;
     if (chr == 0) return out;
     for (const ScanHit& h : scanForClasses(reader, image_base, chr, 0, summon::kChrScanEnd, 64)) {
         if (h.cls.find("ChrConditionSfxSeSlot") != std::string::npos) {
+            bool seen = false;
+            for (uintptr_t s : out) seen = seen || s == h.object;
+            if (!seen) out.push_back(h.object);
+        }
+    }
+    return out;
+}
+
+// Collects pointers to all Chr Sfx slot objects (ChrConditionSfxSeSlot, ChrMultiSfxSlot, ChrSingleSfxSlot) from EnemyIns
+inline std::vector<uintptr_t> collectChrSfxSlots(const IMemoryReader& reader, uintptr_t image_base, uintptr_t chr) {
+    std::vector<uintptr_t> out;
+    if (chr == 0) return out;
+    for (const ScanHit& h : scanForClasses(reader, image_base, chr, 0, summon::kChrScanEnd, 64)) {
+        if (isChrSfxSlotClass(h.cls)) {
             bool seen = false;
             for (uintptr_t s : out) seen = seen || s == h.object;
             if (!seen) out.push_back(h.object);
