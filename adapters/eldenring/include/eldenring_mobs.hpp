@@ -29,6 +29,8 @@ struct MobSnapshot {
     int max_hp{-1};
     uint32_t npc_id{0};
     std::string model_type;
+    float scale{1.0f};
+    float white_flash{0.0f};
 };
 
 struct MobDraw {
@@ -41,7 +43,20 @@ struct MobDraw {
     std::string model_type;
     std::vector<mc::rig::Mat4> bones;
     eldenring::render::PartMatrices parts{};
+    float scale{1.0f};
+    float white_flash{0.0f};
 };
+
+inline mc::rig::Mat4 scaleAboutPoint(const mc::Vec3& p, float s) {
+    mc::rig::Mat4 m;
+    m.m[0] = s;
+    m.m[5] = s;
+    m.m[10] = s;
+    m.m[12] = p.x * (1.0f - s);
+    m.m[13] = p.y * (1.0f - s);
+    m.m[14] = p.z * (1.0f - s);
+    return m;
+}
 
 class MobRegistry {
 public:
@@ -159,15 +174,24 @@ private:
             else in.arms_forward = true;
             e.anim.update(dt, in);
         }
+        d.scale = s.scale > 0.01f ? s.scale : 1.0f;
+        d.white_flash = s.white_flash;
         const mc::Vec3 feet{s.feet[0], s.feet[1], s.feet[2]};
         const mc::rig::Mat4 flip = d.fall > 0.f ? eldenring::render::deathFallMatrix(feet, s.yaw, d.fall) : mc::rig::Mat4{};
+        const mc::rig::Mat4 swell_mat = d.scale != 1.0f ? scaleAboutPoint(feet, d.scale) : mc::rig::Mat4{};
         if (model != nullptr) {
             d.generic = true;
             d.bones = poseFromAnimator(*model, e.anim.getTransforms(), s);
-            for (auto& m : d.bones) m = m * flip;
+            for (auto& m : d.bones) {
+                if (d.scale != 1.0f) m = m * swell_mat;
+                m = m * flip;
+            }
         } else {
             d.parts = eldenring::render::posedMatrices(e.anim.getTransforms(), feet, s.yaw);
-            for (auto& m : d.parts) m = m * flip;
+            for (auto& m : d.parts) {
+                if (d.scale != 1.0f) m = m * swell_mat;
+                m = m * flip;
+            }
         }
         return d;
     }

@@ -343,4 +343,31 @@ TEST(EldenRingMobs, CreeperQuadrupedLegsSwingAlternatelyDuringWalk) {
     EXPECT_TRUE(differs);
 }
 
+TEST(EldenRingMobs, SwellScalesBonesOutwardFromFeet) {
+    MobRegistry r;
+    MobSnapshot unscaled = at(1, 0.f, 0.f);
+    unscaled.scale = 1.0f;
+    unscaled.white_flash = 0.0f;
+
+    MobSnapshot scaled = at(2, 0.f, 0.f);
+    scaled.scale = 1.35f;
+    scaled.white_flash = 1.0f;
+
+    auto draws = r.update(1.f / 60.f, {unscaled, scaled});
+    ASSERT_EQ(draws.size(), 2u);
+
+    EXPECT_FLOAT_EQ(draws[0].scale, 1.0f);
+    EXPECT_FLOAT_EQ(draws[0].white_flash, 0.0f);
+    EXPECT_FLOAT_EQ(draws[1].scale, 1.35f);
+    EXPECT_FLOAT_EQ(draws[1].white_flash, 1.0f);
+
+    // Diagonal elements of the matrix are scaled by 1.35x
+    const auto head = static_cast<size_t>(mc::StevePart::Head);
+    EXPECT_FLOAT_EQ(draws[0].parts[head].m[0], 1.0f);
+    EXPECT_FLOAT_EQ(draws[1].parts[head].m[0], 1.35f);
+    EXPECT_FLOAT_EQ(draws[1].parts[head].m[5], 1.35f);
+    EXPECT_FLOAT_EQ(draws[1].parts[head].m[10], 1.35f);
+}
+
+
 

@@ -42,6 +42,7 @@
 #include "eldenring_blocks.hpp"
 #include "eldenring_mining.hpp"
 #include "eldenring_tnt.hpp"
+#include "eldenring_creeper.hpp"
 
 #include "eldenring_buddy.hpp"
 #include "eldenring_chrscan.hpp"
@@ -735,6 +736,7 @@ std::atomic<bool> g_summon_hide{false};
 std::mutex g_summon_mutex;
 std::vector<eldenring::mobs::MobSnapshot> g_summon_list; // the team 47 summons seen by the last HideSummonModels (render thread), read by the HUD provider
 float g_mob_yaw_offset = 3.14159265f;                   // like the player's: the orientation quaternion faces opposite to the model (mob_yaw_offset_deg)
+eldenring::creeper::CreeperManager g_creeper_mgr;
 
 std::set<uintptr_t> g_hidden_flag_addresses; // the disp_flags words whose drawn bit we cleared (render thread only), to put it back
 
@@ -762,6 +764,8 @@ void HideSummonModels() {
             snap.id = e.chr;
             snap.hp = e.hp;
             snap.max_hp = e.max_hp;
+            snap.scale = g_creeper_mgr.getScale(e.chr);
+            snap.white_flash = g_creeper_mgr.isWhiteFlash(e.chr) ? 1.0f : 0.0f;
             if (detail::readPhysicsPosition(g_reader, g_img.base, e.chr, snap.feet) && detail::readPhysicsOrientation(g_reader, g_img.base, e.chr, q)) {
                 snap.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) + g_mob_yaw_offset;
                 seen.push_back(snap);
@@ -2222,6 +2226,41 @@ bool TryIgniteTnt() {
     return true;
 }
 
+// Right click with Flint and Steel near a summoned Creeper manually ignites it.
+bool TryIgniteCreeper() {
+    mc::ItemId held = mc::ItemId::None;
+    {
+        std::lock_guard<std::mutex> g(g_melee_mutex);
+        held = g_melee.heldItem();
+    }
+    if (held != mc::ItemId::FlintAndSteel) return false;
+
+    std::vector<eldenring::mobs::MobSnapshot> summons;
+    {
+        std::lock_guard<std::mutex> g(g_summon_mutex);
+        summons = g_summon_list;
+    }
+    float player_feet[3]{};
+    if (!detail::readPhysicsPosition(g_reader, g_img.base, PlayerChrPtr(), player_feet)) return false;
+
+    for (const auto& s : summons) {
+        const float dx = s.feet[0] - player_feet[0];
+        const float dy = s.feet[1] - player_feet[1];
+        const float dz = s.feet[2] - player_feet[2];
+        const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist <= 4.5f) {
+            if (g_creeper_mgr.ignite(s.id)) {
+                eraudio::Play("entity.tnt.primed", 1.0f);
+                Log("creeper: manually ignited creeper %p with flint and steel!", reinterpret_cast<void*>(s.id));
+                std::lock_guard<std::mutex> g(g_melee_mutex);
+                g_melee.startSwing();
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // Right click with a block in hand. Returns true when the click was used (placed, or refused for a reason the player can see).
 bool TryPlaceBlock() {
     if (!g_blocks_enabled.load()) return false;
@@ -2811,6 +2850,78 @@ void ProcessTntExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies) {
     }
 }
 
+void ProcessCreeperExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies, const float player_feet[3]) {
+    std::vector<eldenring::creeper::CreeperTarget> creeper_targets;
+    {
+        std::lock_guard<std::mutex> g(g_summon_mutex);
+        for (const auto& s : g_summon_list) {
+            eldenring::creeper::CreeperTarget t;
+            t.id = s.id;
+            t.feet[0] = s.feet[0];
+            t.feet[1] = s.feet[1];
+            t.feet[2] = s.feet[2];
+            t.hp = s.hp;
+            t.max_hp = s.max_hp;
+            t.is_creeper = true;
+            creeper_targets.push_back(t);
+        }
+    }
+    if (creeper_targets.empty()) return;
+
+    std::vector<eldenring::creeper::CreeperEnemyTarget> enemy_targets;
+    for (const auto& e : enemies) {
+        if (e.chr == 0 || e.hp <= 0) continue;
+        float ef[3]{};
+        if (!detail::readPhysicsPosition(g_reader, g_img.base, e.chr, ef)) continue;
+        eldenring::creeper::CreeperEnemyTarget et;
+        et.chr = e.chr;
+        et.feet[0] = ef[0];
+        et.feet[1] = ef[1];
+        et.feet[2] = ef[2];
+        et.hostile = e.hostile;
+        et.hp = e.hp;
+        enemy_targets.push_back(et);
+    }
+
+    static uint64_t last_creeper_tick_ms = 0;
+    const uint64_t now_tick_ms = GetTickCount64();
+    if (last_creeper_tick_ms == 0) last_creeper_tick_ms = now_tick_ms;
+    const float c_dt = std::clamp(static_cast<float>(now_tick_ms - last_creeper_tick_ms) / 1000.f, 0.001f, 0.1f);
+    last_creeper_tick_ms = now_tick_ms;
+
+    auto c_events = g_creeper_mgr.update(c_dt, creeper_targets, enemy_targets);
+    for (const auto& cev : c_events) {
+        if (cev.kind == eldenring::creeper::CreeperEventKind::Hiss) {
+            eraudio::Play("entity.tnt.primed", 1.0f);
+            Log("creeper: %p started hissing (fuse primed)!", reinterpret_cast<void*>(cev.creeper_id));
+        } else if (cev.kind == eldenring::creeper::CreeperEventKind::Defuse) {
+            Log("creeper: %p defused", reinterpret_cast<void*>(cev.creeper_id));
+        } else if (cev.kind == eldenring::creeper::CreeperEventKind::Explosion) {
+            eraudio::Play("entity.generic.explode", 1.0f);
+            Log("creeper: DETONATION at (%.2f %.2f %.2f)!", cev.pos[0], cev.pos[1], cev.pos[2]);
+            {
+                std::lock_guard<std::mutex> g(g_tnt_intent_mutex);
+                g_tnt_damage_intents.enqueue(cev.pos, cev.radius, cev.damage);
+            }
+            const int p_dmg = eldenring::tnt::computeTntExplosionDamage(cev.pos, player_feet, cev.radius, 350.0f);
+            if (p_dmg > 0 && CurrentGameMode() == creative::GameMode::Survival) {
+                GiveHp(PlayerChrPtr(), -p_dmg);
+                eraudio::Play("entity.player.hurt");
+            }
+            {
+                std::lock_guard<std::mutex> gb(g_blocks_mutex);
+                if (g_blocks.count() > 0) {
+                    g_tnt_mgr.detonateAt(g_blocks, cev.pos, cev.radius);
+                    SendBlockMesh();
+                }
+            }
+            if (cev.kill_creeper && cev.creeper_id != 0) {
+                GiveHp(cev.creeper_id, -99999);
+            }
+        }
+    }
+}
+
 void EnemiesBlockCollisionStep(const float player_feet[3]) {
     if (!g_mc_mode.load(std::memory_order_relaxed)) return;
     std::vector<EnemyInfo> enemies;
@@ -2827,6 +2938,7 @@ void EnemiesBlockCollisionStep(const float player_feet[3]) {
 
     // Process queued TNT explosion damage intents on game thread!
     ProcessTntExplosionsOnGameThread(enemies);
+    ProcessCreeperExplosionsOnGameThread(enemies, player_feet);
 
     if (!g_enemy_block_collision.load(std::memory_order_relaxed)) return;
     {
@@ -3595,6 +3707,8 @@ DWORD WINAPI KeyThread(LPVOID) {
         const bool right_edge = !inv_open && g_input_enabled.load() && erin::TakeRightClick();
         if (right_edge && fg && WantSuppress() && !PlayerDead() && TryIgniteTnt()) {
             // a placed TNT block was ignited
+        } else if (right_edge && fg && WantSuppress() && !PlayerDead() && TryIgniteCreeper()) {
+            // a summoned Creeper was ignited with Flint and Steel
         } else if (right_edge && fg && WantSuppress() && !PlayerDead() && TryPlaceBlock()) {
             // a block was placed (or the click was refused): not a meal
         } else if (right_edge && fg && WantSuppress() && !PlayerDead() && g_mc_mode.load() && TryUseSpawnEgg()) {
