@@ -8,6 +8,11 @@
 - TDD：新增/修改功能先写测试；Python 一律 `uv run`；不要在 mac 上假设 `loader.cpp` 等 Windows 文件被编译了——它们只在 win 上编译（`/W4 /WX`）。
 - 代码只走 git（win 访问 GitHub 要 `-c http.proxy=http://127.0.0.1:7897`，TLS 常断，循环重试并核对两边 `git rev-parse --short HEAD` 一致）。
 - **真实 Mojang 资产（皮肤、图集、声音）绝不提交**，只放游戏目录 `mods\mc_adapter\`，由 `tools/extract_mc_*.py` 本地生成。
+- **严禁混淆占位图集与真实烘焙图集（防打包/部署灾难）**：
+  - 源码树中的 `mc_hud_atlas.png` 或 `mc_hud_atlas.authentic.png` 是防侵权的占位/半成品，**其中的 `entity_shield` 等 3D 实体贴图区域通常为纯透明空像素**。
+  - **严禁直接拷贝仓库中的图集到游戏目录或打包发布！**
+  - 构建、打包或实机部署前，**必须**从官方 `client.jar`（`D:\game\sekiro\build\mc_client_1.21.8.jar`）使用 `python tools/extract_mc_assets.py --client-jar <path> --export-hud-atlas` 重新提取完整 78 UV 图集。
+  - 部署/打包必须运行 `python tools/inspect_atlas_regions.py` 严格断言：`entity_shield` 实心像素数必须达到 716，`item_shield` 实心像素必须 ≥ 140，若检测到关键区域全透明立即终止打包。
 - 部署前确认游戏已关：进程名是 **`start_protected_game.exe`**（不是 `eldenring.exe`）；部署后用 `certutil -hashfile` 核对哈希。
 - 涉及代理路由、IP 出口、网络配置的改动先问用户。
 - 逆向方（另一个 agent）的报告要**核对字节再采信**，已被证伪的清单见 handoff 第 8 节。
