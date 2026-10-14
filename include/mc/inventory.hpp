@@ -58,6 +58,7 @@ public:
         inv.slots_[kHotbar + 3] = {ItemId::DiamondChestplate, 1};
         inv.slots_[kHotbar + 4] = {ItemId::DiamondLeggings, 1};
         inv.slots_[kHotbar + 5] = {ItemId::DiamondBoots, 1};
+        inv.slots_[kHotbar + 6] = {ItemId::ZombieSpawnEgg, 64}; // spawn eggs ready in backpack
         inv.offhand_ = {ItemId::Shield, 1};        // the offhand starts with a shield ready for defense
         return inv;
     }

@@ -351,3 +351,11 @@ TEST(Inventory, StartInventoryHasFullDiamondArmorReadyToEquip) {
     EXPECT_TRUE(inv.has(ItemId::Elytra));
 }
 
+TEST(Inventory, StartInventoryHasSpawnEggsReadyInBackpack) {
+    const Inventory inv = Inventory::withDefaultHotbar();
+    EXPECT_TRUE(inv.has(ItemId::ZombieSpawnEgg));
+    EXPECT_EQ(inv.slot(15).item, ItemId::ZombieSpawnEgg);
+    EXPECT_EQ(inv.slot(15).count, 64u);
+}
+
+

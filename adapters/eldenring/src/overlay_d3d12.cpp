@@ -687,42 +687,42 @@ void DrawInventory(const HudState& hud, float w, float h) {
         // Crafting arrow
         dl->AddLine({p.x + 135.f * gs, p.y + 37.f * gs}, {p.x + 148.f * gs, p.y + 37.f * gs}, IM_COL32(139, 139, 139, 255), 2.f * gs);
         dl->AddTriangleFilled({p.x + 148.f * gs, p.y + 33.f * gs}, {p.x + 148.f * gs, p.y + 41.f * gs}, {p.x + 152.f * gs, p.y + 37.f * gs}, IM_COL32(139, 139, 139, 255));
+
+        // 2. 4 Armor slots on the left (x = 8, y = 8, 26, 44, 62)
+        for (int i = 0; i < 4; ++i) {
+            const mc::HudRect arm = lay.armorSlot(i);
+            drawSlotBox(arm);
+            const mc::HudRect arm_item{arm.x + 1.f * gs, arm.y + 1.f * gs, 16.f * gs, 16.f * gs};
+            if (hud.armor_item[i] == 0) {
+                if (g_atlas_ready) {
+                    if (const mc::hud::HudUV* wuv = eldenring::render::uvForEmptyArmorSlot(static_cast<mc::ArmorSlot>(i))) {
+                        dl->AddImage(atlas, {arm_item.x, arm_item.y}, {arm_item.x + arm_item.w, arm_item.y + arm_item.h},
+                                     {wuv->u0, wuv->v0}, {wuv->u1, wuv->v1}, IM_COL32(255, 255, 255, 90));
+                    }
+                }
+            } else {
+                icon(arm_item, static_cast<mc::ItemId>(hud.armor_item[i]));
+                stackCount(arm_item, hud.armor_count[i]);
+            }
+        }
+
+        // 3. Offhand slot in inventory (x = 77, y = 62)
+        const mc::HudRect off = lay.offhandSlot();
+        drawSlotBox(off);
+        const mc::HudRect off_item{off.x + 1.f * gs, off.y + 1.f * gs, 16.f * gs, 16.f * gs};
+        if (hud.offhand_item == 0) {
+            if (g_atlas_ready) {
+                const mc::hud::HudUV& suv = mc::hud::kUV_ITEM_SHIELD;
+                dl->AddImage(atlas, {off_item.x, off_item.y}, {off_item.x + off_item.w, off_item.y + off_item.h},
+                             {suv.u0, suv.v0}, {suv.u1, suv.v1}, IM_COL32(255, 255, 255, 90));
+            }
+        } else {
+            icon(off_item, static_cast<mc::ItemId>(hud.offhand_item));
+            stackCount(off_item, hud.offhand_count);
+        }
     }
 
     dl->AddText(ImGui::GetFont(), fs, {lay.titleInventory().x, lay.titleInventory().y}, label, "Inventory");
-
-    // 2. 4 Armor slots on the left (x = 8, y = 8, 26, 44, 62)
-    for (int i = 0; i < 4; ++i) {
-        const mc::HudRect arm = lay.armorSlot(i);
-        drawSlotBox(arm);
-        const mc::HudRect arm_item{arm.x + 1.f * gs, arm.y + 1.f * gs, 16.f * gs, 16.f * gs};
-        if (hud.armor_item[i] == 0) {
-            if (g_atlas_ready) {
-                if (const mc::hud::HudUV* wuv = eldenring::render::uvForEmptyArmorSlot(static_cast<mc::ArmorSlot>(i))) {
-                    dl->AddImage(atlas, {arm_item.x, arm_item.y}, {arm_item.x + arm_item.w, arm_item.y + arm_item.h},
-                                 {wuv->u0, wuv->v0}, {wuv->u1, wuv->v1}, IM_COL32(255, 255, 255, 90));
-                }
-            }
-        } else {
-            icon(arm_item, static_cast<mc::ItemId>(hud.armor_item[i]));
-            stackCount(arm_item, hud.armor_count[i]);
-        }
-    }
-
-    // 3. Offhand slot in inventory (x = 77, y = 62)
-    const mc::HudRect off = lay.offhandSlot();
-    drawSlotBox(off);
-    const mc::HudRect off_item{off.x + 1.f * gs, off.y + 1.f * gs, 16.f * gs, 16.f * gs};
-    if (hud.offhand_item == 0) {
-        if (g_atlas_ready) {
-            const mc::hud::HudUV& suv = mc::hud::kUV_ITEM_SHIELD;
-            dl->AddImage(atlas, {off_item.x, off_item.y}, {off_item.x + off_item.w, off_item.y + off_item.h},
-                         {suv.u0, suv.v0}, {suv.u1, suv.v1}, IM_COL32(255, 255, 255, 90));
-        }
-    } else {
-        icon(off_item, static_cast<mc::ItemId>(hud.offhand_item));
-        stackCount(off_item, hud.offhand_count);
-    }
 
     // 4. Main Inventory (3x9) and Hotbar (1x9)
     for (int i = 0; i < 36; ++i) {
