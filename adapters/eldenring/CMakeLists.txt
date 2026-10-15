@@ -63,6 +63,9 @@ if(WIN32)
         src/ui/inventory_controller.cpp
         src/ui/hud_bridge.cpp
         src/debug/probes.cpp
+        src/movement/player_locomotion.cpp
+        src/world/voxel_world_runtime.cpp
+        src/combat/combat_service.cpp
         eldenring_dinput8.def)
     set_target_properties(eldenring_adapter PROPERTIES
         OUTPUT_NAME dinput8
