@@ -110,7 +110,7 @@ eldenring::render::HeadTracker g_head;
 std::mutex g_mob_mutex;
 std::vector<eldenring::mobs::MobSnapshot> g_mob_snapshot; // the list the loader gave last
 eldenring::mobs::MobRegistry g_mob_registry;              // render thread only
-float g_death_seconds = 0.f; // how long the figure has been dying (0 = alive)
+mc::PlayerDeathTracker g_death_tracker;
 std::mutex g_depth_mutex;
 ID3D12Resource* g_depth_res = nullptr; // AddRef'd scene depth in use (R32G8X24_TYPELESS), guarded by g_depth_mutex
 std::vector<ID3D12Resource*> g_depth_candidates; // AddRef'd, oldest first, guarded by g_depth_mutex
@@ -1130,33 +1130,40 @@ void RenderFrame(IDXGISwapChain* sc) {
         blocks_drawn = g_steve.drawBlocks(g_s.device, g_s.list, g_s.srv_heap, g_held_table_gpu, g_s.width, g_s.height, vp, bp, f.rtv, idx);
         if (blocks_drawn) g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
     }
-    if (steve.draw && g_steve.ready()) {
+    g_death_tracker.update(dt, steve.dead);
+    if (g_death_tracker.justRespawned()) {
+        g_anim.reset();
+        g_motion.reset();
+    }
+    const bool should_draw_steve = steve.draw && g_death_tracker.shouldDrawModel();
+    if (should_draw_steve && g_steve.ready()) {
         const float scene_h = g_steve_cfg.scene_height > 0.f ? g_steve_cfg.scene_height : static_cast<float>(g_s.height);
         const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
-        mc::SteveAnimInput anim_in = g_motion.update(dt, steve.feet, steve.yaw);
-        anim_in.swing_progress = steve.swing;
-        anim_in.bow_charge = steve.bow_charge;
-        anim_in.bow_offhand = steve.bow_offhand;
-        anim_in.is_blocking = steve.blocking;
-        anim_in.block_offhand = steve.block_offhand;
-        anim_in.is_crouching = steve.sneaking;
-        anim_in.is_sprinting = steve.sprinting;
-        anim_in.on_ground = steve.on_ground;
-        g_head.update(steve.cam.forward.x, steve.cam.forward.y, steve.cam.forward.z, steve.yaw, anim_in);
-        g_anim.update(dt, anim_in);
-        if (g_trace_left.load() > 0) {
-            g_trace_left.fetch_sub(1);
-            char tr[220];
-            snprintf(tr, sizeof(tr), "trace: dt=%.4f feet=%.4f %.4f %.4f cam=%.4f %.4f %.4f yaw=%.3f fwd=%.3f strafe=%.3f", dt, steve.feet[0],
-                     steve.feet[1], steve.feet[2], steve.cam.position.x, steve.cam.position.y, steve.cam.position.z, steve.yaw,
-                     anim_in.forward_speed, anim_in.strafe_speed);
-            Logf(tr);
+        if (!steve.dead) {
+            mc::SteveAnimInput anim_in = g_motion.update(dt, steve.feet, steve.yaw);
+            anim_in.swing_progress = steve.swing;
+            anim_in.bow_charge = steve.bow_charge;
+            anim_in.bow_offhand = steve.bow_offhand;
+            anim_in.is_blocking = steve.blocking;
+            anim_in.block_offhand = steve.block_offhand;
+            anim_in.is_crouching = steve.sneaking;
+            anim_in.is_sprinting = steve.sprinting;
+            anim_in.on_ground = steve.on_ground;
+            g_head.update(steve.cam.forward.x, steve.cam.forward.y, steve.cam.forward.z, steve.yaw, anim_in);
+            g_anim.update(dt, anim_in);
+            if (g_trace_left.load() > 0) {
+                g_trace_left.fetch_sub(1);
+                char tr[220];
+                snprintf(tr, sizeof(tr), "trace: dt=%.4f feet=%.4f %.4f %.4f cam=%.4f %.4f %.4f yaw=%.3f fwd=%.3f strafe=%.3f", dt, steve.feet[0],
+                         steve.feet[1], steve.feet[2], steve.cam.position.x, steve.cam.position.y, steve.cam.position.z, steve.yaw,
+                         anim_in.forward_speed, anim_in.strafe_speed);
+                Logf(tr);
+            }
         }
         auto parts = eldenring::render::posedMatrices(g_anim.getTransforms(), {steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw);
-        g_death_seconds = steve.dead ? g_death_seconds + dt : 0.f;
-        if (g_death_seconds > 0.f) {
-            const mc::rig::Mat4 fall = eldenring::render::deathFallMatrix({steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw,
-                                                                         eldenring::render::deathFlipFraction(g_death_seconds));
+        const float fall_frac = g_death_tracker.fallFraction();
+        if (fall_frac > 0.f) {
+            const mc::rig::Mat4 fall = eldenring::render::deathFallMatrix({steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw, fall_frac);
             for (auto& m : parts) m = m * fall;
         }
         if (steve.shadow && g_steve.shadowReady() && g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
@@ -1182,7 +1189,7 @@ void RenderFrame(IDXGISwapChain* sc) {
         sp.depth_h = static_cast<float>(g_depth_h);
         sp.tint[0] = 1.f; // Minecraft's hurt flash: red over the lit skin for the 10 ticks after a hit
         sp.tint[1] = sp.tint[2] = 0.f;
-        sp.tint[3] = 0.4f * std::min(1.f, steve.hurt * 4.f);
+        sp.tint[3] = 0.4f * (g_death_tracker.isDying() ? 1.0f : std::min(1.f, steve.hurt * 4.f));
         sp.keep_depth = blocks_drawn; // the blocks left their depth in the figure's buffer: the figure sorts against them
         sp.held_item = static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.held_item), steve.bow_charge));
         // a bow in the offhand shows the drawn-bow sprite while it is drawn (the held item in the right hand stays what it is)
@@ -1230,7 +1237,7 @@ void RenderFrame(IDXGISwapChain* sc) {
         if (!draws.empty()) {
             const float scene_h = g_steve_cfg.scene_height > 0.f ? g_steve_cfg.scene_height : static_cast<float>(g_s.height);
             const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
-            bool keep = blocks_drawn || steve.draw; // the blocks and Steve left their depth in the figure's buffer
+            bool keep = blocks_drawn || should_draw_steve; // the blocks and Steve left their depth in the figure's buffer
             if (steve.shadow && g_steve.shadowReady()) {
                 std::vector<eldenring::shadow::Shadow> shadows;
                 for (const auto& d : draws) shadows.push_back(eldenring::shadow::shadowAt(d.feet[0], d.feet[1], d.feet[2], d.feet[1])); // a mob stands on the ground
@@ -1270,7 +1277,7 @@ void RenderFrame(IDXGISwapChain* sc) {
     } else {
         g_mob_registry.clear();
     }
-    if (steve.first_person && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
+    if (steve.first_person && !steve.dead && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
         g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
         namespace fp = eldenring::fp;
         // The hand: lowered/raised by the hotbar and the attack cooldown, swaying behind the view, bobbing with the steps.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mc/death.hpp"
 #include "mc/entity_model.hpp"
 #include "mc/rig.hpp"
 
@@ -14,13 +15,6 @@ namespace mc {
 inline constexpr size_t kMaxMobs = 16;
 inline constexpr int kMissedFramesBeforeDrop = 30;
 inline constexpr float kHurtSeconds = 0.5f;  // Minecraft: 10 ticks of hurt time (the red flash)
-inline constexpr float kDeathSeconds = 1.0f; // the body lies there for a moment (20 ticks) before the mob is removed
-
-// Death tip-over animation in Minecraft: flips 90 degrees onto its side over 10 ticks (0.5s)
-inline float deathFlipFraction(float dying_sec) {
-    if (dying_sec <= 0.f) return 0.f;
-    return std::clamp(dying_sec / 0.5f, 0.f, 1.f);
-}
 
 inline mc::rig::Mat4 scaleAboutPoint(const mc::Vec3& p, float s) {
     mc::rig::Mat4 m;
