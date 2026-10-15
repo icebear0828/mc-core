@@ -154,6 +154,55 @@ TEST(EldenRingWorldRuntime, SweptAabbPlayerCollisionAndLedgeSafety) {
     EXPECT_TRUE(ctx.mode().block_supported.load());
 }
 
+TEST(EldenRingWorldRuntime, StepBlockCollisionDrivesVelocityAndUnlocksAir) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x2000;
+
+    float feet[3] = {0.5f, 1.0f, 0.5f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, feet, sizeof(feet));
+
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+    runtime.setInputProvider([](int) { return false; });
+
+    bool drive_called = false;
+    bool reset_fall_called = false;
+    bool unlock_air_called = false;
+
+    WorldRuntimeCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.read_physics_pos = [&](uintptr_t, float out_f[3]) {
+        return mem.readBytes(kModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+    };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.is_game_in_foreground = []() { return true; };
+    cb.drive_velocity = [&](uintptr_t, bool, RuntimeContext&) { drive_called = true; };
+    cb.reset_fall_timer = [&](uintptr_t) { reset_fall_called = true; };
+    cb.unlock_air_movement = [&](uintptr_t) { unlock_air_called = true; };
+    runtime.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+    ctx.mode().block_collision.store(true);
+    ctx.mode().block_drive.store(true);
+
+    {
+        std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+        ctx.world().block_grid.place({0, 0, 0}, mc::BlockId::Dirt);
+    }
+
+    runtime.stepPlayerBlockCollision(ctx);
+
+    EXPECT_TRUE(ctx.mode().block_supported.load());
+    EXPECT_TRUE(drive_called);
+    EXPECT_TRUE(reset_fall_called);
+    EXPECT_TRUE(unlock_air_called);
+}
+
 TEST(EldenRingWorldRuntime, TntExplosionIntentDrainAndDamageEvaluation) {
     auto& runtime = VoxelWorldRuntime::Instance();
     runtime.resetForTesting();
@@ -263,3 +312,91 @@ TEST(EldenRingWorldRuntime, EnemyBlockCollisionSweptBoxPush) {
     mem.readBytes(kEnemyModule + layout::kPhysicsPosition, final_feet, sizeof(final_feet));
     EXPECT_NE(final_feet[0], e_feet[0]);
 }
+
+TEST(EldenRingWorldRuntime, CreeperDetonationWorkflowAndLifecycle) {
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+    runtime.setInputProvider([](int) { return false; });
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+
+    const uintptr_t kCreeperId = 0x7000;
+    const uintptr_t kEnemyChr = 0x8000;
+
+    eldenring::mobs::MobSnapshot creeper_snap{};
+    creeper_snap.id = kCreeperId;
+    creeper_snap.feet[0] = 10.0f;
+    creeper_snap.feet[1] = 0.0f;
+    creeper_snap.feet[2] = 10.0f;
+    creeper_snap.hp = 100;
+    creeper_snap.max_hp = 100;
+
+    {
+        std::lock_guard<std::mutex> g(ctx.ui().summon_mutex);
+        ctx.ui().summon_list.push_back(creeper_snap);
+    }
+
+    std::vector<std::string> sounds_played;
+    std::vector<uintptr_t> chrs_killed;
+    bool mesh_sent = false;
+
+    WorldRuntimeCallbacks cb{};
+    cb.read_physics_pos = [&](uintptr_t chr, float out_f[3]) {
+        if (chr == kEnemyChr) {
+            out_f[0] = 12.0f; out_f[1] = 0.0f; out_f[2] = 10.0f; // 2m from creeper
+            return true;
+        }
+        return false;
+    };
+    cb.play_sound = [&](const char* s, float) { sounds_played.push_back(s); };
+    cb.kill_chr = [&](uintptr_t chr) { chrs_killed.push_back(chr); };
+    cb.send_block_mesh = [&]() { mesh_sent = true; };
+    runtime.setCallbacks(cb);
+
+    std::vector<EnemyInfo> enemies;
+    EnemyInfo enemy{};
+    enemy.chr = kEnemyChr;
+    enemy.hp = 100;
+    enemy.hostile = true;
+    enemies.push_back(enemy);
+
+    float player_feet[3] = {0.f, 0.f, 0.f};
+
+    // Step 1: Creeper detects hostile enemy within 3.5m -> starts fuse and hisses!
+    runtime.processCreeperExplosions(enemies, player_feet, ctx);
+    EXPECT_TRUE(ctx.world().creeper_mgr.isPrimed(kCreeperId));
+    bool found_hiss = false;
+    for (const auto& s : sounds_played) {
+        if (s == "entity.creeper.primed") found_hiss = true;
+    }
+    EXPECT_TRUE(found_hiss);
+
+    // Step 2: Manually ignite with Flint and Steel to force detonation countdown
+    ctx.world().creeper_mgr.ignite(kCreeperId);
+
+    // Advance 1.6s -> Detonation!
+    Sleep(60); // Advance clock
+    // Simulate elapsed time by directly updating or stepping
+    // In processCreeperExplosions, it checks GetTickCount64, but we can also ignite and advance
+    for (int i = 0; i < 35; ++i) {
+        Sleep(50);
+        runtime.processCreeperExplosions(enemies, player_feet, ctx);
+        if (!chrs_killed.empty()) break;
+    }
+
+    // Creeper should have exploded: killed, explode sound played, and removed from summon_list
+    bool found_explode = false;
+    for (const auto& s : sounds_played) {
+        if (s == "entity.generic.explode") found_explode = true;
+    }
+    EXPECT_TRUE(found_explode);
+    ASSERT_EQ(chrs_killed.size(), 1u);
+    EXPECT_EQ(chrs_killed[0], kCreeperId);
+
+    {
+        std::lock_guard<std::mutex> g(ctx.ui().summon_mutex);
+        EXPECT_TRUE(ctx.ui().summon_list.empty());
+    }
+}
+

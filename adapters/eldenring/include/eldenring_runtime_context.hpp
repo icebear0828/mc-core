@@ -8,11 +8,13 @@
 
 #include "eldenring_blocks.hpp"
 #include "eldenring_creative.hpp"
+#include "eldenring_creeper.hpp"
 #include "eldenring_damage.hpp"
 #include "eldenring_hunger.hpp"
 #include "eldenring_jump.hpp"
 #include "eldenring_melee.hpp"
 #include "eldenring_mining.hpp"
+#include "eldenring_mobs.hpp"
 #include "eldenring_roll.hpp"
 #include "eldenring_shield.hpp"
 #include "eldenring_sprint.hpp"
@@ -154,12 +156,14 @@ struct PlayerSystems {
     std::atomic<float> sprint_anim{1.0f};
     std::atomic<float> ground_y{0.f};
     std::atomic<bool> ground_valid{false};
+    std::atomic<uint64_t> movement_layer_ms{0};
 };
 
 struct WorldSystems {
     std::mutex blocks_mutex;
     blocks::BlockGrid block_grid;
     tnt::ErTntManager tnt_mgr;
+    creeper::CreeperManager creeper_mgr;
     mining::MiningController mining;
     unsigned blocks_sent_version{~0u};
 };
@@ -193,6 +197,8 @@ struct UiSystems {
     std::atomic<float> steve_yaw_offset{3.14159265f};
     std::atomic<bool> no_player_hit_vfx{false};
     std::atomic<float> kb_force{-1.f};
+    std::mutex summon_mutex;
+    std::vector<mobs::MobSnapshot> summon_list;
 };
 
 class RuntimeContext {
@@ -289,12 +295,14 @@ public:
         player_.sprint_anim.store(1.0f);
         player_.ground_y.store(0.f);
         player_.ground_valid.store(false);
+        player_.movement_layer_ms.store(0);
 
         // Reset World
         {
             std::lock_guard<std::mutex> g(world_.blocks_mutex);
             world_.block_grid = blocks::BlockGrid{};
             world_.tnt_mgr = tnt::ErTntManager{};
+            world_.creeper_mgr = creeper::CreeperManager{};
             world_.mining.reset();
             world_.blocks_sent_version = ~0u;
         }
@@ -329,6 +337,10 @@ public:
         ui_.steve_yaw_offset.store(3.14159265f);
         ui_.no_player_hit_vfx.store(false);
         ui_.kb_force.store(-1.f);
+        {
+            std::lock_guard<std::mutex> g(ui_.summon_mutex);
+            ui_.summon_list.clear();
+        }
 
         // Clear Command Queue
         command_queue_.clear();

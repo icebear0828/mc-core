@@ -335,3 +335,55 @@ TEST(EldenRingLocomotion, SneakEdgeProtectionAndGroundSprint) {
     mem.readBytes(kModule + layout::kPhysicsPosition, pos_after, sizeof(pos_after));
     EXPECT_FLOAT_EQ(pos_before[2], pos_after[2]); // no movement boost applied
 }
+
+TEST(EldenRingLocomotion, ShieldBlockingSlowdownUsingModeFlag) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x2000;
+
+    auto& loco = PlayerLocomotion::Instance();
+    loco.resetForTesting();
+
+    std::map<int, bool> keys_down;
+    loco.setInputProvider([&](int vk) { return keys_down[vk]; });
+
+    LocomotionCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.is_game_in_foreground = []() { return true; };
+    cb.want_suppress = []() { return true; };
+    cb.is_player_dead = []() { return false; };
+    cb.is_player_airborne = []() { return false; };
+    cb.read_camera = [](CameraPose& cam) {
+        cam.forward[0] = 0.f; cam.forward[1] = 0.f; cam.forward[2] = 1.f;
+        cam.right[0] = 1.f; cam.right[1] = 0.f; cam.right[2] = 0.f;
+        return true;
+    };
+    cb.check_sprint_collision = [](float, float, float) { return false; };
+    loco.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+
+    // Only set mode().shield_blocking, combat().shield remains inactive
+    ctx.mode().shield_blocking.store(true);
+    keys_down['W'] = true;
+
+    loco.driveVelocity(kModule, false, ctx);
+
+    const float vz = mem.read<float>(kModule + 0x128);
+    const float expected_speed = ctx.mode().block_walk_speed.load() * eldenring::shield::kShieldBlockSpeedMultiplier;
+    EXPECT_NEAR(vz, expected_speed, 1e-3f);
+
+    // Also verify ground sprint is inhibited by mode().shield_blocking
+    ctx.player().sprint_active.store(true);
+    float pos_before[3] = {};
+    mem.readBytes(kModule + layout::kPhysicsPosition, pos_before, sizeof(pos_before));
+    loco.stepGroundSprint(0.016f, ctx);
+    float pos_after[3] = {};
+    mem.readBytes(kModule + layout::kPhysicsPosition, pos_after, sizeof(pos_after));
+    EXPECT_FLOAT_EQ(pos_before[2], pos_after[2]);
+}

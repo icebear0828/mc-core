@@ -378,7 +378,7 @@ void __fastcall HitReactHeavyDetour(void* self, void* a, void* b, void* out, uin
 using KillChrFn = void(__fastcall*)(void* chr);
 KillChrFn g_kill_orig = nullptr;
 std::atomic<bool> g_fall_protect{true};
-std::atomic<uint64_t> g_movement_layer_ms{0}; // last time one of our movement features moved the player (tick count)
+std::atomic<uint64_t>& g_movement_layer_ms = g_player.movement_layer_ms; // last time one of our movement features moved the player (tick count)
 std::atomic<unsigned> g_kills_skipped{0};
 uintptr_t PlayerChrPtr(); // defined below
 bool BlocksPresent();     // defined with the placed blocks
@@ -507,7 +507,7 @@ uint64_t __fastcall CreativeEventDetour(void* self, void* event) {
     return g_cr_event_orig(self, event);
 }
 
-std::atomic<bool> g_summon_hide{false};
+std::atomic<bool>& g_summon_hide = g_ui.summon_hide;
 
 bool __fastcall CreativeSpEffectDetour(void* container, int sp_effect) {
     const bool answer = g_cr_sp_orig(container, sp_effect);
@@ -589,10 +589,10 @@ bool WriteBytesSafe(uintptr_t address, const void* src, size_t n) {
 // Summons (team 47) are drawn by us in the end: their own model is hidden by clearing the "drawn" bit of every CSModelDispEntity they own, every
 // frame before the draw, the way the player's parts are hidden. mc_er_summonhide.txt turns it on. Everything is looked up afresh each frame (no
 // cached pointers: a summon that disappears meanwhile is simply not enumerated any more).
-std::mutex g_summon_mutex;
-std::vector<eldenring::mobs::MobSnapshot> g_summon_list; // the team 47 summons seen by the last HideSummonModels (render thread), read by the HUD provider
-float g_mob_yaw_offset = eldenring::live::summon::kDefaultMobYawOffset; // monster/wolf orientation quaternion aligns forward; default 0 (mob_yaw_offset_deg)
-eldenring::creeper::CreeperManager g_creeper_mgr;
+std::mutex& g_summon_mutex = g_ui.summon_mutex;
+std::vector<eldenring::mobs::MobSnapshot>& g_summon_list = g_ui.summon_list; // the team 47 summons seen by the last HideSummonModels (render thread), read by the HUD provider
+std::atomic<float>& g_mob_yaw_offset = g_ui.mob_yaw_offset;
+eldenring::creeper::CreeperManager& g_creeper_mgr = g_world.creeper_mgr;
 
 std::set<uintptr_t> g_hidden_flag_addresses; // the disp_flags words whose drawn bit we cleared (render thread only), to put it back
 std::map<uintptr_t, uint16_t> g_suppressed_sfx_slots; // the sfx slot control words whose skip bit we set, to restore on exit
@@ -827,7 +827,7 @@ struct alignas(16) HkVec4 {
 using RaycastFn = bool(__fastcall*)(void* phys_world, uint32_t filter, const HkVec4* from, const HkVec4* disp, HkVec4* out_pos,
                                     HkVec4* out_normal, float* out_fraction);
 RaycastFn g_raycast = nullptr;
-std::atomic<bool> g_los_enabled{false};
+std::atomic<bool>& g_los_enabled = g_mode.los_enabled;
 std::atomic<unsigned> g_los_blocked{0};
 
 thread_local RayResult t_last_ray;
@@ -989,8 +989,8 @@ bool KillChr(uintptr_t chr) {
     return SetChrHp(chr, 0);
 }
 
-std::atomic<bool> g_shield_blocking{false};
-std::atomic<bool> g_shield_offhand{false}; // the shield being raised is the offhand's (the left arm goes up), else the main hand's
+std::atomic<bool>& g_shield_blocking = g_mode.shield_blocking;
+std::atomic<bool>& g_shield_offhand = g_mode.shield_offhand; // the shield being raised is the offhand's (the left arm goes up), else the main hand's
 
 // What the raised shield decides about a hit on the player. The shield guards where the player LOOKS: the horizontal part of the camera's forward
 // vector (live data 2026-10-11: ER's body orientation only turns when the character moves and a hit reaction can even turn it, so against it the
@@ -1177,7 +1177,7 @@ void DamageVfunc7Detour(void* damage_module, void* attacker, uint8_t* ctx, uint8
 // so the engine's own state stays consistent. mc_er_noknockdownfix.txt switches it off.
 using BreakTestFn = bool (*)(void* damage_module, uint8_t* ctx);
 BreakTestFn g_breaktest_orig = nullptr;
-std::atomic<bool> g_knockdown_fix{true};
+std::atomic<bool>& g_knockdown_fix = g_mode.knockdown_fix;
 
 bool BreakTestDetour(void* damage_module, uint8_t* ctx) {
     const bool broke = g_breaktest_orig(damage_module, ctx);
@@ -1926,91 +1926,7 @@ void ProcessTntExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies) {
 }
 
 void ProcessCreeperExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies, const float player_feet[3]) {
-    std::vector<eldenring::creeper::CreeperTarget> creeper_targets;
-    {
-        std::lock_guard<std::mutex> g(g_summon_mutex);
-        for (const auto& s : g_summon_list) {
-            eldenring::creeper::CreeperTarget t;
-            t.id = s.id;
-            t.feet[0] = s.feet[0];
-            t.feet[1] = s.feet[1];
-            t.feet[2] = s.feet[2];
-            t.hp = s.hp;
-            t.max_hp = s.max_hp;
-            t.is_creeper = true;
-            creeper_targets.push_back(t);
-        }
-    }
-    if (creeper_targets.empty()) return;
-
-    std::vector<eldenring::creeper::CreeperEnemyTarget> enemy_targets;
-    for (const auto& e : enemies) {
-        if (e.chr == 0 || e.hp <= 0) continue;
-        float ef[3]{};
-        if (!detail::readPhysicsPosition(g_reader, g_img.base, e.chr, ef)) continue;
-        eldenring::creeper::CreeperEnemyTarget et;
-        et.chr = e.chr;
-        et.feet[0] = ef[0];
-        et.feet[1] = ef[1];
-        et.feet[2] = ef[2];
-        et.hostile = e.hostile;
-        et.hp = e.hp;
-        enemy_targets.push_back(et);
-    }
-
-    static uint64_t last_creeper_tick_ms = 0;
-    const uint64_t now_tick_ms = GetTickCount64();
-    if (last_creeper_tick_ms == 0) last_creeper_tick_ms = now_tick_ms;
-    const float c_dt = std::clamp(static_cast<float>(now_tick_ms - last_creeper_tick_ms) / 1000.f, 0.001f, 0.1f);
-    last_creeper_tick_ms = now_tick_ms;
-
-
-    auto c_events = g_creeper_mgr.update(c_dt, creeper_targets, enemy_targets);
-    for (const auto& cev : c_events) {
-        if (cev.kind == eldenring::creeper::CreeperEventKind::Hiss) {
-            eraudio::Play("entity.creeper.primed", 1.0f);
-            Log("creeper: %p started hissing (fuse primed)!", reinterpret_cast<void*>(cev.creeper_id));
-        } else if (cev.kind == eldenring::creeper::CreeperEventKind::Defuse) {
-            Log("creeper: %p defused", reinterpret_cast<void*>(cev.creeper_id));
-        } else if (cev.kind == eldenring::creeper::CreeperEventKind::Explosion) {
-            eraudio::Play("entity.generic.explode", 1.0f);
-            Log("creeper: DETONATION at (%.2f %.2f %.2f)!", cev.pos[0], cev.pos[1], cev.pos[2]);
-            eldenring::world::VoxelWorldRuntime::Instance().enqueueTntIntent(cev.pos, cev.radius, cev.damage);
-            const int p_dmg = eldenring::tnt::computeTntExplosionDamage(cev.pos, player_feet, cev.radius, 350.0f);
-            if (p_dmg > 0 && CurrentGameMode() == creative::GameMode::Survival) {
-                const uintptr_t p_chr = PlayerChrPtr();
-                const uintptr_t p_data = DataModuleOfChr(p_chr);
-                if (p_data != 0) {
-                    int32_t cur_hp = 0;
-                    if (SafeCopy(p_data + layout::kDataHp, &cur_hp, sizeof(cur_hp))) {
-                        SetChrHp(p_chr, std::max(0, cur_hp - p_dmg));
-                    }
-                }
-                eraudio::Play("entity.player.hurt");
-            }
-            {
-                std::lock_guard<std::mutex> gb(g_blocks_mutex);
-                if (g_blocks.count() > 0) {
-                    g_tnt_mgr.detonateAt(g_blocks, cev.pos, cev.radius);
-                    SendBlockMesh();
-                }
-            }
-            if (cev.kill_creeper && cev.creeper_id != 0) {
-                KillChr(cev.creeper_id);
-                {
-                    std::lock_guard<std::mutex> gs(g_summon_mutex);
-                    for (auto it = g_summon_list.begin(); it != g_summon_list.end(); ) {
-                        if (it->id == cev.creeper_id) {
-                            it = g_summon_list.erase(it);
-                        } else {
-                            ++it;
-                        }
-                    }
-                }
-                Log("creeper: %p killed and removed after explosion", reinterpret_cast<void*>(cev.creeper_id));
-            }
-        }
-    }
+    eldenring::world::VoxelWorldRuntime::Instance().processCreeperExplosions(enemies, player_feet, g_ctx);
 }
 
 void EnemiesBlockCollisionStep(const float player_feet[3]) {
@@ -3581,8 +3497,19 @@ void SetupWorldRuntime() {
     cb.apply_damage_to_chr = [](uintptr_t chr, int dmg) {
         g_queue.enqueue(chr, dmg, NowTick(), 4u | (static_cast<uint32_t>(std::min(255, dmg / 10)) << 8));
     };
+    cb.kill_chr = [](uintptr_t chr) { KillChr(chr); };
+    cb.send_block_mesh = []() { SendBlockMesh(); };
     cb.play_sound = [](const char* snd, float vol) { eraudio::Play(snd, vol); };
     cb.spawn_fx = [](int kind, const float pos[3], int count) { erov::SpawnFx(static_cast<erov::FxKind>(kind), pos, count); };
+    cb.drive_velocity = [](uintptr_t module, bool pinned, eldenring::RuntimeContext& ctx) {
+        eldenring::movement::PlayerLocomotion::Instance().driveVelocity(module, pinned, ctx);
+    };
+    cb.reset_fall_timer = [](uintptr_t chr) {
+        eldenring::movement::PlayerLocomotion::Instance().resetFallTimer(chr);
+    };
+    cb.unlock_air_movement = [](uintptr_t chr) {
+        eldenring::movement::PlayerLocomotion::Instance().unlockAirMovement(chr);
+    };
     cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
     eldenring::world::VoxelWorldRuntime::Instance().setCallbacks(cb);
 }

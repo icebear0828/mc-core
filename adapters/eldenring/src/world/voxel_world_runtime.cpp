@@ -40,6 +40,14 @@ bool VoxelWorldRuntime::isKeyDown(int vk) const {
 }
 
 void VoxelWorldRuntime::resetForTesting() {
+    is_key_down_ = [](int vk) -> bool {
+#ifdef _WIN32
+        return (GetAsyncKeyState(vk) & 0x8000) != 0;
+#else
+        (void)vk;
+        return false;
+#endif
+    };
     have_prev_player_ = false;
     std::memset(prev_player_feet_, 0, sizeof(prev_player_feet_));
     player_pushes_ = 0;
@@ -230,6 +238,15 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
         callbacks_.safe_write(module + 0x1B8, &zero, sizeof(zero));
     }
 
+    if (module != 0 && supported && ctx.mode().block_drive.load(std::memory_order_relaxed) && callbacks_.drive_velocity) {
+        callbacks_.drive_velocity(module, pinned, ctx);
+    }
+    if (supported) {
+        ctx.player().movement_layer_ms.store(GetTickCount64(), std::memory_order_relaxed);
+        if (callbacks_.reset_fall_timer) callbacks_.reset_fall_timer(player);
+        if (callbacks_.unlock_air_movement) callbacks_.unlock_air_movement(player);
+    }
+
     std::memcpy(prev_player_feet_, final_feet, sizeof(prev_player_feet_));
     have_prev_player_ = true;
 }
@@ -318,9 +335,86 @@ void VoxelWorldRuntime::processTntExplosions(const std::vector<EnemyInfo>& enemi
 }
 
 void VoxelWorldRuntime::processCreeperExplosions(const std::vector<EnemyInfo>& enemies, const float player_feet[3], RuntimeContext& ctx) {
-    (void)enemies;
-    (void)player_feet;
-    (void)ctx;
+    std::vector<eldenring::creeper::CreeperTarget> creeper_targets;
+    {
+        std::lock_guard<std::mutex> g(ctx.ui().summon_mutex);
+        for (const auto& s : ctx.ui().summon_list) {
+            eldenring::creeper::CreeperTarget t;
+            t.id = s.id;
+            t.feet[0] = s.feet[0];
+            t.feet[1] = s.feet[1];
+            t.feet[2] = s.feet[2];
+            t.hp = s.hp;
+            t.max_hp = s.max_hp;
+            t.is_creeper = true;
+            creeper_targets.push_back(t);
+        }
+    }
+    if (creeper_targets.empty()) return;
+
+    std::vector<eldenring::creeper::CreeperEnemyTarget> enemy_targets;
+    for (const auto& e : enemies) {
+        if (e.chr == 0 || e.hp <= 0) continue;
+        float ef[3]{};
+        if (!callbacks_.read_physics_pos || !callbacks_.read_physics_pos(e.chr, ef)) continue;
+        eldenring::creeper::CreeperEnemyTarget et;
+        et.chr = e.chr;
+        et.feet[0] = ef[0];
+        et.feet[1] = ef[1];
+        et.feet[2] = ef[2];
+        et.hostile = e.hostile;
+        et.hp = e.hp;
+        enemy_targets.push_back(et);
+    }
+
+    static uint64_t last_creeper_tick_ms = 0;
+    const uint64_t now_tick_ms = GetTickCount64();
+    if (last_creeper_tick_ms == 0) last_creeper_tick_ms = now_tick_ms;
+    const float c_dt = std::clamp(static_cast<float>(now_tick_ms - last_creeper_tick_ms) / 1000.f, 0.001f, 0.1f);
+    last_creeper_tick_ms = now_tick_ms;
+
+    auto c_events = ctx.world().creeper_mgr.update(c_dt, creeper_targets, enemy_targets);
+    for (const auto& cev : c_events) {
+        if (cev.kind == eldenring::creeper::CreeperEventKind::Hiss) {
+            if (callbacks_.play_sound) callbacks_.play_sound("entity.creeper.primed", 1.0f);
+            log("creeper: %p started hissing (fuse primed)!", reinterpret_cast<void*>(cev.creeper_id));
+        } else if (cev.kind == eldenring::creeper::CreeperEventKind::Defuse) {
+            log("creeper: %p defused", reinterpret_cast<void*>(cev.creeper_id));
+        } else if (cev.kind == eldenring::creeper::CreeperEventKind::Explosion) {
+            if (callbacks_.play_sound) callbacks_.play_sound("entity.generic.explode", 1.0f);
+            log("creeper: DETONATION at (%.2f %.2f %.2f)!", cev.pos[0], cev.pos[1], cev.pos[2]);
+            enqueueTntIntent(cev.pos, cev.radius, cev.damage);
+            const int p_dmg = eldenring::tnt::computeTntExplosionDamage(cev.pos, player_feet, cev.radius, 350.0f);
+            if (p_dmg > 0 && ctx.currentGameMode() == creative::GameMode::Survival && callbacks_.apply_damage_to_chr) {
+                uintptr_t player_chr = callbacks_.get_player_chr ? callbacks_.get_player_chr() : 0;
+                if (player_chr != 0) {
+                    callbacks_.apply_damage_to_chr(player_chr, p_dmg);
+                }
+                if (callbacks_.play_sound) callbacks_.play_sound("entity.player.hurt", 1.0f);
+            }
+            {
+                std::lock_guard<std::mutex> gb(ctx.world().blocks_mutex);
+                if (ctx.world().block_grid.count() > 0) {
+                    ctx.world().tnt_mgr.detonateAt(ctx.world().block_grid, cev.pos, cev.radius);
+                    if (callbacks_.send_block_mesh) callbacks_.send_block_mesh();
+                }
+            }
+            if (cev.kill_creeper && cev.creeper_id != 0) {
+                if (callbacks_.kill_chr) callbacks_.kill_chr(cev.creeper_id);
+                {
+                    std::lock_guard<std::mutex> gs(ctx.ui().summon_mutex);
+                    for (auto it = ctx.ui().summon_list.begin(); it != ctx.ui().summon_list.end(); ) {
+                        if (it->id == cev.creeper_id) {
+                            it = ctx.ui().summon_list.erase(it);
+                        } else {
+                            ++it;
+                        }
+                    }
+                }
+                log("creeper: %p killed and removed after explosion", reinterpret_cast<void*>(cev.creeper_id));
+            }
+        }
+    }
 }
 
 void VoxelWorldRuntime::triggerTntExplosion(const float center[3], RuntimeContext& ctx) {

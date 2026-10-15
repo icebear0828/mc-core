@@ -57,8 +57,15 @@ struct WorldRuntimeCallbacks {
 
     // Combat & damage integration
     std::function<void(uintptr_t chr, int damage)> apply_damage_to_chr;
+    std::function<void(uintptr_t chr)> kill_chr;
+    std::function<void()> send_block_mesh;
     std::function<void(const char* sound, float vol)> play_sound;
     std::function<void(int fx_kind, const float pos[3], int count)> spawn_fx;
+
+    // Player locomotion integration on supported blocks
+    std::function<void(uintptr_t module, bool force_zero, RuntimeContext& ctx)> drive_velocity;
+    std::function<void(uintptr_t chr)> reset_fall_timer;
+    std::function<void(uintptr_t chr)> unlock_air_movement;
 
     // Diagnostics / logging
     std::function<void(const std::string&)> log;
