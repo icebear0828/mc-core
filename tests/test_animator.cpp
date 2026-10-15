@@ -98,8 +98,9 @@ TEST(SteveAnimatorTest, SwayOnlyArmsDoNotSwingWithTheStrideAndStayNearTheirRestR
     EXPECT_TRUE(legs_move);
 }
 
-TEST(SteveAnimatorTest, ADrawnBowRaisesTheArmThatHoldsIt) {
+TEST(SteveAnimatorTest, TwoHandedBowDrawingPosesBothArmsAuthentically) {
     const size_t ra = static_cast<size_t>(mc::StevePart::RightArm), la = static_cast<size_t>(mc::StevePart::LeftArm);
+    const size_t rs = static_cast<size_t>(mc::StevePart::RightSleeve), ls = static_cast<size_t>(mc::StevePart::LeftSleeve);
     mc::SteveAnimator idle, main_bow, off_bow;
     mc::SteveAnimInput in{};
     mc::SteveAnimInput main_in = in, off_in = in;
@@ -111,13 +112,26 @@ TEST(SteveAnimatorTest, ADrawnBowRaisesTheArmThatHoldsIt) {
         main_bow.update(0.05f, main_in);
         off_bow.update(0.05f, off_in);
     }
-    // bow in the main hand: the right arm aims (about -90 degrees of pitch), the left one stays at rest
-    EXPECT_LT(main_bow.getTransforms()[ra].rot.w, 0.75f);
-    EXPECT_GT(main_bow.getTransforms()[la].rot.w, 0.85f);
-    // bow in the offhand: the left arm aims, the right arm (with the sword) stays at rest
-    EXPECT_LT(off_bow.getTransforms()[la].rot.w, 0.75f);
-    EXPECT_GT(off_bow.getTransforms()[ra].rot.w, 0.85f);
-    EXPECT_GT(idle.getTransforms()[la].rot.w, 0.85f);
+
+    // Main hand bow draw:
+    // Right arm holds bow (pitch -90 deg, yaw -0.1), Left arm draws string (pitch -90 deg, yaw +0.5 across chest)
+    EXPECT_LT(main_bow.getTransforms()[ra].rot.w, 0.75f) << "Right arm holding bow must be raised";
+    EXPECT_LT(main_bow.getTransforms()[la].rot.w, 0.75f) << "Left arm drawing string must also be raised";
+    // Pitch angles match
+    EXPECT_NEAR(main_bow.getTransforms()[ra].rot.y, main_bow.getTransforms()[la].rot.y, 0.05f);
+    // Sleeves follow arms
+    EXPECT_NEAR(main_bow.getTransforms()[rs].rot.w, main_bow.getTransforms()[ra].rot.w, 1e-4f);
+    EXPECT_NEAR(main_bow.getTransforms()[ls].rot.w, main_bow.getTransforms()[la].rot.w, 1e-4f);
+
+    // Offhand bow draw:
+    // Left arm holds bow (pitch -90 deg, yaw +0.1), Right arm draws string (pitch -90 deg, yaw -0.5 across chest)
+    EXPECT_LT(off_bow.getTransforms()[la].rot.w, 0.75f) << "Left arm holding offhand bow must be raised";
+    EXPECT_LT(off_bow.getTransforms()[ra].rot.w, 0.75f) << "Right arm drawing string must also be raised";
+    EXPECT_NEAR(off_bow.getTransforms()[la].rot.y, off_bow.getTransforms()[ra].rot.y, 0.05f);
+
+    // When idle, arms hang down
+    EXPECT_GT(idle.getTransforms()[ra].rot.w, 0.95f);
+    EXPECT_GT(idle.getTransforms()[la].rot.w, 0.95f);
 }
 
 TEST(SteveAnimatorTest, OnlyTheArmThatHoldsTheRaisedShieldMoves) {
