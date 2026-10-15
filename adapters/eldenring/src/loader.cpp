@@ -292,7 +292,7 @@ bool GameInForeground() {
 // ---- damage --------------------------------------------------------------------------------------------------
 
 std::atomic<bool> g_damage_enabled{false};
-std::atomic<bool> g_mc_mode{false};
+std::atomic<bool> g_mc_mode{true};
 std::atomic<uint8_t> g_game_mode{static_cast<uint8_t>(creative::GameMode::Survival)}; // F5: survival (default) or creative, inside MC mode
 std::atomic<uint64_t> g_mode_toast_ms{0};                                              // tick count of the last F5, drives the on-screen name
 creative::GameMode CurrentGameMode() { return static_cast<creative::GameMode>(g_game_mode.load(std::memory_order_relaxed)); }
@@ -2596,18 +2596,10 @@ void BlocksCollisionStep() {
     static bool have_prev = false;
     static float prev[3] = {};
     static unsigned pushes = 0;
-    if (!g_block_collision.load(std::memory_order_relaxed) || !g_mc_mode.load(std::memory_order_relaxed)) {
+    if (!g_mc_mode.load(std::memory_order_relaxed)) {
         have_prev = false;
         g_block_supported.store(false, std::memory_order_relaxed);
         return;
-    }
-    {
-        std::lock_guard<std::mutex> g(g_blocks_mutex);
-        if (g_blocks.count() == 0) {
-            have_prev = false;
-            g_block_supported.store(false, std::memory_order_relaxed);
-            return;
-        }
     }
     const uintptr_t player = PlayerChrPtr();
     float feet[3];
@@ -2623,14 +2615,21 @@ void BlocksCollisionStep() {
         dz = feet[2] - prev[2];
     }
     const bool jumped = std::sqrt(dx * dx + dy * dy + dz * dz) > 20.f; // teleport / origin re-base: not movement
-    blocks::Resolve r;
-    {
+
+    bool has_blocks = false;
+    if (g_block_collision.load(std::memory_order_relaxed)) {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        has_blocks = (g_blocks.count() > 0);
+    }
+
+    blocks::Resolve r{};
+    if (has_blocks) {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         r = have_prev && !jumped ? blocks::resolvePlayerSwept(g_blocks, prev, feet) : blocks::resolvePlayer(g_blocks, feet);
     }
     float final_feet[3] = {r.moved ? r.feet[0] : feet[0], r.moved ? r.feet[1] : feet[1], r.moved ? r.feet[2] : feet[2]};
-    bool supported;
-    {
+    bool supported = false;
+    if (has_blocks) {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         supported = blocks::supportedByBlock(g_blocks, final_feet);
     }
@@ -2685,7 +2684,7 @@ void BlocksCollisionStep() {
 
     // Check if the previous frame was supported on blocks
     bool was_supported = false;
-    if (have_prev) {
+    if (have_prev && has_blocks) {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         was_supported = blocks::supportedByBlock(g_blocks, prev);
     }
@@ -4915,6 +4914,7 @@ void SetupOverlay() {
                 else if (key == "fly_vspeed") g_fly_v_speed.store(std::clamp(value, 1.f, 40.f));
                 else if (key == "mc_jump") g_mc_jump.store(value != 0.f);
                 else if (key == "mc_jump_key") g_mc_jump_vk.store(static_cast<int>(value));
+                else if (key == "mc_mode") g_mc_mode.store(value != 0.f);
                 else if (key == "mc_gravity") g_mc_gravity.store(std::clamp(value, 5.f, 80.f));
                 else if (key == "mc_jump_speed") g_mc_jump_speed.store(std::clamp(value, 1.f, 20.f));
                 else if (key == "blocks") g_blocks_enabled.store(value != 0.f);
