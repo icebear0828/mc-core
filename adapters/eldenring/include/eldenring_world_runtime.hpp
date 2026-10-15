@@ -101,6 +101,7 @@ public:
     size_t pendingTntIntentCount() const;
 
     void resetForTesting();
+    void setDeltaTimeOverrideForTesting(float dt) { delta_time_override_ = dt; }
 
 private:
     VoxelWorldRuntime();
@@ -116,6 +117,10 @@ private:
     unsigned player_pushes_{0};
     bool anchored_{false};
     float anchor_[2]{0.f, 0.f};
+#ifdef _WIN32
+    LARGE_INTEGER last_block_qpc_{};
+#endif
+    float delta_time_override_{0.f};
 
     // Enemy collision tracking
     unsigned enemy_pushes_{0};

@@ -57,6 +57,11 @@ void VoxelWorldRuntime::resetForTesting() {
     enemy_pushes_ = 0;
     prev_enemy_feet_.clear();
 
+#ifdef _WIN32
+    last_block_qpc_.QuadPart = 0;
+#endif
+    delta_time_override_ = 0.f;
+
     std::lock_guard<std::mutex> g(tnt_intent_mutex_);
     (void)tnt_damage_intents_.drain();
 }
@@ -219,7 +224,86 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
         }
     }
 
-    if (module != 0 && (pinned || sneak_clamped) && callbacks_.safe_write) {
+    float block_dt = delta_time_override_ > 0.f ? delta_time_override_ : 0.016f;
+#ifdef _WIN32
+    if (delta_time_override_ <= 0.f) {
+        LARGE_INTEGER now_block_qpc, freq_block;
+        QueryPerformanceCounter(&now_block_qpc);
+        QueryPerformanceFrequency(&freq_block);
+        if (last_block_qpc_.QuadPart != 0 && freq_block.QuadPart != 0) {
+            const float measured = static_cast<float>(now_block_qpc.QuadPart - last_block_qpc_.QuadPart) / static_cast<float>(freq_block.QuadPart);
+            block_dt = (measured < 0.002f) ? 0.016f : std::clamp(measured, 0.002f, 0.05f);
+        }
+        last_block_qpc_ = now_block_qpc;
+    }
+#endif
+
+    bool direct_moved = false;
+    if (supported && !pinned && fg) {
+        const float fwd_key = (key_w ? 1.f : 0.f) - (key_s ? 1.f : 0.f);
+        const float right_key = (key_d ? 1.f : 0.f) - (key_a ? 1.f : 0.f);
+        const bool blocking = ctx.mode().shield_blocking.load(std::memory_order_relaxed) ||
+                              ctx.combat().shield.isBlocking();
+        const bool sprinting = !sneaking && !blocking && ctx.player().sprint_active.load(std::memory_order_relaxed);
+        const float target_speed = eldenring::shield::effectiveMovementSpeed(
+            ctx.mode().block_walk_speed.load(std::memory_order_relaxed),
+            ctx.mode().sprint_speed.load(std::memory_order_relaxed),
+            ctx.mode().sneak_speed.load(std::memory_order_relaxed),
+            sneaking, sprinting, blocking);
+
+        CameraPose cam;
+        if (callbacks_.read_camera && callbacks_.read_camera(cam)) {
+            float dir[2] = {0.f, 0.f};
+            if (eldenring::motion::computeInputDirection(fwd_key, right_key, cam.forward, cam.right, dir)) {
+                float stepped_feet[3] = {};
+                if (blocks::stepBlockMovement(final_feet, dir, target_speed, block_dt, true, stepped_feet)) {
+                    if (sneaking && has_blocks) {
+                        const float desired_dx = stepped_feet[0] - final_feet[0];
+                        const float desired_dz = stepped_feet[2] - final_feet[2];
+                        blocks::SneakMoveResult sneak_res;
+                        {
+                            std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+                            sneak_res = blocks::clampSneakEdgeMovement(ctx.world().block_grid, final_feet, desired_dx, desired_dz);
+                        }
+                        stepped_feet[0] = final_feet[0] + sneak_res.dx;
+                        stepped_feet[2] = final_feet[2] + sneak_res.dz;
+                    }
+                    blocks::Resolve step_r;
+                    if (has_blocks) {
+                        std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+                        step_r = blocks::resolvePlayerSwept(ctx.world().block_grid, final_feet, stepped_feet);
+                    } else {
+                        step_r.feet[0] = stepped_feet[0];
+                        step_r.feet[1] = stepped_feet[1];
+                        step_r.feet[2] = stepped_feet[2];
+                        step_r.moved = true;
+                    }
+                    final_feet[0] = step_r.feet[0];
+                    final_feet[1] = step_r.feet[1];
+                    final_feet[2] = step_r.feet[2];
+                    direct_moved = true;
+                }
+            }
+        }
+    }
+
+    // Native terrain sneak & shield speed limiting:
+    // When walking on Elden Ring's native ground, clamp horizontal displacement per frame to Minecraft sneak speed (1.295 m/s)
+    const bool clamp_speed = sneaking || ctx.mode().shield_blocking.load(std::memory_order_relaxed) || ctx.combat().shield.isBlocking();
+    if (!supported && clamp_speed && have_prev_player_ && !jumped && !pinned && fg) {
+        const float cur_dx = final_feet[0] - prev_player_feet_[0];
+        const float cur_dz = final_feet[2] - prev_player_feet_[2];
+        const float h_dist = std::sqrt(cur_dx * cur_dx + cur_dz * cur_dz);
+        const float max_h = ctx.mode().sneak_speed.load(std::memory_order_relaxed) * block_dt;
+        if (h_dist > max_h && h_dist > 1e-4f) {
+            const float scale = max_h / h_dist;
+            final_feet[0] = prev_player_feet_[0] + cur_dx * scale;
+            final_feet[2] = prev_player_feet_[2] + cur_dz * scale;
+            direct_moved = true;
+        }
+    }
+
+    if (module != 0 && (pinned || sneak_clamped || direct_moved) && callbacks_.safe_write) {
         callbacks_.safe_write(module + layout::kPhysicsPosition, final_feet, sizeof(final_feet));
         callbacks_.safe_write(module + layout::kPhysicsPosition + 0x10, final_feet, sizeof(final_feet));
         const uint8_t one = 1;
