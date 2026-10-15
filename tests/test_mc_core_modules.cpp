@@ -787,8 +787,10 @@ TEST(McCoreMobsTest, MobLifecycleTracksHurtAndDeathState) {
 TEST(McCoreMobsTest, DeathFlipFractionInterpolatesSmoothly) {
     EXPECT_FLOAT_EQ(mc::deathFlipFraction(-0.1f), 0.f);
     EXPECT_FLOAT_EQ(mc::deathFlipFraction(0.0f), 0.f);
-    EXPECT_GT(mc::deathFlipFraction(0.25f), 0.f);
-    EXPECT_FLOAT_EQ(mc::deathFlipFraction(0.5f), 1.0f); // fully tipped over
+    EXPECT_NEAR(mc::deathFlipFraction(0.05f), 0.f, 1e-4f);
+    EXPECT_NEAR(mc::deathFlipFraction(0.25f), std::sqrt(4.f / 20.f * 1.6f), 1e-5f);
+    EXPECT_NEAR(mc::deathFlipFraction(0.5f), std::sqrt(9.f / 20.f * 1.6f), 1e-5f);
+    EXPECT_FLOAT_EQ(mc::deathFlipFraction(0.7f), 1.0f); // fully tipped over
     EXPECT_FLOAT_EQ(mc::deathFlipFraction(1.0f), 1.0f);
 }
 
