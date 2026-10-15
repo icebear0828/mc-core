@@ -38,6 +38,8 @@ bool SehGuard(F& f) {
 bool SafeCopy(uintptr_t address, void* out, size_t size);
 bool SafeWrite8(uintptr_t address, uint8_t value);
 bool SafeWrite32(uintptr_t address, uint32_t value);
+bool SafeWriteBytes(uintptr_t address, const void* src, size_t size);
+
 
 class SelfReader final : public live::IMemoryReader {
 public:

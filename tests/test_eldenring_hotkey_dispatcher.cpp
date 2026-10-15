@@ -1,0 +1,284 @@
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <gtest/gtest.h>
+
+#include "eldenring_hotkey_dispatcher.hpp"
+#include "eldenring_runtime_context.hpp"
+#include "eldenring_state.hpp"
+#include "eldenring_creative.hpp"
+#include <map>
+#include <vector>
+#include <string>
+
+using namespace eldenring;
+using namespace eldenring::input;
+
+namespace {
+
+class HotkeyDispatcherTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        auto& ctx = RuntimeContext::Instance();
+        ctx.mode().mc_mode.store(true);
+        ctx.mode().input_enabled.store(true);
+        ctx.mode().click_attack.store(true);
+        ctx.mode().damage_enabled.store(true);
+        ctx.mode().bullet_fire_enabled.store(true);
+        ctx.mode().hide_native.store(true);
+        ctx.ui().inv_open.store(false);
+
+        auto& melee = ctx.combat().melee;
+        melee.inventory() = mc::Inventory{};
+        melee.select(0);
+
+        dispatcher_ = &HotkeyDispatcher::Instance();
+        dispatcher_->resetKeyStates();
+        dispatcher_->setSlotCursor(-1);
+
+        key_states_.clear();
+        logged_messages_.clear();
+        played_sounds_.clear();
+
+        // Default test callbacks
+        cb_ = HotkeyCallbacks{};
+        cb_.is_game_in_foreground = [this]() { return foreground_; };
+        cb_.want_suppress = [this]() { return want_suppress_; };
+        cb_.is_player_dead = [this]() { return player_dead_; };
+        cb_.is_player_airborne = [this]() { return player_airborne_; };
+        cb_.get_player_chr = []() { return 0x1000u; };
+        cb_.read_physics_pos = [](uintptr_t, float out_pos[3]) {
+            out_pos[0] = 10.f; out_pos[1] = 20.f; out_pos[2] = 30.f;
+            return true;
+        };
+        cb_.play_sound = [this](const char* snd, float) { played_sounds_.push_back(snd); };
+        cb_.log = [this](const std::string& msg) { logged_messages_.push_back(msg); };
+
+        cb_.take_left_click = [this]() {
+            bool r = left_click_edge_;
+            left_click_edge_ = false;
+            return r;
+        };
+        cb_.take_right_click = [this]() {
+            bool r = right_click_edge_;
+            right_click_edge_ = false;
+            return r;
+        };
+        cb_.left_held = [this]() { return left_held_; };
+        cb_.right_held = [this]() { return right_held_; };
+        cb_.take_wheel_notches = [this]() {
+            int n = wheel_notches_;
+            wheel_notches_ = 0;
+            return n;
+        };
+        cb_.set_suppress_mouse_buttons = [this](bool s) { suppressed_mouse_ = s; };
+        cb_.set_masked_keys = [this](const int*, size_t) {};
+        cb_.take_keyboard_failures = [](long&) { return 0; };
+
+        cb_.is_key_down = [this](int vk) {
+            auto it = key_states_.find(vk);
+            return (it != key_states_.end()) ? it->second : false;
+        };
+
+        cb_.step_mining = [this](float, bool) { return mining_consumed_; };
+        cb_.try_ignite_tnt = [this]() {
+            if (ignite_tnt_success_) { tnt_ignited_ = true; return true; }
+            return false;
+        };
+        cb_.try_ignite_creeper = [this]() {
+            if (ignite_creeper_success_) { creeper_ignited_ = true; return true; }
+            return false;
+        };
+        cb_.try_place_block = [this]() {
+            if (place_block_success_) { block_placed_ = true; return true; }
+            return false;
+        };
+        cb_.try_use_spawn_egg = [this]() {
+            if (use_spawn_egg_success_) { spawn_egg_used_ = true; return true; }
+            return false;
+        };
+        cb_.click_attack = [this](float charged) { attack_charged_ = charged; attack_called_ = true; };
+        cb_.enqueue_nearest_hostile = [this]() { hostile_enqueued_ = true; };
+        cb_.queue_bullet_fire = [this](float dmg) { bullet_queued_ = true; bullet_damage_ = dmg; return true; };
+        cb_.queue_summon = [this](const char*) { summon_queued_ = true; return true; };
+        cb_.cycle_hidden_slot = [this](int& c) { ++c; };
+        cb_.reset_slot_probe = [this](int& c) { c = -1; };
+        cb_.snapshot_native_parts = [this]() { snapshot_taken_ = true; };
+        cb_.request_frame_trace = [this](int f) { trace_frames_ = f; };
+        cb_.request_screenshot = [this](const char* p) { screenshot_path_ = p; };
+        cb_.cycle_depth_candidate = [this]() { depth_cycled_ = true; };
+        cb_.inventory_tick = [this](bool) { ++inventory_ticks_; };
+        cb_.blocks_tick = [this]() { ++blocks_ticks_; };
+        cb_.mc_flags_step = [this]() { ++flags_steps_; };
+        cb_.check_summon_watch = [](uint64_t) {};
+
+        dispatcher_->setCallbacks(cb_);
+    }
+
+    void setKey(int vk, bool down) { key_states_[vk] = down; }
+
+    HotkeyDispatcher* dispatcher_{nullptr};
+    HotkeyCallbacks cb_;
+    std::map<int, bool> key_states_;
+    std::vector<std::string> logged_messages_;
+    std::vector<std::string> played_sounds_;
+
+    bool foreground_{true};
+    bool want_suppress_{true};
+    bool player_dead_{false};
+    bool player_airborne_{false};
+    bool left_click_edge_{false};
+    bool right_click_edge_{false};
+    bool left_held_{false};
+    bool right_held_{false};
+    int wheel_notches_{0};
+    bool suppressed_mouse_{false};
+
+    bool mining_consumed_{false};
+    bool ignite_tnt_success_{false};
+    bool tnt_ignited_{false};
+    bool ignite_creeper_success_{false};
+    bool creeper_ignited_{false};
+    bool place_block_success_{false};
+    bool block_placed_{false};
+    bool use_spawn_egg_success_{false};
+    bool spawn_egg_used_{false};
+    bool attack_called_{false};
+    float attack_charged_{0.f};
+    bool hostile_enqueued_{false};
+    bool bullet_queued_{false};
+    float bullet_damage_{0.f};
+    bool summon_queued_{false};
+    bool snapshot_taken_{false};
+    int trace_frames_{0};
+    std::string screenshot_path_;
+    bool depth_cycled_{false};
+    int inventory_ticks_{0};
+    int blocks_ticks_{0};
+    int flags_steps_{0};
+};
+
+} // namespace
+
+TEST_F(HotkeyDispatcherTest, NumberKeySelectsHotbarSlot) {
+    auto& ctx = RuntimeContext::Instance();
+    auto& melee = ctx.combat().melee;
+
+    EXPECT_EQ(melee.selectedSlot(), 0);
+
+    // Press '3'
+    setKey('3', true);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(melee.selectedSlot(), 2);
+
+    // Release '3' and press '9'
+    setKey('3', false);
+    setKey('9', true);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(melee.selectedSlot(), 8);
+}
+
+TEST_F(HotkeyDispatcherTest, FKeySwapsMainAndOffhand) {
+    auto& ctx = RuntimeContext::Instance();
+    auto& melee = ctx.combat().melee;
+
+    melee.inventory().add({mc::ItemId::DiamondSword, 1}); // slot 0
+    melee.select(0);
+    EXPECT_EQ(melee.heldItem(), mc::ItemId::DiamondSword);
+    EXPECT_EQ(melee.offhandItem(), mc::ItemId::None);
+
+    // Press 'F'
+    setKey('F', true);
+    dispatcher_->tick(0.016f);
+
+    EXPECT_EQ(melee.heldItem(), mc::ItemId::None);
+    EXPECT_EQ(melee.offhandItem(), mc::ItemId::DiamondSword);
+
+    // Release 'F' then press 'F' again
+    setKey('F', false);
+    dispatcher_->tick(0.016f);
+    setKey('F', true);
+    dispatcher_->tick(0.016f);
+
+    EXPECT_EQ(melee.heldItem(), mc::ItemId::DiamondSword);
+    EXPECT_EQ(melee.offhandItem(), mc::ItemId::None);
+}
+
+TEST_F(HotkeyDispatcherTest, ModeTogglesF5AndF6) {
+    auto& ctx = RuntimeContext::Instance();
+
+    // Default is survival
+    EXPECT_EQ(ctx.currentGameMode(), creative::GameMode::Survival);
+
+    // Press F5 -> Creative
+    setKey(VK_F5, true);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.currentGameMode(), creative::GameMode::Creative);
+
+    // Release and press F5 again -> Survival
+    setKey(VK_F5, false);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F5, true);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.currentGameMode(), creative::GameMode::Survival);
+
+    // Press F6 -> Toggle MC Mode
+    EXPECT_TRUE(ctx.mode().mc_mode.load());
+    setKey(VK_F6, true);
+    dispatcher_->tick(0.016f);
+    EXPECT_FALSE(ctx.mode().mc_mode.load());
+}
+
+TEST_F(HotkeyDispatcherTest, MiningConsumesLeftClickSoNoSwingAttack) {
+    left_click_edge_ = true;
+    left_held_ = true;
+    mining_consumed_ = true; // Actively mining a placed block
+
+    dispatcher_->tick(0.016f);
+
+    // Because mining consumed the tick, click_attack must NOT be called
+    EXPECT_FALSE(attack_called_);
+
+    // When mining is NOT active, left click edge triggers attack
+    left_click_edge_ = true;
+    mining_consumed_ = false;
+
+    dispatcher_->tick(0.016f);
+    EXPECT_TRUE(attack_called_);
+    EXPECT_GT(attack_charged_, 0.f);
+}
+
+TEST_F(HotkeyDispatcherTest, RightClickPriorityTntThenCreeperThenBlock) {
+    // 1. TNT priority
+    right_click_edge_ = true;
+    ignite_tnt_success_ = true;
+    place_block_success_ = true;
+
+    dispatcher_->tick(0.016f);
+    EXPECT_TRUE(tnt_ignited_);
+    EXPECT_FALSE(block_placed_);
+
+    // 2. Block placement when not TNT
+    ignite_tnt_success_ = false;
+    right_click_edge_ = true;
+    place_block_success_ = true;
+
+    dispatcher_->tick(0.016f);
+    EXPECT_TRUE(block_placed_);
+}
+
+TEST_F(HotkeyDispatcherTest, MouseWheelScrollsHotbarSlots) {
+    auto& ctx = RuntimeContext::Instance();
+    auto& melee = ctx.combat().melee;
+
+    melee.select(0);
+    // Wheel away (+1 notch) should select previous slot (wrapping to 8)
+    wheel_notches_ = 1;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(melee.selectedSlot(), 8);
+
+    // Wheel toward user (-1 notch) should advance to next slot
+    wheel_notches_ = -1;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(melee.selectedSlot(), 0);
+}

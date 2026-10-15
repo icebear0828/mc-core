@@ -66,6 +66,8 @@ if(WIN32)
         src/movement/player_locomotion.cpp
         src/world/voxel_world_runtime.cpp
         src/combat/combat_service.cpp
+        src/input/hotkey_dispatcher.cpp
+        src/hooks/game_hooks.cpp
         eldenring_dinput8.def)
     set_target_properties(eldenring_adapter PROPERTIES
         OUTPUT_NAME dinput8
@@ -73,7 +75,7 @@ if(WIN32)
         RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/eldenring"
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON)
-    target_include_directories(eldenring_adapter PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include")
+    target_include_directories(eldenring_adapter PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include" "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(eldenring_adapter PRIVATE eldenring_live mc_core minhook imgui_dx12 psapi d3d12 dxgi dxguid d3dcompiler windowscodecs ole32 xaudio2)
     if(MSVC)
         target_compile_options(eldenring_adapter PRIVATE /W4 /WX /permissive- /utf-8)

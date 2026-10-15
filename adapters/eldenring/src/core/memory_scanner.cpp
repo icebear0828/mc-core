@@ -48,6 +48,23 @@ bool SafeWrite32(uintptr_t address, uint32_t value) {
 #endif
 }
 
+bool SafeWriteBytes(uintptr_t address, const void* src, size_t size) {
+    if (size == 0) return true;
+    if (address < 0x10000) return false;
+#ifdef _WIN32
+    __try {
+        std::memcpy(reinterpret_cast<void*>(address), src, size);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+#else
+    std::memcpy(reinterpret_cast<void*>(address), src, size);
+    return true;
+#endif
+}
+
+
 bool ReadImageInfo(ImageInfo& out) {
 #ifdef _WIN32
     const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));

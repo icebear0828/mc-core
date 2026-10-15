@@ -139,6 +139,12 @@ struct ModeConfig {
     std::atomic<bool> shield_offhand{false};
     std::atomic<bool> knockdown_fix{true};
     std::atomic<bool> los_enabled{false};
+    std::atomic<bool> mc_jump{false};
+    std::atomic<int> mc_jump_vk{0x20}; // VK_SPACE
+    std::atomic<bool> flying{false};
+    std::atomic<bool> bow_offhand{false};
+    std::atomic<float> bow_power{0.f};
+    std::atomic<float> bow_ticks{0.f};
 };
 
 struct PlayerSystems {

@@ -132,6 +132,23 @@ enum class DamageOutcome {
     NoLineOfSight, // a wall (static geometry) lies between the player and the victim
 };
 
+inline const char* OutcomeName(DamageOutcome o) {
+    switch (o) {
+        case DamageOutcome::Applied: return "Applied";
+        case DamageOutcome::Deferred: return "Deferred";
+        case DamageOutcome::Expired: return "Expired";
+        case DamageOutcome::NoTemplate: return "NoTemplate";
+        case DamageOutcome::NoPlayer: return "NoPlayer";
+        case DamageOutcome::VictimGone: return "VictimGone";
+        case DamageOutcome::WrongModule: return "WrongModule";
+        case DamageOutcome::VictimDead: return "VictimDead";
+        case DamageOutcome::NotHostile: return "NotHostile";
+        case DamageOutcome::BadDamage: return "BadDamage";
+        case DamageOutcome::NoLineOfSight: return "NoLineOfSight";
+    }
+    return "?";
+}
+
 struct DamageRequest {
     uintptr_t victim_chr{0};
     int32_t base_damage{0};

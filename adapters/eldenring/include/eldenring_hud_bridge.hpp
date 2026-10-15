@@ -16,11 +16,11 @@ namespace eldenring::ui {
 void PopulateHudStateFromContext(erov::HudState& out, const RuntimeContext& ctx);
 void PopulateSteveStateFromContext(erov::SteveState& steve, const RuntimeContext& ctx, bool dead, bool sleeping);
 
-#if defined(WIN32)
+#if defined(WIN32) && !defined(MC_CORE_TESTS)
 // Native player model visibility control
 void RestoreNativeModel(std::unordered_map<uintptr_t, debug::HiddenWord>& hidden_flags, std::mutex& native_mutex);
 void UpdateNativeModel(uintptr_t player, bool hide, const live::IMemoryReader& reader, uintptr_t base,
-                       const RuntimeContext& ctx, std::unordered_map<uintptr_t, debug::HiddenWord>& hidden_flags,
+                       RuntimeContext& ctx, std::unordered_map<uintptr_t, debug::HiddenWord>& hidden_flags,
                        std::mutex& native_mutex);
 
 // Frame HUD provider callback invoked by Present hook

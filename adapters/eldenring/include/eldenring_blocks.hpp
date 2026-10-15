@@ -356,5 +356,14 @@ inline bool shouldSyncPhysicsProxy(
     return collision_moved || direct_driven || sneak_clamped || pinned;
 }
 
+// Maps block ID to standard footstep/hit sound event name
+inline const char* blockSoundName(mc::BlockId id) {
+    switch (id) {
+        case mc::BlockId::Stone: return "block.stone.step";
+        case mc::BlockId::Dirt: return "block.gravel.step";
+        default: return "block.grass.step";
+    }
+}
+
 } // namespace eldenring::blocks
 
