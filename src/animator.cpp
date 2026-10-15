@@ -1,4 +1,5 @@
 #include "mc/animator.hpp"
+#include <algorithm>
 #include <cmath>
 #include <numbers>
 
@@ -42,8 +43,13 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
 
     const float speed = std::sqrt(input.forward_speed * input.forward_speed +
                                   input.strafe_speed * input.strafe_speed);
-    const float amplitude = std::min(1.0f, speed / 4.317f);
-    stride_ += speed * dt * 4.0f;
+    float max_amp = input.is_sprinting ? 1.25f : 1.0f;
+    if (input.is_crouching) {
+        max_amp *= 0.6f; // Dampen sneak walking stride to avoid unnatural large steps
+    }
+    const float raw_amp = (speed / 4.317f) * (input.is_sprinting ? 1.25f : 1.0f);
+    const float amplitude = std::min(max_amp, raw_amp);
+    stride_ += speed * dt * (input.is_sprinting ? 4.5f : 4.0f);
 
     // Head orientation
     const float head_yaw = input.look_yaw;
@@ -107,6 +113,9 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                     if (input.is_crouching) {
                         // Minecraft ModelBiped: bipedHead.rotationPointY = 1.0F (+1 model pixel down = -5.625 cm canonical Z)
                         pos.z = -5.625f;
+                    } else if (input.is_sprinting) {
+                        // Compensate head pitch against torso forward pitch to maintain level gaze
+                        pitch -= 0.15f;
                     }
                     break;
 
@@ -115,11 +124,15 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                     yaw = body_yaw;
                     if (input.is_crouching) {
                         pitch = 0.5f;
+                    } else if (input.is_sprinting) {
+                        pitch = 0.15f; // Sprint forward lean (~8.6 degrees)
                     }
                     break;
 
                 case StevePart::RightLeg:
                 case StevePart::RightPants:
+                    // Authentic Minecraft Java: limb swing is strictly driven by horizontal displacement (speed > 0).
+                    // In vertical jump/fall (speed == 0), pitch is 0 and legs remain straight and parallel.
                     pitch = std::cos(stride_ * 0.6662f) * 1.4f * amplitude;
                     if (input.is_crouching) {
                         // Minecraft ModelBiped: rotationPointZ = 4.0F (+4 model pixels back = -22.5 cm canonical X)

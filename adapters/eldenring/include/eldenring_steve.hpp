@@ -81,6 +81,13 @@ public:
             } else {
                 smooth_forward_ = smooth_strafe_ = 0.f;
             }
+            const float dy = feet[1] - prev_[1];
+            if (std::abs(dy) <= 2.0f) {
+                const float vy = dy / dt;
+                smooth_vertical_ += (vy - smooth_vertical_) * 0.35f;
+            } else {
+                smooth_vertical_ = 0.f;
+            }
         }
         prev_[0] = feet[0];
         prev_[1] = feet[1];
@@ -88,14 +95,15 @@ public:
         have_prev_ = true;
         in.forward_speed = smooth_forward_;
         in.strafe_speed = smooth_strafe_;
+        in.vertical_speed = smooth_vertical_;
         return in;
     }
-    void reset() { have_prev_ = false; smooth_forward_ = smooth_strafe_ = 0.f; }
+    void reset() { have_prev_ = false; smooth_forward_ = smooth_strafe_ = smooth_vertical_ = 0.f; }
 
 private:
     bool have_prev_{false};
     float prev_[3]{};
-    float smooth_forward_{0.f}, smooth_strafe_{0.f};
+    float smooth_forward_{0.f}, smooth_strafe_{0.f}, smooth_vertical_{0.f};
 };
 
 // Third-person head tracking: the head follows where the camera looks, like Minecraft's: up to 50 degrees off the

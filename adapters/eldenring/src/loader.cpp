@@ -4753,6 +4753,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.block_offhand = g_shield_offhand.load(std::memory_order_relaxed);
         steve.bow_ticks = steve_dead_now ? 0.f : g_bow_ticks.load(std::memory_order_relaxed);
         steve.sneaking = steve_dead_now ? false : g_sneak_active.load(std::memory_order_relaxed);
+        steve.sprinting = (steve_dead_now || steve.sneaking) ? false : g_sprint_active.load(std::memory_order_relaxed);
         out.totem = g_feedback.totem();
         steve.swing = steve_dead_now ? 0.f : g_melee.swingProgress();
         out.hit = g_feedback.hit();
