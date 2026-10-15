@@ -110,7 +110,10 @@ HeldItemStyle heldItemStyle(ItemId item) {
     switch (item) {
         case ItemId::DiamondSword:
         case ItemId::DiamondPickaxe: return HeldItemStyle::Handheld;
-        case ItemId::Bow: return HeldItemStyle::Bow;
+        case ItemId::Bow:
+        case ItemId::BowPulling0:
+        case ItemId::BowPulling1:
+        case ItemId::BowPulling2: return HeldItemStyle::Bow;
         case ItemId::Shield: return HeldItemStyle::Shield;
         default: return HeldItemStyle::Generated;
     }

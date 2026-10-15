@@ -250,6 +250,52 @@ TEST(ItemModelTest, ShieldItemStyleIsShield) {
     EXPECT_EQ(heldItemStyle(ItemId::Shield), HeldItemStyle::Shield);
 }
 
+TEST(ItemModelTest, BowPullingSpritesHaveBowStyle) {
+    EXPECT_EQ(heldItemStyle(ItemId::BowPulling0), HeldItemStyle::Bow);
+    EXPECT_EQ(heldItemStyle(ItemId::BowPulling1), HeldItemStyle::Bow);
+    EXPECT_EQ(heldItemStyle(ItemId::BowPulling2), HeldItemStyle::Bow);
+}
+
+TEST(ItemModelTest, BowStyleHasDistinctOrientationFromGeneratedStyle) {
+    // A diagonal bow arc: from (2, 2) to (14, 14)
+    Atlas a(16, 16);
+    for (int i = 0; i < 13; ++i) a.set(2 + i, 2 + i);
+    const RigMesh bow_mesh = buildHeldItemMesh(a.sprite(0, 0, 16, 16), HeldItemStyle::Bow, kCanonical);
+    const RigMesh gen_mesh = buildHeldItemMesh(a.sprite(0, 0, 16, 16), HeldItemStyle::Generated, kCanonical);
+    ASSERT_FALSE(bow_mesh.vertices.empty());
+    ASSERT_FALSE(gen_mesh.vertices.empty());
+
+    // Compute bounding boxes in canonical rig space (X forward, Y left, Z up)
+    auto bbox = [](const RigMesh& m) {
+        float xmin = 1e9f, xmax = -1e9f, ymin = 1e9f, ymax = -1e9f, zmin = 1e9f, zmax = -1e9f;
+        for (const auto& v : m.vertices) {
+            xmin = std::min(xmin, v.x); xmax = std::max(xmax, v.x);
+            ymin = std::min(ymin, v.y); ymax = std::max(ymax, v.y);
+            zmin = std::min(zmin, v.z); zmax = std::max(zmax, v.z);
+        }
+        return std::array<float, 3>{xmax - xmin, ymax - ymin, zmax - zmin};
+    };
+
+    const auto bow_span = bbox(bow_mesh);
+    const auto gen_span = bbox(gen_mesh);
+
+    // In Generated style, the item is unrotated [0,0,0], so its span along X and Y is completely different
+    // from Bow style [-80, 260, -40], which turns the bow forward and tilts it.
+    EXPECT_GT(std::fabs(bow_span[0] - gen_span[0]), 4.0f * kCmPerModelPixel) << "Bow style must have different forward span than Generated";
+    EXPECT_GT(std::fabs(bow_span[2] - gen_span[2]), 4.0f * kCmPerModelPixel) << "Bow style must have different vertical span than Generated";
+
+    // All pulling stages produce meshes consistent with Bow style, not Generated
+    for (ItemId pull_id : {ItemId::BowPulling0, ItemId::BowPulling1, ItemId::BowPulling2}) {
+        const RigMesh pull_mesh = buildHeldItemMesh(a.sprite(0, 0, 16, 16), heldItemStyle(pull_id), kCanonical);
+        const auto pull_span = bbox(pull_mesh);
+        EXPECT_NEAR(pull_span[0], bow_span[0], 1e-4f);
+        EXPECT_NEAR(pull_span[1], bow_span[1], 1e-4f);
+        EXPECT_NEAR(pull_span[2], bow_span[2], 1e-4f);
+    }
+}
+
+
+
 TEST(ItemModelTest, LeftHandItemsMirrorAcrossTheBody) {
     Atlas a(16, 16);
     for (int y = 2; y < 14; ++y) {
