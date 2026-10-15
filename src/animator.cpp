@@ -133,6 +133,9 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                     } else if (input.is_blocking && !input.block_offhand) {
                         pitch = pitch * 0.5f - kPi * 0.3f + head_pitch;
                         yaw = -kPi / 6.0f + head_yaw;
+                    } else if (input.is_blocking && input.block_offhand) {
+                        // Minecraft ArmPose.ITEM: weapon arm held ready with dampened swing while offhand blocks
+                        pitch = pitch * 0.5f - kPi * 0.1f;
                     } else if (input.bow_charge > 0.0f) {
                         pitch = -kPi * 0.5f + head_pitch;
                         yaw = -0.1f + head_yaw - (input.bow_offhand ? 0.4f : 0.0f);
@@ -154,6 +157,9 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                         // Idle breathing oscillation
                         roll += std::sin(age_ * 0.067f) * 0.05f;
                     }
+                    if (input.is_crouching) {
+                        pitch += 0.4f;
+                    }
                     break;
                 }
 
@@ -167,6 +173,8 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                     } else if (input.is_blocking && input.block_offhand) {
                         pitch = pitch * 0.5f - kPi * 0.3f + head_pitch;
                         yaw = kPi / 6.0f + head_yaw;
+                    } else if (input.is_blocking && !input.block_offhand) {
+                        pitch = pitch * 0.5f;
                     } else if (input.bow_charge > 0.0f) {
                         pitch = -kPi * 0.5f + head_pitch;
                         yaw = 0.1f + head_yaw + (input.bow_offhand ? 0.0f : 0.4f);
@@ -175,6 +183,9 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                         pitch += body_yaw;
                     } else {
                         roll -= std::sin(age_ * 0.067f) * 0.05f;
+                    }
+                    if (input.is_crouching) {
+                        pitch += 0.4f;
                     }
                     break;
                 }

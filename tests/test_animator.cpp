@@ -157,6 +157,50 @@ TEST(SteveAnimatorTest, OnlyTheArmThatHoldsTheRaisedShieldMoves) {
     EXPECT_GT(off_shield.getTransforms()[ra].rot.w, 0.97f);
 }
 
+TEST(SteveAnimatorTest, ShieldBlockCombatStanceAndCrouchBracing) {
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+
+    mc::SteveAnimator anim_stand_block, anim_crouch_block, anim_walk_block, anim_walk_plain;
+    mc::SteveAnimInput in_stand{}, in_crouch{}, in_wb{}, in_wp{};
+
+    // 1. Standing block vs Crouching block
+    in_stand.is_blocking = true;
+    in_stand.block_offhand = true;
+
+    in_crouch.is_blocking = true;
+    in_crouch.block_offhand = true;
+    in_crouch.is_crouching = true;
+
+    anim_stand_block.update(0.05f, in_stand);
+    anim_crouch_block.update(0.05f, in_crouch);
+
+    const float stand_pitch = anim_stand_block.getTransforms()[la].rot.y;
+    const float crouch_pitch = anim_crouch_block.getTransforms()[la].rot.y;
+
+    // In vanilla Minecraft, crouching adds +0.4f pitch to the arms to align with the forward tilted torso
+    EXPECT_NE(stand_pitch, crouch_pitch) << "Crouching must tilt shield arm to align with torso";
+    EXPECT_GT(crouch_pitch, stand_pitch) << "Crouch pitch must be more forward/downward";
+
+    // 2. Weapon arm swing is dampened while offhand blocks on the move
+    in_wp.forward_speed = 4.317f;
+    in_wb.forward_speed = 4.317f;
+    in_wb.is_blocking = true;
+    in_wb.block_offhand = true;
+
+    for (int i = 0; i < 5; ++i) {
+        anim_walk_plain.update(0.05f, in_wp);
+        anim_walk_block.update(0.05f, in_wb);
+    }
+
+    const float plain_right_pitch = anim_walk_plain.getTransforms()[ra].rot.y;
+    const float block_right_pitch = anim_walk_block.getTransforms()[ra].rot.y;
+
+    // Plain walk swing reaches large angles (~0.4-0.8 rad); while blocking, right arm has dampened half-swing
+    EXPECT_LT(std::fabs(block_right_pitch), std::fabs(plain_right_pitch) + 0.1f);
+}
+
+
 TEST(SteveAnimatorTest, SwordSwingPosesFollowsAuthenticArcAndHeadPitch) {
     const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
     const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
