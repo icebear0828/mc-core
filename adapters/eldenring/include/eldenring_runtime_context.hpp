@@ -135,6 +135,10 @@ struct ModeConfig {
     std::atomic<bool> bullet_fire_enabled{false};
     std::atomic<bool> summon_pending{false};
     std::atomic<int> heal_pending{0};
+    std::atomic<bool> shield_blocking{false};
+    std::atomic<bool> shield_offhand{false};
+    std::atomic<bool> knockdown_fix{true};
+    std::atomic<bool> los_enabled{false};
 };
 
 struct PlayerSystems {
@@ -267,6 +271,10 @@ public:
         mode_.bullet_fire_enabled.store(false);
         mode_.summon_pending.store(false);
         mode_.heal_pending.store(0);
+        mode_.shield_blocking.store(false);
+        mode_.shield_offhand.store(false);
+        mode_.knockdown_fix.store(true);
+        mode_.los_enabled.store(false);
 
         // Reset Player
         player_.survival = live::SurvivalState{};

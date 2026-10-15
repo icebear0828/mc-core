@@ -77,8 +77,14 @@ add_executable(mc_tests
     test_eldenring_inventory_controller.cpp
     test_eldenring_debug_probes.cpp
     test_eldenring_hud_bridge.cpp
+    test_eldenring_locomotion.cpp
+    test_eldenring_world_runtime.cpp
+    test_eldenring_combat_service.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/ui/inventory_controller.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/ui/hud_bridge.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/movement/player_locomotion.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/world/voxel_world_runtime.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/combat/combat_service.cpp
 )
 
 
