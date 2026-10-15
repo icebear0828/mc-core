@@ -1141,6 +1141,7 @@ void RenderFrame(IDXGISwapChain* sc) {
         anim_in.block_offhand = steve.block_offhand;
         anim_in.is_crouching = steve.sneaking;
         anim_in.is_sprinting = steve.sprinting;
+        anim_in.on_ground = steve.on_ground;
         g_head.update(steve.cam.forward.x, steve.cam.forward.y, steve.cam.forward.z, steve.yaw, anim_in);
         g_anim.update(dt, anim_in);
         if (g_trace_left.load() > 0) {

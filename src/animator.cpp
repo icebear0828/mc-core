@@ -1,4 +1,5 @@
 #include "mc/animator.hpp"
+#include <algorithm>
 #include <cmath>
 #include <numbers>
 
@@ -48,7 +49,13 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
     }
     const float raw_amp = (speed / 4.317f) * (input.is_sprinting ? 1.25f : 1.0f);
     const float amplitude = std::min(max_amp, raw_amp);
-    stride_ += speed * dt * (input.is_sprinting ? 4.5f : 4.0f);
+    if (input.on_ground) {
+        stride_ += speed * dt * (input.is_sprinting ? 4.5f : 4.0f);
+    }
+
+    // Jump / Air dynamics factor based on vertical speed
+    // vy > 0: rising (jump take-off), vy < 0: falling
+    const float jump_rise_ratio = !input.on_ground ? std::clamp(input.vertical_speed / 4.0f, -0.5f, 1.0f) : 0.0f;
 
     // Head orientation
     const float head_yaw = input.look_yaw;
@@ -130,7 +137,19 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
 
                 case StevePart::RightLeg:
                 case StevePart::RightPants:
-                    pitch = std::cos(stride_ * 0.6662f) * 1.4f * amplitude;
+                    if (input.on_ground) {
+                        pitch = std::cos(stride_ * 0.6662f) * 1.4f * amplitude;
+                    } else {
+                        // In the air: legs tilt back in rising phase and splay slightly outward for aerodynamics
+                        if (jump_rise_ratio > 0.0f) {
+                            pitch = jump_rise_ratio * 0.25f;
+                            roll = 0.08f;
+                        } else {
+                            // Falling phase: legs extend downward to meet the ground
+                            pitch = std::max(0.0f, jump_rise_ratio * 0.1f);
+                            roll = 0.03f;
+                        }
+                    }
                     if (input.is_crouching) {
                         // Minecraft ModelBiped: rotationPointZ = 4.0F (+4 model pixels back = -22.5 cm canonical X)
                         //                      rotationPointY = 9.0F (-3 model pixels up = +16.875 cm canonical Z)
@@ -141,7 +160,17 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
 
                 case StevePart::LeftLeg:
                 case StevePart::LeftPants:
-                    pitch = std::cos(stride_ * 0.6662f + kPi) * 1.4f * amplitude;
+                    if (input.on_ground) {
+                        pitch = std::cos(stride_ * 0.6662f + kPi) * 1.4f * amplitude;
+                    } else {
+                        if (jump_rise_ratio > 0.0f) {
+                            pitch = jump_rise_ratio * 0.25f;
+                            roll = -0.08f;
+                        } else {
+                            pitch = std::max(0.0f, jump_rise_ratio * 0.1f);
+                            roll = -0.03f;
+                        }
+                    }
                     if (input.is_crouching) {
                         pos.x = -22.5f;
                         pos.z = 16.875f;
@@ -150,7 +179,13 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
 
                 case StevePart::RightArm:
                 case StevePart::RightSleeve: {
-                    pitch = std::cos(stride_ * 0.6662f + kPi) * amplitude;
+                    if (input.on_ground) {
+                        pitch = std::cos(stride_ * 0.6662f + kPi) * amplitude;
+                    } else {
+                        // In the air: arms spread outward slightly and raise for flight balance
+                        pitch = -0.2f - std::max(0.0f, jump_rise_ratio) * 0.15f;
+                        roll = 0.12f;
+                    }
                     if (input.arms_sway_only) {
                         pitch = std::sin(age_ * 0.067f) * 0.05f;
                     } else if (input.arms_forward) {
@@ -190,7 +225,13 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
 
                 case StevePart::LeftArm:
                 case StevePart::LeftSleeve: {
-                    pitch = std::cos(stride_ * 0.6662f) * amplitude;
+                    if (input.on_ground) {
+                        pitch = std::cos(stride_ * 0.6662f) * amplitude;
+                    } else {
+                        // In the air: arms spread outward slightly and raise for flight balance
+                        pitch = -0.2f - std::max(0.0f, jump_rise_ratio) * 0.15f;
+                        roll = -0.12f;
+                    }
                     if (input.arms_sway_only) {
                         pitch = -std::sin(age_ * 0.067f) * 0.05f;
                     } else if (input.arms_forward) {

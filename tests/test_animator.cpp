@@ -381,5 +381,56 @@ TEST(SteveAnimatorTest, WalkAndSprintKinematicsDynamics) {
     EXPECT_LT(max_sneak_leg, max_walk_leg * 0.7f) << "Sneak walking leg swing must be significantly dampened";
 }
 
+TEST(SteveAnimatorTest, JumpAndAirStanceKinematicsDynamics) {
+    const size_t rl = static_cast<size_t>(mc::StevePart::RightLeg);
+    const size_t ll = static_cast<size_t>(mc::StevePart::LeftLeg);
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+
+    mc::SteveAnimator anim_ground_run, anim_jump_up, anim_fall_down;
+    mc::SteveAnimInput in_ground_run{}, in_jump_up{}, in_fall_down{};
+
+    // Ground run: 4.317 m/s on ground
+    in_ground_run.forward_speed = 4.317f;
+    in_ground_run.on_ground = true;
+
+    // Jump rising: horizontal speed + vy = +4.5 m/s (rising phase)
+    in_jump_up.forward_speed = 4.317f;
+    in_jump_up.on_ground = false;
+    in_jump_up.vertical_speed = 4.5f;
+
+    // Falling: vy = -6.0 m/s (falling phase)
+    in_fall_down.forward_speed = 4.317f;
+    in_fall_down.on_ground = false;
+    in_fall_down.vertical_speed = -6.0f;
+
+    for (int i = 0; i < 10; ++i) {
+        anim_ground_run.update(0.05f, in_ground_run);
+        anim_jump_up.update(0.05f, in_jump_up);
+        anim_fall_down.update(0.05f, in_fall_down);
+    }
+
+    const auto& t_jump = anim_jump_up.getTransforms();
+    const auto& t_fall = anim_fall_down.getTransforms();
+
+    // 1. Air Decoupling: In the air, legs do not bicycle/stride with ground frequency;
+    // Rising jump legs tilt backwards (pitch > 0) with slight outward splay
+    EXPECT_GT(t_jump[rl].rot.y, 0.05f) << "Right leg must tilt back in rising jump (pitch > 0)";
+    EXPECT_GT(t_jump[ll].rot.y, 0.05f) << "Left leg must tilt back in rising jump (pitch > 0)";
+
+    // 2. Outward splay of legs during jump (Roll):
+    // Right leg rolls slightly right, left leg rolls slightly left for aerodynamic balance
+    EXPECT_GT(t_jump[rl].rot.x, 0.0f) << "Right leg rolls slightly outward";
+    EXPECT_LT(t_jump[ll].rot.x, 0.0f) << "Left leg rolls slightly outward";
+
+    // 3. Arms poise during jump: arms spread slightly outward and raise for balance
+    EXPECT_LT(t_jump[ra].rot.y, 0.0f) << "Right arm raises slightly during jump";
+    EXPECT_LT(t_jump[la].rot.y, 0.0f) << "Left arm raises slightly during jump";
+
+    // 4. Falling phase: legs extend downward to prepare for touchdown (pitch diminishes towards 0)
+    EXPECT_LT(t_fall[rl].rot.y, t_jump[rl].rot.y) << "Legs straighten downward during fall to meet ground";
+    EXPECT_LT(t_fall[ll].rot.y, t_jump[ll].rot.y) << "Legs straighten downward during fall to meet ground";
+}
+
 
 

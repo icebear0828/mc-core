@@ -29,6 +29,8 @@ struct SteveAnimInput {
     float swing_progress{0.f};// [0, 1] 0 = idle, 1 = completed
     bool is_crouching{false};
     bool is_sprinting{false};
+    bool on_ground{true};
+    float vertical_speed{0.f}; // m/s, >0 rising, <0 falling
     bool is_blocking{false};
     bool block_offhand{false}; // the shield is held in the left hand: only the left arm is raised (ArmPose.BLOCK), otherwise only the right one
     float bow_charge{0.f};    // [0, 1]
