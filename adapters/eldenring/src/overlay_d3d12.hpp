@@ -82,6 +82,7 @@ struct SteveState {
     bool sprinting{false};      // sprinting: forward lean and enlarged stride dynamics
     float speed_mps{0.f};       // horizontal speed, for the walking bob
     bool on_ground{true};
+    bool sleeping{false};      // player resting at grace: sleeping kinematics
     bool shadow{false};        // draw the blob shadows under the figure and the summons (mc_er_steve.txt: shadow=1)
     bool ground_valid{false};  // ground_y is the height of the ground under the feet this frame (otherwise the feet's own height is used)
     float ground_y{0.f};

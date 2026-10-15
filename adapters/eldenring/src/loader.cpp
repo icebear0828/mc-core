@@ -4815,7 +4815,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     out.show = have_state && !ms.menu_focused && !ms.popup_open && !ls.screen_loading && fade < 0.02f;
 
     if (g_hide_native.load()) {
-        const bool want_hidden = out.show && out.mc_mode;
+        const bool want_hidden = out.mc_mode && have_state && !ls.screen_loading;
         g_native_hide_wanted.store(want_hidden);
         UpdateNativeModel(static_cast<uintptr_t>(player), want_hidden);
         static uint64_t last_report_ms = 0;
@@ -4852,6 +4852,9 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.feet[2] = feet[2];
         steve.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) + g_steve_yaw_offset;
         if (g_flying.load(std::memory_order_relaxed)) steve.yaw = g_fly_yaw.load(std::memory_order_relaxed); // the game does not turn a character that never sees a key
+        float grace_dist = 999.f;
+        const bool near_grace = findNearestGrace(g_reader, g_img.base, world, feet, 2.8f, &grace_dist);
+        steve.sleeping = near_grace && (ms.menu_focused || fade >= 0.02f);
     }
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
@@ -4869,7 +4872,12 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     steve.first_person = g_first_person.load() && g_slot_probe.load() < 0;
     steve.speed_mps = g_walk_speed.load();
     steve.on_ground = g_on_ground.load();
-    if (g_slot_probe.load() >= 0 || g_first_person.load()) steve.draw = false; // slot probing: show only the native model, with the one slot missing
+    if (steve.sleeping) {
+        steve.first_person = false;
+        steve.draw = true; // Always draw Steve when sleeping at a grace
+    } else if (g_slot_probe.load() >= 0 || g_first_person.load()) {
+        steve.draw = false; // slot probing: show only the native model, with the one slot missing
+    }
     {   // why Steve is or is not drawn, logged when any of the inputs changes
         struct Seen { bool draw, enabled, first_person, show, mc, cam_ok; int slot_probe; bool valid; };
         static Seen last{};

@@ -7,6 +7,7 @@
 
 #include "mc/animator.hpp"
 #include "mc/death.hpp"
+#include "mc/sleep.hpp"
 
 #include <algorithm>
 #include <array>
@@ -51,6 +52,9 @@ inline PartMatrices posedMatrices(const mc::SteveAnimator::PartTransforms& t, co
 
 using mc::deathFlipFraction;
 using mc::rig::deathFallMatrix;
+using mc::sleepTransitionFraction;
+using mc::rig::sleepPoseMatrix;
+using mc::PlayerSleepTracker;
 
 // Walking speed of the player from successive standing points, relative to the heading. A jump of more than 1.5 m in
 // one update (floating origin re-base, teleport) is not movement: it resets the state.

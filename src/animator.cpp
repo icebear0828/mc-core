@@ -67,7 +67,48 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
         float roll = 0.f;
         Vec3 pos{0.f, 0.f, 0.f};
 
-        if (input.is_gliding) {
+        if (input.is_sleeping) {
+            // Authentic Minecraft sleeping pose:
+            // Limbs straight, parallel, aligned with sleeping torso.
+            // Subtle breathing oscillation on arms and chest.
+            const float breath = std::sin(age_ * 0.1047f) * 0.025f; // ~3.0s cycle
+            switch (part) {
+                case StevePart::Head:
+                case StevePart::Hat:
+                    pitch = -0.05f; // Slight pillow tilt
+                    yaw = 0.0f;     // Locked head yaw
+                    roll = 0.0f;
+                    break;
+                case StevePart::Body:
+                case StevePart::Jacket:
+                    pitch = breath * 0.5f;
+                    yaw = 0.0f;
+                    roll = 0.0f;
+                    break;
+                case StevePart::RightLeg:
+                case StevePart::RightPants:
+                case StevePart::LeftLeg:
+                case StevePart::LeftPants:
+                    pitch = 0.0f;
+                    yaw = 0.0f;
+                    roll = 0.0f;
+                    break;
+                case StevePart::RightArm:
+                case StevePart::RightSleeve:
+                    pitch = 0.0f;
+                    yaw = 0.0f;
+                    roll = breath;
+                    break;
+                case StevePart::LeftArm:
+                case StevePart::LeftSleeve:
+                    pitch = 0.0f;
+                    yaw = 0.0f;
+                    roll = -breath;
+                    break;
+                default:
+                    break;
+            }
+        } else if (input.is_gliding) {
             switch (part) {
                 case StevePart::Head:
                 case StevePart::Hat:
