@@ -71,6 +71,7 @@
 #include "eldenring_particles.hpp"
 #include "eldenring_model.hpp"
 #include "eldenring_pick.hpp"
+#include "eldenring_entity_manager.hpp"
 #include "eldenring_steve.hpp"
 #include "eldenring_singletons.hpp"
 #include "eldenring_state.hpp"
@@ -1817,48 +1818,20 @@ void* __fastcall ClampDetour(void* module, int32_t value) {
     return r;
 }
 
-std::mutex g_cached_enemies_mutex;
-std::vector<EnemyInfo> g_cached_enemies;
 
 void EnqueueNearestHostile() {
-    std::vector<EnemyInfo> list;
-    {
-        std::lock_guard<std::mutex> g(g_cached_enemies_mutex);
-        list = g_cached_enemies;
-    }
-    auto find_best = [](const std::vector<EnemyInfo>& l) -> const EnemyInfo* {
-        const EnemyInfo* b = nullptr;
-        float best_d = 25.f;
-        for (const EnemyInfo& e : l) {
-            if (!e.hostile) continue;
-            const float d = std::sqrt(e.rel_x * e.rel_x + e.rel_y * e.rel_y + e.rel_z * e.rel_z);
-            if (d <= best_d) {
-                best_d = d;
-                b = &e;
-            }
-        }
-        return b;
-    };
-    const EnemyInfo* best = find_best(list);
-    if (best == nullptr) {
-        std::vector<EnemyInfo> full_list;
-        if (enumerateEnemies(g_reader, g_img.base, full_list, 2000)) {
-            list = std::move(full_list);
-            best = find_best(list);
-            if (best != nullptr) {
-                std::lock_guard<std::mutex> g(g_cached_enemies_mutex);
-                g_cached_enemies = list;
-            }
-        }
-    }
-    if (best == nullptr) {
+    const uintptr_t player = PlayerChrPtr();
+    float feet[3] = {};
+    if (player != 0) detail::readPhysicsPosition(g_reader, g_img.base, player, feet);
+    const auto res = EntityManager::instance().findNearestHostileWithFallback(25.0f, g_reader, g_img.base, NowTick(), feet);
+    if (!res.found) {
         Log("F8: no hostile enemy within 25 m");
         return;
     }
-    const float best_d = std::sqrt(best->rel_x * best->rel_x + best->rel_y * best->rel_y + best->rel_z * best->rel_z);
-    const bool ok = g_queue.enqueue(best->chr, 50, NowTick());
-    Log("F8: queued 50 on chr=%p npc=%d team=%u hp=%d dist=%.1f m (%s)", reinterpret_cast<void*>(best->chr), best->npc_id,
-        static_cast<unsigned>(best->team), best->hp, best_d, ok ? "ok" : "queue full");
+    const float best_d = std::sqrt(res.info.rel_x * res.info.rel_x + res.info.rel_y * res.info.rel_y + res.info.rel_z * res.info.rel_z);
+    const bool ok = g_queue.enqueue(res.info.chr, 50, NowTick());
+    Log("F8: queued 50 on chr=%p npc=%d team=%u hp=%d dist=%.1f m (%s)", reinterpret_cast<void*>(res.info.chr), res.info.npc_id,
+        static_cast<unsigned>(res.info.team), res.info.hp, best_d, ok ? "ok" : "queue full");
 }
 
 // MC left click: the hostile enemy under the crosshair, in melee reach.
@@ -1873,28 +1846,10 @@ void ClickAttack(float charged) {
         Log("click: no camera or player");
         return;
     }
-    std::vector<EnemyInfo> list;
-    {
-        std::lock_guard<std::mutex> g(g_cached_enemies_mutex);
-        list = g_cached_enemies;
-    }
     const float cam_rel[3] = {cam.position[0] - feet[0], cam.position[1] - feet[1], cam.position[2] - feet[2]};
-    int idx = list.empty() ? -1 : pickTarget(cam_rel, cam.forward, list);
-    if (idx < 0) {
-        // Fallback: If cached enemies missed the target, do a full scan (up to 2000 enemies)
-        std::vector<EnemyInfo> full_list;
-        if (enumerateEnemies(g_reader, g_img.base, full_list, 2000)) {
-            const int full_idx = pickTarget(cam_rel, cam.forward, full_list);
-            if (full_idx >= 0) {
-                list = std::move(full_list);
-                idx = full_idx;
-                std::lock_guard<std::mutex> g(g_cached_enemies_mutex);
-                g_cached_enemies = list;
-            } else {
-                list = std::move(full_list);
-            }
-        }
-    }
+    const auto pick_res = EntityManager::instance().pickTargetWithFallback(cam_rel, cam.forward, g_reader, g_img.base, NowTick(), feet);
+    const int idx = pick_res.index;
+    const auto& list = pick_res.list;
     if (idx < 0) {
         int near_count = 0;
         char detail_buf[512];
@@ -3038,15 +2993,11 @@ void EnemiesBlockCollisionStep(const float player_feet[3]) {
     if (!g_mc_mode.load(std::memory_order_relaxed)) return;
     std::vector<EnemyInfo> enemies;
     if (!enumerateEnemies(g_reader, g_img.base, enemies, 512)) {
-        std::lock_guard<std::mutex> g(g_cached_enemies_mutex);
-        g_cached_enemies.clear();
+        EntityManager::instance().clearCache();
         return;
     }
 
-    {
-        std::lock_guard<std::mutex> g(g_cached_enemies_mutex);
-        g_cached_enemies = enemies;
-    }
+    EntityManager::instance().updateCacheFromGameThread(enemies);
 
     // Process queued TNT explosion damage intents on game thread!
     ProcessTntExplosionsOnGameThread(enemies);

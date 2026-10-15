@@ -198,3 +198,106 @@ TEST(McCoreShieldTest, ShieldControllerRequiresHoldingForRaiseDelay) {
     shield.update(0.01f, false, true);
     EXPECT_FALSE(shield.isBlocking());
 }
+
+// ============================================================================
+// 6. Targeting & Spatial Query Tests
+// ============================================================================
+#include "mc/targeting.hpp"
+
+TEST(McCoreTargetingTest, PickTargetPicksEntityUnderCrosshairWithinReach) {
+    const float cam[3] = {0.0f, 1.7f, 0.0f};
+    const float dir[3] = {0.0f, 0.0f, 1.0f}; // looking +Z
+
+    std::vector<mc::TargetableEntity> entities;
+    mc::TargetableEntity e1;
+    e1.id = 1001;
+    e1.rel_pos = {0.0f, 0.0f, 2.0f}; // 2m ahead, torso at y=1.0
+    e1.is_hostile = true;
+    entities.push_back(e1);
+
+    int idx = mc::pickTarget(cam, dir, entities);
+    EXPECT_EQ(idx, 0);
+
+    // Entity farther than 4.5m reach is skipped
+    entities[0].rel_pos = {0.0f, 0.0f, 5.0f};
+    EXPECT_EQ(mc::pickTarget(cam, dir, entities), -1);
+
+    // Dead entity is skipped
+    entities[0].rel_pos = {0.0f, 0.0f, 2.0f};
+    entities[0].is_alive = false;
+    EXPECT_EQ(mc::pickTarget(cam, dir, entities), -1);
+}
+
+TEST(McCoreTargetingTest, PickTargetPrioritizesHostileOverPassive) {
+    const float cam[3] = {0.0f, 1.7f, 0.0f};
+    const float dir[3] = {0.0f, 0.0f, 1.0f};
+
+    std::vector<mc::TargetableEntity> entities;
+    mc::TargetableEntity sheep;
+    sheep.id = 1;
+    sheep.rel_pos = {0.0f, 0.0f, 2.0f};
+    sheep.is_hostile = false; // passive
+    entities.push_back(sheep);
+
+    mc::TargetableEntity zombie;
+    zombie.id = 2;
+    zombie.rel_pos = {0.0f, 0.0f, 3.0f};
+    zombie.is_hostile = true;
+    entities.push_back(zombie);
+
+    // Should prioritize the hostile zombie even though sheep is closer
+    int idx = mc::pickTarget(cam, dir, entities);
+    EXPECT_EQ(idx, 1);
+    EXPECT_EQ(entities[idx].id, 2);
+}
+
+TEST(McCoreTargetingTest, FindNearestHostileReturnsClosestWithinRadius) {
+    std::vector<mc::TargetableEntity> entities;
+    mc::TargetableEntity far_mob;
+    far_mob.id = 10;
+    far_mob.rel_pos = {10.0f, 0.0f, 10.0f}; // ~14.1m
+    far_mob.is_hostile = true;
+    entities.push_back(far_mob);
+
+    mc::TargetableEntity near_mob;
+    near_mob.id = 20;
+    near_mob.rel_pos = {1.0f, 0.0f, 2.0f}; // ~2.2m
+    near_mob.is_hostile = true;
+    entities.push_back(near_mob);
+
+    mc::TargetableEntity passive_close;
+    passive_close.id = 30;
+    passive_close.rel_pos = {0.5f, 0.0f, 0.5f};
+    passive_close.is_hostile = false;
+    entities.push_back(passive_close);
+
+    int idx = mc::findNearestHostile(entities, 25.0f);
+    EXPECT_EQ(idx, 1);
+    EXPECT_EQ(entities[idx].id, 20);
+
+    // If max radius is 2m, neither hostile is found
+    EXPECT_EQ(mc::findNearestHostile(entities, 2.0f), -1);
+}
+
+TEST(McCoreTargetingTest, ScanThrottlePreventsRedundantScansWhileStationary) {
+    mc::ScanThrottle throttle;
+    const mc::Vec3 pos1{10.0f, 2.0f, 20.0f};
+
+    // First scan at t=1000ms: no enemies found
+    throttle.record(1000, pos1, true);
+
+    // 50ms later at same position: should throttle!
+    EXPECT_TRUE(throttle.shouldThrottle(1050, pos1, 200, 0.5f));
+
+    // 250ms later (exceeds 200ms window): should NOT throttle!
+    EXPECT_FALSE(throttle.shouldThrottle(1250, pos1, 200, 0.5f));
+
+    // Moved > 0.5m even within 50ms: should NOT throttle!
+    const mc::Vec3 moved_pos{10.8f, 2.0f, 20.0f};
+    EXPECT_FALSE(throttle.shouldThrottle(1050, moved_pos, 200, 0.5f));
+
+    // If last scan found enemies (empty == false), should NEVER throttle
+    throttle.record(2000, pos1, false);
+    EXPECT_FALSE(throttle.shouldThrottle(2050, pos1, 200, 0.5f));
+}
+
