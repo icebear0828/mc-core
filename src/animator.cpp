@@ -142,8 +142,12 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                         pitch = -1.7f + std::abs(std::sin(age_ * 1.5f)) * 0.15f;
                         yaw = -0.3f;
                     } else if (input.swing_progress > 0.0f) {
-                        const float ease = 1.0f - std::pow(1.0f - input.swing_progress, 4.0f);
-                        pitch -= std::sin(ease * kPi) * 1.2f;
+                        float f = 1.0f - input.swing_progress;
+                        f *= f;
+                        f *= f;
+                        const float f1 = std::sin((1.0f - f) * kPi);
+                        const float f2 = std::sin(input.swing_progress * kPi) * -(head_pitch - 0.7f) * 0.75f;
+                        pitch -= f1 * 1.2f + f2;
                         yaw += body_yaw * 2.0f;
                         roll -= std::sin(input.swing_progress * kPi) * 0.4f;
                     } else {
@@ -166,6 +170,9 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                     } else if (input.bow_charge > 0.0f) {
                         pitch = -kPi * 0.5f + head_pitch;
                         yaw = 0.1f + head_yaw + (input.bow_offhand ? 0.0f : 0.4f);
+                    } else if (input.swing_progress > 0.0f) {
+                        yaw += body_yaw;
+                        pitch += body_yaw;
                     } else {
                         roll -= std::sin(age_ * 0.067f) * 0.05f;
                     }

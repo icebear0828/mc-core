@@ -156,3 +156,37 @@ TEST(SteveAnimatorTest, OnlyTheArmThatHoldsTheRaisedShieldMoves) {
     EXPECT_LT(off_shield.getTransforms()[la].rot.w, 0.92f);
     EXPECT_GT(off_shield.getTransforms()[ra].rot.w, 0.97f);
 }
+
+TEST(SteveAnimatorTest, SwordSwingPosesFollowsAuthenticArcAndHeadPitch) {
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+    const size_t body = static_cast<size_t>(mc::StevePart::Body);
+
+    mc::SteveAnimator anim_level, anim_down, anim_up;
+    mc::SteveAnimInput in_level{}, in_down{}, in_up{};
+
+    in_level.swing_progress = 0.5f;
+
+    in_down.swing_progress = 0.5f;
+    in_down.look_pitch = 0.8f; // looking down (Minecraft: positive pitch is down)
+
+    in_up.swing_progress = 0.5f;
+    in_up.look_pitch = -0.8f; // looking up
+
+    anim_level.update(0.05f, in_level);
+    anim_down.update(0.05f, in_down);
+    anim_up.update(0.05f, in_up);
+
+    // 1. Torso twists during swing
+    EXPECT_NE(anim_level.getTransforms()[body].rot.z, 0.0f) << "Body must twist during swing";
+
+    // 2. Left arm reacts to torso twist
+    EXPECT_NE(anim_level.getTransforms()[la].rot.z, 0.0f) << "Left arm must react to torso twist during swing";
+
+    // 3. Head pitch modifies swing arc (looking down slashes lower than looking up)
+    const float pitch_down = anim_down.getTransforms()[ra].rot.y;
+    const float pitch_up = anim_up.getTransforms()[ra].rot.y;
+    EXPECT_NE(pitch_down, pitch_up) << "Swing trajectory must track vertical look pitch";
+    EXPECT_GT(std::fabs(pitch_down - pitch_up), 0.15f) << "Significant vertical swing angle difference";
+}
+
