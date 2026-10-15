@@ -199,6 +199,20 @@ TEST(McCoreShieldTest, ShieldControllerRequiresHoldingForRaiseDelay) {
     EXPECT_FALSE(shield.isBlocking());
 }
 
+TEST(McCoreShieldTest, ShieldBlockingEnforcesSneakSpeedAndCancelsSprint) {
+    const float walk = 4.317f;
+    const float sprint = 5.612f;
+    const float sneak = 1.295f;
+
+    // Shield blocking overrides walking and sprinting to sneak speed
+    EXPECT_FLOAT_EQ(mc::effectiveMovementSpeed(walk, sprint, sneak, false, false, true), sneak);
+    EXPECT_FLOAT_EQ(mc::effectiveMovementSpeed(walk, sprint, sneak, false, true, true), sneak);
+    EXPECT_FLOAT_EQ(mc::effectiveMovementSpeed(walk, sprint, sneak, true, false, true), sneak);
+    EXPECT_FLOAT_EQ(mc::effectiveMovementSpeed(walk, sprint, sneak, false, true, false), sprint);
+    EXPECT_FLOAT_EQ(mc::effectiveMovementSpeed(walk, sprint, sneak, false, false, false), walk);
+}
+
+
 // ============================================================================
 // 6. Targeting & Spatial Query Tests
 // ============================================================================
@@ -335,6 +349,27 @@ TEST(McCoreSprintTest, FovSmoothlyTransitionsToSprintMultiplier) {
     }
     EXPECT_NEAR(sprint.fovMultiplier(), mc::SprintController::kFovSprintMultiplier, 0.01f);
 }
+
+TEST(McCoreSprintTest, ShieldBlockingCancelsAndSuppressesSprint) {
+    mc::SprintController sprint;
+    sprint.update(0.05f, true, false, true, 20, false);
+    EXPECT_TRUE(sprint.isSprinting());
+    EXPECT_FLOAT_EQ(sprint.boostSpeed(), 2.5f);
+
+    // Blocking active -> sprint interrupted
+    sprint.update(0.05f, true, false, true, 20, true);
+    EXPECT_FALSE(sprint.isSprinting());
+    EXPECT_FLOAT_EQ(sprint.boostSpeed(), 0.0f);
+
+    // Cannot start while blocking
+    sprint.update(0.05f, true, false, true, 20, true);
+    EXPECT_FALSE(sprint.isSprinting());
+
+    // Resume when unblocked
+    sprint.update(0.05f, true, false, true, 20, false);
+    EXPECT_TRUE(sprint.isSprinting());
+}
+
 
 // ============================================================================
 // 8. BowController Tests
