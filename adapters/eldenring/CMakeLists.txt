@@ -60,6 +60,9 @@ if(WIN32)
         src/audio_xaudio2.cpp
         src/core/diagnostics.cpp
         src/core/memory_scanner.cpp
+        src/ui/inventory_controller.cpp
+        src/ui/hud_bridge.cpp
+        src/debug/probes.cpp
         eldenring_dinput8.def)
     set_target_properties(eldenring_adapter PROPERTIES
         OUTPUT_NAME dinput8

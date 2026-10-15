@@ -9,7 +9,7 @@ RuntimeContext& RuntimeContext::Instance() {
 
 void RuntimeContext::resetForTesting() {
     // Reset ModeConfig
-    mode_.mc_mode.store(false);
+    mode_.mc_mode.store(true);
     mode_.game_mode.store(static_cast<uint8_t>(creative::GameMode::Survival));
     mode_.mode_toast_ms.store(0);
     mode_.damage_enabled.store(false);
@@ -82,6 +82,27 @@ void RuntimeContext::resetForTesting() {
         combat_.feedback = live::HitFeedback{};
         combat_.hit_template = std::nullopt;
     }
+
+    // Reset Ui
+    ui_.inv_open.store(false);
+    ui_.inv_mx.store(0.f);
+    ui_.inv_my.store(0.f);
+    ui_.inv_vk.store('I');
+    ui_.inv_sens.store(1.f);
+    ui_.isblocked_forced.store(0);
+    ui_.menufreeze_forced.store(0);
+    ui_.slot_probe.store(-1);
+    ui_.hide_slots.store(0xFFFFFFFFu);
+    ui_.hide_mask1.store(0x100A1);
+    ui_.hide_mask2.store(1);
+    ui_.slots_changed.store(false);
+    ui_.native_hide_wanted.store(false);
+    ui_.native_reshown.store(0);
+    ui_.summon_hide.store(false);
+    ui_.mob_yaw_offset.store(0.f);
+    ui_.steve_yaw_offset.store(3.14159265f);
+    ui_.no_player_hit_vfx.store(false);
+    ui_.kb_force.store(-1.f);
 
     // Clear Command Queue
     command_queue_.clear();

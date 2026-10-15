@@ -169,6 +169,28 @@ struct CombatSystems {
     std::optional<live::HitTemplate> hit_template;
 };
 
+struct UiSystems {
+    std::atomic<bool> inv_open{false};
+    std::atomic<float> inv_mx{0.f};
+    std::atomic<float> inv_my{0.f};
+    std::atomic<int> inv_vk{'I'};
+    std::atomic<float> inv_sens{1.f};
+    std::atomic<unsigned> isblocked_forced{0};
+    std::atomic<unsigned> menufreeze_forced{0};
+    std::atomic<int> slot_probe{-1};
+    std::atomic<uint32_t> hide_slots{0xFFFFFFFFu};
+    std::atomic<uint32_t> hide_mask1{0x100A1};
+    std::atomic<uint32_t> hide_mask2{1};
+    std::atomic<bool> slots_changed{false};
+    std::atomic<bool> native_hide_wanted{false};
+    std::atomic<unsigned> native_reshown{0};
+    std::atomic<bool> summon_hide{false};
+    std::atomic<float> mob_yaw_offset{0.f};
+    std::atomic<float> steve_yaw_offset{3.14159265f};
+    std::atomic<bool> no_player_hit_vfx{false};
+    std::atomic<float> kb_force{-1.f};
+};
+
 class RuntimeContext {
 public:
     static RuntimeContext& Instance() {
@@ -187,6 +209,9 @@ public:
 
     CombatSystems& combat() { return combat_; }
     const CombatSystems& combat() const { return combat_; }
+
+    UiSystems& ui() { return ui_; }
+    const UiSystems& ui() const { return ui_; }
 
     creative::GameMode currentGameMode() const {
         return static_cast<creative::GameMode>(mode_.game_mode.load(std::memory_order_relaxed));
@@ -276,6 +301,27 @@ public:
             combat_.hit_template = std::nullopt;
         }
 
+        // Reset Ui
+        ui_.inv_open.store(false);
+        ui_.inv_mx.store(0.f);
+        ui_.inv_my.store(0.f);
+        ui_.inv_vk.store('I');
+        ui_.inv_sens.store(1.f);
+        ui_.isblocked_forced.store(0);
+        ui_.menufreeze_forced.store(0);
+        ui_.slot_probe.store(-1);
+        ui_.hide_slots.store(0xFFFFFFFFu);
+        ui_.hide_mask1.store(0x100A1);
+        ui_.hide_mask2.store(1);
+        ui_.slots_changed.store(false);
+        ui_.native_hide_wanted.store(false);
+        ui_.native_reshown.store(0);
+        ui_.summon_hide.store(false);
+        ui_.mob_yaw_offset.store(0.f);
+        ui_.steve_yaw_offset.store(3.14159265f);
+        ui_.no_player_hit_vfx.store(false);
+        ui_.kb_force.store(-1.f);
+
         // Clear Command Queue
         command_queue_.clear();
     }
@@ -286,6 +332,7 @@ private:
     PlayerSystems player_;
     WorldSystems world_;
     CombatSystems combat_;
+    UiSystems ui_;
     ThreadSafeCommandQueue<InputCommand, 256> command_queue_;
 };
 
