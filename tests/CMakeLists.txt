@@ -70,6 +70,7 @@ add_executable(mc_tests
     test_eldenring_combat_balance.cpp
     test_eldenring_sprint.cpp
     test_eldenring_creeper.cpp
+    test_eldenring_runtime_context.cpp
     test_mc_core_modules.cpp
     test_sleeping_kinematics.cpp
     test_eldenring_grace_sleep.cpp
