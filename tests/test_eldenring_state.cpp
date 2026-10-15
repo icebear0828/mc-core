@@ -474,3 +474,26 @@ TEST(EldenRingPick, HonoursTheTorsoSphereVertically) {
     EXPECT_EQ(pickTarget(cam, dir, {enemyAt(0.f, 0.f, 2.f)}, p), 0);   // ray near torso centre
     EXPECT_EQ(pickTarget(cam, dir, {enemyAt(0.f, -2.5f, 2.f)}, p), -1); // enemy far below ray
 }
+
+TEST(EldenRingPick, TruncatedCacheMissFallsBackToFullList) {
+    const float cam[3] = {0.f, 1.7f, 0.f}, dir[3] = {0.40f, -0.07f, 0.92f};
+    // Simulate a truncated cache: 128 distant enemies (> 8m away)
+    std::vector<EnemyInfo> truncated_cache;
+    for (int i = 0; i < 128; ++i) {
+        truncated_cache.push_back(enemyAt(15.f + static_cast<float>(i), 0.f, 20.f));
+    }
+    // Truncated cache produces no target
+    EXPECT_EQ(pickTarget(cam, dir, truncated_cache), -1);
+
+    // Full list contains the nearby enemy right in front of the player (0.86m away)
+    std::vector<EnemyInfo> full_list = truncated_cache;
+    EnemyInfo nearby = enemyAt(0.25f, 0.15f, 0.81f);
+    nearby.npc_id = 4311;
+    full_list.push_back(nearby);
+
+    // Resolves successfully on full list
+    const int idx = pickTarget(cam, dir, full_list);
+    EXPECT_EQ(idx, 128);
+    EXPECT_EQ(full_list[static_cast<size_t>(idx)].npc_id, 4311);
+}
+
