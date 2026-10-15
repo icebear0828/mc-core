@@ -94,6 +94,24 @@ def main():
         shutil.copy2(src_creeper, target_creeper)
         print(f"[CREEPER DEPLOY] Copied authentic creeper skin to: {target_creeper}")
 
+    # Deploy golden crossbow bolt template (mc_er_bullet.bin)
+    src_bullet = root / "tools" / "reverse" / "eldenring" / "templates" / "mc_er_bullet.bin"
+    if src_bullet.is_file():
+        src_bullet_hash = get_sha256(src_bullet)
+        for target_rel in [
+            Path("mc_er_bullet.bin"),
+            Path("mods") / "mc_adapter" / "mc_er_bullet.bin",
+        ]:
+            target_bullet = game_dir / target_rel
+            target_bullet.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_bullet, target_bullet)
+            dest_bullet_hash = get_sha256(target_bullet)
+            print(f"[BULLET DEPLOY] Copied to: {target_bullet}")
+            print(f"[BULLET DEST] SHA256: {dest_bullet_hash}")
+            if src_bullet_hash != dest_bullet_hash:
+                print(f"[ERROR] Bullet template SHA256 mismatch for {target_bullet}!")
+                sys.exit(1)
+
     print("[SUCCESS] Physical deployment verified! SHA256 matched 100%.")
 
 

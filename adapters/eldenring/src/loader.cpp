@@ -4128,21 +4128,44 @@ void SaveBulletTemplate(const uint8_t* body) {
 void LoadBulletTemplate() {
     uint8_t body[eldenring::bullet::kFullRequestBytes] = {};
     FILE* f = nullptr;
-    if (fopen_s(&f, BulletTemplatePath().c_str(), "rb") != 0 || f == nullptr) {
-        Log("bullet: no %s yet, fire one real crossbow bolt to create it", BulletTemplatePath().c_str());
-        return;
+    std::string path = BulletTemplatePath();
+    if (fopen_s(&f, path.c_str(), "rb") != 0 || f == nullptr) {
+        path = g_game_dir + "mods\\mc_adapter\\mc_er_bullet.bin";
+        fopen_s(&f, path.c_str(), "rb");
     }
-    const size_t got = fread(body, 1, sizeof(body), f);
-    fclose(f);
+    size_t got = 0;
+    if (f != nullptr) {
+        got = fread(body, 1, sizeof(body), f);
+        fclose(f);
+    }
     if (got != sizeof(body) || !eldenring::bullet::templateUsable(body, sizeof(body))) {
-        Log("bullet: %s is not a usable template (%zu bytes), it is replaced by the next real shot", BulletTemplatePath().c_str(), got);
+        if (path != g_game_dir + "mods\\mc_adapter\\mc_er_bullet.bin") {
+            path = g_game_dir + "mods\\mc_adapter\\mc_er_bullet.bin";
+            if (fopen_s(&f, path.c_str(), "rb") == 0 && f != nullptr) {
+                got = fread(body, 1, sizeof(body), f);
+                fclose(f);
+            }
+        }
+    }
+    if (got == sizeof(body) && eldenring::bullet::templateUsable(body, sizeof(body))) {
+        std::lock_guard<std::mutex> g(g_bullet_mutex);
+        std::memcpy(g_bullet_template.request, body, sizeof(body));
+        g_bullet_template.valid = true;
+        Log("bullet: template loaded from %s (param row 0x%08X, bullet id %u): F3 works without a real shot", path.c_str(), *reinterpret_cast<uint32_t*>(body + 8),
+            *reinterpret_cast<uint32_t*>(body + 0x1C));
         return;
     }
-    std::lock_guard<std::mutex> g(g_bullet_mutex);
-    std::memcpy(g_bullet_template.request, body, sizeof(body));
-    g_bullet_template.valid = true;
-    Log("bullet: template loaded from %s (param row 0x%08X, bullet id %u): F3 works without a real shot", BulletTemplatePath().c_str(), *reinterpret_cast<uint32_t*>(body + 8),
-        *reinterpret_cast<uint32_t*>(body + 0x1C));
+    if (eldenring::bullet::kDefaultBoltTemplateAvailable) {
+        std::lock_guard<std::mutex> g(g_bullet_mutex);
+        std::memcpy(g_bullet_template.request, eldenring::bullet::kDefaultBoltTemplate, sizeof(body));
+        g_bullet_template.valid = true;
+        Log("bullet: loaded built-in golden bolt template (param row 0x%08X, bullet id %u)",
+            *reinterpret_cast<const uint32_t*>(eldenring::bullet::kDefaultBoltTemplate + 8),
+            *reinterpret_cast<const uint32_t*>(eldenring::bullet::kDefaultBoltTemplate + 0x1C));
+        SaveBulletTemplate(eldenring::bullet::kDefaultBoltTemplate);
+        return;
+    }
+    Log("bullet: %s is not a usable template (%zu bytes), it is replaced by the next real shot", path.c_str(), got);
 }
 
 void RecordBulletTemplate(const void* request) {
