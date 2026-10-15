@@ -234,3 +234,35 @@ TEST(SteveAnimatorTest, SwordSwingPosesFollowsAuthenticArcAndHeadPitch) {
     EXPECT_GT(std::fabs(pitch_down - pitch_up), 0.15f) << "Significant vertical swing angle difference";
 }
 
+TEST(SteveAnimatorTest, SneakCrouchingPosesTorsoAndArmsAuthentically) {
+    const size_t body = static_cast<size_t>(mc::StevePart::Body);
+    const size_t jacket = static_cast<size_t>(mc::StevePart::Jacket);
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+    const size_t head = static_cast<size_t>(mc::StevePart::Head);
+
+    mc::SteveAnimator anim_stand, anim_sneak;
+    mc::SteveAnimInput in_stand{}, in_sneak{};
+
+    in_sneak.is_crouching = true;
+    in_sneak.look_pitch = 0.2f;
+
+    anim_stand.update(0.05f, in_stand);
+    anim_sneak.update(0.05f, in_sneak);
+
+    const auto& stand_t = anim_stand.getTransforms();
+    const auto& sneak_t = anim_sneak.getTransforms();
+
+    // 1. Body tilts forward when crouching (+0.5 rad pitch)
+    EXPECT_GT(sneak_t[body].rot.y, 0.2f) << "Torso must pitch forward when crouching";
+    EXPECT_NEAR(sneak_t[jacket].rot.y, sneak_t[body].rot.y, 1e-4f) << "Jacket must follow Body";
+
+    // 2. Both arms tilt backward (+0.4 rad pitch) to hang along tilted torso
+    EXPECT_GT(sneak_t[ra].rot.y, stand_t[ra].rot.y) << "Right arm must tilt backward along torso";
+    EXPECT_GT(sneak_t[la].rot.y, stand_t[la].rot.y) << "Left arm must tilt backward along torso";
+
+    // 3. Head follows independent look angles
+    EXPECT_NEAR(sneak_t[head].rot.y, std::sin(0.2f * 0.5f), 0.05f) << "Head pitch must match look pitch";
+}
+
+
