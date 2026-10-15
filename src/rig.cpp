@@ -252,9 +252,10 @@ Mat4 yawMatrix(const HostBasis& basis, float canonical_yaw) {
     return rotationAboutAxis(basis.up, basis.isReflection() ? -canonical_yaw : canonical_yaw);
 }
 
-Mat4 partMatrix(StevePart part, const Quat& rot, const Vec3& root_pos, float host_yaw, const HostBasis& basis) {
+Mat4 partMatrix(StevePart part, const Quat& rot, const Vec3& pos_offset, const Vec3& root_pos, float host_yaw, const HostBasis& basis) {
     const Vec3 pivot = partPivot(part, basis);
-    return translation(pivot * -1.0f) * rotationFromQuat(rot) * translation(pivot) *
+    const Vec3 host_offset = basis.fromCanonical(pos_offset);
+    return translation(pivot * -1.0f) * rotationFromQuat(rot) * translation(pivot + host_offset) *
            rotationAboutAxis(basis.up, host_yaw) * translation(root_pos);
 }
 

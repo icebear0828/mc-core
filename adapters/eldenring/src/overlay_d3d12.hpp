@@ -78,6 +78,7 @@ struct SteveState {
     bool block_offhand{false};  // the raised shield is held in the left hand: only the left arm is up
     bool bow_offhand{false};    // the bow that is drawn is in the offhand: the left arm aims and the offhand item is the drawn bow
     float bow_ticks{0.f};       // ticks the bow has been drawn (0 = not drawing): the first-person bow pose animates with it
+    bool sneaking{false};       // sneaking/crouching: torso forward lean and lower stance
     float speed_mps{0.f};       // horizontal speed, for the walking bob
     bool on_ground{true};
     bool shadow{false};        // draw the blob shadows under the figure and the summons (mc_er_steve.txt: shadow=1)

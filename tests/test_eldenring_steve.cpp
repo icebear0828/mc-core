@@ -134,6 +134,37 @@ TEST(EldenRingSteve, PosedMatricesFollowTheAnimatorAndStayFinite) {
     EXPECT_TRUE(any_different); // legs and arms swing while walking
 }
 
+TEST(EldenRingSteve, PosedMatricesInCrouchShiftLegsAndHeadToMatchVanilla) {
+    mc::SteveAnimator anim_stand, anim_crouch;
+    mc::SteveAnimInput in_stand{}, in_crouch{};
+    in_crouch.is_crouching = true;
+
+    anim_stand.update(0.016f, in_stand);
+    anim_crouch.update(0.016f, in_crouch);
+
+    const PartMatrices stand_matrices = posedMatrices(anim_stand.getTransforms(), {0.f, 0.f, 0.f}, 0.f);
+    const PartMatrices crouch_matrices = posedMatrices(anim_crouch.getTransforms(), {0.f, 0.f, 0.f}, 0.f);
+
+    const size_t rl = static_cast<size_t>(mc::StevePart::RightLeg);
+    const size_t head = static_cast<size_t>(mc::StevePart::Head);
+
+    // In Elden Ring game space (Y up, Z forward, X right):
+    // Right leg is shifted backward along -Z (-0.225 m) and upward along +Y (+0.16875 m)
+    const float stand_leg_z = stand_matrices[rl].at(3, 2);
+    const float crouch_leg_z = crouch_matrices[rl].at(3, 2);
+    EXPECT_LT(crouch_leg_z, stand_leg_z - 0.1f) << "Leg must shift backward in crouch to meet torso pelvis";
+
+    const float stand_leg_y = stand_matrices[rl].at(3, 1);
+    const float crouch_leg_y = crouch_matrices[rl].at(3, 1);
+    EXPECT_GT(crouch_leg_y, stand_leg_y + 0.1f) << "Leg pivot must shift upward in crouch to meet pelvis socket";
+
+    // Head is shifted downward along -Y (-0.05625 m)
+    const float stand_head_y = stand_matrices[head].at(3, 1);
+    const float crouch_head_y = crouch_matrices[head].at(3, 1);
+    EXPECT_LT(crouch_head_y, stand_head_y - 0.04f) << "Head must lower in crouch";
+}
+
+
 TEST(EldenRingSteve, DeathFlipFollowsMinecraftsCurve) {
     using namespace eldenring::render;
     EXPECT_FLOAT_EQ(deathFlipFraction(0.f), 0.f);

@@ -59,6 +59,7 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
         float pitch = 0.f;
         float yaw = 0.f;
         float roll = 0.f;
+        Vec3 pos{0.f, 0.f, 0.f};
 
         if (input.is_gliding) {
             switch (part) {
@@ -103,6 +104,10 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                 case StevePart::Hat:
                     pitch = head_pitch;
                     yaw = head_yaw;
+                    if (input.is_crouching) {
+                        // Minecraft ModelBiped: bipedHead.rotationPointY = 1.0F (+1 model pixel down = -5.625 cm canonical Z)
+                        pos.z = -5.625f;
+                    }
                     break;
 
                 case StevePart::Body:
@@ -116,11 +121,21 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                 case StevePart::RightLeg:
                 case StevePart::RightPants:
                     pitch = std::cos(stride_ * 0.6662f) * 1.4f * amplitude;
+                    if (input.is_crouching) {
+                        // Minecraft ModelBiped: rotationPointZ = 4.0F (+4 model pixels back = -22.5 cm canonical X)
+                        //                      rotationPointY = 9.0F (-3 model pixels up = +16.875 cm canonical Z)
+                        pos.x = -22.5f;
+                        pos.z = 16.875f;
+                    }
                     break;
 
                 case StevePart::LeftLeg:
                 case StevePart::LeftPants:
                     pitch = std::cos(stride_ * 0.6662f + kPi) * 1.4f * amplitude;
+                    if (input.is_crouching) {
+                        pos.x = -22.5f;
+                        pos.z = 16.875f;
+                    }
                     break;
 
                 case StevePart::RightArm:
@@ -195,6 +210,7 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
             }
         }
 
+        transforms_[i].pos = pos;
         transforms_[i].rot = fromEuler(pitch, yaw, roll);
     }
 }
