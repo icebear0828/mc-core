@@ -265,4 +265,46 @@ TEST(SteveAnimatorTest, SneakCrouchingPosesTorsoAndArmsAuthentically) {
     EXPECT_NEAR(sneak_t[head].rot.y, std::sin(0.2f * 0.5f), 0.05f) << "Head pitch must match look pitch";
 }
 
+TEST(SteveAnimatorTest, SneakCrouchingCompensatesLegsAndHeadPositionsAuthentically) {
+    const size_t rl = static_cast<size_t>(mc::StevePart::RightLeg);
+    const size_t ll = static_cast<size_t>(mc::StevePart::LeftLeg);
+    const size_t rp = static_cast<size_t>(mc::StevePart::RightPants);
+    const size_t lp = static_cast<size_t>(mc::StevePart::LeftPants);
+    const size_t head = static_cast<size_t>(mc::StevePart::Head);
+    const size_t hat = static_cast<size_t>(mc::StevePart::Hat);
+
+    mc::SteveAnimator anim_stand, anim_sneak;
+    mc::SteveAnimInput in_stand{}, in_sneak{};
+    in_sneak.is_crouching = true;
+
+    anim_stand.update(0.05f, in_stand);
+    anim_sneak.update(0.05f, in_sneak);
+
+    const auto& stand_t = anim_stand.getTransforms();
+    const auto& sneak_t = anim_sneak.getTransforms();
+
+    // Stand pose has zero translation offset
+    EXPECT_FLOAT_EQ(stand_t[rl].pos.x, 0.f);
+    EXPECT_FLOAT_EQ(stand_t[rl].pos.z, 0.f);
+    EXPECT_FLOAT_EQ(stand_t[head].pos.z, 0.f);
+
+    // Sneak crouch:
+    // Legs move backward along canonical X (-22.5 cm, 4 pixels) to align with forward-leaning torso bottom (pelvis)
+    EXPECT_NEAR(sneak_t[rl].pos.x, -22.5f, 1e-2f);
+    EXPECT_NEAR(sneak_t[ll].pos.x, -22.5f, 1e-2f);
+    EXPECT_NEAR(sneak_t[rp].pos.x, -22.5f, 1e-2f);
+    EXPECT_NEAR(sneak_t[lp].pos.x, -22.5f, 1e-2f);
+
+    // Legs move upward along canonical Z (+16.875 cm, 3 pixels) to clamp into pelvis socket
+    EXPECT_NEAR(sneak_t[rl].pos.z, 16.875f, 1e-2f);
+    EXPECT_NEAR(sneak_t[ll].pos.z, 16.875f, 1e-2f);
+    EXPECT_NEAR(sneak_t[rp].pos.z, 16.875f, 1e-2f);
+    EXPECT_NEAR(sneak_t[lp].pos.z, 16.875f, 1e-2f);
+
+    // Head lowers along canonical Z (-5.625 cm, 1 pixel) to rest on sloped neck
+    EXPECT_NEAR(sneak_t[head].pos.z, -5.625f, 1e-2f);
+    EXPECT_NEAR(sneak_t[hat].pos.z, -5.625f, 1e-2f);
+}
+
+
 

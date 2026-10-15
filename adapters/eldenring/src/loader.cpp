@@ -2414,7 +2414,9 @@ void DriveVelocityFromKeys(uintptr_t module, bool force_zero) {
     if (!force_zero && GameInForeground()) {
         const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
         const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
-        const bool sneaking = (GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0;
+        const bool sneak_key_down = ((GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0) ||
+                                    ((GetAsyncKeyState('X') & 0x8000) != 0);
+        const bool sneaking = sneak_key_down;
         const bool sprinting = !sneaking && g_sprint_active.load(std::memory_order_relaxed);
         g_sneak_active.store(sneaking, std::memory_order_relaxed);
 
@@ -2642,7 +2644,9 @@ void BlocksCollisionStep() {
         WriteBytesSafe(module + layout::kPhysicsProxySyncRequest, &one, sizeof(one));
     }
     const bool fg = GameInForeground();
-    const bool sneaking = fg && ((GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0);
+    const bool sneak_key_down = ((GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0) ||
+                                ((GetAsyncKeyState('X') & 0x8000) != 0);
+    const bool sneaking = fg && sneak_key_down;
     g_sneak_active.store(sneaking, std::memory_order_relaxed);
 
     // Smooth first-person eye height transition: normal 1.65m <-> sneak 1.27m
@@ -2760,6 +2764,21 @@ void BlocksCollisionStep() {
                     direct_moved = true;
                 }
             }
+        }
+    }
+
+    // Native terrain sneak speed limiting:
+    // When walking on Elden Ring's native ground, clamp horizontal displacement per frame to Minecraft sneak speed (1.295 m/s)
+    if (!supported && sneaking && have_prev && !jumped && !pinned && fg) {
+        const float cur_dx = final_feet[0] - prev[0];
+        const float cur_dz = final_feet[2] - prev[2];
+        const float h_dist = std::sqrt(cur_dx * cur_dx + cur_dz * cur_dz);
+        const float max_h = g_sneak_speed.load(std::memory_order_relaxed) * block_dt;
+        if (h_dist > max_h && h_dist > 1e-4f) {
+            const float scale = max_h / h_dist;
+            final_feet[0] = prev[0] + cur_dx * scale;
+            final_feet[2] = prev[2] + cur_dz * scale;
+            direct_moved = true;
         }
     }
 
@@ -3194,7 +3213,9 @@ void McJumpStep() {
             // Read input and camera direction to initialize horizontal momentum
             const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
             const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
-            const bool sneaking = (GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0;
+            const bool sneak_key_down = ((GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0) ||
+                                        ((GetAsyncKeyState('X') & 0x8000) != 0);
+            const bool sneaking = sneak_key_down;
             const bool sprinting = !sneaking && g_sprint_active.load(std::memory_order_relaxed);
             const float target_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
                                       : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
@@ -3228,9 +3249,10 @@ void McJumpStep() {
     // Compute input for air steering:
     const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
     const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
-    const bool sneaking = (GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0;
-    const bool sprinting = !sneaking && g_sprint_active.load(std::memory_order_relaxed);
-    const float steer_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
+    const bool steer_sneak = ((GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0) ||
+                             ((GetAsyncKeyState('X') & 0x8000) != 0);
+    const bool sprinting = !steer_sneak && g_sprint_active.load(std::memory_order_relaxed);
+    const float steer_speed = steer_sneak ? g_sneak_speed.load(std::memory_order_relaxed)
                             : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
                             : g_block_walk_speed.load(std::memory_order_relaxed);
 
