@@ -127,7 +127,13 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     memory::ImageInfo img;
     if (!memory::ReadImageInfo(img)) return false;
 
-    const uintptr_t world = live::readSingleton(reader, img.base, 0, live::sigs::kWorldChrMan);
+    const uint32_t rva_world = ctx.memory().rva_world.load(std::memory_order_relaxed);
+    if (rva_world == 0) return false;
+    const uint32_t rva_menu = ctx.memory().rva_menu.load(std::memory_order_relaxed);
+    const uint32_t rva_loading = ctx.memory().rva_loading.load(std::memory_order_relaxed);
+    const uint32_t rva_fade = ctx.memory().rva_fade.load(std::memory_order_relaxed);
+
+    const uintptr_t world = live::readSingleton(reader, img.base, rva_world, live::sigs::kWorldChrMan);
     if (world == 0) return false;
     uint64_t player = 0;
     live::Vitals v;
@@ -138,9 +144,9 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     live::MenuState ms;
     live::LoadingState ls;
     float fade = 0.f;
-    const bool have_state = live::readMenuState(reader, live::readSingleton(reader, img.base, 0, live::sigs::kCSMenuMan), ms) &&
-                            live::readLoadingState(reader, live::readSingleton(reader, img.base, 0, live::sigs::kCSNowLoadingHelper), ls) &&
-                            live::readFadeAlpha(reader, live::readSingleton(reader, img.base, 0, live::sigs::kCSFade), fade);
+    const bool have_state = (rva_menu != 0 && live::readMenuState(reader, live::readSingleton(reader, img.base, rva_menu, live::sigs::kCSMenuMan), ms)) &&
+                            (rva_loading != 0 && live::readLoadingState(reader, live::readSingleton(reader, img.base, rva_loading, live::sigs::kCSNowLoadingHelper), ls)) &&
+                            (rva_fade != 0 && live::readFadeAlpha(reader, live::readSingleton(reader, img.base, rva_fade, live::sigs::kCSFade), fade));
 
     PopulateHudStateFromContext(out, ctx);
     out.hp = v.hp;

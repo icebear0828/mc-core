@@ -201,6 +201,15 @@ struct UiSystems {
     std::atomic<float> kb_force{-1.f};
 };
 
+struct MemorySystems {
+    std::atomic<uintptr_t> image_base{0};
+    std::atomic<uint32_t> image_size{0};
+    std::atomic<uint32_t> rva_world{0};
+    std::atomic<uint32_t> rva_menu{0};
+    std::atomic<uint32_t> rva_loading{0};
+    std::atomic<uint32_t> rva_fade{0};
+};
+
 class RuntimeContext {
 public:
     static RuntimeContext& Instance() {
@@ -222,6 +231,9 @@ public:
 
     UiSystems& ui() { return ui_; }
     const UiSystems& ui() const { return ui_; }
+
+    MemorySystems& memory() { return memory_; }
+    const MemorySystems& memory() const { return memory_; }
 
     creative::GameMode currentGameMode() const {
         return static_cast<creative::GameMode>(mode_.game_mode.load(std::memory_order_relaxed));
@@ -336,6 +348,13 @@ public:
         ui_.no_player_hit_vfx.store(false);
         ui_.kb_force.store(-1.f);
 
+        memory_.image_base.store(0);
+        memory_.image_size.store(0);
+        memory_.rva_world.store(0);
+        memory_.rva_menu.store(0);
+        memory_.rva_loading.store(0);
+        memory_.rva_fade.store(0);
+
         // Clear Command Queue
         command_queue_.clear();
     }
@@ -347,6 +366,7 @@ private:
     WorldSystems world_;
     CombatSystems combat_;
     UiSystems ui_;
+    MemorySystems memory_;
     ThreadSafeCommandQueue<InputCommand, 256> command_queue_;
 };
 

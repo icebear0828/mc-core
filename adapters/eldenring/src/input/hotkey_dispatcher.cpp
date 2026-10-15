@@ -151,6 +151,7 @@ void HotkeyDispatcher::tick(float dt) {
     if (cb_.inventory_tick) cb_.inventory_tick(fg);
     if (cb_.blocks_tick) cb_.blocks_tick();
     if (cb_.mc_flags_step) cb_.mc_flags_step();
+    if (cb_.check_summon_watch) cb_.check_summon_watch(0);
 
     // Key masking
     if (cb_.set_masked_keys) {

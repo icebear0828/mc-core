@@ -126,6 +126,13 @@ DWORD WINAPI LoaderThread(LPVOID) {
         Sleep(1000);
     }
 
+    g_ctx.memory().image_base.store(g_img.base);
+    g_ctx.memory().image_size.store(g_img.image_size);
+    g_ctx.memory().rva_world.store(g_rva_world);
+    g_ctx.memory().rva_menu.store(g_rva_menu);
+    g_ctx.memory().rva_loading.store(g_rva_loading);
+    g_ctx.memory().rva_fade.store(g_rva_fade);
+
     hooks::SetupAllDomainServices(g_img.base, g_rva_world);
     hooks::InstallAllHooks(g_game_dir, g_img.base, g_img.image_size);
     ui::SetupOverlay(g_game_dir, g_ctx);

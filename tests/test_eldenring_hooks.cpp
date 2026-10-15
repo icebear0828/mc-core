@@ -10,6 +10,8 @@
 #include "eldenring_buddy.hpp"
 #include "eldenring_combat_service.hpp"
 #include "eldenring_bullet.hpp"
+#include "eldenring_singletons.hpp"
+#include "eldenring_hotkey_dispatcher.hpp"
 #include "mc/contracts/combat_adapter.hpp"
 
 using namespace eldenring;
@@ -52,6 +54,42 @@ TEST(EldenRingHooksTest, BulletConstantsAndTemplateValidation) {
     // Initially bullet template is not loaded in unit test environment
     EXPECT_FALSE(combat.hasValidBulletTemplate());
     EXPECT_FLOAT_EQ(bullet::kCrossbowDamage, 9.0f);
+}
+
+TEST(EldenRingHooksTest, ReadSingletonGuardsZeroRva) {
+    class FailingReader : public live::IMemoryReader {
+    public:
+        bool read(uintptr_t, void*, size_t) const override {
+            ADD_FAILURE() << "read must not be called when global_rva is 0!";
+            return false;
+        }
+    } reader;
+
+    const uintptr_t result = live::readSingleton(reader, 0x140000000, 0, live::sigs::kWorldChrMan);
+    EXPECT_EQ(result, 0u);
+}
+
+TEST(EldenRingHooksTest, MemoryContextRvasStorage) {
+    auto& ctx = RuntimeContext::Instance();
+    ctx.memory().rva_world.store(0x123456);
+    ctx.memory().rva_menu.store(0x234567);
+    ctx.memory().rva_loading.store(0x345678);
+    ctx.memory().rva_fade.store(0x456789);
+
+    EXPECT_EQ(ctx.memory().rva_world.load(), 0x123456u);
+    EXPECT_EQ(ctx.memory().rva_menu.load(), 0x234567u);
+    EXPECT_EQ(ctx.memory().rva_loading.load(), 0x345678u);
+    EXPECT_EQ(ctx.memory().rva_fade.load(), 0x456789u);
+}
+
+TEST(EldenRingHooksTest, HotkeyDispatcherHandlesCallbacksSafely) {
+    input::HotkeyCallbacks cb;
+    bool invoked = false;
+    cb.inventory_tick = [&](bool) { invoked = true; };
+    input::HotkeyDispatcher::Instance().setCallbacks(cb);
+    EXPECT_TRUE(input::HotkeyDispatcher::Instance().callbacks().inventory_tick != nullptr);
+    input::HotkeyDispatcher::Instance().callbacks().inventory_tick(true);
+    EXPECT_TRUE(invoked);
 }
 
 } // namespace

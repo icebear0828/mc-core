@@ -63,6 +63,9 @@ inline MH_STATUS MH_EnableHook(void*) { return MH_OK; }
 #include "eldenring_roll.hpp"
 #include "eldenring_entity_manager.hpp"
 #include "eldenring_singletons.hpp"
+#include "eldenring_flags.hpp"
+#include "eldenring_model.hpp"
+#include "mc/contracts/combat_adapter.hpp"
 
 namespace eldenring::hooks {
 
@@ -90,6 +93,7 @@ using live::sigs::kWorldChrMan;
 using live::sigs::kCSMenuMan;
 using live::sigs::kCSNowLoadingHelper;
 using live::sigs::kCSFade;
+using live::EntityManager;
 
 static const SelfReader g_reader;
 static ImageInfo g_img;
@@ -129,7 +133,10 @@ uint64_t NowTick() {
 }
 
 uintptr_t PlayerChrPtr() {
-    const uintptr_t world = readSingleton(g_reader, g_img.base, 0, kWorldChrMan);
+    auto& ctx = RuntimeContext::Instance();
+    const uint32_t rva_world = ctx.memory().rva_world.load(std::memory_order_relaxed);
+    if (rva_world == 0) return 0;
+    const uintptr_t world = readSingleton(g_reader, g_img.base, rva_world, kWorldChrMan);
     uint64_t p = 0;
     return world != 0 && SafeCopy(world + live::layout::kPlayerInsInWorldChrMan, &p, sizeof(p)) ? static_cast<uintptr_t>(p) : 0;
 }
@@ -141,7 +148,10 @@ bool PlayerDead() {
 }
 
 bool PlayerAirborne() {
-    const uintptr_t w = readSingleton(g_reader, g_img.base, 0, kWorldChrMan);
+    auto& ctx = RuntimeContext::Instance();
+    const uint32_t rva_world = ctx.memory().rva_world.load(std::memory_order_relaxed);
+    if (rva_world == 0) return false;
+    const uintptr_t w = readSingleton(g_reader, g_img.base, rva_world, kWorldChrMan);
     uint64_t p = 0;
     return w != 0 && SafeCopy(w + live::layout::kPlayerInsInWorldChrMan, &p, sizeof(p)) && p != 0 &&
            live::detail::readAirborne(g_reader, g_img.base, static_cast<uintptr_t>(p));
@@ -384,7 +394,9 @@ void RunBulletFire() {
     const uintptr_t player = PlayerChrPtr();
     uint64_t handle = 0;
     CameraPose cam;
-    const uintptr_t world = readSingleton(g_reader, g_img.base, 0, kWorldChrMan);
+    const uint32_t rva_world = RuntimeContext::Instance().memory().rva_world.load(std::memory_order_relaxed);
+    if (rva_world == 0) return;
+    const uintptr_t world = readSingleton(g_reader, g_img.base, rva_world, kWorldChrMan);
     if (!SafeCopy(g_img.base + 0x3D667A8, &manager, sizeof(manager)) || manager == 0 || player == 0 ||
         !SafeCopy(player + 8, &handle, sizeof(handle)) || world == 0 || !readCamera(g_reader, g_img.base, world, cam)) {
         return;
@@ -476,11 +488,16 @@ void DrainOnce(uintptr_t updating_data_module) {
     ctx.combat().damage_queue.drain(c);
 }
 
+void RunSummonExperiment();
+
 static void* __fastcall ClampDetour(void* module, int32_t value) {
     void* r = g_clamp_orig(module, value);
     auto& ctx = RuntimeContext::Instance();
     if (ctx.mode().damage_enabled.load(std::memory_order_relaxed) && ctx.combat().damage_queue.pending() > 0) {
         DrainOnce(reinterpret_cast<uintptr_t>(module));
+    }
+    if (ctx.mode().summon_pending.load(std::memory_order_relaxed) && ctx.mode().summon_pending.exchange(false)) {
+        RunSummonExperiment();
     }
     if (ctx.mode().bullet_fire_pending.load(std::memory_order_relaxed) && ctx.mode().bullet_fire_pending.exchange(false)) {
         RunBulletFire();
@@ -624,44 +641,581 @@ void SetupDamage(const std::string& game_dir, uintptr_t image_base, size_t) {
     }
 }
 
-// World and Mining helpers
-bool StepMining(float, bool) {
-    return false;
+// World, Mining, Blocks, and Combat actions
+static size_t g_tnt_prev_active_count = 0;
+static int g_prev_mining_stage = -1;
+static blocks::Cell g_prev_mining_cell{};
+
+void SendBlockMesh(const std::optional<blocks::MiningOverlay>& overlay) {
+    auto& ctx = RuntimeContext::Instance();
+    std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+    const size_t tnt_count = ctx.world().tnt_mgr.activeCount();
+    const int stage = overlay.has_value() ? overlay->stage : -1;
+    const blocks::Cell cell = overlay.has_value() ? overlay->cell : blocks::Cell{};
+    if (ctx.world().blocks_sent_version == ctx.world().block_grid.version() && tnt_count == 0 && g_tnt_prev_active_count == 0 &&
+        stage == g_prev_mining_stage && cell == g_prev_mining_cell) return;
+    ctx.world().blocks_sent_version = ctx.world().block_grid.version();
+    g_tnt_prev_active_count = tnt_count;
+    g_prev_mining_stage = stage;
+    g_prev_mining_cell = cell;
+    erov::SetBlockMesh(blocks::buildBlockMesh(ctx.world().block_grid, ctx.world().tnt_mgr.activePositions(), overlay));
 }
 
-bool TryIgniteTnt() {
-    return false;
+void SendBlockMesh() {
+    SendBlockMesh(std::nullopt);
 }
 
-bool TryIgniteCreeper() {
+struct BlockTarget {
+    bool have{false};
+    bool on_block{false};
+    blocks::Cell cell;
+    blocks::Cell place;
+};
+
+bool AimRay(float eye[3], float dir[3]) {
+    auto& ctx = RuntimeContext::Instance();
+    const uint32_t rva_world = ctx.memory().rva_world.load(std::memory_order_relaxed);
+    if (rva_world == 0) return false;
+    const uintptr_t player = PlayerChrPtr();
+    const uintptr_t world = readSingleton(g_reader, g_img.base, rva_world, kWorldChrMan);
+    CameraPose cam;
+    float feet[3];
+    if (player == 0 || world == 0 || !readCamera(g_reader, g_img.base, world, cam) || !live::detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) return false;
+    eye[0] = feet[0];
+    eye[1] = feet[1] + ctx.mode().eye_height.load();
+    eye[2] = feet[2];
+    for (int i = 0; i < 3; ++i) dir[i] = cam.forward[i];
+    const float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+    if (!(len > 0.5f)) return false;
+    for (int i = 0; i < 3; ++i) dir[i] /= len;
+    return true;
+}
+
+BlockTarget FindBlockTarget() {
+    auto& ctx = RuntimeContext::Instance();
+    BlockTarget t;
+    float eye[3], dir[3];
+    if (!AimRay(eye, dir)) return t;
+    const float reach = ctx.mode().reach.load();
+    std::optional<blocks::GridHit> grid_hit;
+    {
+        std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+        grid_hit = blocks::raycastGrid(ctx.world().block_grid, eye, dir, reach);
+    }
+    live::RayResult world_hit;
+    if (ctx.mode().los_enabled.load()) {
+        const float disp[3] = {dir[0] * reach, dir[1] * reach, dir[2] * reach};
+        world_hit = CastStaticRay(eye, disp);
+    }
+    const bool terrain = world_hit.ok && world_hit.hit;
+    const float terrain_dist = terrain ? world_hit.fraction * reach : 1e9f;
+    if (grid_hit && grid_hit->distance <= terrain_dist + 0.05f) {
+        t.have = true;
+        t.on_block = true;
+        t.cell = grid_hit->cell;
+        t.place = blocks::placementCellForBlockHit(*grid_hit);
+    } else if (terrain) {
+        t.have = true;
+        t.place = blocks::placementCellForWorldHit(world_hit.pos, world_hit.normal);
+    }
+    return t;
+}
+
+const char* BlockSound(mc::BlockId id) {
+    switch (id) {
+        case mc::BlockId::Stone: return "block.stone.step";
+        case mc::BlockId::Dirt: return "block.gravel.step";
+        default: return "block.grass.step";
+    }
+}
+
+bool StepMining(float dt, bool left_held) {
+    auto& ctx = RuntimeContext::Instance();
+    if (!ctx.mode().blocks_enabled.load()) {
+        ctx.world().mining.reset();
+        SendBlockMesh(std::nullopt);
+        return false;
+    }
+    const BlockTarget t = FindBlockTarget();
+    mc::BlockId id = mc::BlockId::Air;
+    if (t.have && t.on_block) {
+        std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+        id = ctx.world().block_grid.get(t.cell);
+    }
+
+    mc::ItemId held = mc::ItemId::None;
+    {
+        std::lock_guard<std::mutex> g(ctx.combat().melee_mutex);
+        held = ctx.combat().melee.heldItem();
+    }
+    const bool is_creative = (ctx.currentGameMode() == creative::GameMode::Creative);
+
+    ctx.world().mining.update(dt, left_held, t.have && t.on_block, t.cell, id, held, is_creative);
+    const eldenring::mining::MiningState& s = ctx.world().mining.state();
+
+    if (s.is_mining) {
+        if (s.hit_sound) {
+            std::lock_guard<std::mutex> g(ctx.combat().melee_mutex);
+            ctx.combat().melee.startSwing();
+            eraudio::Play(BlockSound(id), 0.6f);
+        }
+        SendBlockMesh(blocks::MiningOverlay{s.target_cell, s.stage});
+        return true;
+    }
+
+    if (s.broken) {
+        bool harvested = false;
+        {
+            std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+            ctx.world().block_grid.remove(s.target_cell);
+        }
+        if (eldenring::mining::MiningController::canHarvest(id, held, is_creative)) {
+            std::lock_guard<std::mutex> g(ctx.combat().melee_mutex);
+            ctx.combat().melee.inventory().add({blocks::itemForBlock(id), 1});
+            harvested = true;
+        }
+        SendBlockMesh(std::nullopt);
+        eraudio::Play(BlockSound(id), 0.95f);
+        Log("blocks: broke %d at (%d %d %d) with tool %d (harvested=%d)",
+            static_cast<int>(id), s.target_cell.x, s.target_cell.y, s.target_cell.z,
+            static_cast<int>(held), harvested ? 1 : 0);
+        return true;
+    }
+
+    SendBlockMesh(std::nullopt);
     return false;
 }
 
 bool TryPlaceBlock() {
+    auto& ctx = RuntimeContext::Instance();
+    if (!ctx.mode().blocks_enabled.load()) return false;
+    mc::ItemId held;
+    int slot;
+    {
+        std::lock_guard<std::mutex> g(ctx.combat().melee_mutex);
+        held = ctx.combat().melee.heldItem();
+        slot = ctx.combat().melee.selectedSlot();
+        if (ctx.combat().melee.countAt(slot) == 0) return false;
+    }
+    const mc::BlockId id = blocks::blockForItem(held);
+    if (id == mc::BlockId::Air) return false;
+    const BlockTarget t = FindBlockTarget();
+    if (!t.have) return true;
+    const uintptr_t player = PlayerChrPtr();
+    float feet[3];
+    if (player != 0 && live::detail::readPhysicsPosition(g_reader, g_img.base, player, feet) && blocks::cellTouchesPlayer(t.place, feet)) return true;
+    {
+        std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+        if (!ctx.world().block_grid.place(t.place, id)) return true;
+    }
+    {
+        std::lock_guard<std::mutex> g(ctx.combat().melee_mutex);
+        if (creative::consumesItems(ctx.currentGameMode())) ctx.combat().melee.consumeAt(slot);
+        ctx.combat().melee.startSwing();
+    }
+    SendBlockMesh();
+    eraudio::Play(BlockSound(id), 0.8f);
+    Log("blocks: placed %d at (%d %d %d)", static_cast<int>(id), t.place.x, t.place.y, t.place.z);
+    return true;
+}
+
+bool TryIgniteTnt() {
+    auto& ctx = RuntimeContext::Instance();
+    if (!ctx.mode().blocks_enabled.load()) return false;
+    const BlockTarget t = FindBlockTarget();
+    if (!t.have || !t.on_block) return false;
+
+    mc::BlockId target_block = mc::BlockId::Air;
+    {
+        std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+        target_block = ctx.world().block_grid.get(t.cell);
+    }
+    if (target_block != mc::BlockId::Tnt) return false;
+
+    mc::ItemId held = mc::ItemId::None;
+    {
+        std::lock_guard<std::mutex> g(ctx.combat().melee_mutex);
+        held = ctx.combat().melee.heldItem();
+    }
+    if (!eldenring::tnt::shouldIgniteTntOnRightClick(held, target_block)) {
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+        if (!ctx.world().tnt_mgr.tryIgniteBlock(ctx.world().block_grid, t.cell)) return false;
+    }
+    SendBlockMesh();
+    eraudio::Play("entity.tnt.primed", 1.0f);
+    Log("tnt: ignited TNT at (%d %d %d)", t.cell.x, t.cell.y, t.cell.z);
+    {
+        std::lock_guard<std::mutex> g(ctx.combat().melee_mutex);
+        ctx.combat().melee.startSwing();
+    }
+    return true;
+}
+
+struct SummonWatch {
+    std::vector<uintptr_t> baseline;
+    uint64_t t0_ms{0};
+    int reports_left{0};
+};
+static SummonWatch g_summon_watch;
+static std::atomic<uint64_t> g_last_summon_ms{0};
+static constexpr uint64_t kSummonCooldownMs = 3000;
+static std::mutex g_summon_mutex;
+static std::vector<eldenring::mobs::MobSnapshot> g_summon_list;
+static eldenring::creeper::CreeperManager g_creeper_mgr;
+
+bool TryIgniteCreeper() {
+    auto& ctx = RuntimeContext::Instance();
+    mc::ItemId held = mc::ItemId::None;
+    {
+        std::lock_guard<std::mutex> g(ctx.combat().melee_mutex);
+        held = ctx.combat().melee.heldItem();
+    }
+    if (held != mc::ItemId::FlintAndSteel) return false;
+
+    std::vector<eldenring::mobs::MobSnapshot> summons;
+    {
+        std::lock_guard<std::mutex> g(g_summon_mutex);
+        summons = g_summon_list;
+    }
+    float player_feet[3]{};
+    if (!live::detail::readPhysicsPosition(g_reader, g_img.base, PlayerChrPtr(), player_feet)) return false;
+
+    for (const auto& s : summons) {
+        const float dx = s.feet[0] - player_feet[0];
+        const float dy = s.feet[1] - player_feet[1];
+        const float dz = s.feet[2] - player_feet[2];
+        const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist <= 4.5f) {
+            if (g_creeper_mgr.ignite(s.id)) {
+                eraudio::Play("entity.tnt.primed", 1.0f);
+                Log("creeper: manually ignited creeper %p with flint and steel!", reinterpret_cast<void*>(s.id));
+                std::lock_guard<std::mutex> g(ctx.combat().melee_mutex);
+                ctx.combat().melee.startSwing();
+                return true;
+            }
+        }
+    }
     return false;
+}
+
+bool QueueSummon(const char* source) {
+    if (!FileExists(g_game_dir + "mc_er_summon.txt")) {
+        Log("%s: ignored (no mc_er_summon.txt in the game directory)", source);
+        return false;
+    }
+    const uint64_t now = GetTickCount64();
+    if (now - g_last_summon_ms.load(std::memory_order_relaxed) < kSummonCooldownMs) return false;
+    g_last_summon_ms.store(now);
+    g_summon_watch.baseline.clear();
+    std::vector<EnemyInfo> before;
+    if (live::enumerateEnemies(g_reader, g_img.base, before, 4000)) {
+        for (const EnemyInfo& e : before) g_summon_watch.baseline.push_back(e.chr);
+    }
+    g_summon_watch.t0_ms = now;
+    g_summon_watch.reports_left = 2;
+    RuntimeContext::Instance().mode().summon_pending.store(true);
+    Log("%s: summon queued for the game thread (%zu entities in the baseline)", source, g_summon_watch.baseline.size());
+    return true;
 }
 
 bool TryUseSpawnEgg() {
-    return false;
+    auto& ctx = RuntimeContext::Instance();
+    {
+        std::lock_guard<std::mutex> g(ctx.combat().melee_mutex);
+        if (ctx.combat().melee.heldItem() != mc::ItemId::ZombieSpawnEgg || ctx.combat().melee.countAt(ctx.combat().melee.selectedSlot()) == 0) return false;
+    }
+    if (!QueueSummon("spawn egg")) return true;
+    std::lock_guard<std::mutex> g(ctx.combat().melee_mutex);
+    if (creative::consumesItems(ctx.currentGameMode())) ctx.combat().melee.consumeAt(ctx.combat().melee.selectedSlot());
+    ctx.combat().melee.startSwing();
+    return true;
 }
 
 void BlocksTick() {
+    auto& ctx = RuntimeContext::Instance();
+    const uint32_t rva_loading = ctx.memory().rva_loading.load(std::memory_order_relaxed);
+    if (rva_loading != 0) {
+        static bool prev_loading = false;
+        live::LoadingState ls;
+        if (live::readLoadingState(g_reader, live::readSingleton(g_reader, g_img.base, rva_loading, live::sigs::kCSNowLoadingHelper), ls)) {
+            if (ls.screen_loading && !prev_loading) {
+                std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+                if (ctx.world().block_grid.count() != 0) Log("blocks: loading screen, %zu blocks forgotten", ctx.world().block_grid.count());
+                ctx.world().block_grid.clear();
+                ctx.world().tnt_mgr.clear();
+            }
+            prev_loading = ls.screen_loading;
+        }
+    }
+
+    static uint64_t last_tnt_ms = 0;
+    const uint64_t now_ms = GetTickCount64();
+    if (last_tnt_ms == 0) last_tnt_ms = now_ms;
+    const float dt = std::clamp(static_cast<float>(now_ms - last_tnt_ms) / 1000.f, 0.001f, 0.1f);
+    last_tnt_ms = now_ms;
+
+    std::vector<eldenring::tnt::ErExplosionResult> explosions;
+    {
+        std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+        if (ctx.world().tnt_mgr.activeCount() > 0) {
+            explosions = ctx.world().tnt_mgr.step(dt, ctx.world().block_grid);
+        }
+    }
+
+    for (const auto& exp : explosions) {
+        world::VoxelWorldRuntime::Instance().triggerTntExplosion(exp.center, ctx);
+    }
+
+    SendBlockMesh();
 }
 
-void SendBlockMesh() {
-}
+class NoCombatPort : public mc::ICombatAdapter {
+public:
+    bool processHit(const mc::HitIntent&) override { return false; }
+    float getMaxHealth(mc::EntityId) override { return 0.f; }
+    void triggerStaggerOrRagdoll(mc::EntityId, const mc::Vec3&, float) override {}
+};
+static NoCombatPort s_no_combat_port;
+static mc::CombatEngine s_combat_engine{s_no_combat_port};
 
-void ClickAttack(float) {
+void ClickAttack(float charged) {
+    auto& ctx = RuntimeContext::Instance();
+    const uint32_t rva_world = ctx.memory().rva_world.load(std::memory_order_relaxed);
+    if (rva_world == 0) return;
+    const uintptr_t world = readSingleton(g_reader, g_img.base, rva_world, kWorldChrMan);
+    if (world == 0) return;
+    CameraPose cam;
+    uint64_t player = 0;
+    float feet[3];
+    if (!readCamera(g_reader, g_img.base, world, cam) || !SafeCopy(world + live::layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) ||
+        player == 0 || !live::detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(player), feet)) {
+        Log("click: no camera or player");
+        return;
+    }
+    const float cam_rel[3] = {cam.position[0] - feet[0], cam.position[1] - feet[1], cam.position[2] - feet[2]};
+    const auto pick_res = EntityManager::instance().pickTargetWithFallback(cam_rel, cam.forward, g_reader, g_img.base, NowTick(), feet);
+    const int idx = pick_res.index;
+    const auto& list = pick_res.list;
+    if (idx < 0) {
+        int near_count = 0;
+        char detail_buf[512];
+        int dn = snprintf(detail_buf, sizeof(detail_buf), "[");
+        for (const EnemyInfo& e : list) {
+            const float d = std::sqrt(e.rel_x * e.rel_x + e.rel_y * e.rel_y + e.rel_z * e.rel_z);
+            if (d > 8.f || near_count >= 5) continue;
+            ++near_count;
+            const float c[3] = {e.rel_x - cam_rel[0], e.rel_y + 1.f - cam_rel[1], e.rel_z - cam_rel[2]};
+            const float t = c[0] * cam.forward[0] + c[1] * cam.forward[1] + c[2] * cam.forward[2];
+            const float q[3] = {c[0] - cam.forward[0] * t, c[1] - cam.forward[1] * t, c[2] - cam.forward[2] * t};
+            dn += snprintf(detail_buf + dn, sizeof(detail_buf) - static_cast<size_t>(dn),
+                           " (%s npc=%d team=%u dist=%.1f t=%.1f off-ray=%.1f)",
+                           e.hostile ? "H" : "N", e.npc_id, static_cast<unsigned>(e.team), d, t,
+                           std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]));
+        }
+        snprintf(detail_buf + dn, sizeof(detail_buf) - static_cast<size_t>(dn), " ]");
+        Log("click: no target (cam_rel %.1f %.1f %.1f, fwd %.2f %.2f %.2f, entities<=8m: %s)", cam_rel[0], cam_rel[1], cam_rel[2],
+            cam.forward[0], cam.forward[1], cam.forward[2], detail_buf);
+        return;
+    }
+    const EnemyInfo& e = list[static_cast<size_t>(idx)];
+    const bool falling = ctx.player().jump.jumping();
+    mc::ItemId held = mc::ItemId::None;
+    mc::HitIntent intent;
+    {
+        std::lock_guard<std::mutex> g(ctx.combat().melee_mutex);
+        held = ctx.combat().melee.heldItem();
+        intent = ctx.combat().melee.makeIntent(s_combat_engine, mc::EntityId::LocalPlayer, mc::EntityId::None, charged, falling, !falling,
+                                               {}, {cam.forward[0], cam.forward[1], cam.forward[2]});
+    }
+    const float dmg_scale = ctx.mode().damage_scale.load();
+    const float hp_pct = ctx.mode().damage_hp_percent.load();
+    const int dmg = live::erDamage(intent, e.max_hp, dmg_scale, hp_pct);
+    const bool ok = dmg > 0 && ctx.combat().damage_queue.enqueue(e.chr, dmg, NowTick(),
+        (intent.is_critical ? 1u : 0u) | (intent.is_sweeping ? 2u : 0u) | (charged > 0.848f ? 4u : 0u) |
+        (static_cast<uint32_t>(std::min(255.f, std::floor(intent.damage))) << 8));
+    Log("click: item=%d charged=%.2f falling=%d crit=%d sweep=%d mc_dmg=%.2f -> %d on chr=%p npc=%d team=%u (%s) hp=%d/%d (%s)", static_cast<int>(held),
+        charged, falling ? 1 : 0, intent.is_critical ? 1 : 0, intent.is_sweeping ? 1 : 0, intent.damage, dmg,
+        reinterpret_cast<void*>(e.chr), e.npc_id, static_cast<unsigned>(e.team), e.hostile ? "hostile" : "neutral", e.hp, e.max_hp, ok ? "ok" : "not queued");
+    if (intent.is_sweeping) {
+        int sweep_count = 0;
+        const float r_max = ctx.mode().sweep_radius.load();
+        const float r2_max = r_max * r_max;
+        for (size_t i = 0; i < list.size(); ++i) {
+            if (i == static_cast<size_t>(idx)) continue;
+            const EnemyInfo& sec = list[i];
+            if (!sec.hostile || sec.chr == 0 || sec.hp <= 0) continue;
+            const float dx = sec.rel_x - e.rel_x;
+            const float dy = sec.rel_y - e.rel_y;
+            const float dz = sec.rel_z - e.rel_z;
+            if (dx * dx + dy * dy + dz * dz <= r2_max) {
+                mc::HitIntent sweep_intent = intent;
+                sweep_intent.damage = std::max(1.0f, intent.damage * 0.4f);
+                sweep_intent.is_sweeping = true;
+                const int sec_dmg = live::erDamage(sweep_intent, sec.max_hp, dmg_scale, hp_pct);
+                if (sec_dmg > 0) {
+                    const uint32_t sec_tag = 2u | (static_cast<uint32_t>(std::min(255.f, std::floor(sweep_intent.damage))) << 8);
+                    if (ctx.combat().damage_queue.enqueue(sec.chr, sec_dmg, NowTick(), sec_tag)) {
+                        ++sweep_count;
+                    }
+                }
+            }
+        }
+        if (sweep_count > 0) {
+            Log("click: sweep splash hit %d secondary targets within %.1fm", sweep_count, r_max);
+        }
+    }
 }
 
 void EnqueueNearestHostile() {
-}
-
-bool QueueSummon(const char*) {
-    return false;
+    auto& ctx = RuntimeContext::Instance();
+    const uintptr_t player = PlayerChrPtr();
+    float feet[3] = {};
+    if (player != 0) live::detail::readPhysicsPosition(g_reader, g_img.base, player, feet);
+    const auto res = EntityManager::instance().findNearestHostileWithFallback(25.0f, g_reader, g_img.base, NowTick(), feet);
+    if (!res.found) {
+        Log("F8: no hostile enemy within 25 m");
+        return;
+    }
+    const float best_d = std::sqrt(res.info.rel_x * res.info.rel_x + res.info.rel_y * res.info.rel_y + res.info.rel_z * res.info.rel_z);
+    const bool ok = ctx.combat().damage_queue.enqueue(res.info.chr, 50, NowTick());
+    Log("F8: queued 50 on chr=%p npc=%d team=%u hp=%d dist=%.1f m (%s)", reinterpret_cast<void*>(res.info.chr), res.info.npc_id,
+        static_cast<unsigned>(res.info.team), res.info.hp, best_d, ok ? "ok" : "queue full");
 }
 
 void RunSummonExperiment() {
+    int32_t summon_request = eldenring::buddy::kKaidenWarriorRequest;
+    std::vector<uint8_t> summon_txt;
+    if (ReadFileAll(g_game_dir + "mc_er_summon.txt", summon_txt) && !summon_txt.empty()) {
+        std::string content(reinterpret_cast<const char*>(summon_txt.data()), summon_txt.size());
+        size_t first = content.find_first_not_of(" \t\r\n");
+        size_t last = content.find_last_not_of(" \t\r\n");
+        if (first != std::string::npos && last != std::string::npos) {
+            std::string token = content.substr(first, last - first + 1);
+            summon_request = eldenring::buddy::resolveSummonRequest(token);
+        }
+    }
+    constexpr int32_t kTabletEntityId = 1042360100;
+    using eldenring::buddy::sample;
+    const auto before = sample(g_reader, g_img.base);
+    const char* why = eldenring::buddy::refusalReason(before);
+    if (why[0] != '\0') {
+        Log("summon: refused: %s", why);
+        return;
+    }
+    const uintptr_t player = PlayerChrPtr();
+    float pos[3], q[4];
+    if (player == 0 || !live::detail::readPhysicsPosition(g_reader, g_img.base, player, pos) ||
+        !live::detail::readPhysicsOrientation(g_reader, g_img.base, player, q)) {
+        Log("summon: refused: the player's position is not readable");
+        return;
+    }
+    const auto spawn = eldenring::buddy::spawnPointAhead(pos, eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]));
+    const auto plan = eldenring::buddy::planSummon(before, summon_request, kTabletEntityId, spawn);
+    if (!plan) {
+        Log("summon: no plan for request %d", summon_request);
+        return;
+    }
+
+    bool sp_ok = true;
+    for (int i = 0; i < 4; ++i) {
+        uint32_t bits;
+        std::memcpy(&bits, &plan->spawn.pos[i], sizeof(bits));
+        sp_ok = SafeWrite32(plan->spawn_address + 4 * static_cast<uintptr_t>(i), bits) && sp_ok;
+    }
+    uint32_t yaw_bits;
+    std::memcpy(&yaw_bits, &plan->spawn.yaw, sizeof(yaw_bits));
+    sp_ok = SafeWrite32(plan->yaw_address, yaw_bits) && sp_ok;
+    if (!sp_ok) {
+        Log("summon: writing the spawn point failed; nothing else was written");
+        return;
+    }
+    const bool t_ok = SafeWrite32(plan->tablet_address, static_cast<uint32_t>(plan->tablet));
+    const bool r_ok = t_ok && SafeWrite32(plan->request_address, static_cast<uint32_t>(plan->request));
+    const auto after = sample(g_reader, g_img.base);
+    Log("summon: wrote tablet=%d request=%d (%s) | before request=%d active=%d tablet=%d | right after request=%d active=%d tablet=%d",
+        plan->tablet, plan->request, r_ok ? "ok" : "WRITE FAILED", before.request, before.active, before.tablet, after.request, after.active,
+        after.tablet);
+    Log("summon: wrote spawn=(%.2f %.2f %.2f %.2f) yaw=%.2f for the player at (%.2f %.2f %.2f)", static_cast<double>(plan->spawn.pos[0]),
+        static_cast<double>(plan->spawn.pos[1]), static_cast<double>(plan->spawn.pos[2]), static_cast<double>(plan->spawn.pos[3]),
+        static_cast<double>(plan->spawn.yaw), static_cast<double>(pos[0]), static_cast<double>(pos[1]), static_cast<double>(pos[2]));
+    Log("summon: spawn point in the manager was (%.2f %.2f %.2f %.2f) yaw=%.2f", static_cast<double>(before.spawn_pos[0]),
+        static_cast<double>(before.spawn_pos[1]), static_cast<double>(before.spawn_pos[2]), static_cast<double>(before.spawn_pos[3]),
+        static_cast<double>(before.spawn_yaw));
+    eldenring::debug::LogPlayerPoseForBuddy(g_reader, g_img.base, PlayerChrPtr());
+}
+
+bool WantSuppress() {
+    auto& ctx = RuntimeContext::Instance();
+    if (!ctx.mode().mc_mode.load()) return false;
+    const uint32_t rva_menu = ctx.memory().rva_menu.load(std::memory_order_relaxed);
+    const uint32_t rva_loading = ctx.memory().rva_loading.load(std::memory_order_relaxed);
+    if (rva_menu == 0 || rva_loading == 0) return false;
+    live::MenuState ms;
+    live::LoadingState ls;
+    if (!live::readMenuState(g_reader, readSingleton(g_reader, g_img.base, rva_menu, kCSMenuMan), ms) ||
+        !live::readLoadingState(g_reader, readSingleton(g_reader, g_img.base, rva_loading, kCSNowLoadingHelper), ls)) {
+        return false;
+    }
+    return !ms.menu_focused && !ms.popup_open && !ls.screen_loading;
+}
+
+void McFlagsStep() {
+    using namespace eldenring::flags;
+    static ByteFlagHold stamina_hold, death_hold;
+    static ByteValueHold hud_hold;
+    static uintptr_t held_data = 0, held_menu = 0;
+    static bool logged_stamina = false, logged_death = false, logged_hud = false;
+    static uint64_t last_status_ms = 0;
+    static const bool enabled = !FileExists(g_game_dir + "mc_er_noflags.txt");
+    auto& ctx = RuntimeContext::Instance();
+    const FlagPolicy policy = policyFor(ctx.mode().mc_mode.load(std::memory_order_relaxed), ctx.currentGameMode() == creative::GameMode::Creative, enabled);
+
+    const uintptr_t player = PlayerChrPtr();
+    const uintptr_t data = player != 0 ? DataModuleOfChr(player) : 0;
+    if (data != held_data) {
+        stamina_hold = ByteFlagHold{};
+        death_hold = ByteFlagHold{};
+        held_data = data;
+    }
+    if (data != 0) {
+        uint8_t b = 0;
+        if (SafeCopy(data + kDataFlagsByte, &b, 1)) {
+            if (const auto w = stamina_hold.step(b, policy.no_stamina, kNoStaminaBit)) { SafeWrite8(data + kDataFlagsByte, *w); b = *w; }
+            if (const auto w = death_hold.step(b, policy.cannot_die, kCannotDieBit)) { SafeWrite8(data + kDataFlagsByte, *w); b = *w; }
+        }
+    }
+    const uint32_t rva_menu = ctx.memory().rva_menu.load(std::memory_order_relaxed);
+    const uintptr_t menu = rva_menu != 0 ? readSingleton(g_reader, g_img.base, rva_menu, kCSMenuMan) : 0;
+    if (menu != held_menu) {
+        hud_hold = ByteValueHold{};
+        held_menu = menu;
+    }
+    if (menu != 0) {
+        uint8_t b = 0;
+        if (SafeCopy(menu + kMenuHudSettingByte, &b, 1)) {
+            if (const auto w = hud_hold.step(b, policy.hide_hud, 0)) SafeWrite8(menu + kMenuHudSettingByte, *w);
+        }
+    }
+    if (stamina_hold.active() != logged_stamina) { logged_stamina = stamina_hold.active(); Log("flags: no-stamina bit %s", logged_stamina ? "held" : "released"); }
+    if (death_hold.active() != logged_death) { logged_death = death_hold.active(); Log("flags: cannot-die bit %s", logged_death ? "held" : "released"); }
+    if (hud_hold.active() != logged_hud) { logged_hud = hud_hold.active(); Log("flags: native HUD setting byte %s", logged_hud ? "forced to 0" : "restored"); }
+    const uint64_t now = GetTickCount64();
+    if ((stamina_hold.active() || death_hold.active() || hud_hold.active()) && now - last_status_ms > 3000) {
+        last_status_ms = now;
+        uint8_t fb = 0, hb = 0;
+        int32_t sp = -1, sp_max = -1;
+        if (data != 0) {
+            SafeCopy(data + kDataFlagsByte, &fb, 1);
+            SafeCopy(data + kDataStamina, &sp, sizeof(sp));
+            SafeCopy(data + kDataMaxStamina, &sp_max, sizeof(sp_max));
+        }
+        if (menu != 0) SafeCopy(menu + kMenuHudSettingByte, &hb, 1);
+        Log("FLAGS: data+0x19A=0x%02X stamina=%d/%d hud_setting=%u", fb, sp, sp_max, hb);
+    }
 }
 
 void SetupAllDomainServices(uintptr_t image_base, uint32_t rva_world) {
@@ -680,7 +1234,7 @@ void SetupAllDomainServices(uintptr_t image_base, uint32_t rva_world) {
     lcb.safe_read = [](uintptr_t addr, void* dst, size_t sz) { return memory::SafeCopy(addr, dst, sz); };
     lcb.safe_write = [](uintptr_t addr, const void* src, size_t sz) { return memory::SafeWriteBytes(addr, src, sz); };
     lcb.is_game_in_foreground = is_foreground;
-    lcb.want_suppress = [&ctx]() { return ctx.mode().mc_mode.load(); };
+    lcb.want_suppress = WantSuppress;
     lcb.is_player_dead = PlayerDead;
     lcb.is_player_airborne = PlayerAirborne;
     lcb.read_camera = [rva_world](CameraPose& out_cam) {
@@ -735,7 +1289,7 @@ void SetupAllDomainServices(uintptr_t image_base, uint32_t rva_world) {
 
     input::HotkeyCallbacks hcb;
     hcb.is_game_in_foreground = is_foreground;
-    hcb.want_suppress = lcb.want_suppress;
+    hcb.want_suppress = WantSuppress;
     hcb.is_player_dead = PlayerDead;
     hcb.is_player_airborne = PlayerAirborne;
     hcb.get_player_chr = PlayerChrPtr;
@@ -759,7 +1313,56 @@ void SetupAllDomainServices(uintptr_t image_base, uint32_t rva_world) {
     hcb.enqueue_nearest_hostile = EnqueueNearestHostile;
     hcb.queue_bullet_fire = QueueBulletFire;
     hcb.queue_summon = QueueSummon;
+    hcb.cycle_hidden_slot = [](int& cursor) {
+        auto& c = RuntimeContext::Instance();
+        debug::CycleHiddenSlot(cursor, PlayerChrPtr(), g_reader, g_img.base, c.ui().hide_slots, c.ui().slot_probe, c.ui().slots_changed);
+    };
+    hcb.reset_slot_probe = [](int& cursor) {
+        auto& c = RuntimeContext::Instance();
+        debug::ResetSlotProbe(cursor, c.ui().hide_slots, c.ui().slot_probe, c.ui().slots_changed, [](const char* s) { Log("%s", s); });
+    };
+    hcb.snapshot_native_parts = []() {
+        auto& c = RuntimeContext::Instance();
+        const uint32_t rw = c.memory().rva_world.load(std::memory_order_relaxed);
+        if (rw == 0) return;
+        const uintptr_t world = live::readSingleton(g_reader, g_img.base, rw, live::sigs::kWorldChrMan);
+        static std::unordered_map<uintptr_t, debug::HiddenWord> s_hidden_flags;
+        static std::mutex s_native_mutex;
+        debug::SnapshotNativeParts(g_reader, g_img.base, world, c, s_hidden_flags, s_native_mutex);
+    };
+    hcb.request_frame_trace = erov::RequestFrameTrace;
+    hcb.request_screenshot = [](const char* p) { erov::RequestScreenshot(p); };
+    hcb.cycle_depth_candidate = erov::CycleDepthCandidate;
+    hcb.inventory_tick = [](bool fg) {
+        auto& c = RuntimeContext::Instance();
+        std::lock_guard<std::mutex> g(c.combat().melee_mutex);
+        ui::InventoryController::Instance().tick(fg, WantSuppress(), PlayerDead(), c.combat().melee.inventory(), c);
+    };
     hcb.blocks_tick = BlocksTick;
+    hcb.mc_flags_step = McFlagsStep;
+    hcb.check_summon_watch = [](uint64_t) {
+        if (g_summon_watch.reports_left > 0) {
+            const uint64_t waited = GetTickCount64() - g_summon_watch.t0_ms;
+            if (waited >= (g_summon_watch.reports_left == 2 ? 1500u : 5000u)) {
+                --g_summon_watch.reports_left;
+                std::vector<EnemyInfo> now_list;
+                if (live::enumerateEnemies(g_reader, g_img.base, now_list, 4000)) {
+                    std::vector<uintptr_t> ptrs;
+                    for (const EnemyInfo& e : now_list) ptrs.push_back(e.chr);
+                    const auto fresh = eldenring::buddy::newEntities(g_summon_watch.baseline, ptrs);
+                    Log("summon: %.1f s after F2, %zu new entities (of %zu)", static_cast<double>(waited) / 1000.0, fresh.size(), now_list.size());
+                    for (size_t i : fresh) {
+                        const EnemyInfo& e = now_list[i];
+                        Log("summon:   new chr=%p npc=%d team=%u hp=%d/%d hostile=%d rel=(%.1f %.1f %.1f) dist=%.1f m", reinterpret_cast<void*>(e.chr),
+                            e.npc_id, static_cast<unsigned>(e.team), e.hp, e.max_hp, e.hostile ? 1 : 0, e.rel_x, e.rel_y, e.rel_z,
+                            std::sqrt(e.rel_x * e.rel_x + e.rel_y * e.rel_y + e.rel_z * e.rel_z));
+                    }
+                } else {
+                    Log("summon: entity enumeration failed");
+                }
+            }
+        }
+    };
     input::HotkeyDispatcher::Instance().setCallbacks(hcb);
 }
 
