@@ -3066,6 +3066,7 @@ void FlightStep() {
 // Opens / closes the inventory and drives its virtual pointer. Runs on the key thread before the normal MC input, and takes the
 // click edges while the screen is open so nothing else (attack, eating) reacts to them.
 void InventoryTick(bool fg) {
+    std::lock_guard<std::mutex> g(g_melee_mutex);
     eldenring::ui::InventoryController::Instance().tick(fg, WantSuppress(), PlayerDead(), g_melee.inventory(), g_ctx);
 }
 

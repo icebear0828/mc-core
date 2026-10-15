@@ -95,6 +95,13 @@ void InventoryController::tickWithInput(const InventoryInputState& input, mc::In
 void InventoryController::open(float screen_w, float screen_h, RuntimeContext& ctx) {
     ctx.ui().inv_mx.store(screen_w * 0.5f, std::memory_order_relaxed);
     ctx.ui().inv_my.store(screen_h * 0.5f, std::memory_order_relaxed);
+#if defined(WIN32) && !defined(MC_CORE_TESTS)
+    int dx = 0, dy = 0;
+    erin::TakeMouseDelta(dx, dy);
+    erin::TakeLeftClick();
+    erin::TakeRightClick();
+    erin::TakeWheelNotches();
+#endif
     if (callbacks_.set_suppress_mouse_motion) callbacks_.set_suppress_mouse_motion(true);
     if (callbacks_.set_suppress_keyboard) callbacks_.set_suppress_keyboard(true);
     ctx.ui().inv_open.store(true, std::memory_order_release);
@@ -144,7 +151,11 @@ void InventoryController::tick(bool fg, bool want_suppress, bool player_dead, mc
     input.fg = fg;
     input.want_suppress = want_suppress;
     input.player_dead = player_dead;
-    input.key_down = fg && (GetAsyncKeyState(ctx.ui().inv_vk.load(std::memory_order_relaxed)) & 0x8000) != 0;
+    const int vk = ctx.ui().inv_vk.load(std::memory_order_relaxed);
+    const bool key_custom = (vk > 0 && (GetAsyncKeyState(vk) & 0x8000) != 0);
+    const bool key_e = (GetAsyncKeyState('E') & 0x8000) != 0;
+    const bool key_i = (GetAsyncKeyState('I') & 0x8000) != 0;
+    input.key_down = fg && (key_custom || key_e || key_i);
     input.esc_down = fg && (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
     input.shift_down = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
     input.f_down = (GetAsyncKeyState('F') & 0x8000) != 0;
@@ -152,10 +163,14 @@ void InventoryController::tick(bool fg, bool want_suppress, bool player_dead, mc
         input.digit_down[i] = (GetAsyncKeyState('1' + i) & 0x8000) != 0;
     }
     erov::ScreenSize(input.screen_width, input.screen_height);
-    erin::TakeMouseDelta(input.mouse_dx, input.mouse_dy);
-    input.left_click = erin::TakeLeftClick();
-    input.right_click = erin::TakeRightClick();
-    input.wheel_notches = erin::TakeWheelNotches();
+
+    const bool is_open = ctx.ui().inv_open.load(std::memory_order_relaxed);
+    if (is_open) {
+        erin::TakeMouseDelta(input.mouse_dx, input.mouse_dy);
+        input.left_click = erin::TakeLeftClick();
+        input.right_click = erin::TakeRightClick();
+        input.wheel_notches = erin::TakeWheelNotches();
+    }
 
     tickWithInput(input, inv, ctx);
 }

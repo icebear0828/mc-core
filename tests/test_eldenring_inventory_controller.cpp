@@ -244,3 +244,26 @@ TEST_F(InventoryControllerTest, HotbarDigitSwap) {
     EXPECT_EQ(inv_.slot(12).item, mc::ItemId::DiamondSword);
     EXPECT_EQ(inv_.slot(12).count, 1u);
 }
+
+TEST_F(InventoryControllerTest, IsToggleKeyMatchesBothEAndIAndCustomConfiguredKey) {
+    // Standard Minecraft 'E' key (0x45 / 69) should match even if configured is 73 ('I')
+    EXPECT_TRUE(InventoryController::isToggleKey('E', 73));
+    EXPECT_TRUE(InventoryController::isToggleKey('e', 73));
+    EXPECT_TRUE(InventoryController::isToggleKey(0x45, 73));
+
+    // 'I' key (0x49 / 73) should match even if configured is 0x45 ('E')
+    EXPECT_TRUE(InventoryController::isToggleKey('I', 0x45));
+    EXPECT_TRUE(InventoryController::isToggleKey('i', 0x45));
+    EXPECT_TRUE(InventoryController::isToggleKey(73, 0x45));
+
+    // Custom configured key should match
+    EXPECT_TRUE(InventoryController::isToggleKey('B', 'B'));
+    EXPECT_TRUE(InventoryController::isToggleKey('X', 'X'));
+
+    // Non-toggle keys should return false
+    EXPECT_FALSE(InventoryController::isToggleKey(0x1B, 73)); // Esc
+    EXPECT_FALSE(InventoryController::isToggleKey(0x20, 73)); // Space
+    EXPECT_FALSE(InventoryController::isToggleKey('W', 73));
+    EXPECT_FALSE(InventoryController::isToggleKey(0, 73));
+}
+
