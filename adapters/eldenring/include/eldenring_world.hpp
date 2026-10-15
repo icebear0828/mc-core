@@ -274,4 +274,62 @@ inline bool enumerateEnemies(const IMemoryReader& reader, uintptr_t image_base, 
     return true;
 }
 
+// Scans active ChrSets for the nearest Site of Grace (kGraceNpcId = 1000) within max_distance.
+inline bool findNearestGrace(const IMemoryReader& reader, uintptr_t image_base, uintptr_t world,
+                             const float player_pos[3], float max_distance, float* out_dist = nullptr) {
+    if (world == 0 || player_pos == nullptr) return false;
+    uint32_t active_count = 0;
+    std::vector<uintptr_t> sets_to_scan;
+    sets_to_scan.reserve(layout::kMaxActiveChrSets + layout::kChrSetPointerCount);
+
+    if (reader.read(world + layout::kActiveChrSetCountInWorldChrMan, &active_count, sizeof(active_count)) &&
+        active_count > 0 && active_count <= layout::kMaxActiveChrSets) {
+        for (uint32_t a = 0; a < active_count; ++a) {
+            uint64_t set = 0;
+            if (reader.read(world + layout::kActiveChrSetArrayInWorldChrMan + a * layout::kActiveChrSetEntryStride,
+                            &set, sizeof(set)) && set != 0) {
+                sets_to_scan.push_back(static_cast<uintptr_t>(set));
+            }
+        }
+    }
+    // Also check sparse sets if active sets list was empty
+    if (sets_to_scan.empty()) {
+        for (uint32_t s = 0; s < layout::kChrSetPointerCount; ++s) {
+            uint64_t set = 0;
+            if (reader.read(world + layout::kChrSetPointerArrayInWorldChrMan + s * 8, &set, sizeof(set)) && set != 0) {
+                sets_to_scan.push_back(static_cast<uintptr_t>(set));
+            }
+        }
+    }
+
+    const float max_dist_sq = max_distance * max_distance;
+    float closest_sq = max_dist_sq + 1.0f;
+    for (uintptr_t set : sets_to_scan) {
+        uint32_t capacity = 0;
+        uint64_t entries = 0;
+        if (!reader.read(set + layout::kChrSetCapacity, &capacity, sizeof(capacity)) || capacity == 0 || capacity > layout::kMaxChrSetCapacity) continue;
+        if (!reader.read(set + layout::kChrSetEntries, &entries, sizeof(entries)) || entries == 0) continue;
+        for (uint32_t i = 0; i < capacity; ++i) {
+            uint64_t pair[2];
+            if (!reader.read(static_cast<uintptr_t>(entries) + static_cast<uintptr_t>(i) * 16, pair, sizeof(pair))) break;
+            const auto chr = static_cast<uintptr_t>(pair[0]);
+            if (chr == 0) continue;
+            int32_t npc_id = 0;
+            if (!reader.read(chr + layout::kNpcIdInChrIns, &npc_id, sizeof(npc_id)) || npc_id != layout::kGraceNpcId) continue;
+            float pos[3];
+            if (!detail::readPhysicsPosition(reader, image_base, chr, pos)) continue;
+            const float dx = pos[0] - player_pos[0], dy = pos[1] - player_pos[1], dz = pos[2] - player_pos[2];
+            const float dist_sq = dx * dx + dy * dy + dz * dz;
+            if (dist_sq <= max_dist_sq && dist_sq < closest_sq) {
+                closest_sq = dist_sq;
+            }
+        }
+    }
+    if (closest_sq <= max_dist_sq) {
+        if (out_dist) *out_dist = std::sqrt(closest_sq);
+        return true;
+    }
+    return false;
+}
+
 } // namespace eldenring::live

@@ -41,6 +41,7 @@ struct SteveAnimInput {
     bool arms_sway_only{false}; // zombie from a model file whose rest rotation already holds the arms out: only a slow sway on top
     bool is_gliding{false};
     float roll_angle{0.f};    // radians (banking roll when turning during flight)
+    bool is_sleeping{false};
 };
 
 class SteveAnimator {

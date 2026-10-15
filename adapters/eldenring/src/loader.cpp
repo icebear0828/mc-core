@@ -82,180 +82,33 @@ namespace blocks = eldenring::blocks;
 namespace creative = eldenring::creative;
 namespace flight = eldenring::flight;
 
+#include "eldenring_diagnostics.hpp"
+#include "eldenring_memory_scanner.hpp"
+#include "eldenring_runtime_context.hpp"
+#include "eldenring_inventory_controller.hpp"
+#include "eldenring_debug_probes.hpp"
+#include "eldenring_hud_bridge.hpp"
+
 namespace {
 
-// ---- logging -------------------------------------------------------------------------------------------------
+using eldenring::diagnostics::Log;
+using eldenring::diagnostics::InitLogOnce;
+using eldenring::diagnostics::CrashVehHandler;
 
-std::mutex g_log_mutex;
-FILE* g_log = nullptr;
-std::string g_game_dir;
-ULONGLONG g_start_ms = 0;
+const auto& g_game_dir = eldenring::diagnostics::GetGameDir();
 
-void Log(const char* fmt, ...) {
-    char msg[1024];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(msg, sizeof(msg), fmt, args);
-    va_end(args);
-    std::lock_guard<std::mutex> g(g_log_mutex);
-    if (!g_log) return;
-    fprintf(g_log, "[%8.3f] %s\n", static_cast<double>(GetTickCount64() - g_start_ms) / 1000.0, msg);
-    fflush(g_log);
-}
-
-LONG WINAPI CrashVehHandler(PEXCEPTION_POINTERS ep) {
-    if (ep == nullptr || ep->ExceptionRecord == nullptr) return EXCEPTION_CONTINUE_SEARCH;
-    const DWORD code = ep->ExceptionRecord->ExceptionCode;
-    // Intercept fatal faults: Access Violation, illegal instruction, stack overflow, fastfail, abort
-    if (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION ||
-        code == EXCEPTION_STACK_OVERFLOW || code == 0xC0000409 /* STATUS_STACK_BUFFER_OVERRUN / __fastfail */ ||
-        code == 0xE06D7363 /* C++ exception */) {
-        const uintptr_t rip = ep->ContextRecord != nullptr ? static_cast<uintptr_t>(ep->ContextRecord->Rip) : 0;
-        const uintptr_t addr = reinterpret_cast<uintptr_t>(ep->ExceptionRecord->ExceptionAddress);
-        const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-        Log("CRASH-VEH: Exception 0x%08lX at addr %p (RVA 0x%llX, rip %p, tid %lu)",
-            code, reinterpret_cast<void*>(addr),
-            (addr >= base) ? static_cast<unsigned long long>(addr - base) : 0ULL,
-            reinterpret_cast<void*>(rip), GetCurrentThreadId());
-        if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2) {
-            const ULONG_PTR type = ep->ExceptionRecord->ExceptionInformation[0];
-            const ULONG_PTR target = ep->ExceptionRecord->ExceptionInformation[1];
-            Log("CRASH-VEH: Access Violation %s memory at %p",
-                type == 0 ? "reading" : type == 1 ? "writing" : "executing",
-                reinterpret_cast<void*>(target));
-        }
-        if (g_log) fflush(g_log);
-    }
-    return EXCEPTION_CONTINUE_SEARCH;
-}
-
-void InitLogOnce() {
-    static std::mutex m;
-    static bool done = false;
-    std::lock_guard<std::mutex> g(m);
-    if (done) return;
-    done = true;
-    char exe[MAX_PATH] = {};
-    GetModuleFileNameA(nullptr, exe, MAX_PATH);
-    g_game_dir = exe;
-    g_game_dir.resize(g_game_dir.find_last_of("\\/") + 1);
-    g_start_ms = GetTickCount64();
-    // _fsopen with _SH_DENYNO: other processes (the probes, `type`) can read the log while the game runs.
-    g_log = _fsopen((g_game_dir + "mc_er.log").c_str(), "a", _SH_DENYNO);
-    AddVectoredExceptionHandler(1, CrashVehHandler);
-    Log("==== eldenring adapter loaded (pid %lu, exe %s) ====", GetCurrentProcessId(), exe);
-    Log("build: OUR adapter (shadow, bolt F3, bow, crash VEH), compiled %s %s", __DATE__, __TIME__); // a log without this line came from another dll (the reverser's probe build)
-}
-
-// ---- guarded memory access -----------------------------------------------------------------------------------
-
-template <typename F>
-bool SehGuard(F& f) {
-    __try {
-        f();
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-bool SafeCopy(uintptr_t address, void* out, size_t size) {
-    if (size == 0) return true;
-    if (address < 0x10000) return false;
-    __try {
-        std::memcpy(out, reinterpret_cast<const void*>(address), size);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-bool SafeWrite8(uintptr_t address, uint8_t value) {
-    if (address < 0x10000) return false;
-    __try {
-        *reinterpret_cast<volatile uint8_t*>(address) = value;
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-bool SafeWrite32(uintptr_t address, uint32_t value) {
-    if (address < 0x10000) return false;
-    __try {
-        *reinterpret_cast<volatile uint32_t*>(address) = value;
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-class SelfReader final : public IMemoryReader {
-public:
-    bool read(uintptr_t address, void* out, size_t size) const override { return SafeCopy(address, out, size); }
-};
+using eldenring::memory::SehGuard;
+using eldenring::memory::SafeCopy;
+using eldenring::memory::SafeWrite8;
+using eldenring::memory::SafeWrite32;
+using eldenring::memory::SelfReader;
+using eldenring::memory::ImageInfo;
+using eldenring::memory::ReadImageInfo;
+using eldenring::memory::Bound;
+using eldenring::memory::LocateSingleton;
+using eldenring::memory::LocateByPrefix;
 
 const SelfReader g_reader;
-
-// ---- image ---------------------------------------------------------------------------------------------------
-
-struct ImageInfo {
-    uintptr_t base{0};
-    uint32_t image_size{0};
-    uint32_t text_rva{0};
-    uint32_t text_size{0};
-};
-
-bool ReadImageInfo(ImageInfo& out) {
-    const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-    if (base == 0) return false;
-    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
-    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + static_cast<uintptr_t>(dos->e_lfanew));
-    if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
-    out.base = base;
-    out.image_size = nt->OptionalHeader.SizeOfImage;
-    const auto* sec = IMAGE_FIRST_SECTION(nt);
-    for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
-        if (std::memcmp(sec[i].Name, ".text", 5) == 0) {
-            out.text_rva = sec[i].VirtualAddress;
-            out.text_size = sec[i].Misc.VirtualSize;
-            return out.text_size > 0;
-        }
-    }
-    return false;
-}
-
-struct Bound {
-    uint32_t rva{0};
-    bool ok{false};
-};
-
-// Locates one singleton global inside .text; any access fault counts as "not found yet" (the image may still be
-// unpacking while the game starts).
-Bound LocateSingleton(const ImageInfo& img, const SingletonSig& sig) {
-    Bound b;
-    std::optional<uint32_t> result;
-    auto work = [&] {
-        result = locateGlobalRva(reinterpret_cast<const uint8_t*>(img.base + img.text_rva), img.text_size, img.text_rva,
-                                 img.image_size, sig);
-    };
-    if (SehGuard(work) && result) {
-        b.rva = *result;
-        b.ok = true;
-    }
-    return b;
-}
-
-bool LocateByPrefix(const ImageInfo& img, const char* pattern, uintptr_t& address) {
-    const auto parsed = Signature::parse(pattern);
-    if (!parsed) return false;
-    ScanResult r;
-    auto work = [&] { r = scanUnique(reinterpret_cast<const uint8_t*>(img.base + img.text_rva), img.text_size, *parsed); };
-    if (!SehGuard(work) || r.status != ScanStatus::Unique) return false;
-    address = img.base + img.text_rva + r.offset;
-    return true;
-}
 
 // ---- game state ----------------------------------------------------------------------------------------------
 
@@ -289,48 +142,52 @@ bool GameInForeground() {
     return pid == GetCurrentProcessId();
 }
 
-// ---- damage --------------------------------------------------------------------------------------------------
+// ---- RuntimeContext integration ------------------------------------------------------------------------------
 
-std::atomic<bool> g_damage_enabled{false};
-std::atomic<bool> g_mc_mode{true};
-std::atomic<uint8_t> g_game_mode{static_cast<uint8_t>(creative::GameMode::Survival)}; // F5: survival (default) or creative, inside MC mode
-std::atomic<uint64_t> g_mode_toast_ms{0};                                              // tick count of the last F5, drives the on-screen name
-creative::GameMode CurrentGameMode() { return static_cast<creative::GameMode>(g_game_mode.load(std::memory_order_relaxed)); }
-std::atomic<bool> g_input_enabled{false};
-std::atomic<bool> g_click_attack{false};
-std::atomic<bool> g_steve_enabled{false};
-std::atomic<bool> g_hide_native{false};
-struct HiddenWord {
-    uint32_t original;
-    uint32_t mask;
-};
+auto& g_ctx = eldenring::RuntimeContext::Instance();
+auto& g_mode = g_ctx.mode();
+auto& g_player = g_ctx.player();
+auto& g_world = g_ctx.world();
+auto& g_combat = g_ctx.combat();
+auto& g_ui = g_ctx.ui();
+
+std::atomic<bool>& g_damage_enabled = g_mode.damage_enabled;
+std::atomic<bool>& g_mc_mode = g_mode.mc_mode;
+std::atomic<uint8_t>& g_game_mode = g_mode.game_mode;
+std::atomic<uint64_t>& g_mode_toast_ms = g_mode.mode_toast_ms;
+inline creative::GameMode CurrentGameMode() { return g_ctx.currentGameMode(); }
+std::atomic<bool>& g_input_enabled = g_mode.input_enabled;
+std::atomic<bool>& g_click_attack = g_mode.click_attack;
+std::atomic<bool>& g_steve_enabled = g_mode.steve_enabled;
+std::atomic<bool>& g_hide_native = g_mode.hide_native;
+using HiddenWord = eldenring::debug::HiddenWord;
 std::unordered_map<uintptr_t, HiddenWord> g_hidden_flags; // flag word addresses we cleared -> original value and the bits we cleared
 std::mutex g_native_mutex; // g_hidden_flags: the Present thread and the pre-render hook both touch it
-std::atomic<bool> g_native_hide_wanted{false}; // set by the HUD provider: the native model should be hidden this frame
-std::atomic<unsigned> g_native_reshown{0};     // times the game turned a hidden part back on before we cleared it again
-std::atomic<bool> g_slots_changed{false};
-std::atomic<int> g_slot_probe{-1}; // F9 probe: -1 = off (all slots), 0..26 = only that part slot is hidden
-std::atomic<uint32_t> g_hide_mask1{0x100A1}; // bits cleared in disp_flags1 (+0x20): visible + shadow (verified live, not bisected)
-std::atomic<bool> g_no_player_hit_vfx{false}; // mc_er_steve.txt: no_player_hit_vfx=1 (also implied by first person): no blood when the player is hit
-std::atomic<bool> g_fp_persist{true};      // mc_er_steve.txt: fp_persist=0 turns the persistent eye camera off
-std::atomic<bool> g_shadow_enabled{true};  // mc_er_steve.txt: shadow=0 turns the blob shadows off
-std::atomic<float> g_ground_y{0.f};       // the ground under the player's feet, found by ShadowGroundStep on the game thread
-std::atomic<bool> g_ground_valid{false};
-std::atomic<bool> g_first_person{false};  // mc_er_steve.txt: first_person=1 (experiment), F10 toggles
-std::atomic<float> g_eye_height{1.65f};
-std::atomic<float> g_kb_force{-1.f}; // mc_er_steve.txt: kb_force (>= 0 overrides HitContext+0xFC of our own hits; experiment)
-std::atomic<uint32_t> g_hide_slots{0xFFFFFFFFu}; // bit n = part slot n of the native model (mc_er_steve.txt: hide_slots)
-std::atomic<uint32_t> g_hide_mask2{1};         // bits cleared in disp_flags2 (+0x24)
+std::atomic<bool>& g_native_hide_wanted = g_ui.native_hide_wanted;
+std::atomic<unsigned>& g_native_reshown = g_ui.native_reshown;
+std::atomic<bool>& g_slots_changed = g_ui.slots_changed;
+std::atomic<int>& g_slot_probe = g_ui.slot_probe;
+std::atomic<uint32_t>& g_hide_mask1 = g_ui.hide_mask1;
+std::atomic<bool>& g_no_player_hit_vfx = g_ui.no_player_hit_vfx;
+std::atomic<bool>& g_fp_persist = g_mode.fp_persist;
+std::atomic<bool>& g_shadow_enabled = g_mode.shadow_enabled;
+std::atomic<float>& g_ground_y = g_player.ground_y;
+std::atomic<bool>& g_ground_valid = g_player.ground_valid;
+std::atomic<bool>& g_first_person = g_mode.first_person;
+std::atomic<float>& g_eye_height = g_mode.eye_height;
+std::atomic<float>& g_kb_force = g_ui.kb_force;
+std::atomic<uint32_t>& g_hide_slots = g_ui.hide_slots;
+std::atomic<uint32_t>& g_hide_mask2 = g_ui.hide_mask2;
 float g_steve_yaw_offset = 3.14159265f; // the orientation quaternion at PhysicsModule+0x50 faces opposite to the model forward (user verified live, 180 deg)
-std::atomic<bool> g_instant_turn{true};  // mc_er_steve.txt: instant_turn=1 (snap to movement heading with zero delay)
-std::atomic<float> g_turn_speed{15.0f};  // mc_er_steve.txt: turn_speed=<rad/s> (used when instant_turn=0 for smooth turn clamp)
-std::atomic<bool> g_disable_vanilla_roll{true}; // mc_er_steve.txt: disable_vanilla_roll=1 (also disable_roll=1)
-std::atomic<int> g_roll_vk{VK_SHIFT};            // mc_er_steve.txt: roll_key=<virtual key code> (default Shift)
-std::atomic<bool> g_require_victim_updating{false};
-std::atomic<float> g_damage_scale{20.0f};          // mc_er_steve.txt: damage_scale (base flat portion, default 20.0f)
-std::atomic<float> g_damage_hp_percent{0.02f};     // mc_er_steve.txt: damage_hp_percent (boss max hp ratio, default 0.02f)
-std::atomic<float> g_sweep_radius{3.0f};           // mc_er_steve.txt: sweep_radius (meters for sweeping edge splash, default 3.0f)
-DamageQueue g_queue;
+std::atomic<bool>& g_instant_turn = g_mode.instant_turn;
+std::atomic<float>& g_turn_speed = g_mode.turn_speed;
+std::atomic<bool>& g_disable_vanilla_roll = g_mode.disable_vanilla_roll;
+std::atomic<int>& g_roll_vk = g_mode.roll_vk;
+std::atomic<bool>& g_require_victim_updating = g_mode.require_victim_updating;
+std::atomic<float>& g_damage_scale = g_mode.damage_scale;
+std::atomic<float>& g_damage_hp_percent = g_mode.damage_hp_percent;
+std::atomic<float>& g_sweep_radius = g_mode.sweep_radius;
+DamageQueue& g_queue = g_combat.damage_queue;
 
 // Attack rules come from mc::CombatEngine; hits are applied through g_queue, so this port only exists to build the engine.
 class NoCombatPort : public mc::ICombatAdapter {
@@ -341,30 +198,30 @@ public:
 };
 NoCombatPort g_no_combat_port;
 mc::CombatEngine g_combat_engine{g_no_combat_port};
-std::mutex g_melee_mutex; // KeyThread writes, the Present thread reads
-MeleeController g_melee;
-JumpTracker g_jump; // KeyThread only
-eldenring::sprint::SprintController g_sprint; // KeyThread only
-std::atomic<bool> g_sprint_active{false};
-std::atomic<float> g_sprint_fov{1.0f};
-std::atomic<float> g_sprint_anim{1.0f};
-SurvivalState g_survival;          // regeneration / absorption, guarded by g_melee_mutex
-HungerModel g_hunger;              // food level, saturation, exhaustion (guarded by g_melee_mutex)
-XpModel g_xp;                      // experience level and bar (guarded by g_melee_mutex)
-float g_hunger_heal_carry = 0.f;   // Elden Ring hit points not yet whole, from the natural regeneration (key thread only)
-mc::ConsumableSystem g_eating;     // right click on food, guarded by g_melee_mutex
-std::atomic<float> g_sound_volume{0.8f}; // mc_er_steve.txt: sound_volume
-std::atomic<float> g_walk_speed{0.f}; // horizontal speed of the player (m/s), measured by the key thread
-std::atomic<bool> g_on_ground{true};
-std::atomic<bool> g_bullet_fire_pending{false}; // F3 pressed with mc_er_bulletfire.txt present: call spawn_bullet once on the game thread
-std::atomic<bool> g_bullet_fire_enabled{false};  // mc_er_bulletfire.txt present: F3 and the bow may shoot (needs the saved request template)
-std::atomic<bool> g_summon_pending{false}; // F2 pressed with mc_er_summon.txt present: write one summon request on the game thread
-std::atomic<int> g_heal_pending{0}; // Elden Ring hit points waiting to be given back on the game thread
+std::mutex& g_melee_mutex = g_combat.melee_mutex;
+MeleeController& g_melee = g_combat.melee;
+JumpTracker& g_jump = g_player.jump;
+eldenring::sprint::SprintController& g_sprint = g_player.sprint;
+std::atomic<bool>& g_sprint_active = g_player.sprint_active;
+std::atomic<float>& g_sprint_fov = g_player.sprint_fov;
+std::atomic<float>& g_sprint_anim = g_player.sprint_anim;
+SurvivalState& g_survival = g_player.survival;
+HungerModel& g_hunger = g_player.hunger;
+XpModel& g_xp = g_player.xp;
+float& g_hunger_heal_carry = g_player.hunger_heal_carry;
+mc::ConsumableSystem& g_eating = g_player.eating;
+std::atomic<float>& g_sound_volume = g_mode.sound_volume;
+std::atomic<float>& g_walk_speed = g_mode.walk_speed;
+std::atomic<bool>& g_on_ground = g_mode.on_ground;
+std::atomic<bool>& g_bullet_fire_pending = g_mode.bullet_fire_pending;
+std::atomic<bool>& g_bullet_fire_enabled = g_mode.bullet_fire_enabled;
+std::atomic<bool>& g_summon_pending = g_mode.summon_pending;
+std::atomic<int>& g_heal_pending = g_mode.heal_pending;
 using ApplyHpFn = void*(__fastcall*)(void* data_module, int32_t hp, uint8_t flag);
 ApplyHpFn g_apply_hp = nullptr;
-HitFeedback g_feedback; // guarded by g_melee_mutex
+HitFeedback& g_feedback = g_combat.feedback;
 thread_local int32_t t_hp_after = -1; // victim hp right after our vfunc[7] call (game thread)
-std::optional<HitTemplate> g_template;
+std::optional<HitTemplate>& g_template = g_combat.hit_template;
 using ClampFn = void*(__fastcall*)(void*, int32_t);
 ClampFn g_clamp_orig = nullptr;
 using DamageFn = uint64_t(__fastcall*)(void*, void*, void*);
@@ -669,30 +526,24 @@ bool __fastcall CreativeSpEffectDetour(void* container, int sp_effect) {
 // While the inventory is open the game must not walk, roll, attack or turn the camera: the input master gate (0x14067B020) and the
 // camera-rotation freeze test (0x140766C60) both report "blocked" (REVERSE 12). Both are optional: without them the mouse buttons and
 // motion are still taken away from the game, and only the keyboard and gamepad keep moving the character.
-std::atomic<bool> g_inv_open{false};
-std::atomic<float> g_inv_mx{0.f}, g_inv_my{0.f}; // the virtual pointer, back buffer pixels
-std::atomic<int> g_inv_vk{'I'};                  // mc_er_steve.txt: inv_key=<virtual key code>
-std::atomic<float> g_inv_sens{1.f};              // pixels per mouse count
+std::atomic<bool>& g_inv_open = g_ui.inv_open;
+std::atomic<float>& g_inv_mx = g_ui.inv_mx;
+std::atomic<float>& g_inv_my = g_ui.inv_my;
+std::atomic<int>& g_inv_vk = g_ui.inv_vk;
+std::atomic<float>& g_inv_sens = g_ui.inv_sens;
 using IsInputBlockedFn = uint64_t(__fastcall*)();
 using MenuFreezeFn = uint8_t(__fastcall*)(void*);
 IsInputBlockedFn g_isblocked_orig = nullptr;
 MenuFreezeFn g_menufreeze_orig = nullptr;
-std::atomic<unsigned> g_isblocked_forced{0}, g_menufreeze_forced{0};
+std::atomic<unsigned>& g_isblocked_forced = g_ui.isblocked_forced;
+std::atomic<unsigned>& g_menufreeze_forced = g_ui.menufreeze_forced;
 
 uint64_t __fastcall IsInputBlockedDetour() {
-    if (g_inv_open.load(std::memory_order_relaxed)) {
-        ++g_isblocked_forced;
-        return 1;
-    }
-    return g_isblocked_orig();
+    return eldenring::ui::InventoryController::IsInputBlockedDetour();
 }
 
 uint8_t __fastcall MenuFreezeDetour(void* self) {
-    if (g_inv_open.load(std::memory_order_relaxed)) {
-        ++g_menufreeze_forced;
-        return 1;
-    }
-    return g_menufreeze_orig(self);
+    return eldenring::ui::InventoryController::MenuFreezeDetour(self);
 }
 
 // ---- persistent eye camera ----------------------------------------------------------------------------------------------
@@ -936,91 +787,7 @@ uint64_t __fastcall CameraStepDetour(uint64_t self, float dt, uint64_t chr, uint
 
 
 // ---- camera write watch (diagnostic, opt-in: mc_er_camwatch.txt) ----------------------------------------------------------
-// Hardware write breakpoints on ChrCam's position find which instructions write it each frame. Every distinct writer is logged
-// once with its module offset and the first stack words (return addresses), then counted.
-struct CamWatchHit {
-    uint64_t rip{0};
-    uint64_t stack[6]{};
-};
-CamWatchHit g_watch_ring[256];
-std::atomic<unsigned> g_watch_head{0};
-
-LONG CALLBACK CamWatchVeh(PEXCEPTION_POINTERS info) {
-    if (info->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP || (info->ContextRecord->Dr6 & 0xF) == 0) return EXCEPTION_CONTINUE_SEARCH;
-    const unsigned idx = g_watch_head.fetch_add(1) % 256;
-    CamWatchHit& h = g_watch_ring[idx];
-    h.rip = info->ContextRecord->Rip;
-    const uint64_t* sp = reinterpret_cast<const uint64_t*>(info->ContextRecord->Rsp);
-    for (int i = 0; i < 6; ++i) {
-        uint64_t v = 0;
-        SafeCopy(reinterpret_cast<uintptr_t>(sp + i), &v, sizeof(v));
-        h.stack[i] = v;
-    }
-    info->ContextRecord->Dr6 = 0;
-    return EXCEPTION_CONTINUE_EXECUTION;
-}
-
-void ArmThreadWatch(DWORD tid, uintptr_t addr) {
-    HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE, tid);
-    if (th == nullptr) return;
-    if (SuspendThread(th) != static_cast<DWORD>(-1)) {
-        CONTEXT ctx{};
-        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-        if (GetThreadContext(th, &ctx)) {
-            ctx.Dr0 = addr;
-            ctx.Dr1 = addr + 8;
-            ctx.Dr7 = 0x1ull | (1ull << 16) | (3ull << 18) | (1ull << 2) | (1ull << 20) | (3ull << 22);
-            SetThreadContext(th, &ctx);
-        }
-        ResumeThread(th);
-    }
-    CloseHandle(th);
-}
-
-DWORD WINAPI CamWatchThread(LPVOID) {
-    AddVectoredExceptionHandler(1, CamWatchVeh);
-    std::unordered_map<DWORD, uintptr_t> armed;
-    std::unordered_map<uint64_t, unsigned> counts;
-    unsigned printed_head = 0, rounds = 0;
-    for (;;) {
-        Sleep(1000);
-        ++rounds;
-        uintptr_t addr = 0;
-        if (ChrCamPosAddress(addr)) {
-            if ((addr & 7) != 0) Log("camwatch: position address %p is not 8-aligned, watch not armed", reinterpret_cast<void*>(addr));
-            else {
-                const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-                if (snap != INVALID_HANDLE_VALUE) {
-                    THREADENTRY32 te{};
-                    te.dwSize = sizeof(te);
-                    for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
-                        if (te.th32OwnerProcessID != GetCurrentProcessId() || te.th32ThreadID == GetCurrentThreadId()) continue;
-                        auto it = armed.find(te.th32ThreadID);
-                        if (it != armed.end() && it->second == addr) continue;
-                        ArmThreadWatch(te.th32ThreadID, addr);
-                        armed[te.th32ThreadID] = addr;
-                    }
-                    CloseHandle(snap);
-                }
-                if (rounds % 10 == 1) Log("camwatch: armed %zu threads on ChrCam pos %p", armed.size(), reinterpret_cast<void*>(addr));
-            }
-        }
-        const unsigned head = g_watch_head.load();
-        for (; printed_head < head && printed_head + 256 > head; ++printed_head) {
-            const CamWatchHit& h = g_watch_ring[printed_head % 256];
-            if (++counts[h.rip] == 1) {
-                Log("camwatch: NEW writer rip=%p (RVA 0x%llX) stack: %llX %llX %llX %llX %llX %llX", reinterpret_cast<void*>(h.rip),
-                    static_cast<unsigned long long>(h.rip - g_img.base), static_cast<unsigned long long>(h.stack[0] - g_img.base),
-                    static_cast<unsigned long long>(h.stack[1] - g_img.base), static_cast<unsigned long long>(h.stack[2] - g_img.base),
-                    static_cast<unsigned long long>(h.stack[3] - g_img.base), static_cast<unsigned long long>(h.stack[4] - g_img.base),
-                    static_cast<unsigned long long>(h.stack[5] - g_img.base));
-            }
-        }
-        if (rounds % 10 == 0) {
-            for (const auto& kv : counts) Log("camwatch: writer RVA 0x%llX hit %u times", static_cast<unsigned long long>(kv.first - g_img.base), kv.second);
-        }
-    }
-}
+using eldenring::debug::CamWatchThread;
 
 // ---- player hit effect (blood) -----------------------------------------------------------------------------------------
 // 0x140450120 spawns the hit particles; its first gate is IsMainPlayer(victim), so it only runs for hits the player takes.
@@ -1145,93 +912,20 @@ uintptr_t DataModuleOfChr(uintptr_t chr);
 
 // Read-only (REVERSE 37, to check the reverser's claim): the four homogeneous vectors the hit context is said to keep at +0x190 (impact point),
 // +0x1A0 (attack source point), +0x1B0 (attack direction) and +0x1C0 (hit normal / knockback direction), next to the positions we can read
-// ourselves, so a few hits show which one points where. Also the classes (vtable RVAs) of the attacker argument and of ctx+0x1D8.
 void LogHitGeometry(const char* tag, void* attacker, uintptr_t player, const uint8_t* ctx) {
-    constexpr size_t kVecOffsets[4] = {0x190, 0x1A0, 0x1B0, 0x1C0};
-    float v[4][4] = {};
-    for (int i = 0; i < 4; ++i) SafeCopy(reinterpret_cast<uintptr_t>(ctx) + kVecOffsets[i], v[i], sizeof(v[i]));
-    uint8_t kind = 0, d9 = 0, react = 0;
-    float kb = 0.f;
-    uint64_t ctx_attacker = 0;
-    SafeCopy(reinterpret_cast<uintptr_t>(ctx) + 0xDA, &kind, 1);
-    SafeCopy(reinterpret_cast<uintptr_t>(ctx) + 0xD9, &d9, 1);
-    SafeCopy(reinterpret_cast<uintptr_t>(ctx) + layout::kHitEnableReaction, &react, 1);
-    SafeCopy(reinterpret_cast<uintptr_t>(ctx) + layout::kHitKnockbackIn, &kb, sizeof(kb));
-    SafeCopy(reinterpret_cast<uintptr_t>(ctx) + layout::kHitAttacker, &ctx_attacker, sizeof(ctx_attacker));
-    auto vtable_rva = [&](uintptr_t object) -> long long {
-        uint64_t vt = 0;
-        if (object == 0 || !SafeCopy(object, &vt, sizeof(vt)) || vt < g_img.base) return -1;
-        return static_cast<long long>(vt - g_img.base);
-    };
-    float pp[3] = {}, ap[3] = {};
-    const bool ok_player = player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, pp);
-    const bool ok_attacker = attacker != nullptr && detail::readPhysicsPosition(g_reader, g_img.base, reinterpret_cast<uintptr_t>(attacker), ap);
-    Log("%s: kind=%u d9=%u react=%u kb=%.2f attacker=%p vt=0x%llX ctx_attacker=%p vt=0x%llX player=%s(%.2f %.2f %.2f) attacker_pos=%s(%.2f %.2f %.2f) "
-        "v190=(%.3f %.3f %.3f %.1f) v1A0=(%.3f %.3f %.3f %.1f) v1B0=(%.3f %.3f %.3f %.1f) v1C0=(%.3f %.3f %.3f %.1f)",
-        tag, kind, d9, react, kb, attacker, static_cast<unsigned long long>(vtable_rva(reinterpret_cast<uintptr_t>(attacker))),
-        reinterpret_cast<void*>(ctx_attacker), static_cast<unsigned long long>(vtable_rva(static_cast<uintptr_t>(ctx_attacker))),
-        ok_player ? "ok" : "no", pp[0], pp[1], pp[2], ok_attacker ? "ok" : "no", ap[0], ap[1], ap[2], v[0][0], v[0][1], v[0][2], v[0][3], v[1][0], v[1][1],
-        v[1][2], v[1][3], v[2][0], v[2][1], v[2][2], v[2][3], v[3][0], v[3][1], v[3][2], v[3][3]);
+    eldenring::debug::LogHitGeometry(tag, attacker, player, ctx, g_reader, g_img.base);
 }
 
 void LogPlayerHit(void* module, void* attacker, const uint8_t* ctx, uint8_t blocked_flag) {
-    uint64_t owner = 0, world = 0, player = 0;
-    if (!SafeCopy(reinterpret_cast<uintptr_t>(module) + layout::kOwnerInDataModule, &owner, sizeof(owner)) || owner == 0) return;
-    world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
-    if (world == 0 || !SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) || owner != player) return;
-    uint8_t b[0x270];
-    if (!SafeCopy(reinterpret_cast<uintptr_t>(ctx), b, sizeof(b))) return;
-    auto u32 = [&](size_t o) { uint32_t v; std::memcpy(&v, b + o, 4); return v; };
-    auto f32 = [&](size_t o) { float v; std::memcpy(&v, b + o, 4); return v; };
-    int32_t npc = 0;
-    uint8_t team = 0;
-    SafeCopy(reinterpret_cast<uintptr_t>(attacker) + layout::kNpcIdInChrIns, &npc, sizeof(npc));
-    SafeCopy(reinterpret_cast<uintptr_t>(attacker) + layout::kTeamTypeInChrIns, &team, sizeof(team));
-    Log("HIT-IN: dmg=%u poise=%u tier=%u kb+FC=%.2f f+50=%.2f %.2f %.2f u8[67]=%u u8[D9]=%u u8[DA]=%u u8[114]=%02X u8[115]=%02X u32[54]=%u "
-        "u32[21C]=%u u32[230]=%u blocked_arg=%u attacker=%p npc=%d team=%u",
-        u32(layout::kHitDamage), u32(0x40), u32(0x44), f32(layout::kHitKnockbackIn), f32(0x50), f32(0x54), f32(0x58), b[0x67], b[0xD9], b[0xDA],
-        b[0x114], b[0x115], u32(0x54), u32(0x21C), u32(0x230), static_cast<unsigned>(blocked_flag), attacker, npc, static_cast<unsigned>(team));
-    // What 0x447810 (which runs before this hook) left in the context: the stagger level and animation ids, and the data module
-    // words around +0x154 that it compares with ctx+0x22C (REVERSE 21: poise or stamina?).
-    uint32_t words[6] = {};
-    if (const uintptr_t data = DataModuleOfChr(static_cast<uintptr_t>(owner))) SafeCopy(data + 0x148, words, sizeof(words));
-    auto u16 = [&](size_t o) { uint16_t v; std::memcpy(&v, b + o, 2); return static_cast<unsigned>(v); };
-    Log("HIT-IN2: u32[22C]=%u u32[228]=%u anim[220]=%u [222]=%u [224]=%u [226]=%u u8[258]=%u u8[259]=%u u8[25A]=%u u8[266]=%02X u8[267]=%02X "
-        "module+148..15C=%u %u %u %u %u %u",
-        u32(0x22C), u32(0x228), u16(0x220), u16(0x222), u16(0x224), u16(0x226), b[0x258], b[0x259], b[0x25A], b[0x266], b[0x267], words[0], words[1],
-        words[2], words[3], words[4], words[5]);
-    LogHitGeometry("HIT-GEOM", attacker, static_cast<uintptr_t>(owner), ctx);
+    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    eldenring::debug::LogPlayerHit(module, attacker, ctx, blocked_flag, g_reader, g_img.base, world);
 }
 
 // Read-only (mc_er_chrscan.txt, after F2): the classes behind the pointers of a summoned character, and inside the model-like ones where a dword
 // equal to the live "drawn" display flags (0x000100A1) sits. Finds where a monster model keeps what the player's CSModelDispEntity keeps.
 unsigned g_chrscan_count = 0; // reset by every F2
 void LogChrScan(uintptr_t chr, size_t index) {
-    unsigned& scanned = g_chrscan_count;
-    if (++scanned > 3) return; // three wolves, one is enough to learn the layout
-    if (scanned == 1) { // the player's own parts, for comparison: the flags there are known to read 0x000100A1 while drawn
-        const std::vector<uintptr_t> player_flags = collectDispFlagAddresses(g_reader, g_img.base, PlayerChrPtr());
-        Log("chrscan: the player has %zu drawn parts; first dumps (disp_flags1 sits at +0x20 of the entity)", player_flags.size());
-        for (size_t i = 0; i < player_flags.size() && i < 3; ++i) Log("chrscan:   player part %zu %s", i, dumpDwords(g_reader, player_flags[i] - 0x20, 0x10, 0x50).c_str());
-    }
-    Log("chrscan: entity #%zu chr=%p", index, reinterpret_cast<void*>(chr));
-    for (const ScanHit& h : scanForClasses(g_reader, g_img.base, chr, 0, 0xA00)) {
-        Log("%s", formatScanHit(h, 0).c_str());
-        if (!looksLikeModelClass(h.cls)) continue;
-        for (const ScanHit& h2 : scanForClasses(g_reader, g_img.base, h.object, 0, 0x300, 40)) {
-            Log("%s", formatScanHit(h2, 1).c_str());
-            if (h2.cls.find("CSModelDispEntity") != std::string::npos) Log("chrscan:     dump %s", dumpDwords(g_reader, h2.object, 0x10, 0x50).c_str());
-            if (!looksLikeModelClass(h2.cls)) continue;
-            for (const uintptr_t at : findDwordOffsets(g_reader, h2.object, 0, 0x100, 0x000100A1u)) {
-                Log("chrscan:     display flags 0x000100A1 at +0x%llX of %p (chr+0x%llX -> +0x%llX)", static_cast<unsigned long long>(at), reinterpret_cast<void*>(h2.object),
-                    static_cast<unsigned long long>(h.offset), static_cast<unsigned long long>(h2.offset));
-            }
-        }
-        for (const uintptr_t at : findDwordOffsets(g_reader, h.object, 0, 0x100, 0x000100A1u)) {
-            Log("chrscan:   display flags 0x000100A1 at +0x%llX of %p (chr+0x%llX)", static_cast<unsigned long long>(at), reinterpret_cast<void*>(h.object),
-                static_cast<unsigned long long>(h.offset));
-        }
-    }
+    eldenring::debug::LogChrScan(chr, index, g_reader, g_img.base, PlayerChrPtr());
 }
 
 uintptr_t PlayerChrPtr() {
@@ -1944,166 +1638,62 @@ bool FileExists(const std::string& path); // defined below
 // Diagnostic: +0x70 (position), +0x80 and +0x120 of the player's physics module, twice a second while moving. Answers whether
 // +0x80 is the previous position (fromsoftware-rs: last_update_position) or a velocity (reverser 2026-10-09).
 void LogPhysicsVectors() {
-    static uint64_t last_ms = 0;
-    const uint64_t now = GetTickCount64();
-    if (now - last_ms < 500) return;
-    last_ms = now;
     const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
-    uint64_t player = 0;
-    float p70[3], p80[3], p120[3];
-    if (world == 0 || !SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) || player == 0) return;
-    const auto chr = static_cast<uintptr_t>(player);
-    if (!detail::readPhysicsVec3(g_reader, g_img.base, chr, 0x70, p70) || !detail::readPhysicsVec3(g_reader, g_img.base, chr, 0x80, p80) ||
-        !detail::readPhysicsVec3(g_reader, g_img.base, chr, 0x120, p120)) {
-        return;
-    }
-    Log("phys: +70=(%.3f %.3f %.3f) +80=(%.3f %.3f %.3f) +120=(%.3f %.3f %.3f)", p70[0], p70[1], p70[2], p80[0], p80[1], p80[2], p120[0],
-        p120[1], p120[2]);
+    eldenring::debug::LogPhysicsVectors(g_reader, g_img.base, world);
 }
 
-// Diagnostic (read only): the spirit-ash manager's fields, one log entry each time they change. Armed by mc_er_buddylog.txt
-// in the game directory (looked for once a second); works outside MC mode so ashes can be used normally. The request slot
-// (+0x20) lives for less than a frame, so while armed this thread polls as fast as it can (one core busy; delete the file
-// to stop). Never writes to the game.
-// The player's own position (PhysicsModule+0x70) and heading, next to a buddy log entry: to compare with the spawn point
-// the item code writes into the manager (read only).
 void LogPlayerPoseForBuddy() {
-    const uintptr_t player = PlayerChrPtr();
-    float pos[3], q[4];
-    if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, pos) &&
-        detail::readPhysicsOrientation(g_reader, g_img.base, player, q)) {
-        Log("buddy: player pos=(%.2f %.2f %.2f) heading=%.2f", pos[0], pos[1], pos[2],
-            eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]));
-    }
+    eldenring::debug::LogPlayerPoseForBuddy(g_reader, g_img.base, PlayerChrPtr());
 }
 
-DWORD WINAPI BuddyThread(LPVOID) {
-    eldenring::buddy::Monitor monitor;
-    uint64_t last_check_ms = 0;
-    bool armed = false;
-    for (;;) {
-        const uint64_t now = GetTickCount64();
-        if (now - last_check_ms >= 1000) {
-            last_check_ms = now;
-            const bool file = FileExists(g_game_dir + "mc_er_buddylog.txt");
-            if (file && !armed) monitor = eldenring::buddy::Monitor{};
-            armed = file;
-        }
-        if (!armed) {
-            Sleep(1000);
-            continue;
-        }
-        const std::string text = monitor.update(eldenring::buddy::sample(g_reader, g_img.base));
-        if (!text.empty()) {
-            Log("%s", text.c_str());
-            LogPlayerPoseForBuddy();
-        }
-        YieldProcessor();
-        SwitchToThread();
-    }
-}
+using eldenring::debug::BuddyThread;
 
 // Diagnostic: the player's ground-contact bytes, one log line each time they change (jump / fall / roll / swim).
 void LogGroundBytesOnChange() {
-    static uint8_t last[4] = {0xFF, 0xFF, 0xFF, 0xFF};
     const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
-    uint64_t player = 0;
-    uint8_t b[4];
-    if (world == 0 || !SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) || player == 0 ||
-        !detail::readGroundBytes(g_reader, g_img.base, static_cast<uintptr_t>(player), b)) {
-        return;
-    }
-    if (std::memcmp(b, last, 4) == 0) return;
-    std::memcpy(last, b, 4);
-    Log("ground: 92=%u 93=%u 1D0=%u 1D1=%u", b[0], b[1], b[2], b[3]);
+    eldenring::debug::LogGroundBytesOnChange(g_reader, g_img.base, world);
 }
 
 // F11: write down, right now, the state of every part slot of the player's native model, so a model that is visible in
 // first person can be compared with what we believe is hidden.
 void SnapshotNativeParts() {
     const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
-    uint64_t player = 0, model = 0;
-    if (world == 0 || !SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) || player == 0 ||
-        !SafeCopy(static_cast<uintptr_t>(player) + layout::kAsmModelInPlayerIns, &model, sizeof(model)) || model == 0) {
-        Log("snapshot: no player model");
-        return;
-    }
-    Log("snapshot: model=%p first_person=%d hide_wanted=%d slots=0x%X mask1=0x%X mask2=0x%X", reinterpret_cast<void*>(model),
-        g_first_person.load() ? 1 : 0, g_native_hide_wanted.load() ? 1 : 0, g_hide_slots.load(), g_hide_mask1.load(), g_hide_mask2.load());
-    std::lock_guard<std::mutex> lock(g_native_mutex);
-    for (unsigned i = 0; i < layout::kAsmPartSlots; ++i) {
-        uint64_t part = 0, disp = 0;
-        uint32_t f1 = 0, f2 = 0;
-        if (!SafeCopy(static_cast<uintptr_t>(model) + layout::kAsmPartPointers + i * 8, &part, sizeof(part)) || part == 0) continue;
-        if (!SafeCopy(static_cast<uintptr_t>(part) + layout::kPartDispEntity, &disp, sizeof(disp)) || disp == 0) {
-            Log("snapshot: slot %2u part=%p (no disp entity)", i, reinterpret_cast<void*>(part));
-            continue;
-        }
-        SafeCopy(static_cast<uintptr_t>(disp) + layout::kDispFlags1, &f1, sizeof(f1));
-        SafeCopy(static_cast<uintptr_t>(disp) + layout::kDispFlags2, &f2, sizeof(f2));
-        const bool ours = g_hidden_flags.count(static_cast<uintptr_t>(disp) + layout::kDispFlags1) != 0;
-        Log("snapshot: slot %2u part=%p disp=%p flags1=%08X flags2=%08X drawn=%d tracked=%d", i, reinterpret_cast<void*>(part),
-            reinterpret_cast<void*>(disp), f1, f2, (f1 & layout::kDispVisibleBit) ? 1 : 0, ours ? 1 : 0);
-    }
+    eldenring::debug::SnapshotNativeParts(g_reader, g_img.base, world, g_ctx, g_hidden_flags, g_native_mutex);
 }
 
 // Back to hiding every part slot: a probe left on a single slot would otherwise keep the rest of the model visible.
 void ResetSlotProbe(int& cursor) {
-    if (cursor < 0 && g_slot_probe.load() < 0 && g_hide_slots.load() == 0xFFFFFFFFu) return;
-    cursor = -1;
-    g_hide_slots.store(0xFFFFFFFFu);
-    g_slot_probe.store(-1);
-    g_slots_changed.store(true);
-    Log("slots: probe reset, hiding ALL part slots");
+    eldenring::debug::ResetSlotProbe(cursor, g_hide_slots, g_slot_probe, g_slots_changed, [](const char* s) { Log("%s", s); });
 }
 
 // F9: hide one part slot at a time (to find out which body part a slot is), then all of them again.
 void CycleHiddenSlot(int& cursor) {
-    const uintptr_t w = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
-    uint64_t p = 0;
-    if (w == 0 || !SafeCopy(w + layout::kPlayerInsInWorldChrMan, &p, sizeof(p)) || p == 0) return;
-    int next = cursor;
-    for (int tries = 0; tries <= static_cast<int>(layout::kAsmPartSlots); ++tries) {
-        next = next + 1;
-        if (next >= static_cast<int>(layout::kAsmPartSlots)) {
-            next = -1;
-            break;
-        }
-        if (!collectDispFlagAddresses(g_reader, g_img.base, static_cast<uintptr_t>(p), 1u << next).empty()) break;
-    }
-    cursor = next;
-    g_hide_slots.store(next < 0 ? 0xFFFFFFFFu : (1u << next));
-    g_slot_probe.store(next);
-    g_slots_changed.store(true);
-    if (next < 0) {
-        Log("slots: hiding ALL part slots");
-    } else {
-        Log("slots: hiding ONLY part slot %d (mask 0x%X)", next, 1u << next);
-    }
+    const uintptr_t player = PlayerChrPtr();
+    eldenring::debug::CycleHiddenSlot(cursor, player, g_reader, g_img.base, g_hide_slots, g_slot_probe, g_slots_changed);
 }
 
 // ---- placed blocks (phase A: our own grid, no physics bodies in the game) ----------------------------------------------------
 // Right click with a block in hand places it, left click on a placed block breaks it. The game's physics knows nothing about the
 // blocks: the player is kept out of them by writing the physics position (soft collision); enemies and arrows ignore them.
-blocks::BlockGrid g_blocks;
-eldenring::tnt::ErTntManager g_tnt_mgr;
-std::mutex g_blocks_mutex;
-std::atomic<bool> g_blocks_enabled{true};      // mc_er_steve.txt: blocks=0 turns placing and breaking off
-std::atomic<float> g_block_walk_speed{4.317f}; // Minecraft walk speed: 4.317 m/s
-std::atomic<float> g_sneak_speed{1.295f};      // Minecraft sneak speed: 1.295 m/s (~1.3 m/s)
-std::atomic<float> g_sprint_speed{5.612f};     // Minecraft sprint speed: 5.612 m/s (~5.6 m/s)
-std::atomic<int> g_sneak_vk{VK_SHIFT};         // Sneak key: default Shift
-std::atomic<bool> g_sneak_active{false};
+blocks::BlockGrid& g_blocks = g_world.block_grid;
+eldenring::tnt::ErTntManager& g_tnt_mgr = g_world.tnt_mgr;
+std::mutex& g_blocks_mutex = g_world.blocks_mutex;
+std::atomic<bool>& g_blocks_enabled = g_mode.blocks_enabled;
+std::atomic<float>& g_block_walk_speed = g_mode.block_walk_speed;
+std::atomic<float>& g_sneak_speed = g_mode.sneak_speed;
+std::atomic<float>& g_sprint_speed = g_mode.sprint_speed;
+std::atomic<int>& g_sneak_vk = g_mode.sneak_vk;
+std::atomic<bool>& g_sneak_active = g_mode.sneak_active;
 std::atomic<bool> g_sneak_clamped_x{false};
 std::atomic<bool> g_sneak_clamped_z{false};
-std::atomic<bool> g_block_drive{true};         // block_drive=0: leave the game's own (stale) velocity alone on a block
-std::atomic<bool> g_block_anchor{false};       // default false: do not pin the player in place on a block while no movement key is down
-std::atomic<bool> g_block_ground{true};        // block_ground=0: do not fake "on the ground" while standing on a block
-std::atomic<bool> g_block_collision{true};     // block_collision=0: the player walks through the blocks
-std::atomic<bool> g_enemy_block_collision{true}; // enemy_block_collision=0: enemies walk through the blocks
-std::atomic<bool> g_block_supported{false};     // true when player's feet are supported by placed voxel blocks
-std::atomic<float> g_reach{4.5f};              // reach, metres (Minecraft survival)
-unsigned g_blocks_sent_version = ~0u;
+std::atomic<bool>& g_block_drive = g_mode.block_drive;
+std::atomic<bool>& g_block_anchor = g_mode.block_anchor;
+std::atomic<bool>& g_block_ground = g_mode.block_ground;
+std::atomic<bool>& g_block_collision = g_mode.block_collision;
+std::atomic<bool>& g_enemy_block_collision = g_mode.enemy_block_collision;
+std::atomic<bool>& g_block_supported = g_mode.block_supported;
+std::atomic<float>& g_reach = g_mode.reach;
+unsigned& g_blocks_sent_version = g_world.blocks_sent_version;
 
 bool BlocksPresent() {
     std::lock_guard<std::mutex> g(g_blocks_mutex);
@@ -3476,111 +3066,8 @@ void FlightStep() {
 // Opens / closes the inventory and drives its virtual pointer. Runs on the key thread before the normal MC input, and takes the
 // click edges while the screen is open so nothing else (attack, eating) reacts to them.
 void InventoryTick(bool fg) {
-    static bool prev_key = false, prev_esc = false;
-    static bool prev_digit[mc::Inventory::kHotbar] = {};
-    const bool want = fg && WantSuppress() && g_mc_mode.load() && !PlayerDead();
-    bool open = g_inv_open.load();
-    const bool key = fg && (GetAsyncKeyState(g_inv_vk.load()) & 0x8000) != 0;
-    const bool esc = fg && (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
-    auto closeIt = [&](const char* why) {
-        {
-            std::lock_guard<std::mutex> g(g_melee_mutex);
-            g_melee.inventory().returnCursor();
-        }
-        g_inv_open.store(false);
-        erin::SetSuppressMouseMotion(false);
-        erin::SetSuppressKeyboard(false);
-        open = false;
-        Log("inventory: closed (%s)", why);
-    };
-    if (key && !prev_key) {
-        if (open) {
-            closeIt("key");
-        } else if (want && g_input_enabled.load()) {
-            float w = 0.f, h = 0.f;
-            erov::ScreenSize(w, h);
-            g_inv_mx.store(w * 0.5f);
-            g_inv_my.store(h * 0.5f);
-            int dx = 0, dy = 0;
-            erin::TakeMouseDelta(dx, dy);
-            erin::TakeLeftClick();
-            erin::TakeRightClick();
-            erin::TakeWheelNotches();
-            erin::SetSuppressMouseMotion(true);
-            erin::SetSuppressKeyboard(true);
-            g_inv_open.store(true);
-            open = true;
-            Log("inventory: opened (%.0fx%.0f, gate calls so far %u)", w, h, g_isblocked_forced.load());
-        }
-    }
-    if (open && esc && !prev_esc) closeIt("Esc");
-    if (open && !want) closeIt("menu, loading or MC mode off");
-    prev_key = key;
-    prev_esc = esc;
-    if (!open) {
-        for (bool& d : prev_digit) d = false;
-        return;
-    }
-
-    {
-        static uint64_t last_ms = 0;
-        const uint64_t now = GetTickCount64();
-        if (now - last_ms >= 1000) {
-            last_ms = now;
-            unsigned keys = 0, motion = 0;
-            erin::TakeSuppressStats(keys, motion);
-            Log("inventory: open; blanked %u keyboard / %u mouse polls, input gate forced %u, camera freeze forced %u, player speed %.2f m/s", keys, motion,
-                g_isblocked_forced.exchange(0), g_menufreeze_forced.exchange(0), g_walk_speed.load());
-        }
-    }
-    float w = 0.f, h = 0.f;
-    erov::ScreenSize(w, h);
-    int dx = 0, dy = 0;
-    erin::TakeMouseDelta(dx, dy);
-    const float sens = g_inv_sens.load();
-    const float mx = std::clamp(g_inv_mx.load() + static_cast<float>(dx) * sens, 0.f, std::max(0.f, w - 1.f));
-    const float my = std::clamp(g_inv_my.load() + static_cast<float>(dy) * sens, 0.f, std::max(0.f, h - 1.f));
-    g_inv_mx.store(mx);
-    g_inv_my.store(my);
-    erin::TakeWheelNotches();
-
-    const mc::InventoryLayout lay(w, h, creative::showsPalette(CurrentGameMode()));
-    const mc::SlotRef ref = lay.hitTest(mx, my);
-    const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-    auto click = [&](mc::Button button) {
-        std::lock_guard<std::mutex> g(g_melee_mutex);
-        mc::Inventory& inv = g_melee.inventory();
-        switch (ref.kind) {
-            case mc::SlotRef::Kind::Inventory: inv.click(ref.index, button, shift); break;
-            case mc::SlotRef::Kind::Offhand: inv.clickOffhand(button, shift); break;
-            case mc::SlotRef::Kind::Armor: inv.clickArmor(ref.index, button, shift); break;
-            case mc::SlotRef::Kind::Crafting:
-            case mc::SlotRef::Kind::CraftResult:
-                break;
-            case mc::SlotRef::Kind::Palette:
-                if (static_cast<size_t>(ref.index) < mc::paletteItems().size()) inv.clickPalette(mc::paletteItems()[static_cast<size_t>(ref.index)], button);
-                break;
-            case mc::SlotRef::Kind::None: inv.clickOutside(); break;
-            case mc::SlotRef::Kind::Panel: break;
-        }
-    };
-    if (erin::TakeLeftClick()) click(mc::Button::Left);
-    if (erin::TakeRightClick()) click(mc::Button::Right);
-    static bool prev_f = false;
-    const bool f_down = (GetAsyncKeyState('F') & 0x8000) != 0;
-    if (f_down && !prev_f) {
-        std::lock_guard<std::mutex> g(g_melee_mutex);
-        g_melee.inventory().swapMainAndOffhand(g_melee.selectedSlot());
-    }
-    prev_f = f_down;
-    for (int i = 0; i < mc::Inventory::kHotbar; ++i) {
-        const bool d = (GetAsyncKeyState('1' + i) & 0x8000) != 0;
-        if (d && !prev_digit[i] && ref.kind == mc::SlotRef::Kind::Inventory) {
-            std::lock_guard<std::mutex> g(g_melee_mutex);
-            g_melee.inventory().swapWithHotbar(ref.index, i);
-        }
-        prev_digit[i] = d;
-    }
+    std::lock_guard<std::mutex> g(g_melee_mutex);
+    eldenring::ui::InventoryController::Instance().tick(fg, WantSuppress(), PlayerDead(), g_melee.inventory(), g_ctx);
 }
 
 // Holds the game's own flag bytes while the MC mode is on and gives them back when it is off (eldenring_flags.hpp, REVERSE 40/41): no stamina cost,
@@ -4612,6 +4099,7 @@ void SetupDamage() {
         } else {
             Log("inventory: camera freeze hooked at %p (RVA 0x%llX)", reinterpret_cast<void*>(freeze), static_cast<unsigned long long>(freeze - g_img.base));
         }
+        eldenring::ui::InventoryController::setOriginalHooks(g_isblocked_orig, g_menufreeze_orig);
     }
     {
         uintptr_t react = 0, heavy = 0;
@@ -4815,7 +4303,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     out.show = have_state && !ms.menu_focused && !ms.popup_open && !ls.screen_loading && fade < 0.02f;
 
     if (g_hide_native.load()) {
-        const bool want_hidden = out.show && out.mc_mode;
+        const bool want_hidden = out.mc_mode && have_state && !ls.screen_loading;
         g_native_hide_wanted.store(want_hidden);
         UpdateNativeModel(static_cast<uintptr_t>(player), want_hidden);
         static uint64_t last_report_ms = 0;
@@ -4852,6 +4340,9 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.feet[2] = feet[2];
         steve.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) + g_steve_yaw_offset;
         if (g_flying.load(std::memory_order_relaxed)) steve.yaw = g_fly_yaw.load(std::memory_order_relaxed); // the game does not turn a character that never sees a key
+        float grace_dist = 999.f;
+        const bool near_grace = findNearestGrace(g_reader, g_img.base, world, feet, 2.8f, &grace_dist);
+        steve.sleeping = near_grace && (ms.menu_focused || fade >= 0.02f);
     }
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
@@ -4869,7 +4360,12 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     steve.first_person = g_first_person.load() && g_slot_probe.load() < 0;
     steve.speed_mps = g_walk_speed.load();
     steve.on_ground = g_on_ground.load();
-    if (g_slot_probe.load() >= 0 || g_first_person.load()) steve.draw = false; // slot probing: show only the native model, with the one slot missing
+    if (steve.sleeping) {
+        steve.first_person = false;
+        steve.draw = true; // Always draw Steve when sleeping at a grace
+    } else if (g_slot_probe.load() >= 0 || g_first_person.load()) {
+        steve.draw = false; // slot probing: show only the native model, with the one slot missing
+    }
     {   // why Steve is or is not drawn, logged when any of the inputs changes
         struct Seen { bool draw, enabled, first_person, show, mc, cam_ok; int slot_probe; bool valid; };
         static Seen last{};
@@ -5038,6 +4534,13 @@ void SetupOverlay() {
 }
 
 void SetupInput() {
+    {
+        eldenring::ui::InventoryCallbacks cb;
+        cb.set_suppress_mouse_motion = erin::SetSuppressMouseMotion;
+        cb.set_suppress_keyboard = erin::SetSuppressKeyboard;
+        cb.log = [](const char* msg) { Log("%s", msg); };
+        eldenring::ui::InventoryController::Instance().setCallbacks(cb);
+    }
     if (!FileExists(g_game_dir + "mc_er_input.txt")) {
         Log("input: disabled (no mc_er_input.txt)");
         return;

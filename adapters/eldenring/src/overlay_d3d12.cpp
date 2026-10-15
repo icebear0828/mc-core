@@ -111,6 +111,7 @@ std::mutex g_mob_mutex;
 std::vector<eldenring::mobs::MobSnapshot> g_mob_snapshot; // the list the loader gave last
 eldenring::mobs::MobRegistry g_mob_registry;              // render thread only
 mc::PlayerDeathTracker g_death_tracker;
+mc::PlayerSleepTracker g_sleep_tracker;
 std::mutex g_depth_mutex;
 ID3D12Resource* g_depth_res = nullptr; // AddRef'd scene depth in use (R32G8X24_TYPELESS), guarded by g_depth_mutex
 std::vector<ID3D12Resource*> g_depth_candidates; // AddRef'd, oldest first, guarded by g_depth_mutex
@@ -1140,6 +1141,9 @@ void RenderFrame(IDXGISwapChain* sc) {
         const float scene_h = g_steve_cfg.scene_height > 0.f ? g_steve_cfg.scene_height : static_cast<float>(g_s.height);
         const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
         if (!steve.dead) {
+            g_sleep_tracker.update(dt, steve.sleeping);
+            const float sleep_frac = g_sleep_tracker.sleepFraction();
+
             mc::SteveAnimInput anim_in = g_motion.update(dt, steve.feet, steve.yaw);
             anim_in.swing_progress = steve.swing;
             anim_in.bow_charge = steve.bow_charge;
@@ -1149,7 +1153,10 @@ void RenderFrame(IDXGISwapChain* sc) {
             anim_in.is_crouching = steve.sneaking;
             anim_in.is_sprinting = steve.sprinting;
             anim_in.on_ground = steve.on_ground;
-            g_head.update(steve.cam.forward.x, steve.cam.forward.y, steve.cam.forward.z, steve.yaw, anim_in);
+            anim_in.is_sleeping = (sleep_frac > 0.05f);
+            if (!anim_in.is_sleeping) {
+                g_head.update(steve.cam.forward.x, steve.cam.forward.y, steve.cam.forward.z, steve.yaw, anim_in);
+            }
             g_anim.update(dt, anim_in);
             if (g_trace_left.load() > 0) {
                 g_trace_left.fetch_sub(1);
@@ -1159,12 +1166,20 @@ void RenderFrame(IDXGISwapChain* sc) {
                          anim_in.forward_speed, anim_in.strafe_speed);
                 Logf(tr);
             }
+        } else {
+            g_sleep_tracker.reset();
         }
         auto parts = eldenring::render::posedMatrices(g_anim.getTransforms(), {steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw);
         const float fall_frac = g_death_tracker.fallFraction();
         if (fall_frac > 0.f) {
             const mc::rig::Mat4 fall = eldenring::render::deathFallMatrix({steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw, fall_frac);
             for (auto& m : parts) m = m * fall;
+        } else {
+            const float sleep_frac = g_sleep_tracker.sleepFraction();
+            if (sleep_frac > 0.f) {
+                const mc::rig::Mat4 sleep = eldenring::render::sleepPoseMatrix({steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw, sleep_frac);
+                for (auto& m : parts) m = m * sleep;
+            }
         }
         if (steve.shadow && g_steve.shadowReady() && g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
             const float ground = steve.ground_valid ? steve.ground_y : steve.feet[1];

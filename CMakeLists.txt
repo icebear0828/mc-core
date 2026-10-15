@@ -19,6 +19,7 @@ add_library(mc_core STATIC
     include/mc/types.hpp
     include/mc/animator.hpp
     include/mc/death.hpp
+    include/mc/sleep.hpp
     include/mc/voxel_world.hpp
     include/mc/ballistics.hpp
     include/mc/combat.hpp

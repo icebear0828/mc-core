@@ -183,6 +183,10 @@ public:
         return q_.size();
     }
     [[nodiscard]] uint64_t reentrantRejections() const { return reentrant_.load(); }
+    void clear() {
+        std::lock_guard<std::mutex> g(m_);
+        q_.clear();
+    }
 
     // Runs at most `max_per_drain` due requests. Never throws away a request that merely has to wait.
     std::vector<DamageResult> drain(const DrainContext& ctx) {

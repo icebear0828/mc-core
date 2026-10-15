@@ -51,7 +51,19 @@ if(WIN32)
         target_compile_options(imgui_dx12 PRIVATE /W3 /WX-)
     endif()
 
-    add_library(eldenring_adapter SHARED src/loader.cpp src/overlay_d3d12.cpp src/steve_renderer_d3d12.cpp src/input_hook.cpp src/png_wic.cpp src/audio_xaudio2.cpp eldenring_dinput8.def)
+    add_library(eldenring_adapter SHARED
+        src/loader.cpp
+        src/overlay_d3d12.cpp
+        src/steve_renderer_d3d12.cpp
+        src/input_hook.cpp
+        src/png_wic.cpp
+        src/audio_xaudio2.cpp
+        src/core/diagnostics.cpp
+        src/core/memory_scanner.cpp
+        src/ui/inventory_controller.cpp
+        src/ui/hud_bridge.cpp
+        src/debug/probes.cpp
+        eldenring_dinput8.def)
     set_target_properties(eldenring_adapter PROPERTIES
         OUTPUT_NAME dinput8
         RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/eldenring"

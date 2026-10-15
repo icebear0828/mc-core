@@ -70,12 +70,20 @@ add_executable(mc_tests
     test_eldenring_combat_balance.cpp
     test_eldenring_sprint.cpp
     test_eldenring_creeper.cpp
+    test_eldenring_runtime_context.cpp
     test_mc_core_modules.cpp
+    test_sleeping_kinematics.cpp
+    test_eldenring_grace_sleep.cpp
+    test_eldenring_inventory_controller.cpp
+    test_eldenring_debug_probes.cpp
+    test_eldenring_hud_bridge.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/ui/inventory_controller.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/ui/hud_bridge.cpp
 )
 
 
 
-target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source")
+target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source" MC_CORE_TESTS)
 
 target_link_libraries(mc_tests
     PRIVATE
