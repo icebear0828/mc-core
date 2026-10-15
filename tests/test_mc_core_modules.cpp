@@ -653,4 +653,144 @@ TEST(McCoreMeleeTest, HitFeedbackFadesOverDuration) {
     EXPECT_FALSE(fb.crit());
 }
 
+// ============================================================================
+// 14. Survival Defense & Totem Mechanics Tests
+// ============================================================================
+#include "mc/survival.hpp"
+
+TEST(McCoreSurvivalTest, TotemOnlyActsOnLethalHitLeavesOneHp) {
+    auto a = mc::totemClamp(50, 100, true);
+    EXPECT_FALSE(a.popped);
+    EXPECT_EQ(a.damage, 50);
+
+    auto b = mc::totemClamp(100, 100, true); // exactly lethal
+    EXPECT_TRUE(b.popped);
+    EXPECT_EQ(b.damage, 99); // leaves 1 HP
+
+    auto c = mc::totemClamp(300, 100, true); // overkill
+    EXPECT_TRUE(c.popped);
+    EXPECT_EQ(c.damage, 99);
+
+    auto d = mc::totemClamp(300, 100, false); // no totem
+    EXPECT_FALSE(d.popped);
+    EXPECT_EQ(d.damage, 300);
+
+    auto e = mc::totemClamp(5, 1, true); // on 1 HP already
+    EXPECT_TRUE(e.popped);
+    EXPECT_EQ(e.damage, 0);
+
+    EXPECT_FALSE(mc::totemClamp(300, 0, true).popped); // already dead
+}
+
+TEST(McCoreSurvivalTest, ArmorDamageReductionCapsAtEightyPercent) {
+    auto r1 = mc::computeArmorDamageReduction(100, 100, 20, 0.50f);
+    EXPECT_EQ(r1.final_damage, 50);
+
+    // Over-capped ratio (e.g. 0.95f) must cap at 80% reduction (final damage >= 20)
+    auto r2 = mc::computeArmorDamageReduction(100, 100, 20, 0.95f);
+    EXPECT_EQ(r2.final_damage, 20);
+
+    // No armor
+    auto r3 = mc::computeArmorDamageReduction(100, 100, 0, 0.0f);
+    EXPECT_EQ(r3.final_damage, 100);
+}
+
+TEST(McCoreSurvivalTest, SurvivalStateAbsorptionAndRegeneration) {
+    mc::SurvivalState s;
+    s.apply({mc::ActiveEffect{mc::EffectType::Absorption, 1, 120.f}}); // 4 HP = 200 at max 1000
+    EXPECT_EQ(s.absorb(150, 1000), 0);
+    EXPECT_NEAR(s.absorptionMc(), 1.f, 0.01f); // 50 native HP left = 1 MC HP
+    EXPECT_EQ(s.absorb(100, 1000), 50);
+    EXPECT_FLOAT_EQ(s.absorptionMc(), 0.f);
+}
+
+// ============================================================================
+// 15. Combat Particles & Camera Hurt Tilt Tests
+// ============================================================================
+#include "mc/particles.hpp"
+
+TEST(McCoreParticlesTest, ParticleSystemSpawnsCritParticlesWithGravity) {
+    mc::ParticleSystem sys;
+    mc::Rng rng(42);
+    const float at[3] = {0.f, 1.f, 0.f};
+
+    sys.spawnCrit(at, rng);
+    EXPECT_EQ(sys.alive().size(), static_cast<size_t>(mc::ParticleSystem::kCritCount));
+
+    const float initial_vy = sys.alive()[0].vel[1];
+    sys.update(0.1f);
+    EXPECT_LT(sys.alive()[0].vel[1], initial_vy); // gravity pulls downward
+}
+
+TEST(McCoreParticlesTest, ParticleSystemSweepAndFadeLifecycle) {
+    mc::ParticleSystem sys;
+    const float at[3] = {0.f, 1.f, 0.f};
+
+    sys.spawnSweep(at);
+    ASSERT_EQ(sys.alive().size(), 1u);
+    EXPECT_EQ(sys.alive()[0].kind, mc::ParticleKind::Sweep);
+    EXPECT_EQ(sys.alive()[0].frame, 0);
+
+    sys.update(0.2f); // half of 0.4s life
+    EXPECT_EQ(sys.alive()[0].frame, 4);
+    EXPECT_NEAR(mc::ParticleSystem::fade(sys.alive()[0]), 0.5f, 0.1f);
+
+    sys.update(0.25f); // exceeded lifetime
+    EXPECT_EQ(sys.alive().size(), 0u);
+}
+
+TEST(McCoreParticlesTest, HurtTiltFormulaPeaksAtFourteenDegrees) {
+    // 14 degrees in radians = ~0.2443 rad
+    constexpr float kFourteenDegRad = 14.f * 0.01745329252f;
+
+    // t = 1.0 (just hurt): sin(pi) = 0
+    EXPECT_NEAR(mc::hurtTiltRadians(1.0f, 1.0f), 0.f, 1e-4f);
+
+    // t around 0.84: t^4 ~ 0.5 -> sin(pi/2) ~ 1.0 -> peaks at 14 deg
+    const float peak_t = std::pow(0.5f, 0.25f);
+    EXPECT_NEAR(mc::hurtTiltRadians(peak_t, 1.0f), kFourteenDegRad, 1e-3f);
+    EXPECT_NEAR(mc::hurtTiltRadians(peak_t, -1.0f), -kFourteenDegRad, 1e-3f); // opposite roll
+}
+
+// ============================================================================
+// 16. Mob Lifecycle & Corpse Animation Tests
+// ============================================================================
+#include "mc/mobs.hpp"
+
+TEST(McCoreMobsTest, MobLifecycleTracksHurtAndDeathState) {
+    mc::MobLifecycleTracker mob;
+    EXPECT_FALSE(mob.isHurt());
+    EXPECT_FALSE(mob.isDying());
+
+    // Initial observation on spawn: 500 HP
+    mob.updateHp(500, 500, 0.05f);
+    EXPECT_FALSE(mob.isHurt());
+    EXPECT_FALSE(mob.isDying());
+
+    // Mob takes damage: 500 -> 400
+    mob.updateHp(400, 500, 0.05f);
+    EXPECT_TRUE(mob.isHurt());
+    EXPECT_FALSE(mob.isDying());
+
+    // Mob dies: 400 -> 0
+    mob.updateHp(0, 500, 0.05f);
+    EXPECT_TRUE(mob.isDying());
+    EXPECT_TRUE(mob.isHurt()); // dying mob stays tinted red
+
+    // After death duration expires (> 1.0s / 20 ticks)
+    for (int i = 0; i < 25; ++i) {
+        mob.tick(0.05f);
+    }
+    EXPECT_TRUE(mob.isCorpseExpired());
+}
+
+TEST(McCoreMobsTest, DeathFlipFractionInterpolatesSmoothly) {
+    EXPECT_FLOAT_EQ(mc::deathFlipFraction(-0.1f), 0.f);
+    EXPECT_FLOAT_EQ(mc::deathFlipFraction(0.0f), 0.f);
+    EXPECT_GT(mc::deathFlipFraction(0.25f), 0.f);
+    EXPECT_FLOAT_EQ(mc::deathFlipFraction(0.5f), 1.0f); // fully tipped over
+    EXPECT_FLOAT_EQ(mc::deathFlipFraction(1.0f), 1.0f);
+}
+
+
 

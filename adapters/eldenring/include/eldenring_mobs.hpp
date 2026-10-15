@@ -8,6 +8,7 @@
 
 #include "eldenring_steve.hpp"
 #include "mc/entity_model.hpp"
+#include "mc/mobs.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -16,10 +17,13 @@
 
 namespace eldenring::mobs {
 
-inline constexpr size_t kMaxMobs = 16;
-inline constexpr int kMissedFramesBeforeDrop = 30;
-inline constexpr float kHurtSeconds = 0.5f;  // Minecraft: 10 ticks of hurt time (the red flash)
-inline constexpr float kDeathSeconds = 1.0f; // the body lies there for a moment (20 ticks) before the mob is removed
+using mc::kMaxMobs;
+using mc::kMissedFramesBeforeDrop;
+using mc::kHurtSeconds;
+using mc::kDeathSeconds;
+using mc::deathFlipFraction;
+using mc::scaleAboutPoint;
+using mc::MobLifecycleTracker;
 
 struct MobSnapshot {
     uintptr_t id{0};   // the character pointer
@@ -46,17 +50,6 @@ struct MobDraw {
     float scale{1.0f};
     float white_flash{0.0f};
 };
-
-inline mc::rig::Mat4 scaleAboutPoint(const mc::Vec3& p, float s) {
-    mc::rig::Mat4 m;
-    m.m[0] = s;
-    m.m[5] = s;
-    m.m[10] = s;
-    m.m[12] = p.x * (1.0f - s);
-    m.m[13] = p.y * (1.0f - s);
-    m.m[14] = p.z * (1.0f - s);
-    return m;
-}
 
 class MobRegistry {
 public:
