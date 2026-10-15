@@ -133,9 +133,9 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                     } else if (input.is_blocking && !input.block_offhand) {
                         pitch = pitch * 0.5f - kPi * 0.3f + head_pitch;
                         yaw = -kPi / 6.0f + head_yaw;
-                    } else if (input.bow_charge > 0.0f && !input.bow_offhand) {
+                    } else if (input.bow_charge > 0.0f) {
                         pitch = -kPi * 0.5f + head_pitch;
-                        yaw = -0.1f + head_yaw;
+                        yaw = -0.1f + head_yaw - (input.bow_offhand ? 0.4f : 0.0f);
                     } else if (input.trident_charge > 0.0f) {
                         pitch = pitch * 0.5f - kPi;
                     } else if (input.eating_progress > 0.0f) {
@@ -163,9 +163,9 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                     } else if (input.is_blocking && input.block_offhand) {
                         pitch = pitch * 0.5f - kPi * 0.3f + head_pitch;
                         yaw = kPi / 6.0f + head_yaw;
-                    } else if (input.bow_charge > 0.0f && input.bow_offhand) {
+                    } else if (input.bow_charge > 0.0f) {
                         pitch = -kPi * 0.5f + head_pitch;
-                        yaw = 0.1f + head_yaw;
+                        yaw = 0.1f + head_yaw + (input.bow_offhand ? 0.0f : 0.4f);
                     } else {
                         roll -= std::sin(age_ * 0.067f) * 0.05f;
                     }
