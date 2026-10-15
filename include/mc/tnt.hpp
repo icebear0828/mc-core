@@ -120,4 +120,34 @@ ExplosionResult CalculateVoxelExplosion(
     const std::vector<ExplosionEntityTarget>& targets
 );
 
+// Minecraft interaction rules for TNT and Flint & Steel:
+// 1. Right-click on a TNT block with Flint & Steel ignites it. Any other held item does NOT ignite it.
+inline bool shouldIgniteTntOnRightClick(ItemId held, BlockId target_block) noexcept {
+    return (held == ItemId::FlintAndSteel) && (target_block == BlockId::Tnt);
+}
+
+// 2. Left-click NEVER ignites TNT (left-click is attack or mine/break block).
+inline bool shouldIgniteTntOnLeftClick(ItemId held, BlockId target_block) noexcept {
+    (void)held;
+    (void)target_block;
+    return false;
+}
+
+// 3. Left-click on any solid placed block breaks it.
+inline bool shouldBreakBlockOnLeftClick(BlockId target_block) noexcept {
+    return target_block != BlockId::Air;
+}
+
+inline int computeTntExplosionDamage(const float center[3], const float target_pos[3], float radius, float max_damage) {
+    if (radius <= 0.0f || max_damage <= 0.0f) return 0;
+    const float dx = target_pos[0] - center[0];
+    const float dy = target_pos[1] - center[1];
+    const float dz = target_pos[2] - center[2];
+    const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (dist > radius) return 0;
+    const float exposure = 1.0f - (dist / radius);
+    return static_cast<int>(std::round(max_damage * exposure));
+}
+
 } // namespace mc
+

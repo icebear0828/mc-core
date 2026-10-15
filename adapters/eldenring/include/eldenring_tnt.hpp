@@ -55,34 +55,10 @@ struct ErExplosionDamageIntent {
     float max_damage{1500.0f};
 };
 
-inline int computeTntExplosionDamage(const float center[3], const float target_pos[3], float radius, float max_damage) {
-    if (radius <= 0.0f || max_damage <= 0.0f) return 0;
-    const float dx = target_pos[0] - center[0];
-    const float dy = target_pos[1] - center[1];
-    const float dz = target_pos[2] - center[2];
-    const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-    if (dist > radius) return 0;
-    const float exposure = 1.0f - (dist / radius);
-    return static_cast<int>(std::round(max_damage * exposure));
-}
-
-// Minecraft interaction rules for TNT and Flint & Steel:
-// 1. Right-click on a TNT block with Flint & Steel ignites it. Any other held item does NOT ignite it.
-inline bool shouldIgniteTntOnRightClick(mc::ItemId held, mc::BlockId target_block) noexcept {
-    return (held == mc::ItemId::FlintAndSteel) && (target_block == mc::BlockId::Tnt);
-}
-
-// 2. Left-click NEVER ignites TNT (left-click is attack or mine/break block).
-inline bool shouldIgniteTntOnLeftClick(mc::ItemId held, mc::BlockId target_block) noexcept {
-    (void)held;
-    (void)target_block;
-    return false;
-}
-
-// 3. Left-click on any solid placed block breaks it.
-inline bool shouldBreakBlockOnLeftClick(mc::BlockId target_block) noexcept {
-    return target_block != mc::BlockId::Air;
-}
+using mc::computeTntExplosionDamage;
+using mc::shouldIgniteTntOnRightClick;
+using mc::shouldIgniteTntOnLeftClick;
+using mc::shouldBreakBlockOnLeftClick;
 
 
 class ErExplosionIntentQueue {

@@ -301,3 +301,173 @@ TEST(McCoreTargetingTest, ScanThrottlePreventsRedundantScansWhileStationary) {
     EXPECT_FALSE(throttle.shouldThrottle(2050, pos1, 200, 0.5f));
 }
 
+// ============================================================================
+// 7. SprintController Tests
+// ============================================================================
+#include "mc/sprint.hpp"
+
+TEST(McCoreSprintTest, CtrlWithForwardActivatesSprintWhenHungerAllows) {
+    mc::SprintController sprint;
+    EXPECT_FALSE(sprint.isSprinting());
+    EXPECT_FLOAT_EQ(sprint.fovMultiplier(), 1.0f);
+    EXPECT_FLOAT_EQ(sprint.boostSpeed(), 0.0f);
+
+    // Ctrl + W with full food (20)
+    sprint.update(0.05f, true /* w */, false /* s */, true /* ctrl */, 20);
+    EXPECT_TRUE(sprint.isSprinting());
+    EXPECT_GT(sprint.fovMultiplier(), 1.0f);
+    EXPECT_FLOAT_EQ(sprint.boostSpeed(), 2.5f);
+
+    // Hunger <= 6 cancels sprint
+    sprint.update(0.05f, true /* w */, false /* s */, true /* ctrl */, 6);
+    EXPECT_FALSE(sprint.isSprinting());
+    EXPECT_FLOAT_EQ(sprint.boostSpeed(), 0.0f);
+
+    // Moving backward (S) cancels sprint even with Ctrl + W and full food
+    sprint.update(0.05f, true /* w */, true /* s */, true /* ctrl */, 20);
+    EXPECT_FALSE(sprint.isSprinting());
+}
+
+TEST(McCoreSprintTest, FovSmoothlyTransitionsToSprintMultiplier) {
+    mc::SprintController sprint;
+    for (int i = 0; i < 20; ++i) {
+        sprint.update(0.05f, true, false, true, 20);
+    }
+    EXPECT_NEAR(sprint.fovMultiplier(), mc::SprintController::kFovSprintMultiplier, 0.01f);
+}
+
+// ============================================================================
+// 8. BowController Tests
+// ============================================================================
+#include "mc/bow.hpp"
+
+TEST(McCoreBowTest, PowerCalculationAndDamageScaling) {
+    // 0 ticks -> 0 power
+    EXPECT_FLOAT_EQ(mc::powerForTicks(0.0f), 0.0f);
+    EXPECT_FLOAT_EQ(mc::damageForPower(0.0f), 0.0f);
+
+    // 20 ticks (1.0s) -> full power 1.0, damage 6 + 3 = 9.0
+    EXPECT_FLOAT_EQ(mc::powerForTicks(20.0f), 1.0f);
+    EXPECT_FLOAT_EQ(mc::damageForPower(1.0f), 9.0f);
+
+    // Overdrawn ticks capped at 1.0
+    EXPECT_FLOAT_EQ(mc::powerForTicks(40.0f), 1.0f);
+}
+
+TEST(McCoreBowTest, ControllerTracksDrawReleaseAndCancel) {
+    mc::BowController bow;
+    EXPECT_FALSE(bow.drawing());
+
+    // Press right click with usable bow
+    auto u1 = bow.update(0.05f, true, true);
+    EXPECT_TRUE(u1.started);
+    EXPECT_TRUE(bow.drawing());
+
+    // Hold for 1 second (20 ticks)
+    for (int i = 0; i < 20; ++i) {
+        bow.update(0.05f, true, true);
+    }
+    EXPECT_NEAR(bow.power(), 1.0f, 0.01f);
+
+    // Release right click fires arrow
+    auto u2 = bow.update(0.05f, false, true);
+    EXPECT_TRUE(u2.released);
+    EXPECT_NEAR(u2.power, 1.0f, 0.01f);
+    EXPECT_FALSE(bow.drawing());
+
+    // Very short draw (< 3 ticks / power < 0.1) cancels
+    bow.update(0.05f, true, true);
+    auto u3 = bow.update(0.05f, false, true); // only 1 tick
+    EXPECT_TRUE(u3.cancelled);
+    EXPECT_FALSE(u3.released);
+}
+
+TEST(McCoreBowTest, UsabilityRulesPrioritizeMainHandActions) {
+    // Bow in main hand is usable
+    EXPECT_TRUE(mc::bowHandUsable(mc::ItemId::Bow, 1, mc::ItemId::None, 0));
+
+    // Shield in main hand claims right click, blocks offhand bow
+    EXPECT_FALSE(mc::bowHandUsable(mc::ItemId::Shield, 1, mc::ItemId::Bow, 1));
+    EXPECT_FALSE(mc::bowInOffhand(mc::ItemId::Shield, 1, mc::ItemId::Bow, 1));
+
+    // Sword in main hand (no right click action) allows offhand bow
+    EXPECT_TRUE(mc::bowHandUsable(mc::ItemId::DiamondSword, 1, mc::ItemId::Bow, 1));
+    EXPECT_TRUE(mc::bowInOffhand(mc::ItemId::DiamondSword, 1, mc::ItemId::Bow, 1));
+}
+
+// ============================================================================
+// 9. CreeperManager Tests
+// ============================================================================
+#include "mc/creeper.hpp"
+
+TEST(McCoreCreeperTest, ProximityStartsFuseAndHissThenExplodes) {
+    mc::CreeperManager creeper(1.0f); // 1.0s fuse for test
+    mc::CreeperTarget summon;
+    summon.id = 100;
+    summon.feet[0] = 0.0f; summon.feet[1] = 0.0f; summon.feet[2] = 0.0f;
+    summon.is_creeper = true;
+    summon.hp = 100;
+
+    mc::CreeperEnemyTarget enemy;
+    enemy.chr = 200;
+    enemy.feet[0] = 2.0f; enemy.feet[1] = 0.0f; enemy.feet[2] = 0.0f; // 2m distance (<= 3.5m)
+    enemy.hostile = true;
+    enemy.hp = 100;
+
+    // First tick: detects proximity, triggers Hiss event
+    auto ev1 = creeper.update(0.05f, {summon}, {enemy});
+    ASSERT_EQ(ev1.size(), 1u);
+    EXPECT_EQ(ev1[0].kind, mc::CreeperEventKind::Hiss);
+    EXPECT_TRUE(creeper.isPrimed(100));
+
+    // Update for 0.95s (fuse reaches 0)
+    std::vector<mc::CreeperEvent> ev_final;
+    for (int i = 0; i < 20; ++i) {
+        auto ev = creeper.update(0.05f, {summon}, {enemy});
+        if (!ev.empty()) ev_final = ev;
+    }
+
+    ASSERT_EQ(ev_final.size(), 1u);
+    EXPECT_EQ(ev_final[0].kind, mc::CreeperEventKind::Explosion);
+    EXPECT_TRUE(ev_final[0].kill_creeper);
+}
+
+TEST(McCoreCreeperTest, ManualIgnitionAndDefuseRules) {
+    mc::CreeperManager creeper(1.5f);
+    mc::CreeperTarget summon;
+    summon.id = 100;
+    summon.is_creeper = true;
+
+    // Manual ignition with Flint and Steel primes creeper even without enemies
+    EXPECT_TRUE(creeper.ignite(100));
+    EXPECT_TRUE(creeper.isPrimed(100));
+
+    // Dying cancels fuse
+    summon.hp = 0;
+    creeper.update(0.05f, {summon}, {});
+    EXPECT_FALSE(creeper.isPrimed(100));
+}
+
+// ============================================================================
+// 10. TNT Rules & Damage Tests
+// ============================================================================
+#include "mc/tnt.hpp"
+
+TEST(McCoreTntTest, RightClickOnlyIgnitesWithFlintAndSteel) {
+    EXPECT_TRUE(mc::shouldIgniteTntOnRightClick(mc::ItemId::FlintAndSteel, mc::BlockId::Tnt));
+    EXPECT_FALSE(mc::shouldIgniteTntOnRightClick(mc::ItemId::BlockDirt, mc::BlockId::Tnt));
+    EXPECT_FALSE(mc::shouldIgniteTntOnRightClick(mc::ItemId::DiamondSword, mc::BlockId::Tnt));
+    EXPECT_FALSE(mc::shouldIgniteTntOnLeftClick(mc::ItemId::FlintAndSteel, mc::BlockId::Tnt));
+}
+
+TEST(McCoreTntTest, ExplosionDamageFollowsLinearFalloff) {
+    const float center[3] = {0.0f, 0.0f, 0.0f};
+    const float at_center[3] = {0.0f, 0.0f, 0.0f};
+    const float half_dist[3] = {4.0f, 0.0f, 0.0f}; // 4m on 8m radius
+    const float outside[3] = {10.0f, 0.0f, 0.0f};
+
+    EXPECT_EQ(mc::computeTntExplosionDamage(center, at_center, 8.0f, 1000.0f), 1000);
+    EXPECT_NEAR(mc::computeTntExplosionDamage(center, half_dist, 8.0f, 1000.0f), 500, 5);
+    EXPECT_EQ(mc::computeTntExplosionDamage(center, outside, 8.0f, 1000.0f), 0);
+}
+
