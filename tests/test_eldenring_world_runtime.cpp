@@ -213,6 +213,7 @@ TEST(EldenRingWorldRuntime, StepBlockCollisionDirectDriveMovesPlayerOnBlock) {
 
     auto& runtime = VoxelWorldRuntime::Instance();
     runtime.resetForTesting();
+    runtime.setDeltaTimeOverrideForTesting(0.016f);
     // Press 'W'
     runtime.setInputProvider([](int vk) { return vk == 'W'; });
 
@@ -269,6 +270,7 @@ TEST(EldenRingWorldRuntime, StepBlockCollisionClampsNativeTerrainDisplacementWhe
 
     auto& runtime = VoxelWorldRuntime::Instance();
     runtime.resetForTesting();
+    runtime.setDeltaTimeOverrideForTesting(0.016f);
     runtime.setInputProvider([](int) { return false; });
 
     WorldRuntimeCallbacks cb{};

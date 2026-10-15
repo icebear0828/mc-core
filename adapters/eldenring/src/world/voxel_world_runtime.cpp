@@ -230,10 +230,9 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
         LARGE_INTEGER now_block_qpc, freq_block;
         QueryPerformanceCounter(&now_block_qpc);
         QueryPerformanceFrequency(&freq_block);
-        if (last_block_qpc_.QuadPart != 0 && freq_block.QuadPart != 0) {
-            const float measured = static_cast<float>(now_block_qpc.QuadPart - last_block_qpc_.QuadPart) / static_cast<float>(freq_block.QuadPart);
-            block_dt = (measured < 0.002f) ? 0.016f : std::clamp(measured, 0.002f, 0.05f);
-        }
+        block_dt = last_block_qpc_.QuadPart != 0
+            ? std::clamp(static_cast<float>(now_block_qpc.QuadPart - last_block_qpc_.QuadPart) / static_cast<float>(freq_block.QuadPart), 0.f, 0.05f)
+            : 0.016f;
         last_block_qpc_ = now_block_qpc;
     }
 #endif
