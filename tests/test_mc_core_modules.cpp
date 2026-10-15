@@ -471,3 +471,186 @@ TEST(McCoreTntTest, ExplosionDamageFollowsLinearFalloff) {
     EXPECT_EQ(mc::computeTntExplosionDamage(center, outside, 8.0f, 1000.0f), 0);
 }
 
+// ============================================================================
+// 11. Minecraft Jump Physics Tests
+// ============================================================================
+#include "mc/jump.hpp"
+
+TEST(McCoreJumpTest, PeakHeightFollowsVanillaSimulation) {
+    EXPECT_NEAR(mc::mcJumpPeakHeight(), 1.25f, 0.06f);
+    EXPECT_NEAR(mc::kMcJumpSpeed * mc::kMcJumpSpeed / (2.f * mc::kMcGravity), 1.10f, 0.01f);
+}
+
+TEST(McCoreJumpTest, JumpControllerSprintingAppliesMomentumBoost) {
+    mc::MinecraftJumpController jump;
+    EXPECT_FALSE(jump.isActive());
+
+    // Normal jump with 5.0 m/s horizontal speed
+    jump.start(10.0f, 5.0f, 0.0f, false);
+    EXPECT_TRUE(jump.isActive());
+    EXPECT_FLOAT_EQ(jump.vx(), 5.0f);
+    EXPECT_FLOAT_EQ(jump.vy(), mc::kMcJumpInitialVelocity);
+
+    // Sprint jump with 5.0 m/s horizontal speed: 1.15x boost
+    jump.start(10.0f, 5.0f, 0.0f, true);
+    EXPECT_FLOAT_EQ(jump.vx(), 5.0f * mc::kMcJumpSprintBoost);
+}
+
+TEST(McCoreJumpTest, JumpControllerAirSteeringAndLanding) {
+    mc::MinecraftJumpController jump;
+    jump.start(10.0f, 4.0f, 0.0f, false);
+
+    // Update with input steering in opposite direction
+    auto r1 = jump.update(0.05f, -1.0f, 0.0f, 4.0f, true);
+    EXPECT_TRUE(r1.active);
+    EXPECT_LT(r1.vx, 4.0f); // velocity turned towards desired direction
+    EXPECT_GT(r1.y, 10.0f); // moving upwards initially
+
+    // Land on ground
+    jump.land(10.0f);
+    EXPECT_FALSE(jump.isActive());
+    EXPECT_FLOAT_EQ(jump.vy(), 0.0f);
+}
+
+TEST(McCoreJumpTest, CanTakeOffArbitratesGroundAndBlockSupport) {
+    EXPECT_TRUE(mc::canTakeOff(true, false, false, false));
+    EXPECT_TRUE(mc::canTakeOff(false, true, false, false));
+    EXPECT_TRUE(mc::canTakeOff(false, false, true, false));
+    EXPECT_FALSE(mc::canTakeOff(false, false, false, false));
+    EXPECT_FALSE(mc::canTakeOff(true, true, true, true)); // dead entity cannot jump
+}
+
+// ============================================================================
+// 12. Creative Flight Locomotion Tests
+// ============================================================================
+#include "mc/flight.hpp"
+
+TEST(McCoreFlightTest, DoubleTapDetectorDetectsQuickSpacebar) {
+    mc::DoubleTap tap;
+    EXPECT_FALSE(tap.update(true, 1000));
+    EXPECT_FALSE(tap.update(false, 1050));
+    EXPECT_TRUE(tap.update(true, 1200)); // second press within 300ms
+    EXPECT_FALSE(tap.update(false, 1250));
+    EXPECT_FALSE(tap.update(true, 1300)); // third press begins new pair
+
+    // Slow press exceeds 300ms
+    tap.reset();
+    EXPECT_FALSE(tap.update(true, 1000));
+    EXPECT_FALSE(tap.update(false, 1100));
+    EXPECT_FALSE(tap.update(true, 1301)); // 301ms later
+}
+
+TEST(McCoreFlightTest, HeadingFromCameraProjectsHorizontalPlane) {
+    mc::FlightHeading h;
+    const float up_look[3] = {0.f, 0.9f, 0.436f}, right[3] = {1.f, 0.f, 0.f};
+    ASSERT_TRUE(mc::headingFromCamera(up_look, right, h));
+    EXPECT_NEAR(h.fwd[0], 0.f, 1e-5f);
+    EXPECT_NEAR(h.fwd[1], 1.f, 1e-5f);
+
+    const float straight_up[3] = {0.f, 1.f, 0.f};
+    EXPECT_FALSE(mc::headingFromCamera(straight_up, right, h));
+}
+
+TEST(McCoreFlightTest, FlightStepMovesAtExactSpeedsWithoutDiagonalSpeedup) {
+    float pos[3] = {0.f, 10.f, 0.f};
+    mc::FlightHeading h;
+    h.fwd[0] = 0.f; h.fwd[1] = 1.f;
+    h.right[0] = 1.f; h.right[1] = 0.f;
+
+    mc::FlightKeys k;
+    k.forward = true;
+    k.right = true; // diagonal
+
+    bool moved = mc::flightStep(pos, k, h, 0.05f);
+    EXPECT_TRUE(moved);
+
+    // Displacement magnitude must equal speed * dt (10.9 * 0.05 = 0.545), NOT sqrt(2) * 0.545
+    float disp = std::sqrt(pos[0] * pos[0] + pos[2] * pos[2]);
+    EXPECT_NEAR(disp, mc::kFlightHorizontalSpeed * 0.05f, 1e-4f);
+
+    // Vertical flight
+    k.forward = false;
+    k.right = false;
+    k.up = true;
+    mc::flightStep(pos, k, h, 0.05f);
+    EXPECT_NEAR(pos[1], 10.0f + mc::kFlightVerticalSpeed * 0.05f, 1e-4f);
+}
+
+// ============================================================================
+// 13. Melee Controller & Combat Feedback Tests
+// ============================================================================
+#include "mc/melee.hpp"
+
+TEST(McCoreMeleeTest, MeleeControllerHotbarSelectionAndWrap) {
+    mc::MeleeController m;
+    EXPECT_EQ(m.selectedSlot(), 0);
+    EXPECT_EQ(m.heldItem(), mc::ItemId::DiamondSword);
+
+    m.scroll(1);
+    EXPECT_EQ(m.selectedSlot(), 1);
+    EXPECT_EQ(m.heldItem(), mc::ItemId::DiamondPickaxe);
+
+    m.scroll(-2);
+    EXPECT_EQ(m.selectedSlot(), 8); // wraps around
+
+    m.select(4);
+    EXPECT_EQ(m.selectedSlot(), 4);
+    m.select(9); // out of range: ignored
+    EXPECT_EQ(m.selectedSlot(), 4);
+}
+
+TEST(McCoreMeleeTest, AttackCooldownAndSwingProgress) {
+    mc::MeleeController m;
+    EXPECT_FLOAT_EQ(m.cooldown(), 1.f);
+    EXPECT_FLOAT_EQ(m.swingProgress(), 0.f);
+
+    const float before = m.startSwing();
+    EXPECT_FLOAT_EQ(before, 1.f);
+    EXPECT_FLOAT_EQ(m.cooldown(), 0.f);
+
+    m.tick(mc::Session::kSwingDurationSec * 0.5f);
+    EXPECT_NEAR(m.swingProgress(), 0.5f, 1e-3f);
+
+    m.tick(mc::Session::kSwingDurationSec);
+    EXPECT_FLOAT_EQ(m.swingProgress(), 0.f); // finished swing
+
+    m.tick(mc::Session::kAttackRechargeSec);
+    EXPECT_FLOAT_EQ(m.cooldown(), 1.f); // fully recharged
+}
+
+TEST(McCoreMeleeTest, JumpTrackerTracksCriticalHitState) {
+    mc::JumpTracker tracker;
+    EXPECT_FALSE(tracker.jumping());
+
+    // Jump pressed on ground
+    tracker.update(0.05f, true, false);
+    EXPECT_TRUE(tracker.jumping());
+
+    // Airborne
+    tracker.update(0.05f, false, true);
+    EXPECT_TRUE(tracker.jumping());
+
+    // Landed
+    tracker.update(0.05f, false, false);
+    EXPECT_FALSE(tracker.jumping());
+}
+
+TEST(McCoreMeleeTest, HitFeedbackFadesOverDuration) {
+    mc::HitFeedback fb;
+    EXPECT_FLOAT_EQ(fb.hit(), 0.f);
+    EXPECT_FALSE(fb.crit());
+
+    fb.onHit(true);
+    EXPECT_FLOAT_EQ(fb.hit(), 1.f);
+    EXPECT_TRUE(fb.crit());
+
+    fb.tick(mc::HitFeedback::kHitSec * 0.5f);
+    EXPECT_NEAR(fb.hit(), 0.5f, 0.05f);
+    EXPECT_TRUE(fb.crit());
+
+    fb.tick(mc::HitFeedback::kHitSec);
+    EXPECT_FLOAT_EQ(fb.hit(), 0.f);
+    EXPECT_FALSE(fb.crit());
+}
+
+
