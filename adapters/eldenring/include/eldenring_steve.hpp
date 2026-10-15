@@ -43,7 +43,7 @@ inline mc::Quat hostQuat(const mc::Quat& q) { return {q.y, -q.z, -q.x, q.w}; }
 inline PartMatrices posedMatrices(const mc::SteveAnimator::PartTransforms& t, const mc::Vec3& feet, float yaw) {
     PartMatrices out;
     for (size_t i = 0; i < out.size(); ++i) {
-        out[i] = mc::rig::partMatrix(static_cast<mc::StevePart>(i), hostQuat(t[i].rot), feet, yaw, kBasis);
+        out[i] = mc::rig::partMatrix(static_cast<mc::StevePart>(i), hostQuat(t[i].rot), t[i].pos, feet, yaw, kBasis);
     }
     return out;
 }

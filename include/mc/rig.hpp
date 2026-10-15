@@ -113,9 +113,11 @@ RigMesh buildGroundShadowMesh(const HostBasis& basis, float radius_cm);
 // positive seen from above). Handles left-handed hosts.
 Mat4 yawMatrix(const HostBasis& basis, float canonical_yaw);
 
-// Rotates the part about its pivot by `rot` (host axes), then turns by `host_yaw` about the host's vertical
-// axis through the feet (the angle as that axis' right-hand rotation, i.e. already converted from canonical),
-// then moves to `root_pos`.
-Mat4 partMatrix(StevePart part, const Quat& rot, const Vec3& root_pos, float host_yaw, const HostBasis& basis);
+// Rotates the part about its pivot by `rot` (host axes) with optional canonical cm `pos_offset`, then turns
+// by `host_yaw` about the host's vertical axis through the feet, then moves to `root_pos`.
+Mat4 partMatrix(StevePart part, const Quat& rot, const Vec3& pos_offset, const Vec3& root_pos, float host_yaw, const HostBasis& basis);
+inline Mat4 partMatrix(StevePart part, const Quat& rot, const Vec3& root_pos, float host_yaw, const HostBasis& basis) {
+    return partMatrix(part, rot, Vec3{0.f, 0.f, 0.f}, root_pos, host_yaw, basis);
+}
 
 } // namespace mc::rig

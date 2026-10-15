@@ -292,7 +292,7 @@ bool GameInForeground() {
 // ---- damage --------------------------------------------------------------------------------------------------
 
 std::atomic<bool> g_damage_enabled{false};
-std::atomic<bool> g_mc_mode{false};
+std::atomic<bool> g_mc_mode{true};
 std::atomic<uint8_t> g_game_mode{static_cast<uint8_t>(creative::GameMode::Survival)}; // F5: survival (default) or creative, inside MC mode
 std::atomic<uint64_t> g_mode_toast_ms{0};                                              // tick count of the last F5, drives the on-screen name
 creative::GameMode CurrentGameMode() { return static_cast<creative::GameMode>(g_game_mode.load(std::memory_order_relaxed)); }
@@ -2414,7 +2414,9 @@ void DriveVelocityFromKeys(uintptr_t module, bool force_zero) {
     if (!force_zero && GameInForeground()) {
         const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
         const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
-        const bool sneaking = (GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0;
+        const bool sneak_key_down = ((GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0) ||
+                                    ((GetAsyncKeyState('X') & 0x8000) != 0);
+        const bool sneaking = sneak_key_down;
         const bool sprinting = !sneaking && g_sprint_active.load(std::memory_order_relaxed);
         g_sneak_active.store(sneaking, std::memory_order_relaxed);
 
@@ -2594,18 +2596,10 @@ void BlocksCollisionStep() {
     static bool have_prev = false;
     static float prev[3] = {};
     static unsigned pushes = 0;
-    if (!g_block_collision.load(std::memory_order_relaxed) || !g_mc_mode.load(std::memory_order_relaxed)) {
+    if (!g_mc_mode.load(std::memory_order_relaxed)) {
         have_prev = false;
         g_block_supported.store(false, std::memory_order_relaxed);
         return;
-    }
-    {
-        std::lock_guard<std::mutex> g(g_blocks_mutex);
-        if (g_blocks.count() == 0) {
-            have_prev = false;
-            g_block_supported.store(false, std::memory_order_relaxed);
-            return;
-        }
     }
     const uintptr_t player = PlayerChrPtr();
     float feet[3];
@@ -2621,14 +2615,21 @@ void BlocksCollisionStep() {
         dz = feet[2] - prev[2];
     }
     const bool jumped = std::sqrt(dx * dx + dy * dy + dz * dz) > 20.f; // teleport / origin re-base: not movement
-    blocks::Resolve r;
-    {
+
+    bool has_blocks = false;
+    if (g_block_collision.load(std::memory_order_relaxed)) {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        has_blocks = (g_blocks.count() > 0);
+    }
+
+    blocks::Resolve r{};
+    if (has_blocks) {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         r = have_prev && !jumped ? blocks::resolvePlayerSwept(g_blocks, prev, feet) : blocks::resolvePlayer(g_blocks, feet);
     }
     float final_feet[3] = {r.moved ? r.feet[0] : feet[0], r.moved ? r.feet[1] : feet[1], r.moved ? r.feet[2] : feet[2]};
-    bool supported;
-    {
+    bool supported = false;
+    if (has_blocks) {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         supported = blocks::supportedByBlock(g_blocks, final_feet);
     }
@@ -2642,7 +2643,9 @@ void BlocksCollisionStep() {
         WriteBytesSafe(module + layout::kPhysicsProxySyncRequest, &one, sizeof(one));
     }
     const bool fg = GameInForeground();
-    const bool sneaking = fg && ((GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0);
+    const bool sneak_key_down = ((GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0) ||
+                                ((GetAsyncKeyState('X') & 0x8000) != 0);
+    const bool sneaking = fg && sneak_key_down;
     g_sneak_active.store(sneaking, std::memory_order_relaxed);
 
     // Smooth first-person eye height transition: normal 1.65m <-> sneak 1.27m
@@ -2681,7 +2684,7 @@ void BlocksCollisionStep() {
 
     // Check if the previous frame was supported on blocks
     bool was_supported = false;
-    if (have_prev) {
+    if (have_prev && has_blocks) {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         was_supported = blocks::supportedByBlock(g_blocks, prev);
     }
@@ -2760,6 +2763,21 @@ void BlocksCollisionStep() {
                     direct_moved = true;
                 }
             }
+        }
+    }
+
+    // Native terrain sneak speed limiting:
+    // When walking on Elden Ring's native ground, clamp horizontal displacement per frame to Minecraft sneak speed (1.295 m/s)
+    if (!supported && sneaking && have_prev && !jumped && !pinned && fg) {
+        const float cur_dx = final_feet[0] - prev[0];
+        const float cur_dz = final_feet[2] - prev[2];
+        const float h_dist = std::sqrt(cur_dx * cur_dx + cur_dz * cur_dz);
+        const float max_h = g_sneak_speed.load(std::memory_order_relaxed) * block_dt;
+        if (h_dist > max_h && h_dist > 1e-4f) {
+            const float scale = max_h / h_dist;
+            final_feet[0] = prev[0] + cur_dx * scale;
+            final_feet[2] = prev[2] + cur_dz * scale;
+            direct_moved = true;
         }
     }
 
@@ -3194,7 +3212,9 @@ void McJumpStep() {
             // Read input and camera direction to initialize horizontal momentum
             const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
             const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
-            const bool sneaking = (GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0;
+            const bool sneak_key_down = ((GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0) ||
+                                        ((GetAsyncKeyState('X') & 0x8000) != 0);
+            const bool sneaking = sneak_key_down;
             const bool sprinting = !sneaking && g_sprint_active.load(std::memory_order_relaxed);
             const float target_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
                                       : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
@@ -3228,9 +3248,10 @@ void McJumpStep() {
     // Compute input for air steering:
     const float fwd_key = ((GetAsyncKeyState('W') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('S') & 0x8000) ? 1.f : 0.f);
     const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
-    const bool sneaking = (GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0;
-    const bool sprinting = !sneaking && g_sprint_active.load(std::memory_order_relaxed);
-    const float steer_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
+    const bool steer_sneak = ((GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0) ||
+                             ((GetAsyncKeyState('X') & 0x8000) != 0);
+    const bool sprinting = !steer_sneak && g_sprint_active.load(std::memory_order_relaxed);
+    const float steer_speed = steer_sneak ? g_sneak_speed.load(std::memory_order_relaxed)
                             : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
                             : g_block_walk_speed.load(std::memory_order_relaxed);
 
@@ -4731,6 +4752,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.bow_offhand = g_bow_offhand.load(std::memory_order_relaxed);
         steve.block_offhand = g_shield_offhand.load(std::memory_order_relaxed);
         steve.bow_ticks = steve_dead_now ? 0.f : g_bow_ticks.load(std::memory_order_relaxed);
+        steve.sneaking = steve_dead_now ? false : g_sneak_active.load(std::memory_order_relaxed);
         out.totem = g_feedback.totem();
         steve.swing = steve_dead_now ? 0.f : g_melee.swingProgress();
         out.hit = g_feedback.hit();
@@ -4892,6 +4914,7 @@ void SetupOverlay() {
                 else if (key == "fly_vspeed") g_fly_v_speed.store(std::clamp(value, 1.f, 40.f));
                 else if (key == "mc_jump") g_mc_jump.store(value != 0.f);
                 else if (key == "mc_jump_key") g_mc_jump_vk.store(static_cast<int>(value));
+                else if (key == "mc_mode") g_mc_mode.store(value != 0.f);
                 else if (key == "mc_gravity") g_mc_gravity.store(std::clamp(value, 5.f, 80.f));
                 else if (key == "mc_jump_speed") g_mc_jump_speed.store(std::clamp(value, 1.f, 20.f));
                 else if (key == "blocks") g_blocks_enabled.store(value != 0.f);
