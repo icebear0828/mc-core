@@ -306,5 +306,80 @@ TEST(SteveAnimatorTest, SneakCrouchingCompensatesLegsAndHeadPositionsAuthentical
     EXPECT_NEAR(sneak_t[hat].pos.z, -5.625f, 1e-2f);
 }
 
+TEST(SteveAnimatorTest, WalkAndSprintKinematicsDynamics) {
+    const size_t body = static_cast<size_t>(mc::StevePart::Body);
+    const size_t head = static_cast<size_t>(mc::StevePart::Head);
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t rl = static_cast<size_t>(mc::StevePart::RightLeg);
+    const size_t ll = static_cast<size_t>(mc::StevePart::LeftLeg);
+
+    mc::SteveAnimator anim_stand, anim_walk, anim_sprint, anim_sneak_walk;
+    mc::SteveAnimInput in_stand{}, in_walk{}, in_sprint{}, in_sneak_walk{};
+
+    // Stand: 0 m/s
+    anim_stand.update(0.05f, in_stand);
+
+    // Walk: 4.317 m/s (standard Minecraft walking speed)
+    in_walk.forward_speed = 4.317f;
+
+    // Sprint: 5.612 m/s (Minecraft sprint speed) with is_sprinting = true
+    in_sprint.forward_speed = 5.612f;
+    in_sprint.is_sprinting = true;
+
+    // Sneak walk: 1.295 m/s (Minecraft sneak speed) with is_crouching = true
+    in_sneak_walk.forward_speed = 1.295f;
+    in_sneak_walk.is_crouching = true;
+
+    // Step several frames to develop stride
+    for (int i = 0; i < 10; ++i) {
+        anim_walk.update(0.05f, in_walk);
+        anim_sprint.update(0.05f, in_sprint);
+        anim_sneak_walk.update(0.05f, in_sneak_walk);
+    }
+
+    const auto& t_stand = anim_stand.getTransforms();
+    const auto& t_walk = anim_walk.getTransforms();
+    const auto& t_sprint = anim_sprint.getTransforms();
+    const auto& t_sneak_walk = anim_sneak_walk.getTransforms();
+
+    // Verify stand pose is finite and neutral
+    EXPECT_FLOAT_EQ(t_stand[body].rot.y, 0.0f);
+    EXPECT_NEAR(t_sneak_walk[body].rot.y, std::sin(0.25f), 1e-4f); // crouch torso pitch 0.5 rad
+    EXPECT_NE(t_sprint[ll].rot.y, 0.0f);
+
+    // 1. Sprinting Torso Pitch Lean (冲刺俯冲前倾角):
+    // In sprinting, torso pitches forward by ~0.15 rad (~8.5 deg) compared to standing/walking
+    EXPECT_NEAR(t_walk[body].rot.y, 0.0f, 1e-3f) << "Walking torso stays upright";
+    EXPECT_NEAR(t_sprint[body].rot.y, std::sin(0.075f), 1e-4f) << "Sprinting torso must pitch forward 0.15 rad";
+
+    // 2. Sprinting Head Pitch Compensation (冲刺平视补偿):
+    // Head pitch compensates against torso forward lean so eye-level gaze remains horizontal
+    EXPECT_LT(t_sprint[head].rot.y, 0.0f) << "Head must tilt backward to compensate torso forward pitch and keep gaze level";
+
+    // 3. Sprinting Stride and Arm swing amplitude (大步幅冲刺动力学):
+    // Sprinting has larger amplitude than standard walk (1.25 vs 1.0)
+    // Over the cycles, sprint arm rotation magnitude should exceed standard walk
+    float max_walk_arm = 0.f, max_sprint_arm = 0.f;
+    float max_walk_leg = 0.f, max_sprint_leg = 0.f;
+    for (int i = 0; i < 40; ++i) {
+        anim_walk.update(0.05f, in_walk);
+        anim_sprint.update(0.05f, in_sprint);
+        max_walk_arm = std::max(max_walk_arm, std::abs(anim_walk.getTransforms()[ra].rot.y));
+        max_sprint_arm = std::max(max_sprint_arm, std::abs(anim_sprint.getTransforms()[ra].rot.y));
+        max_walk_leg = std::max(max_walk_leg, std::abs(anim_walk.getTransforms()[rl].rot.y));
+        max_sprint_leg = std::max(max_sprint_leg, std::abs(anim_sprint.getTransforms()[rl].rot.y));
+    }
+    EXPECT_GT(max_sprint_leg, max_walk_leg) << "Sprint stride leg swing amplitude must exceed walking amplitude";
+    EXPECT_GT(max_sprint_arm, max_walk_arm) << "Sprint arm swing amplitude must exceed walking amplitude";
+
+    // 4. Sneak walking dampening (潜行轻步挪移，杜绝大跨步穿帮):
+    float max_sneak_leg = 0.f;
+    for (int i = 0; i < 40; ++i) {
+        anim_sneak_walk.update(0.05f, in_sneak_walk);
+        max_sneak_leg = std::max(max_sneak_leg, std::abs(anim_sneak_walk.getTransforms()[rl].rot.y));
+    }
+    EXPECT_LT(max_sneak_leg, max_walk_leg * 0.7f) << "Sneak walking leg swing must be significantly dampened";
+}
+
 
 
