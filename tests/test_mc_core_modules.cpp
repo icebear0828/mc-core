@@ -792,5 +792,115 @@ TEST(McCoreMobsTest, DeathFlipFractionInterpolatesSmoothly) {
     EXPECT_FLOAT_EQ(mc::deathFlipFraction(1.0f), 1.0f);
 }
 
+// ============================================================================
+// 17. Voxel Blocks & Mesh Generation Tests
+// ============================================================================
+#include "mc/blocks.hpp"
+#include "mc/blockmesh.hpp"
+
+TEST(McCoreBlockMeshTest, SingleBlockHasSixFacesTwentyFourVertices) {
+    mc::BlockGrid grid;
+    grid.place({0, 0, 0}, mc::BlockId::Dirt);
+
+    auto mesh = mc::buildBlockMesh(grid);
+    // 6 faces * 4 vertices = 24 vertices
+    EXPECT_EQ(mesh.vertices.size(), 24u);
+    // 6 faces * 6 indices (2 triangles) = 36 indices
+    EXPECT_EQ(mesh.indices.size(), 36u);
+}
+
+TEST(McCoreBlockMeshTest, AdjacentBlocksCullSharedInternalFace) {
+    mc::BlockGrid grid;
+    grid.place({0, 0, 0}, mc::BlockId::Dirt);
+    grid.place({1, 0, 0}, mc::BlockId::Dirt); // shares x=1 / x=0 face
+
+    auto mesh = mc::buildBlockMesh(grid);
+    // 2 blocks with 1 shared face culled = (6 + 6 - 2) = 10 faces = 40 vertices, 60 indices
+    EXPECT_EQ(mesh.vertices.size(), 40u);
+    EXPECT_EQ(mesh.indices.size(), 60u);
+}
+
+TEST(McCoreBlockMeshTest, MiningOverlayCrackStageMapsValidUV) {
+    EXPECT_NE(mc::crackUVForStage(0), nullptr);
+    EXPECT_NE(mc::crackUVForStage(9), nullptr);
+    EXPECT_EQ(mc::crackUVForStage(-1), nullptr);
+    EXPECT_EQ(mc::crackUVForStage(10), nullptr);
+}
+
+// ============================================================================
+// 18. Motion Orientation & Camera Projection Tests
+// ============================================================================
+#include "mc/orientation.hpp"
+
+TEST(McCoreOrientationTest, YawQuatRoundtripPreservesAngles) {
+    for (float angle_deg : {0.f, 45.f, 90.f, 135.f, 180.f, -90.f, -135.f}) {
+        const float rad = angle_deg * 0.01745329252f;
+        auto q = mc::OrientationQuat::fromYaw(rad);
+        EXPECT_NEAR(std::abs(mc::normalizeAngle(q.toYaw() - rad)), 0.f, 1e-4f);
+    }
+}
+
+TEST(McCoreOrientationTest, ComputeInputDirectionNormalizesDiagonal) {
+    const float cam_fwd[3] = {0.f, 0.f, 1.f};
+    const float cam_right[3] = {1.f, 0.f, 0.f};
+    float dir[2]{0.f, 0.f};
+
+    // Forward + Right (W + D diagonal)
+    bool has_dir = mc::computeInputDirection(1.f, 1.f, cam_fwd, cam_right, dir);
+    EXPECT_TRUE(has_dir);
+
+    // Direction magnitude must be exactly 1.0 (no diagonal speed increase)
+    const float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1]);
+    EXPECT_NEAR(len, 1.0f, 1e-5f);
+    EXPECT_NEAR(dir[0], 0.70710678f, 1e-4f);
+    EXPECT_NEAR(dir[1], 0.70710678f, 1e-4f);
+}
+
+TEST(McCoreOrientationTest, StepYawRespectsTurnSpeedLimit) {
+    const float current = 0.f;
+    const float target = 1.0f; // ~57 degrees
+    const float speed = 2.0f;  // rad/s
+
+    // At dt = 0.1s, max step = 0.2 rad -> reaches 0.2
+    float stepped = mc::stepYaw(current, target, 0.1f, speed, false);
+    EXPECT_NEAR(stepped, 0.2f, 1e-5f);
+
+    // Instant turn bypasses speed
+    float instant = mc::stepYaw(current, target, 0.1f, speed, true);
+    EXPECT_NEAR(instant, target, 1e-5f);
+}
+
+// ============================================================================
+// 19. Blob Shadow Generation Tests
+// ============================================================================
+#include "mc/shadow.hpp"
+
+TEST(McCoreShadowTest, ShadowAtFadesLinearlyWithHeight) {
+    // Standing on ground (feet_y = 10, ground_y = 10)
+    auto s0 = mc::shadowAt(0.f, 10.f, 0.f, 10.f);
+    EXPECT_TRUE(s0.visible);
+    EXPECT_FLOAT_EQ(s0.strength, mc::kMaxStrength);
+    EXPECT_FLOAT_EQ(s0.radius, mc::kBaseRadius);
+    EXPECT_FLOAT_EQ(s0.y, 10.f + mc::kLift);
+
+    // 8m above ground (halfway to kFadeHeight = 16m)
+    auto s1 = mc::shadowAt(0.f, 18.f, 0.f, 10.f);
+    EXPECT_TRUE(s1.visible);
+    EXPECT_NEAR(s1.strength, mc::kMaxStrength * 0.5f, 0.01f);
+
+    // 20m above ground (exceeds kFadeHeight = 16m)
+    auto s2 = mc::shadowAt(0.f, 30.f, 0.f, 10.f);
+    EXPECT_FALSE(s2.visible);
+}
+
+TEST(McCoreShadowTest, BuildShadowDiscProducesValidTriangleFan) {
+    auto disc = mc::buildShadowDisc(16);
+    // Center vertex (1) + 16 rim vertices = 17 vertices
+    EXPECT_EQ(disc.vertices.size(), 17u);
+    // 16 triangles * 3 = 48 indices
+    EXPECT_EQ(disc.indices.size(), 48u);
+}
+
+
 
 

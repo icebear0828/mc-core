@@ -1,156 +1,16 @@
 #pragma once
 
-// The mesh of the placed blocks: one world-space mesh (game metres, Y up) with the faces between neighbours left out, textured from
-// the HUD atlas cells of the block faces. Rebuilt whenever the grid changes.
-
+#include "mc/blockmesh.hpp"
 #include "eldenring_blocks.hpp"
-#include "mc/hud_atlas.hpp"
-#include "mc/item_model.hpp"
-#include "mc/rig.hpp"
 
 namespace eldenring::blocks {
 
-struct FaceCells {
-    const mc::hud::HudUV* top;
-    const mc::hud::HudUV* side;
-    const mc::hud::HudUV* bottom;
-};
-
-inline FaceCells faceCellsFor(mc::BlockId id) {
-    switch (id) {
-        case mc::BlockId::Stone: return {&mc::hud::kUV_BLOCK_STONE, &mc::hud::kUV_BLOCK_STONE, &mc::hud::kUV_BLOCK_STONE};
-        case mc::BlockId::Tnt: return {&mc::hud::kUV_BLOCK_TNT_TOP, &mc::hud::kUV_BLOCK_TNT_SIDE, &mc::hud::kUV_BLOCK_TNT_BOTTOM};
-        default: return {&mc::hud::kUV_BLOCK_DIRT, &mc::hud::kUV_BLOCK_DIRT, &mc::hud::kUV_BLOCK_DIRT};
-    }
-}
-
-struct MiningOverlay {
-
-    Cell cell{};
-    int stage{-1}; // -1 = none, 0..9 = crack stage
-};
-
-inline const mc::hud::HudUV* crackUVForStage(int stage) {
-    switch (stage) {
-        case 0: return &mc::hud::kUV_DESTROY_STAGE_0;
-        case 1: return &mc::hud::kUV_DESTROY_STAGE_1;
-        case 2: return &mc::hud::kUV_DESTROY_STAGE_2;
-        case 3: return &mc::hud::kUV_DESTROY_STAGE_3;
-        case 4: return &mc::hud::kUV_DESTROY_STAGE_4;
-        case 5: return &mc::hud::kUV_DESTROY_STAGE_5;
-        case 6: return &mc::hud::kUV_DESTROY_STAGE_6;
-        case 7: return &mc::hud::kUV_DESTROY_STAGE_7;
-        case 8: return &mc::hud::kUV_DESTROY_STAGE_8;
-        case 9: return &mc::hud::kUV_DESTROY_STAGE_9;
-        default: return nullptr;
-    }
-}
-
-inline mc::rig::RigMesh buildBlockMesh(const BlockGrid& grid,
-                                       const std::vector<std::array<float, 3>>& primed_tnt_positions = {},
-                                       const std::optional<MiningOverlay>& mining = std::nullopt) {
-    mc::rig::RigMesh mesh;
-    // a quarter of a source pixel inside the cell: the 4x enlarged atlas never samples a neighbouring sprite
-    const float inset = 0.25f / static_cast<float>(mc::hud::kHudAtlasWidth);
-    struct Face {
-        int dx, dy, dz;
-        int kind; // 0 top, 1 side, 2 bottom
-        float c[4][3]; // corners (unit cube), in order: top-left, top-right, bottom-right, bottom-left as seen from outside
-    };
-    static const Face faces[6] = {
-        {0, 1, 0, 0, {{0, 1, 0}, {1, 1, 0}, {1, 1, 1}, {0, 1, 1}}},
-        {0, -1, 0, 2, {{0, 0, 1}, {1, 0, 1}, {1, 0, 0}, {0, 0, 0}}},
-        {1, 0, 0, 1, {{1, 1, 0}, {1, 1, 1}, {1, 0, 1}, {1, 0, 0}}},
-        {-1, 0, 0, 1, {{0, 1, 1}, {0, 1, 0}, {0, 0, 0}, {0, 0, 1}}},
-        {0, 0, 1, 1, {{1, 1, 1}, {0, 1, 1}, {0, 0, 1}, {1, 0, 1}}},
-        {0, 0, -1, 1, {{0, 1, 0}, {1, 1, 0}, {1, 0, 0}, {0, 0, 0}}},
-    };
-    for (const auto& [cell, id] : grid.all()) {
-        const FaceCells cells = faceCellsFor(id);
-        for (const Face& f : faces) {
-            if (grid.get({cell.x + f.dx, cell.y + f.dy, cell.z + f.dz}) != mc::BlockId::Air) continue;
-            if (mesh.vertices.size() + 4 > 65535) return mesh;
-            const mc::hud::HudUV& uv = f.kind == 0 ? *cells.top : (f.kind == 1 ? *cells.side : *cells.bottom);
-            const float us[4] = {uv.u0 + inset, uv.u1 - inset, uv.u1 - inset, uv.u0 + inset};
-            const float vs[4] = {uv.v0 + inset, uv.v0 + inset, uv.v1 - inset, uv.v1 - inset};
-            const uint16_t base = static_cast<uint16_t>(mesh.vertices.size());
-            for (int k = 0; k < 4; ++k) {
-                mesh.vertices.push_back({static_cast<float>(cell.x) + f.c[k][0], static_cast<float>(cell.y) + f.c[k][1], static_cast<float>(cell.z) + f.c[k][2],
-                                         us[k], vs[k]});
-            }
-            static constexpr uint16_t kQuad[6] = {0, 1, 2, 0, 2, 3};
-            for (uint16_t i : kQuad) mesh.indices.push_back(static_cast<uint16_t>(base + i));
-        }
-    }
-
-    // Render active primed TNT cubes so they remain fully visible while ticking down!
-    for (const auto& tpos : primed_tnt_positions) {
-        const FaceCells cells = faceCellsFor(mc::BlockId::Tnt);
-        const float bx = tpos[0] - 0.5f;
-        const float by = tpos[1];
-        const float bz = tpos[2] - 0.5f;
-        for (const Face& f : faces) {
-            if (mesh.vertices.size() + 4 > 65535) return mesh;
-            const mc::hud::HudUV& uv = f.kind == 0 ? *cells.top : (f.kind == 1 ? *cells.side : *cells.bottom);
-            const float us[4] = {uv.u0 + inset, uv.u1 - inset, uv.u1 - inset, uv.u0 + inset};
-            const float vs[4] = {uv.v0 + inset, uv.v0 + inset, uv.v1 - inset, uv.v1 - inset};
-            const uint16_t base = static_cast<uint16_t>(mesh.vertices.size());
-            for (int k = 0; k < 4; ++k) {
-                mesh.vertices.push_back({bx + f.c[k][0], by + f.c[k][1], bz + f.c[k][2], us[k], vs[k]});
-            }
-            static constexpr uint16_t kQuad[6] = {0, 1, 2, 0, 2, 3};
-            for (uint16_t i : kQuad) mesh.indices.push_back(static_cast<uint16_t>(base + i));
-        }
-    }
-
-    // Render progressive crack overlay on the block being mined
-    if (mining.has_value() && mining->stage >= 0 && mining->stage <= 9 && grid.get(mining->cell) != mc::BlockId::Air) {
-        const mc::hud::HudUV* crack_uv = crackUVForStage(mining->stage);
-        if (crack_uv != nullptr) {
-            for (const Face& f : faces) {
-                if (grid.get({mining->cell.x + f.dx, mining->cell.y + f.dy, mining->cell.z + f.dz}) != mc::BlockId::Air) continue;
-                if (mesh.vertices.size() + 4 > 65535) return mesh;
-                const float us[4] = {crack_uv->u0 + inset, crack_uv->u1 - inset, crack_uv->u1 - inset, crack_uv->u0 + inset};
-                const float vs[4] = {crack_uv->v0 + inset, crack_uv->v0 + inset, crack_uv->v1 - inset, crack_uv->v1 - inset};
-                const float nx = static_cast<float>(f.dx) * 0.001f;
-                const float ny = static_cast<float>(f.dy) * 0.001f;
-                const float nz = static_cast<float>(f.dz) * 0.001f;
-                const uint16_t base = static_cast<uint16_t>(mesh.vertices.size());
-                for (int k = 0; k < 4; ++k) {
-                    mesh.vertices.push_back({static_cast<float>(mining->cell.x) + f.c[k][0] + nx,
-                                             static_cast<float>(mining->cell.y) + f.c[k][1] + ny,
-                                             static_cast<float>(mining->cell.z) + f.c[k][2] + nz,
-                                             us[k], vs[k]});
-                }
-                static constexpr uint16_t kQuad[6] = {0, 1, 2, 0, 2, 3};
-                for (uint16_t i : kQuad) mesh.indices.push_back(static_cast<uint16_t>(base + i));
-            }
-        }
-    }
-
-    return mesh;
-}
-
-
-// A block as an item in the hand: the unit cube centred on the origin (first person; 1 unit = 1 block, y up, +z towards the viewer).
-inline mc::rig::RigMesh buildCubeMesh(mc::BlockId id) {
-    BlockGrid g;
-    g.place({0, 0, 0}, id);
-    mc::rig::RigMesh mesh = buildBlockMesh(g);
-    for (mc::rig::RigVertex& v : mesh.vertices) {
-        v.x -= 0.5f;
-        v.y -= 0.5f;
-        v.z -= 0.5f;
-    }
-    return mesh;
-}
-
-// The same block held in the right hand in third person (see mc::rig::buildHeldBlockMesh).
-inline mc::rig::RigMesh buildHeldCubeMesh(mc::BlockId id, const mc::rig::HostBasis& basis) {
-    const FaceCells cells = faceCellsFor(id);
-    const float inset = 0.25f / static_cast<float>(mc::hud::kHudAtlasWidth);
-    auto rect = [&](const mc::hud::HudUV& uv) { return mc::rig::UvRect{uv.u0 + inset, uv.v0 + inset, uv.u1 - inset, uv.v1 - inset}; };
-    return mc::rig::buildHeldBlockMesh(rect(*cells.top), rect(*cells.side), rect(*cells.bottom), basis);
-}
+using mc::FaceCells;
+using mc::faceCellsFor;
+using mc::MiningOverlay;
+using mc::crackUVForStage;
+using mc::buildBlockMesh;
+using mc::buildCubeMesh;
+using mc::buildHeldCubeMesh;
 
 } // namespace eldenring::blocks
