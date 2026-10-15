@@ -38,6 +38,8 @@ HudRect HudLayout::crosshair() const {
 }
 
 HudRect HudLayout::hotbar() const { return box(0.f, -kHotbarHeight, kHotbarWidth, kHotbarHeight); }
+HudRect HudLayout::offhand() const { return box(-29.f, -kHotbarHeight - 1.f, 29.f, 24.f); }
+HudRect HudLayout::offhandItem() const { return box(-29.f + 3.f, -kHotbarHeight + 3.f, 16.f, 16.f); }
 
 HudRect HudLayout::selection(int slot) const {
     return box(kSlotPitch * static_cast<float>(slot) - 1.f, -kHotbarHeight - 1.f, 24.f, 23.f);
@@ -49,6 +51,11 @@ HudRect HudLayout::item(int slot) const {
 
 HudRect HudLayout::heart(int index) const {
     return box(kIconPitch * static_cast<float>(index), -kStatusRowFromBottom, kIconSize, kIconSize);
+}
+
+HudRect HudLayout::armor(int index, bool has_absorption) const {
+    const float offset_y = has_absorption ? (kStatusRowFromBottom + 20.f) : (kStatusRowFromBottom + 10.f);
+    return box(kIconPitch * static_cast<float>(index), -offset_y, kIconSize, kIconSize);
 }
 
 HudRect HudLayout::food(int index) const {

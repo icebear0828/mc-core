@@ -367,6 +367,29 @@ _PLACEHOLDER_ITEM_COLORS = {
 
 def create_canonical_sprite(name: str) -> Image.Image:
     """Generate canonical pixel sprite when extracting without an official client.jar."""
+    if name == "entity_shield":
+        # Placeholder with the real texture's layout (ShieldModel: plate box at texOffs (0, 0), 12x22x1; handle box at (26, 0), 2x6x6):
+        # a riveted front at (1, 1), a plain back at (14, 1), iron edges around them and a dark handle.
+        sheet = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        iron, iron_dk = (150, 150, 155, 255), (95, 95, 100, 255)
+        wood, wood_dk, rivet = (140, 95, 50, 255), (112, 74, 36, 255), (200, 200, 205, 255)
+        for x in range(0, 27):  # the top and bottom edge strips and the side strips of the plate
+            for y in range(0, 24):
+                if y in (0, 23) or x in (0, 13, 26):
+                    sheet.putpixel((x, y), iron if (x + y) % 2 == 0 else iron_dk)
+        for face_x in (1, 14):
+            for dx in range(12):
+                for dy in range(22):
+                    rim = dx in (0, 11) or dy in (0, 21)
+                    col = iron if rim else (wood if dx % 3 else wood_dk)
+                    if face_x == 1 and not rim and dx in (2, 9) and dy % 4 == 2:
+                        col = rivet  # the front has rivets, the back does not
+                    sheet.putpixel((face_x + dx, 1 + dy), col)
+        for x in range(26, 42):  # the handle's six faces
+            for y in range(0, 12):
+                sheet.putpixel((x, y), iron_dk if (x + y) % 3 else wood_dk)
+        return sheet
+
     if name == "crosshair":
         img = Image.new("RGBA", (15, 15), (0, 0, 0, 0))
         for i in range(4, 11):  # a plain white plus; the real sprite replaces it when a client.jar is given
@@ -509,6 +532,16 @@ def create_canonical_sprite(name: str) -> Image.Image:
                     img.putpixel((x, y), (255, 255, 255, 255))
         return img
 
+    if name == "hotbar_offhand_left":
+        img = Image.new("RGBA", (29, 24), (0, 0, 0, 0))
+        for x in range(29):
+            for y in range(24):
+                if x == 0 or x == 28 or y == 0 or y == 23:
+                    img.putpixel((x, y), (200, 200, 200, 255))
+                else:
+                    img.putpixel((x, y), (40, 40, 40, 200))
+        return img
+
     # 16x16 Items
     img = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
     if name == "item_diamond_sword":
@@ -578,6 +611,137 @@ def create_canonical_sprite(name: str) -> Image.Image:
             for x in range(5, 11):
                 img.putpixel((x, y), c_gld)
         img.putpixel((6, 5), c_emr); img.putpixel((9, 5), c_emr)
+    elif name == "item_shield":
+        # Full 16x16 canonical Minecraft shield with iron rim, wood planks, and iron boss/rivet
+        c_ir_hi = (220, 220, 225, 255) # iron highlight
+        c_ir_md = (180, 180, 185, 255) # iron midtone
+        c_ir_dk = (120, 120, 125, 255) # iron shadow
+        c_ir_ol = (60, 60, 65, 255)    # iron outline edge
+        c_wd_hi = (170, 120, 70, 255)  # wood light grain
+        c_wd_md = (145, 95, 50, 255)   # wood base
+        c_wd_dk = (115, 75, 35, 255)   # wood seam
+
+        # Shield shape: row ranges [x_start, x_end] (inclusive)
+        shield_rows = {
+            1: (3, 12),
+            2: (2, 13), 3: (2, 13), 4: (2, 13), 5: (2, 13),
+            6: (2, 13), 7: (2, 13), 8: (2, 13),
+            9: (3, 12), 10: (3, 12),
+            11: (4, 11), 12: (4, 11),
+            13: (5, 10),
+            14: (6, 9),
+        }
+        for y, (x_min, x_max) in shield_rows.items():
+            for x in range(x_min, x_max + 1):
+                is_rim = (y == 1 or y == 14 or x == x_min or x == x_max)
+                if is_rim:
+                    if y == 1 or x == x_min:
+                        col = c_ir_hi if (x + y) % 2 == 0 else c_ir_md
+                    elif x == x_max or y >= 13:
+                        col = c_ir_dk if (x + y) % 2 == 0 else c_ir_ol
+                    else:
+                        col = c_ir_md
+                elif y in (6, 7) and x in (7, 8):
+                    # Central iron boss / rivet
+                    col = c_ir_hi if (x == 7 and y == 6) else (c_ir_dk if (x == 8 and y == 7) else c_ir_md)
+                else:
+                    # Wood planks with vertical grain pattern
+                    if x in (4, 8, 11):
+                        col = c_wd_dk
+                    elif (x + y) % 3 == 0:
+                        col = c_wd_hi
+                    else:
+                        col = c_wd_md
+                img.putpixel((x, y), col)
+    elif name == "item_diamond_helmet":
+        c_dm, c_dd = (43, 235, 235, 255), (28, 163, 163, 255)
+        for y in range(4, 13):
+            for x in range(3, 13):
+                if y <= 8 or x in (3, 4, 11, 12):
+                    img.putpixel((x, y), c_dm if (x + y) % 2 == 0 else c_dd)
+    elif name == "item_diamond_chestplate":
+        c_dm, c_dd = (43, 235, 235, 255), (28, 163, 163, 255)
+        for y in range(3, 13):
+            for x in range(2, 14):
+                if (y >= 6 and 5 <= x <= 10) or (x in (2, 3, 4, 11, 12, 13) and y <= 8) or (y <= 5 and (x <= 4 or x >= 11)):
+                    img.putpixel((x, y), c_dm if (x + y) % 2 == 0 else c_dd)
+    elif name == "item_diamond_leggings":
+        c_dm, c_dd = (43, 235, 235, 255), (28, 163, 163, 255)
+        for y in range(3, 14):
+            for x in range(3, 13):
+                if y <= 6 or x in (3, 4, 5, 10, 11, 12):
+                    img.putpixel((x, y), c_dm if (x + y) % 2 == 0 else c_dd)
+    elif name == "item_diamond_boots":
+        c_dm, c_dd = (43, 235, 235, 255), (28, 163, 163, 255)
+        for y in range(7, 13):
+            for x in range(2, 14):
+                if (x in (2, 3, 4, 5) and (y >= 10 or x <= 4)) or (x in (10, 11, 12, 13) and (y >= 10 or x >= 11)):
+                    img.putpixel((x, y), c_dm if (x + y) % 2 == 0 else c_dd)
+    elif name.startswith("empty_armor_slot_"):
+        c_wm = (140, 140, 140, 120)
+        part = name.replace("empty_armor_slot_", "")
+        if part == "helmet":
+            for y in range(5, 11):
+                for x in range(4, 12):
+                    if y <= 8 or x in (4, 5, 10, 11): img.putpixel((x, y), c_wm)
+        elif part == "chestplate":
+            for y in range(4, 12):
+                for x in range(3, 13):
+                    if (y >= 6 and 5 <= x <= 10) or (y <= 5 and (x <= 5 or x >= 10)): img.putpixel((x, y), c_wm)
+        elif part == "leggings":
+            for y in range(4, 13):
+                for x in range(4, 12):
+                    if y <= 7 or x in (4, 5, 10, 11): img.putpixel((x, y), c_wm)
+        elif part == "boots":
+            for y in range(7, 12):
+                for x in range(3, 13):
+                    if x in (3, 4, 5, 10, 11, 12): img.putpixel((x, y), c_wm)
+    elif name in ("armor_empty", "armor_half", "armor_full"):
+        img = Image.new("RGBA", (9, 9), (0, 0, 0, 0))
+        c_out = (30, 30, 30, 255)
+        c_iron = (230, 230, 230, 255)
+        c_iron_d = (160, 160, 160, 255)
+        c_bg = (50, 50, 50, 180)
+        for y in range(9):
+            for x in range(9):
+                is_pixel = False
+                if y == 0 and (x in (1, 2, 6, 7)): is_pixel = True
+                elif y in (1, 2) and (1 <= x <= 7): is_pixel = True
+                elif y in (3, 4) and (0 <= x <= 8): is_pixel = True
+                elif y in (5, 6) and (1 <= x <= 7): is_pixel = True
+                elif y == 7 and (2 <= x <= 6): is_pixel = True
+                elif y == 8 and (3 <= x <= 5): is_pixel = True
+                if not is_pixel: continue
+                is_outline = (y == 0 or y == 8 or x == 0 or x == 8 or
+                              (y in (1, 2) and x in (1, 7)) or
+                              (y in (3, 4) and x in (0, 8)) or
+                              (y in (5, 6) and x in (1, 7)) or
+                              (y == 7 and x in (2, 6)) or
+                              (y == 8 and x in (3, 5)) or
+                              (y == 1 and x in (3, 4, 5)))
+                if is_outline:
+                    img.putpixel((x, y), c_out)
+                else:
+                    if name == "armor_empty":
+                        img.putpixel((x, y), c_bg)
+                    elif name == "armor_full":
+                        img.putpixel((x, y), c_iron if (x + y) % 2 == 0 else c_iron_d)
+                    elif name == "armor_half":
+                        if x <= 4:
+                            img.putpixel((x, y), c_iron if (x + y) % 2 == 0 else c_iron_d)
+                        else:
+                            img.putpixel((x, y), c_bg)
+    elif name.startswith("destroy_stage_"):
+        stage = int(name.split("_")[-1])
+        img = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+        target_count = 6 + stage * 12
+        coords = list(dict.fromkeys([( (x * 7 + y * 13) % 16, (x * 11 + y * 3) % 16 ) for y in range(16) for x in range(16)]))
+        for y in range(16):
+            for x in range(16):
+                if (x, y) not in coords:
+                    coords.append((x, y))
+        for x, y in coords[:target_count]:
+            img.putpixel((x, y), (50, 50, 50, 255))
     elif name.startswith("block_") and name in _PLACEHOLDER_ITEM_COLORS:  # a flat coloured square
         img = Image.new("RGBA", (16, 16), _PLACEHOLDER_ITEM_COLORS[name] + (255,))
     elif name in _PLACEHOLDER_ITEM_COLORS:  # a plain coloured disc; the real icon replaces it when a client.jar is given
@@ -588,6 +752,7 @@ def create_canonical_sprite(name: str) -> Image.Image:
                     img.putpixel((x, y), col)
 
     return img
+
 
 
 _JAR_TEXTURES = "assets/minecraft/textures/"
@@ -654,9 +819,42 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("item_bow_pulling_0", (16, 16)),
     ("item_bow_pulling_1", (16, 16)),
     ("item_bow_pulling_2", (16, 16)),
+    # the offhand hotbar slot and the shield item icon
+    ("hotbar_offhand_left", (29, 24)),
+    ("item_shield", (16, 16)),
+    # the whole 64x64 shield entity texture: the 3D shield model (plate 12x22x1 and handle 2x6x6) is mapped onto it like the game does
+    ("entity_shield", (64, 64)),
+    # diamond armor items and empty armor slot watermarks
+    ("item_diamond_helmet", (16, 16)),
+    ("item_diamond_chestplate", (16, 16)),
+    ("item_diamond_leggings", (16, 16)),
+    ("item_diamond_boots", (16, 16)),
+    ("empty_armor_slot_helmet", (16, 16)),
+    ("empty_armor_slot_chestplate", (16, 16)),
+    ("empty_armor_slot_leggings", (16, 16)),
+    ("empty_armor_slot_boots", (16, 16)),
+    # HUD armor bar sprites
+    ("armor_empty", (9, 9)),
+    ("armor_half", (9, 9)),
+    ("armor_full", (9, 9)),
+    # 10 stages of block destruction (cracking) overlay
+    *[(f"destroy_stage_{i}", (16, 16)) for i in range(10)],
 ]
 
+
 _JAR_HUD_SPRITES = {
+    "item_diamond_helmet": "item/diamond_helmet.png",
+    "item_diamond_chestplate": "item/diamond_chestplate.png",
+    "item_diamond_leggings": "item/diamond_leggings.png",
+    "item_diamond_boots": "item/diamond_boots.png",
+    "empty_armor_slot_helmet": "gui/sprites/container/slot/helmet.png",
+    "empty_armor_slot_chestplate": "gui/sprites/container/slot/chestplate.png",
+    "empty_armor_slot_leggings": "gui/sprites/container/slot/leggings.png",
+    "empty_armor_slot_boots": "gui/sprites/container/slot/boots.png",
+    "armor_empty": "gui/sprites/hud/armor_empty.png",
+    "armor_half": "gui/sprites/hud/armor_half.png",
+    "armor_full": "gui/sprites/hud/armor_full.png",
+    "entity_shield": "entity/shield_base_nopattern.png",
     "crosshair": "gui/sprites/hud/crosshair.png",
     "heart_container": "gui/sprites/hud/heart/container.png",
     "heart_full": "gui/sprites/hud/heart/full.png",
@@ -666,6 +864,7 @@ _JAR_HUD_SPRITES = {
     "hunger_half": "gui/sprites/hud/food_half.png",
     "hotbar": "gui/sprites/hud/hotbar.png",
     "hotbar_selection": "gui/sprites/hud/hotbar_selection.png",
+    "hotbar_offhand_left": "gui/sprites/hud/hotbar_offhand_left.png",
     "item_diamond_sword": "item/diamond_sword.png",
     "item_diamond_pickaxe": "item/diamond_pickaxe.png",
     "item_golden_apple": "item/golden_apple.png",
@@ -698,7 +897,9 @@ _JAR_HUD_SPRITES = {
     "heart_half_blinking": "gui/sprites/hud/heart/half_blinking.png",
     "xp_bar_background": "gui/sprites/hud/experience_bar_background.png",
     "xp_bar_progress": "gui/sprites/hud/experience_bar_progress.png",
+    **{f"destroy_stage_{i}": f"block/destroy_stage_{i}.png" for i in range(10)},
 }
+
 
 # The 3-row container background (gui/container/generic_54.png): its top part is 17 + 3 * 18 rows, its bottom part (the
 # player's inventory) starts at row 126, as in Minecraft's ContainerScreen.
@@ -823,14 +1024,37 @@ def _read_real_hud_sprite(jar_zip: zipfile.ZipFile, name: str, size: tuple[int, 
         egg = _multiply_tint(_fit_exact(base, size), primary)
         egg.alpha_composite(_multiply_tint(_fit_exact(spots, size), secondary))
         return egg
-    if name == "item_enchanted_golden_apple":
-        apple = _open_jar_png(jar_zip, "item/golden_apple.png")
-        return None if apple is None else _tint(_fit_exact(apple, size), _GLINT, 0.35)
+    if name == "item_shield":
+        # 1.21.8 has no item/shield.png (the inventory icon is the 3D model): use the front face of the plate in the entity texture.
+        plate = _open_jar_png(jar_zip, "entity/shield_base_nopattern.png")
+        if plate is None or plate.size != (64, 64):
+            return None
+        front = plate.crop((1, 1, 13, 23))  # 12x22, the face with the rivets
+        scaled = front.resize((9, size[1]), Image.BOX)
+        icon = Image.new("RGBA", size, (0, 0, 0, 0))
+        icon.paste(scaled, ((size[0] - scaled.width) // 2, 0))
+        return icon
+    if name.startswith("destroy_stage_"):
+        relative = _JAR_HUD_SPRITES.get(name)
+        if relative is None:
+            return None
+        src = _open_jar_png(jar_zip, relative)
+        if src is None:
+            return None
+        rgba = src.convert("RGBA")
+        px = rgba.load()
+        for y in range(rgba.height):
+            for x in range(rgba.width):
+                r, g, b, a = px[x, y]
+                if a <= 1:
+                    px[x, y] = (0, 0, 0, 0)
+        return _fit_exact(rgba, size)
     relative = _JAR_HUD_SPRITES.get(name)
     if relative is None:
         return None
     src = _open_jar_png(jar_zip, relative)
     return None if src is None else _fit_exact(src, size)
+
 
 
 def build_hud_atlas(client_jar: Path | None = None) -> tuple[Image.Image, dict[str, tuple[float, float, float, float]]]:

@@ -43,6 +43,12 @@ inline constexpr size_t kHitKnockbackOut = 0x230;    // int32: what the engine d
 inline constexpr size_t kHitDamage = 0x228;          // u32; the engine overwrites it with the computed damage
 inline constexpr size_t kHitEnableReaction = 0x264;  // u8; 0 -> only HP drops: no flinch, no aggro
 
+// The victim damage module's hit reaction buffer ([module+0xA0]): 0x140449520 (the break test, called from 0x140447A3B) writes the push (+0x34, float) and
+// the break flag (+0x38) into it whatever it answers (REVERSE 41).
+inline constexpr size_t kDamageHitBuffer = 0xA0;
+inline constexpr size_t kHitBufferForce = 0x34;
+inline constexpr size_t kHitBufferBreakFlag = 0x38;
+
 inline constexpr uint8_t kDefaultStaggerLevel = 3;
 inline constexpr uint8_t kDefaultStaggerAnim = 2;
 inline constexpr float kHitHeightAboveFeet = 1.0f;   // waist
@@ -153,6 +159,7 @@ struct DrainContext {
     uintptr_t updating_data_module{0};
     bool require_victim_updating{true};
     const HitTemplate* hit_template{nullptr};
+    bool allow_neutral{false}; // when true, non-Friend neutral entities/animals can take damage
     DamageInvoker invoke;
     // Optional: false = something static is in the way. Called on the game thread right before the hit, with the player's
     // and the victim's standing points (game metres).
@@ -269,7 +276,10 @@ private:
             !rd.read(victim + layout::kTeamTypeInChrIns, &victim_team, 1)) {
             return DamageOutcome::VictimGone;
         }
-        if (readTeamRelation(rd, base, player_team, victim_team) != TeamRelation::Hostile) return DamageOutcome::NotHostile;
+        const TeamRelation rel = readTeamRelation(rd, base, player_team, victim_team);
+        // Unknown (unreadable matrix entry, team out of range), Friend and All are never attacked, whatever allow_neutral says.
+        const bool attackable = rel == TeamRelation::Hostile || (ctx.allow_neutral && rel == TeamRelation::Neutral);
+        if (!attackable) return DamageOutcome::NotHostile;
 
         float pos[3];
         if (!detail::readPhysicsPosition(rd, base, victim, pos)) return DamageOutcome::VictimGone;
@@ -297,5 +307,8 @@ private:
     std::atomic<bool> in_drain_{false};
     std::atomic<uint64_t> reentrant_{0};
 };
+
+// The player is not knocked down or blown away by a hit in MC mode (a light flinch stays): the break test answers "no" and its buffer is cleared.
+inline bool shouldSoftenHitReaction(bool mc_mode, bool victim_is_player, bool enabled) { return mc_mode && victim_is_player && enabled; }
 
 } // namespace eldenring::live

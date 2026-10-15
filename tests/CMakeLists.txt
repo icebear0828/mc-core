@@ -52,10 +52,27 @@ add_executable(mc_tests
     test_eldenring_blocks.cpp
     test_eldenring_blockmesh.cpp
     test_eldenring_blockicon.cpp
+    test_eldenring_action_lock.cpp
     test_eldenring_hud_anim.cpp
     test_eldenring_jump.cpp
+    test_eldenring_orientation.cpp
+    test_eldenring_roll.cpp
     test_entity_model.cpp
+    test_eldenring_shield.cpp
+    test_eldenring_flags.cpp
+    test_eldenring_pixel.cpp
+    test_eldenring_depth.cpp
+    test_eldenring_d3dstate.cpp
+    test_tnt.cpp
+    test_eldenring_tnt.cpp
+    test_eldenring_mining.cpp
+    test_eldenring_combat_balance.cpp
+    test_eldenring_sprint.cpp
+    test_eldenring_creeper.cpp
+    test_mc_core_modules.cpp
 )
+
+
 
 target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source")
 

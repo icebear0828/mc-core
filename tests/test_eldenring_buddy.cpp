@@ -282,3 +282,35 @@ TEST(BuddySummon, RefusesANonFiniteSpawnPoint) {
     const buddy::SpawnPoint bad{{std::nanf(""), 0.f, 0.f, 1.f}, 0.f};
     EXPECT_FALSE(buddy::planSummon(buddy::sample(m, kBase), 232000, 1, bad).has_value());
 }
+
+TEST(BuddySummon, ResolvesKnownSpiritAshNamesAndRequests) {
+    EXPECT_EQ(buddy::resolveSummonRequest("kaiden"), buddy::kKaidenWarriorRequest);
+    EXPECT_EQ(buddy::resolveSummonRequest("Kaiden"), buddy::kKaidenWarriorRequest);
+    EXPECT_EQ(buddy::resolveSummonRequest("wolf"), buddy::kWolfPackRequest);
+    EXPECT_EQ(buddy::resolveSummonRequest("wolves"), buddy::kWolfPackRequest);
+    EXPECT_EQ(buddy::resolveSummonRequest("mimic"), buddy::kMimicTearRequest);
+    EXPECT_EQ(buddy::resolveSummonRequest("skeleton"), buddy::kSkeletalMilitiaRequest);
+    EXPECT_EQ(buddy::resolveSummonRequest("tiche"), buddy::kBlackKnifeTicheRequest);
+    EXPECT_EQ(buddy::resolveSummonRequest("soldier"), buddy::kGodrickSoldierRequest);
+    EXPECT_EQ(buddy::resolveSummonRequest("231000"), 231000);
+    EXPECT_EQ(buddy::resolveSummonRequest("232000"), 232000);
+}
+
+TEST(BuddySummon, ClassifiesHumanoidSummonsForHitboxMatching) {
+    EXPECT_TRUE(buddy::isHumanoidSummon(buddy::kKaidenWarriorRequest));
+    EXPECT_TRUE(buddy::isHumanoidSummon(buddy::kMimicTearRequest));
+    EXPECT_TRUE(buddy::isHumanoidSummon(buddy::kSkeletalMilitiaRequest));
+    EXPECT_TRUE(buddy::isHumanoidSummon(buddy::kBlackKnifeTicheRequest));
+    EXPECT_TRUE(buddy::isHumanoidSummon(buddy::kGodrickSoldierRequest));
+    EXPECT_FALSE(buddy::isHumanoidSummon(buddy::kWolfPackRequest));
+}
+
+TEST(BuddySummon, ReturnsExpectedSpawnEntityCounts) {
+    EXPECT_EQ(buddy::expectedSpawnCount(buddy::kKaidenWarriorRequest), 1);
+    EXPECT_EQ(buddy::expectedSpawnCount(buddy::kMimicTearRequest), 1);
+    EXPECT_EQ(buddy::expectedSpawnCount(buddy::kBlackKnifeTicheRequest), 1);
+    EXPECT_EQ(buddy::expectedSpawnCount(buddy::kSkeletalMilitiaRequest), 2);
+    EXPECT_EQ(buddy::expectedSpawnCount(buddy::kGodrickSoldierRequest), 2);
+    EXPECT_EQ(buddy::expectedSpawnCount(buddy::kWolfPackRequest), 3);
+}
+

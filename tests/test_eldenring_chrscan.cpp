@@ -160,20 +160,140 @@ TEST(EldenRingChrScan, NothingToCollectForAnObjectWithoutAModel) {
 }
 
 TEST(EldenRingChrScan, ShowingAgainSetsOnlyTheBitWeCleared) {
-    EXPECT_EQ(showDrawnBit(0x000000A6u), 0x000000A7u);
-    EXPECT_EQ(showDrawnBit(hideDrawnBit(0x000100A1u)), 0x000100A1u); // hide then show gives the original
-    EXPECT_EQ(showDrawnBit(0x000000A7u), 0x000000A7u);
+    EXPECT_EQ(showDrawnBit(0x00000000u, 0x000000A7u), 0x000000A7u);
+    EXPECT_EQ(showDrawnBit(hideDrawnBit(0x000100A1u), 0x000100A1u), 0x000100A1u); // hide then show gives the original
+    EXPECT_EQ(showDrawnBit(0x000000A7u, 0x000000A7u), 0x000000A7u);
 }
 
-TEST(EldenRingChrScan, TheDrawnBitIsTheLowestBitOnly) {
-    EXPECT_EQ(hideDrawnBit(0x000000A7u), 0x000000A6u);
-    EXPECT_EQ(hideDrawnBit(0x000100A1u), 0x000100A0u);
-    EXPECT_EQ(hideDrawnBit(0x000000A6u), 0x000000A6u); // already hidden: nothing to write
+TEST(EldenRingChrScan, HideMaskClearsModelDrawnShadowAndGhostParticles) {
+    // Wolf display flags 0xA7 contains drawn (1), model (2, 4), shadow (0x20), spirit particle/phantom (0x80)
+    EXPECT_EQ(hideDrawnBit(0x000000A7u), 0x00000000u);
+    EXPECT_EQ(hideDrawnBit(0x000100A1u), 0x00000000u);
+    EXPECT_EQ(hideDrawnBit(0x00000000u), 0x00000000u); // already hidden: nothing to write
     EXPECT_TRUE(needsHiding(0x000000A7u));
-    EXPECT_FALSE(needsHiding(0x000000A6u));
+    EXPECT_TRUE(needsHiding(0x000000A6u)); // 0xA6 still had ghost/particle bits; now needsHiding is true
+    EXPECT_FALSE(needsHiding(0x00000000u));
 }
 
 TEST(EldenRingChrScan, SummonsAreTheTeamTheWolvesWereSeenWith) {
     EXPECT_EQ(summon::kTeam, 47);
     EXPECT_EQ(summon::kDispFlags1, 0x20u); // same word as the player's parts (eldenring_model.hpp layout::kDispFlags1)
+    EXPECT_EQ(summon::kDispFlags2, 0x24u);
+    EXPECT_EQ(summon::kHideMask1, 0x000100A7u);
 }
+
+TEST(EldenRingChrScan, IdentifiesSpiritSpEffectIds) {
+    // 0x182 (386) is the phantom/ghost shader flag checked by the D3D12 pipeline at 0x1402C722C
+    EXPECT_TRUE(isSpiritSpEffectId(summon::kPhantomShaderSpEffect));
+    EXPECT_TRUE(isSpiritSpEffectId(0x182));
+    // Non-visual / lifecycle SpEffects must NOT be blocked, otherwise FromSoftware's summon lifecycle
+    // fails to finish initialization or corrupts memory allocations!
+    EXPECT_FALSE(isSpiritSpEffectId(20297130)); // Lone Wolf modifiers
+    EXPECT_FALSE(isSpiritSpEffectId(20297320)); // Kaiden Sellsword modifiers
+    EXPECT_FALSE(isSpiritSpEffectId(231000));   // Request based
+    EXPECT_FALSE(isSpiritSpEffectId(232000));
+    EXPECT_FALSE(isSpiritSpEffectId(140700000));
+    // Non-spirit SpEffects must not be suppressed
+    EXPECT_FALSE(isSpiritSpEffectId(0x8F));    // creative::kLandingSkipSpEffect
+    EXPECT_FALSE(isSpiritSpEffectId(0));
+    EXPECT_FALSE(isSpiritSpEffectId(1000));
+}
+
+TEST(EldenRingChrScan, SuppressSfxSlotSetsSkipBit) {
+    // Bit 7 of slot + 0x5a causes ChrConditionSfxSeSlot::Update (0x1404A2480) to jump to early exit (0x1404A2A4D)
+    EXPECT_EQ(suppressSfxSlotFlags(0x0000u), 0x0080u);
+    EXPECT_EQ(suppressSfxSlotFlags(0x0005u), 0x0085u);
+    EXPECT_TRUE(needsSfxSuppression(0x0005u));
+    EXPECT_FALSE(needsSfxSuppression(0x0085u));
+    EXPECT_EQ(restoreSfxSlotFlags(0x0085u), 0x0005u);
+}
+
+TEST(EldenRingChrScan, CollectsChrConditionSfxSlotsFromEnemyIns) {
+    Mem m;
+    addRttiClass(m, 0x2A428B0, 0x32D6558, 0x3C844E8, ".?AVChrConditionSfxSeSlot@CS@@");
+    const uintptr_t chr = 0x7ff600001000ull, slot = 0x7ff600009000ull;
+    m.region(chr, 0xA00);
+    m.region(slot, 0x100);
+    m.put<uint64_t>(slot, kBase + 0x2A428B0); // vtable
+    m.put<uint64_t>(chr + 0x318, slot);       // wolf ChrConditionSfxSeSlot pointer #1
+    m.put<uint64_t>(chr + 0x908, slot);       // wolf ChrConditionSfxSeSlot pointer #2
+    const auto slots = collectChrConditionSfxSlots(m, kBase, chr);
+    ASSERT_EQ(slots.size(), 1u); // De-duplicated
+    EXPECT_EQ(slots[0], slot);
+}
+
+TEST(EldenRingChrScan, DefaultMobYawOffsetIsZeroNotPi) {
+    // Monsters and wolves have physics forward orientation aligned with model space;
+    // adding an extra pi (180 deg) by default causes summons to face completely backwards!
+    EXPECT_FLOAT_EQ(summon::kDefaultMobYawOffset, 0.0f);
+}
+
+TEST(EldenRingChrScan, SfxParticleVisibilityClearing) {
+    // [sfx + 0x14] bit 6 (0x40) controls visible particle rendering (CSFD4SfxIns::SetVisible 0x140D8B840).
+    // Clearing bit 6 (and ~0x40) renders the particle emitter invisible safely without corrupting node pools.
+    uint32_t sfx_flags = 0x7Cu; // default flags from 0x140D8B365
+    EXPECT_TRUE((sfx_flags & summon::kSfxVisibleBit) != 0);
+    EXPECT_EQ(summon::hideSfxBitmask(sfx_flags), 0x3Cu);
+    EXPECT_FALSE((summon::hideSfxBitmask(sfx_flags) & summon::kSfxVisibleBit) != 0);
+}
+
+TEST(EldenRingChrScan, ProbeActiveWithoutLogMatchesActiveCreativeHooks) {
+    // Only the probes modifying player physics and survivability are active without log switch
+    EXPECT_FALSE(isProbeActiveWithoutLog("sp effect query"));
+    EXPECT_TRUE(isProbeActiveWithoutLog("fall height"));
+    EXPECT_TRUE(isProbeActiveWithoutLog("kill wrapper"));
+    EXPECT_TRUE(isProbeActiveWithoutLog("fall time exceeded"));
+    EXPECT_FALSE(isProbeActiveWithoutLog("chr event dispatch"));
+}
+
+TEST(EldenRingChrScan, CollectsAllChrSfxSlotTypesFromEnemyIns) {
+    Mem m;
+    addRttiClass(m, 0x2A428B0, 0x32D6558, 0x3C844E8, ".?AVChrConditionSfxSeSlot@CS@@");
+    addRttiClass(m, 0x2A43400, 0x32D6DD0, 0x3C845E8, ".?AVChrMultiSfxSlot@CS@@");
+    addRttiClass(m, 0x2A43AA8, 0x32D70C8, 0x3C846E8, ".?AVChrSingleSfxSlot@CS@@");
+    const uintptr_t chr = 0x7ff600001000ull;
+    const uintptr_t cond_slot = 0x7ff600009000ull;
+    const uintptr_t multi_slot = 0x7ff60000A000ull;
+    const uintptr_t single_slot = 0x7ff60000B000ull;
+    m.region(chr, 0xA00);
+    m.region(cond_slot, 0x100);
+    m.region(multi_slot, 0x100);
+    m.region(single_slot, 0x100);
+    m.put<uint64_t>(cond_slot, kBase + 0x2A428B0);
+    m.put<uint64_t>(multi_slot, kBase + 0x2A43400);
+    m.put<uint64_t>(single_slot, kBase + 0x2A43AA8);
+    m.put<uint64_t>(chr + 0x318, cond_slot);
+    m.put<uint64_t>(chr + 0x320, multi_slot);
+    m.put<uint64_t>(chr + 0x328, single_slot);
+    const auto slots = collectChrSfxSlots(m, kBase, chr);
+    ASSERT_EQ(slots.size(), 3u);
+    EXPECT_EQ(slots[0], cond_slot);
+    EXPECT_EQ(slots[1], multi_slot);
+    EXPECT_EQ(slots[2], single_slot);
+}
+
+TEST(EldenRingChrScan, ScanForClassesIgnoresNonCanonicalPointersAndOutOfBoundsVtables) {
+    Mem m;
+    addRttiClass(m, 0x2A428B0, 0x32D6558, 0x3C844E8, ".?AVChrConditionSfxSeSlot@CS@@");
+    const uintptr_t chr = 0x7ff600001000ull;
+    const uintptr_t valid_slot = 0x7ff600009000ull;
+    const uintptr_t invalid_slot = 0x7ff60000A000ull;
+    m.region(chr, 0xA00);
+    m.region(valid_slot, 0x100);
+    m.region(invalid_slot, 0x100);
+    m.put<uint64_t>(valid_slot, kBase + 0x2A428B0);
+    // invalid_slot has vtable outside image bounds
+    m.put<uint64_t>(invalid_slot, 0x123456780000ull);
+
+    m.put<uint64_t>(chr + 0x10, 0xFFFFFFFFFFFFFFFFull); // -1 (non-canonical kernel pointer)
+    m.put<uint64_t>(chr + 0x18, 0x000000003F800000ull); // 1.0f float representation
+    m.put<uint64_t>(chr + 0x20, 0x7ff600001001ull);     // unaligned pointer
+    m.put<uint64_t>(chr + 0x28, invalid_slot);          // out of image bounds vtable
+    m.put<uint64_t>(chr + 0x30, valid_slot);            // perfectly valid slot
+
+    const auto hits = scanForClasses(m, kBase, chr, 0, 0xA00);
+    ASSERT_EQ(hits.size(), 1u);
+    EXPECT_EQ(hits[0].object, valid_slot);
+    EXPECT_EQ(hits[0].cls, ".?AVChrConditionSfxSeSlot@CS@@");
+}
+

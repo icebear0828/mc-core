@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "eldenring_steve.hpp"
+#include "eldenring_inventory_preview.hpp"
 
 #include <cmath>
 
@@ -186,6 +187,37 @@ TEST(EldenRingSteve, HeldItemSitsAtTheRightHandWithTheErBasis) {
     EXPECT_LT(max_horizontal, 1.2f);
 }
 
+TEST(EldenRingSteve, OffhandShieldSitsAtTheLeftForearmWithTheErBasis) {
+    std::vector<uint8_t> atlas(16 * 16 * 4, 0);
+    for (int y = 2; y < 14; ++y) {
+        for (int x = 3; x < 13; ++x) atlas[(static_cast<size_t>(y) * 16 + x) * 4 + 3] = 255;
+    }
+    const mc::rig::ItemSprite sprite{atlas.data(), 16, 16, 0, 0, 16, 16};
+    const mc::rig::RigMesh mesh = mc::rig::buildHeldItemMesh(sprite, mc::rig::HeldItemStyle::Shield, eldenring::render::kBasis, mc::rig::Hand::Left);
+    ASSERT_FALSE(mesh.vertices.empty());
+
+    // Standing pose with feet at origin, yaw = 0
+    const mc::rig::Mat4 arm = mc::rig::partMatrix(mc::StevePart::LeftArm, mc::Quat{0.f, 0.f, 0.f, 1.f}, {0.f, 0.f, 0.f}, 0.f, eldenring::render::kBasis);
+    float lo_y = 1e9f, hi_y = -1e9f;
+    float min_x = 1e9f, max_x = -1e9f;
+    float max_horizontal = 0.f;
+    for (const mc::rig::RigVertex& v : mesh.vertices) {
+        const mc::Vec3 p = mc::rig::transformPoint(arm, {v.x, v.y, v.z});
+        lo_y = std::min(lo_y, p.y);
+        hi_y = std::max(hi_y, p.y);
+        min_x = std::min(min_x, p.x);
+        max_x = std::max(max_x, p.x);
+        max_horizontal = std::max(max_horizontal, std::sqrt(p.x * p.x + p.z * p.z));
+    }
+    // Height of shield should align with forearm (~0.4m to ~1.4m above ground)
+    EXPECT_GT(lo_y, 0.3f);
+    EXPECT_LT(hi_y, 1.5f);
+    // In Dantelion coordinates (+X right, -X left), the left arm is at negative X
+    EXPECT_LT(min_x, -0.1f) << "Left hand shield sits on the left side of the body (-X)";
+    EXPECT_LT(max_horizontal, 0.7f) << "Shield is closely fitted to the forearm, not floating in mid-air";
+}
+
+
 // ---- head tracking: the third-person head follows the camera -------------------------------------------------
 
 namespace {
@@ -280,17 +312,28 @@ TEST(EldenRingHead, TurnsNoFurtherThanFiftyDegreesOffTheBody) {
     EXPECT_NEAR(std::fabs(in.look_yaw), 50.f * kDeg, 1e-3);
 }
 
-TEST(EldenRingHead, CameraDirectlyOppositeKeepsTheLastSideInsteadOfSnapping) {
+TEST(EldenRingHead, FacesCameraWhenDirectlyOppositeAndTracksMouseSmoothly) {
     HeadTracker h;
     mc::SteveAnimInput in;
-    mc::Vec3 d = lookDir(60.f, 0.f); // settled on the +X side
+    // Character body faces +Z (body_yaw = 0). Camera is placed directly in front facing -Z (lookDir(180, 0)).
+    // Steve should look directly at the front camera (|look_yaw| ~ 0), not be twisted at 50 degrees!
+    mc::Vec3 d = lookDir(180.f, 0.f);
     h.update(d.x, d.y, d.z, 0.f, in);
-    const float side = in.look_yaw;
-    for (float deg : {175.f, -175.f, 180.f, -178.f}) {
-        d = lookDir(deg, 0.f);
-        h.update(d.x, d.y, d.z, 0.f, in);
-        EXPECT_NEAR(in.look_yaw, side < 0.f ? -50.f * kDeg : 50.f * kDeg, 1e-3) << "deg=" << deg;
-    }
+    EXPECT_NEAR(in.look_yaw, 0.f, 0.05f) << "When facing camera directly, head should be looking forward at camera!";
+
+    // Camera moves to screen left (world +X, e.g. 165 degrees facing back toward player).
+    // Steve's face must track to screen left (world +X), NOT twist to screen right!
+    d = lookDir(165.f, 0.f);
+    h.update(d.x, d.y, d.z, 0.f, in);
+    const mc::Vec3 face_left = renderedFace(in, 0.f);
+    EXPECT_GT(face_left.x, 0.02f) << "When camera is at screen left, Steve must look towards screen left (+X)!";
+
+    // Camera moves to screen right (world -X, e.g. -165 degrees).
+    // Steve's face must track to screen right (world -X), NOT twist to screen left!
+    d = lookDir(-165.f, 0.f);
+    h.update(d.x, d.y, d.z, 0.f, in);
+    const mc::Vec3 face_right = renderedFace(in, 0.f);
+    EXPECT_LT(face_right.x, -0.02f) << "When camera is at screen right, Steve must look towards screen right (-X)!";
 }
 
 TEST(EldenRingHead, DegenerateCameraVectorLeavesTheHeadStraight) {
@@ -302,4 +345,117 @@ TEST(EldenRingHead, DegenerateCameraVectorLeavesTheHeadStraight) {
     h.update(std::nanf(""), 0.f, 1.f, 0.f, in);
     EXPECT_EQ(in.look_yaw, 0.f);
     EXPECT_EQ(in.look_pitch, 0.f);
+}
+
+TEST(EldenRingInventoryPreview, SteveFacesCameraAndHeadFollowsMouseAcrossScreen) {
+    using namespace eldenring::preview;
+    // Preview centered at (200, 200) with GUI scale 2.0
+    const float cx = 200.f, cy = 200.f, scale = 2.0f;
+    float look_yaw = 0.f, look_pitch = 0.f, body_yaw = 0.f;
+
+    // Helper: compute transformed head forward vector in world coordinates
+    auto getHeadForward = [](float ly, float lp, float by) -> mc::Vec3 {
+        const auto parts = computePreviewPartMatrices(ly, lp, by);
+        const auto& head_m = parts[static_cast<size_t>(mc::StevePart::Head)];
+        const mc::Vec3 p0 = mc::rig::transformPoint(head_m, {0.f, 0.f, 0.f});
+        const mc::Vec3 p1 = mc::rig::transformPoint(head_m, {0.f, 0.f, 1.f});
+        return {p1.x - p0.x, p1.y - p0.y, p1.z - p0.z};
+    };
+
+    // Helper: compute transformed torso/body forward vector in world coordinates
+    auto getBodyForward = [](float ly, float lp, float by) -> mc::Vec3 {
+        const auto parts = computePreviewPartMatrices(ly, lp, by);
+        const auto& body_m = parts[static_cast<size_t>(mc::StevePart::Body)];
+        const mc::Vec3 p0 = mc::rig::transformPoint(body_m, {0.f, 0.f, 0.f});
+        const mc::Vec3 p1 = mc::rig::transformPoint(body_m, {0.f, 0.f, 1.f});
+        return {p1.x - p0.x, p1.y - p0.y, p1.z - p0.z};
+    };
+
+    // 1. Center mouse: Steve MUST face the camera (Z > 0.8), body yaw positive showing right hand in front
+    computePreviewTracking(cx, cy, cx, cy, scale, look_yaw, look_pitch, body_yaw);
+    EXPECT_NEAR(look_yaw, 0.f, 1e-4f);
+    EXPECT_NEAR(look_pitch, 0.f, 1e-4f);
+    EXPECT_GT(body_yaw, 5.f * eldenring::preview::kDeg) << "Default body yaw should slightly angle positive (showing sword hand forward)";
+    EXPECT_LT(body_yaw, 35.f * eldenring::preview::kDeg);
+    const mc::Vec3 center_fwd = getHeadForward(look_yaw, look_pitch, body_yaw);
+    EXPECT_GT(center_fwd.z, 0.8f) << "Steve must face forward towards the camera at +Z, not turn away!";
+
+    // 2. Mouse to the right (mx > cx): Head and body MUST both turn towards screen right (world -X)
+    computePreviewTracking(cx + 100.f, cy, cx, cy, scale, look_yaw, look_pitch, body_yaw);
+    const mc::Vec3 right_fwd = getHeadForward(look_yaw, look_pitch, body_yaw);
+    const mc::Vec3 right_body = getBodyForward(look_yaw, look_pitch, body_yaw);
+    EXPECT_LT(right_fwd.x, -0.1f) << "Looking towards screen right corresponds to world -X";
+    EXPECT_LT(right_body.x, getBodyForward(0.f, 0.f, kDefaultPreviewBodyYaw).x) << "Body must also turn right with head, not twist opposite!";
+    EXPECT_GT(right_fwd.z, 0.5f);
+
+    // 3. Mouse to the left (mx < cx): Head and body MUST both turn towards screen left (world +X)
+    computePreviewTracking(cx - 100.f, cy, cx, cy, scale, look_yaw, look_pitch, body_yaw);
+    const mc::Vec3 left_fwd = getHeadForward(look_yaw, look_pitch, body_yaw);
+    const mc::Vec3 left_body = getBodyForward(look_yaw, look_pitch, body_yaw);
+    EXPECT_GT(left_fwd.x, 0.1f) << "Looking towards screen left corresponds to world +X";
+    EXPECT_GT(left_body.x, getBodyForward(0.f, 0.f, kDefaultPreviewBodyYaw).x) << "Body must also turn left with head, not twist opposite!";
+    EXPECT_GT(left_fwd.z, 0.35f);
+
+    // 4. Mouse above (my < cy): Steve tilts head up (world +Y)
+    computePreviewTracking(cx, cy - 100.f, cx, cy, scale, look_yaw, look_pitch, body_yaw);
+    const mc::Vec3 up_fwd = getHeadForward(look_yaw, look_pitch, body_yaw);
+    EXPECT_GT(up_fwd.y, 0.1f) << "Looking towards screen up corresponds to world +Y";
+
+    // 5. Mouse below (my > cy): Steve tilts head down (world -Y)
+    computePreviewTracking(cx, cy + 100.f, cx, cy, scale, look_yaw, look_pitch, body_yaw);
+    const mc::Vec3 down_fwd = getHeadForward(look_yaw, look_pitch, body_yaw);
+    EXPECT_LT(down_fwd.y, -0.1f) << "Looking towards screen down corresponds to world -Y";
+}
+
+TEST(EldenRingInventoryPreview, CameraMatrixProjectsSteveInsideViewportNDC) {
+    using namespace eldenring::preview;
+    const float aspect = 51.f / 72.f; // vanilla preview rect aspect ratio
+    const mc::rig::Mat4 vp = computePreviewViewProjection(aspect);
+
+    // Helper: transform a 3D point by row-major Mat4 and perform perspective divide
+    auto projectPoint = [&](const mc::Vec3& p) -> mc::Vec3 {
+        const auto& m = vp.m;
+        const float x = p.x * m[0] + p.y * m[4] + p.z * m[8] + m[12];
+        const float y = p.x * m[1] + p.y * m[5] + p.z * m[9] + m[13];
+        const float z = p.x * m[2] + p.y * m[6] + p.z * m[10] + m[14];
+        const float w = p.x * m[3] + p.y * m[7] + p.z * m[11] + m[15];
+        EXPECT_GT(w, 0.01f);
+        return {x / w, y / w, z / w};
+    };
+
+    // Center of Steve body around y = 0.95m
+    const mc::Vec3 center_ndc = projectPoint({0.f, 0.95f, 0.f});
+    EXPECT_NEAR(center_ndc.x, 0.f, 0.1f);
+    EXPECT_NEAR(center_ndc.y, 0.f, 0.15f);
+
+    // Top of head around y = 1.85m
+    const mc::Vec3 head_top_ndc = projectPoint({0.f, 1.85f, 0.f});
+    EXPECT_GT(head_top_ndc.y, 0.5f);
+    EXPECT_LT(head_top_ndc.y, 0.95f); // stays well within NDC top bound
+
+    // Feet at ground y = 0.0m
+    const mc::Vec3 feet_ndc = projectPoint({0.f, 0.0f, 0.f});
+    EXPECT_LT(feet_ndc.y, -0.5f);
+    EXPECT_GT(feet_ndc.y, -0.95f); // stays well within NDC bottom bound
+}
+
+TEST(EldenRingInventoryPreview, PosedMatricesInInventoryPreviewStandOnGroundAndAreFinite) {
+    using namespace eldenring::preview;
+    const auto parts = computePreviewPartMatrices(0.2f, -0.1f, kDefaultPreviewBodyYaw);
+    ASSERT_EQ(parts.size(), static_cast<size_t>(mc::StevePart::Count));
+
+    for (const auto& part : parts) {
+        for (float v : part.m) {
+            EXPECT_TRUE(std::isfinite(v));
+        }
+    }
+
+    // Verify feet bottom vertex rests at ground y = 0
+    const mc::rig::RigMesh right_leg = mc::rig::buildPartMesh(mc::StevePart::RightLeg, kBasis);
+    float lowest = 1e9f;
+    for (const auto& v : right_leg.vertices) {
+        const mc::Vec3 p = mc::rig::transformPoint(parts[static_cast<size_t>(mc::StevePart::RightLeg)], {v.x, v.y, v.z});
+        lowest = std::min(lowest, p.y);
+    }
+    EXPECT_NEAR(lowest, 0.f, 1e-3f);
 }

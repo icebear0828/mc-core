@@ -8,6 +8,7 @@
 
 #include "eldenring_steve.hpp"
 #include "mc/entity_model.hpp"
+#include "mc/mobs.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -16,10 +17,13 @@
 
 namespace eldenring::mobs {
 
-inline constexpr size_t kMaxMobs = 16;
-inline constexpr int kMissedFramesBeforeDrop = 30;
-inline constexpr float kHurtSeconds = 0.5f;  // Minecraft: 10 ticks of hurt time (the red flash)
-inline constexpr float kDeathSeconds = 1.0f; // the body lies there for a moment (20 ticks) before the mob is removed
+using mc::kMaxMobs;
+using mc::kMissedFramesBeforeDrop;
+using mc::kHurtSeconds;
+using mc::kDeathSeconds;
+using mc::deathFlipFraction;
+using mc::scaleAboutPoint;
+using mc::MobLifecycleTracker;
 
 struct MobSnapshot {
     uintptr_t id{0};   // the character pointer
@@ -27,6 +31,10 @@ struct MobSnapshot {
     float yaw{0.f};    // host rotation about +Y, the way Steve's is
     int hp{-1};        // the game's hit points of the character; max_hp <= 0: unknown, no hurt flash and no death scene
     int max_hp{-1};
+    uint32_t npc_id{0};
+    std::string model_type;
+    float scale{1.0f};
+    float white_flash{0.0f};
 };
 
 struct MobDraw {
@@ -36,8 +44,11 @@ struct MobDraw {
     bool dying{false};
     float fall{0.f};   // 0..1 how far the dead body has tipped over (already applied to the matrices below)
     bool generic{false};                          // true: `bones` (one matrix per bone of the model file); false: `parts` (the Steve rig)
+    std::string model_type;
     std::vector<mc::rig::Mat4> bones;
     eldenring::render::PartMatrices parts{};
+    float scale{1.0f};
+    float white_flash{0.0f};
 };
 
 class MobRegistry {
@@ -47,6 +58,21 @@ public:
         model_ = model;
         entries_.clear();
     }
+
+    void registerModel(std::string_view name, const mc::model::EntityModel* model) {
+        if (!name.empty() && model != nullptr) {
+            models_[std::string(name)] = model;
+        }
+    }
+
+    [[nodiscard]] const mc::model::EntityModel* getModel(std::string_view name = "") const {
+        if (!name.empty()) {
+            auto it = models_.find(std::string(name));
+            if (it != models_.end()) return it->second;
+        }
+        return model_;
+    }
+
 
     // One frame: the summons seen now. Returns what to draw (at most kMaxMobs): the ones seen, then the ones that have just died and have
     // already been removed by the game (their body stays where it fell for the rest of kDeathSeconds).
@@ -112,7 +138,14 @@ private:
     static std::vector<mc::rig::Mat4> poseFromAnimator(const mc::model::EntityModel& model, const mc::SteveAnimator::PartTransforms& t, const MobSnapshot& s) {
         std::vector<mc::Quat> extra(model.bones.size());
         for (size_t i = 0; i < model.bones.size(); ++i) {
-            if (const auto part = mc::model::humanoidPartForBone(model.bones[i].name)) extra[i] = eldenring::render::hostQuat(t[static_cast<size_t>(*part)].rot);
+            const std::string& name = model.bones[i].name;
+            if (const auto part = mc::model::humanoidPartForBone(name)) {
+                extra[i] = eldenring::render::hostQuat(t[static_cast<size_t>(*part)].rot);
+            } else if (name == "leg0" || name == "leg3") {
+                extra[i] = eldenring::render::hostQuat(t[static_cast<size_t>(mc::StevePart::RightLeg)].rot);
+            } else if (name == "leg1" || name == "leg2") {
+                extra[i] = eldenring::render::hostQuat(t[static_cast<size_t>(mc::StevePart::LeftLeg)].rot);
+            }
         }
         return mc::model::boneMatrices(model, extra, {s.feet[0], s.feet[1], s.feet[2]}, s.yaw, eldenring::render::kBasis);
     }
@@ -122,30 +155,42 @@ private:
         const MobSnapshot& s = e.last;
         MobDraw d;
         d.id = id;
+        d.model_type = s.model_type;
         for (int i = 0; i < 3; ++i) d.feet[i] = s.feet[i];
         d.dying = e.dying >= 0.f;
         d.hurt = d.dying ? 1.f : std::min(1.f, e.hurt / kHurtSeconds);
         d.fall = d.dying ? eldenring::render::deathFlipFraction(e.dying) : 0.f;
+        const mc::model::EntityModel* model = getModel(s.model_type);
         if (!d.dying) {
             mc::SteveAnimInput in = e.motion.update(dt, s.feet, s.yaw);
-            if (model_ != nullptr) in.arms_sway_only = true; // the file's rest rotation holds the arms out
+            if (model != nullptr) in.arms_sway_only = true; // the file's rest rotation holds the arms out
             else in.arms_forward = true;
             e.anim.update(dt, in);
         }
+        d.scale = s.scale > 0.01f ? s.scale : 1.0f;
+        d.white_flash = s.white_flash;
         const mc::Vec3 feet{s.feet[0], s.feet[1], s.feet[2]};
         const mc::rig::Mat4 flip = d.fall > 0.f ? eldenring::render::deathFallMatrix(feet, s.yaw, d.fall) : mc::rig::Mat4{};
-        if (model_ != nullptr) {
+        const mc::rig::Mat4 swell_mat = d.scale != 1.0f ? scaleAboutPoint(feet, d.scale) : mc::rig::Mat4{};
+        if (model != nullptr) {
             d.generic = true;
-            d.bones = poseFromAnimator(*model_, e.anim.getTransforms(), s);
-            for (auto& m : d.bones) m = m * flip;
+            d.bones = poseFromAnimator(*model, e.anim.getTransforms(), s);
+            for (auto& m : d.bones) {
+                if (d.scale != 1.0f) m = m * swell_mat;
+                m = m * flip;
+            }
         } else {
             d.parts = eldenring::render::posedMatrices(e.anim.getTransforms(), feet, s.yaw);
-            for (auto& m : d.parts) m = m * flip;
+            for (auto& m : d.parts) {
+                if (d.scale != 1.0f) m = m * swell_mat;
+                m = m * flip;
+            }
         }
         return d;
     }
 
     const mc::model::EntityModel* model_{nullptr};
+    std::map<std::string, const mc::model::EntityModel*> models_;
     std::map<uintptr_t, Entry> entries_;
 };
 

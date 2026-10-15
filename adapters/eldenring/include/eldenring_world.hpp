@@ -25,6 +25,14 @@ inline constexpr uintptr_t kChrSetCapacity = 0x10; // u32
 inline constexpr uintptr_t kChrSetEntries = 0x18;  // pointer to 16-byte {ChrIns*, handle} entries (B+)
 inline constexpr uint32_t kMaxChrSetCapacity = 4096; // set 115 is 1500; anything above is a wrong read
 
+// Active ChrSets array (B+: reverse disassembly 0x140508AA2 & WorldChrMan ctor 0x140504C8A):
+// WorldChrMan+0x1CC58 is the active ChrSet count (u32).
+// WorldChrMan+0x1CC60 is the array of active set descriptors (stride 0x18), where +0x00 is ChrSet*.
+inline constexpr uintptr_t kActiveChrSetCountInWorldChrMan = 0x1CC58;
+inline constexpr uintptr_t kActiveChrSetArrayInWorldChrMan = 0x1CC60;
+inline constexpr uintptr_t kActiveChrSetEntryStride = 0x18;
+inline constexpr uint32_t kMaxActiveChrSets = 128;
+
 inline constexpr uint32_t kEnemyInsVtableRva = 0x2A47090;  // A
 inline constexpr uint32_t kPlayerInsVtableRva = 0x2A7FBB0; // A: humanoid NPCs share it (B)
 
@@ -194,17 +202,42 @@ inline bool enumerateEnemies(const IMemoryReader& reader, uintptr_t image_base, 
     uint8_t player_team = 0;
     if (!reader.read(player_chr + layout::kTeamTypeInChrIns, &player_team, sizeof(player_team))) return false;
 
-    std::vector<EnemyInfo> found;
-    for (uint32_t s = 0; s < layout::kChrSetPointerCount && found.size() < max; ++s) {
-        uint64_t set = 0;
-        if (!reader.read(static_cast<uintptr_t>(world) + layout::kChrSetPointerArrayInWorldChrMan + s * 8, &set, sizeof(set)) ||
-            set == 0) {
-            continue;
+    std::vector<uintptr_t> sets_to_scan;
+    sets_to_scan.reserve(layout::kMaxActiveChrSets + layout::kChrSetPointerCount);
+
+    // 1. Scan dynamically active ChrSets (WorldChrMan + 0x1CC60, count at +0x1CC58)
+    uint32_t active_count = 0;
+    if (reader.read(static_cast<uintptr_t>(world) + layout::kActiveChrSetCountInWorldChrMan, &active_count, sizeof(active_count)) &&
+        active_count > 0 && active_count <= layout::kMaxActiveChrSets) {
+        for (uint32_t a = 0; a < active_count; ++a) {
+            uint64_t set = 0;
+            if (reader.read(static_cast<uintptr_t>(world) + layout::kActiveChrSetArrayInWorldChrMan + a * layout::kActiveChrSetEntryStride,
+                            &set, sizeof(set)) && set != 0) {
+                if (std::find(sets_to_scan.begin(), sets_to_scan.end(), static_cast<uintptr_t>(set)) == sets_to_scan.end()) {
+                    sets_to_scan.push_back(static_cast<uintptr_t>(set));
+                }
+            }
         }
+    }
+
+    // 2. Scan sparse ChrSet pointer array (WorldChrMan + 0x1DED8)
+    for (uint32_t s = 0; s < layout::kChrSetPointerCount; ++s) {
+        uint64_t set = 0;
+        if (reader.read(static_cast<uintptr_t>(world) + layout::kChrSetPointerArrayInWorldChrMan + s * 8, &set, sizeof(set)) &&
+            set != 0) {
+            if (std::find(sets_to_scan.begin(), sets_to_scan.end(), static_cast<uintptr_t>(set)) == sets_to_scan.end()) {
+                sets_to_scan.push_back(static_cast<uintptr_t>(set));
+            }
+        }
+    }
+
+    std::vector<EnemyInfo> found;
+    for (uintptr_t set : sets_to_scan) {
+        if (found.size() >= max) break;
         uint32_t capacity = 0;
         uint64_t entries = 0;
-        if (!reader.read(static_cast<uintptr_t>(set) + layout::kChrSetCapacity, &capacity, sizeof(capacity))) continue;
-        if (!reader.read(static_cast<uintptr_t>(set) + layout::kChrSetEntries, &entries, sizeof(entries)) || entries == 0) continue;
+        if (!reader.read(set + layout::kChrSetCapacity, &capacity, sizeof(capacity))) continue;
+        if (!reader.read(set + layout::kChrSetEntries, &entries, sizeof(entries)) || entries == 0) continue;
         if (capacity == 0 || capacity > layout::kMaxChrSetCapacity) continue;
         for (uint32_t i = 0; i < capacity && found.size() < max; ++i) {
             uint64_t pair[2];

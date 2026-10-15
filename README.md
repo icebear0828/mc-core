@@ -99,13 +99,34 @@ mc-core/
 
 任意游戏安装均只需两步：**放置插件库** + **放置资产包**。
 
-| 目标游戏 | 插件文件 (.dll / .asi) 放置目录 | 资产包 (.pak / .archive / .rpf) 放置目录 | 默认按键 |
+| 目标游戏 | 插件文件 (.dll / .asi) 放置目录 | 资产包 / 图集放置目录 | 默认按键 |
 |---|---|---|---|
 | **黑神话 / 虚幻5** | `游戏根目录/b1/Binaries/Win64/ue4ss/Mods/mc_core/` | `游戏根目录/b1/Content/Paks/~mods/mc_assets_P.pak` | **F4** 变身 Steve<br>左键 攻击/挖掘<br>右键 放置方块<br>1~9 切物品 |
 | **赛博朋克 2077** | `游戏根目录/bin/x64/plugins/cyber_engine_tweaks/mods/mc_core/` | `游戏根目录/archive/pc/mod/mc_assets.archive` |
 | **GTA V** | `游戏根目录/gta5_adapter.asi` (直接放根目录) | OpenIV 导入 `mods/update/x64/dlcpacks/mc_assets/` |
-| **艾尔登法环** | `modengine2/mod/dll/elden_adapter.dll` | `modengine2/mod/parts/` |
+| **艾尔登法环** | `游戏根目录/dinput8.dll` | 详见下方完整资产清单：`Game/mods/mc_adapter/` | **F4** 变身 Steve<br>**E** 打开背包<br>**F5** 创造/生存切换<br>**F** 副手/主手切换 |
 | **生化危机系列** | `游戏根目录/reframework/plugins/re_adapter.dll` | Fluffy Mod Manager 拖入一键安装 |
+
+### 艾尔登法环专属资产与打包标准（防贴图缺失）
+为保证 3D 实体盾牌（`entity_shield`）、刷怪蛋、钻石盔甲与方块挖掘裂纹全部正常显示，打包或安装时必须包含完整烘焙的 78 UV 真实图集：
+1. **核心文件结构**：
+   ```text
+   Game/
+   ├── dinput8.dll                    # 核心加载器与适配器
+   ├── mc_hud_atlas.png               # 根目录 HUD 图集备份
+   └── mods/
+       └── mc_adapter/
+           ├── mc_hud_atlas.png       # 核心 78-UV 真实图集（含 3D 盾牌贴图、物品图标、挖掘裂纹）
+           ├── steve.png              # Steve 64x64 皮肤
+           ├── creeper.png            # 苦力怕 64x32 真实 Java 皮肤
+           ├── zombie.png             # 僵尸 64x64 皮肤
+           ├── sounds/                # 原版音效（含苦力怕引信、爆炸、击中、放置方块等）
+           └── sounds_manifest.txt    # 音效清单
+   ```
+2. **打包严谨规范**：
+   - 严禁直接使用源码目录下的占位图集打包（仓库占位图集盾牌区域为空白透明）。
+   - 打包前必须执行提取指令从官方 Jar 生成：`python tools/extract_mc_assets.py --client-jar <path> --export-hud-atlas --out-dir build/authentic_atlas`。
+   - 必须运行 `python tools/inspect_atlas_regions.py` 验证 `entity_shield` 具有 716 个实体像素，确保盾牌 100% 可见。
 
 ---
 

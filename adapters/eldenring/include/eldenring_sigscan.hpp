@@ -106,6 +106,19 @@ inline constexpr const char* kClampHp =
 // load, then `mov r14, r8` (ctx). Both halves are unique in 2.7.1.0 (checked in the exe).
 inline constexpr const char* kProcessDamageContext =
     "4C 8B DC 55 53 56 57 41 56 41 57 49 8D 6B 88 48 81 EC 48 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 20 4D 89 63 20 4D 8B F0";
+// GuardCheck (0x140480EF0): (attackerActionModule, victimChrIns, attackAttr u32, defenseType u8, breakFlag u8) -> bool. DamageDriver (0x140449D30)
+// calls it at 0x140449E55; `true` sets ctx+0x267 |= 0x10 and jumps over 0x140447810 and ProcessDamageContext (no damage, no flinch). The first
+// argument's +8 is the attacker's ChrIns (the function itself calls 0x14043D250 = `mov rax,[rcx+8]` on it). 35 bytes, unique in 2.7.1.0 (REVERSE 38).
+inline constexpr const char* kGuardCheck =
+    "48 8B C4 57 48 83 EC 70 48 C7 40 A8 FE FF FF FF 48 89 58 08 48 89 70 10 48 8B F2 48 8B D9 BF 01 00 00 00";
+// The damage module's vfunc[7] (0x140444B40): (damageModule, attacker, hitContext*, u8 a4). It dispatches the knockback from ctx+0xFC (0x140444BEA..
+// 0x140444C1B, call 0x140480630) before it calls DamageDriver. Prologue up to the first call, unique in 2.7.1.0 (REVERSE 38).
+inline constexpr const char* kDamageVfunc7 =
+    "48 89 5C 24 18 55 56 57 48 83 EC 30 4C 89 74 24 50 49 8B D8 4C 89 7C 24 58 45 0F B6 F1 48 8B F2 48 8B F9 E8 ?? ?? ?? ??";
+// The break test (0x140449520): (damageModule, hitContext*) -> bool. 0x140447A3B calls it; a non-zero answer writes ctx+0x258 = 1 (the heavy reaction: knocked down or
+// blown away), zero keeps the light flinch. Its tail writes [[module+0xA0]+0x34] and +0x38 whatever it answers. 59 bytes, unique in 2.7.1.0 (REVERSE 41).
+inline constexpr const char* kBreakTest =
+    "48 8B C4 48 89 58 18 48 89 70 20 55 57 41 56 48 8D 68 A1 48 81 EC E0 00 00 00 0F 29 70 D8 0F 29 78 C8 44 0F 29 40 B8 44 0F 29 48 A8 44 0F 29 50 98 48 8B 05 ?? ?? ?? ?? 48 33 C4";
 // The function that copies ChrCam's right/up/forward/position into another camera context ([rbx+0x80..0xB0]); it is called
 // through a vtable (0x1404A7190). Unique in 2.7.1.0. Used by the first-person experiment only.
 inline constexpr const char* kRenderCameraCopy =

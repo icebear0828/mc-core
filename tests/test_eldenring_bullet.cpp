@@ -166,6 +166,36 @@ TEST(EldenRingBulletFire, ATemplateIsUsableOnlyWithTheFullBodyAndARealParamRowAn
     auto no_id = realTemplate();
     std::memcpy(no_id.data() + 0x1C, &minus_one, 4);
     EXPECT_FALSE(templateUsable(no_id.data(), no_id.size()));
+
+    // TDD Red: Spirit summon / SpEffect dummy bullet (DummyPoly 900, Row 1501) must NEVER be accepted as a bolt template!
+    auto summon_bullet = realTemplate();
+    const uint32_t summon_row = 0x000005DDu; // 1501
+    const int32_t summon_poly = 900;          // DummyPoly 900 (Spirit summon anchor)
+    std::memcpy(summon_bullet.data() + 0x08, &summon_row, 4);
+    std::memcpy(summon_bullet.data() + 0x1C, &summon_poly, 4);
+    EXPECT_FALSE(templateUsable(summon_bullet.data(), summon_bullet.size()));
+
+    // Character root dummy poly (0) or non-weapon dummy polys must be rejected
+    auto root_poly_bullet = realTemplate();
+    const int32_t root_poly = 0;
+    std::memcpy(root_poly_bullet.data() + 0x1C, &root_poly, 4);
+    EXPECT_FALSE(templateUsable(root_poly_bullet.data(), root_poly_bullet.size()));
+
+    // Left hand crossbow (57) and standard crossbow (56) must be accepted
+    auto lh_crossbow = realTemplate();
+    const int32_t lh_poly = 57;
+    std::memcpy(lh_crossbow.data() + 0x1C, &lh_poly, 4);
+    EXPECT_TRUE(templateUsable(lh_crossbow.data(), lh_crossbow.size()));
+
+    // Verify built-in golden bolt template
+    EXPECT_TRUE(kDefaultBoltTemplateAvailable);
+    EXPECT_TRUE(templateUsable(kDefaultBoltTemplate, sizeof(kDefaultBoltTemplate)));
+    uint32_t golden_row = 0;
+    int32_t golden_id = 0;
+    std::memcpy(&golden_row, kDefaultBoltTemplate + 8, 4);
+    std::memcpy(&golden_id, kDefaultBoltTemplate + 0x1C, 4);
+    EXPECT_EQ(golden_row, 0x06455A50u);
+    EXPECT_EQ(golden_id, 56);
 }
 
 TEST(EldenRingBulletFire, TheTemplateOnDiskIsRewrittenOnlyWhenTheParamRowOrTheBulletIdChanged) {
@@ -209,6 +239,7 @@ TEST(EldenRingBulletDamage, OnlyAHitByTheShootersBoltRightAfterAShotIsReplaced) 
     const uint64_t player = 0x7FF500100000ull, other = 0x7FF500400000ull;
     // Measured (REVERSE 35.5): a bolt hit on an enemy is u8[DA] == 2 with the player as the attacker argument.
     EXPECT_TRUE(isPlayersBoltHit(2, player, player, other, kBoltBulletId, 500));
+    EXPECT_TRUE(isPlayersBoltHit(2, player, player, other, 0xFFFFFFFFu, 500));            // our directional shot with attach_poly = -1
     EXPECT_FALSE(isPlayersBoltHit(1, player, player, other, kBoltBulletId, 500));         // a melee hit
     EXPECT_FALSE(isPlayersBoltHit(6, player, player, other, kBoltBulletId, 500));         // the kind of an arrow that hits the player
     EXPECT_FALSE(isPlayersBoltHit(2, other, player, other, kBoltBulletId, 500));          // somebody else's projectile

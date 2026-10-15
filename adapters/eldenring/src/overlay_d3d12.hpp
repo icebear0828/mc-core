@@ -37,6 +37,10 @@ struct HudState {
     uint8_t inv_count[36]{};
     uint16_t cursor_item{0};
     uint8_t cursor_count{0};
+    uint16_t offhand_item{0};
+    uint8_t offhand_count{0};
+    uint16_t armor_item[4]{};
+    uint8_t armor_count[4]{};
     float mouse_x{0.f}, mouse_y{0.f};
     // Survival status bars: food level (0..20), the Regeneration effect (the hearts' wave), experience level and bar progress 0..1.
     int food{20};
@@ -44,6 +48,14 @@ struct HudState {
     bool regen{false};
     int xp_level{0};
     float xp_progress{0.f};
+    // Armor points (0..20) continuously synchronized for HUD armor bar
+    int armor_points{0};
+    // Armor damage reduction toast notification for live verification
+    float armor_toast_timer{0.f};
+    int armor_toast_raw{0};
+    int armor_toast_final{0};
+    int armor_toast_pts{0};
+    float armor_toast_ratio{0.f};
 };
 
 // The 3D figure for this frame: camera, standing point (feet, game metres) and heading (rotation about +Y).
@@ -58,9 +70,13 @@ struct SteveState {
     float hurt{0.f};  // 1 just hurt .. 0: the figure flashes red
     bool first_person{false};   // draw the view model (bare arm or held item) instead of the figure
     uint16_t held_item{0};      // mc::ItemId the hotbar wants in the hand (0 = bare hand)
+    uint16_t offhand_item{0};   // mc::ItemId in offhand (0 = none)
+    bool blocking{false};       // shield raise / blocking pose
     float cooldown{1.f};        // attack strength 0..1
     float eating{0.f};          // 0..1 progress of the meal in the hand (0 = not eating)
     float bow_charge{0.f};      // 0..1 how far the bow is drawn (0 = not drawing): the third-person arms aim
+    bool block_offhand{false};  // the raised shield is held in the left hand: only the left arm is up
+    bool bow_offhand{false};    // the bow that is drawn is in the offhand: the left arm aims and the offhand item is the drawn bow
     float bow_ticks{0.f};       // ticks the bow has been drawn (0 = not drawing): the first-person bow pose animates with it
     float speed_mps{0.f};       // horizontal speed, for the walking bob
     bool on_ground{true};
@@ -79,6 +95,7 @@ struct SteveConfig {
     float rel_bias{0.08f};
     float abs_bias{0.05f};
     float scene_height{0.f}; // 0: use the back buffer height for the projection aspect
+    bool depth_probe{false}; // record how the game uses its depth textures for three frames (depth_probe_d3d12.hpp); mc_er_depthprobe.txt switches it on
 };
 void SetSteveConfig(const SteveConfig& cfg);
 // The Steve skin (RGBA8, 64x64) the loader decoded; call before the overlay is created. Without it the figure is flat grey-brown.

@@ -115,3 +115,71 @@ TEST(EldenRingFeedback, HurtLastsHalfASecondAndKeepsItsSide) {
     f.tick(HitFeedback::kHurtSec);
     EXPECT_FLOAT_EQ(f.hurt(), 0.f);
 }
+
+TEST(EldenRingSurvival, ComputeArmorDamageReductionFullSuite) {
+    // 0 points: full damage passes through
+    auto r0 = computeArmorDamageReduction(100, 100, 0, 0.0f);
+    EXPECT_EQ(r0.raw_damage, 100);
+    EXPECT_EQ(r0.final_damage, 100);
+    EXPECT_FLOAT_EQ(r0.reduction_ratio, 0.0f);
+
+    // Full diamond set (20 points, 80% reduction)
+    auto r20 = computeArmorDamageReduction(120, 100, 20, 0.80f);
+    EXPECT_EQ(r20.raw_damage, 120);
+    EXPECT_EQ(r20.damage_after_absorb, 100);
+    EXPECT_EQ(r20.armor_points, 20);
+    EXPECT_EQ(r20.final_damage, 20); // 100 * (1 - 0.8) = 20
+
+    // Minimum 1 damage clamped even if reduction would round to 0
+    auto r_min = computeArmorDamageReduction(2, 2, 20, 0.80f);
+    EXPECT_EQ(r_min.final_damage, 1);
+}
+
+TEST(EldenRingFeedback, ArmorDamageToastTracksValuesAndFades) {
+    HitFeedback f;
+    EXPECT_FLOAT_EQ(f.armorToast().timer, 0.f);
+    f.onArmorDamage(150, 30, 20, 0.80f);
+    EXPECT_FLOAT_EQ(f.armorToast().timer, 3.0f);
+    EXPECT_EQ(f.armorToast().raw, 150);
+    EXPECT_EQ(f.armorToast().final_dmg, 30);
+    EXPECT_EQ(f.armorToast().armor_pts, 20);
+    EXPECT_FLOAT_EQ(f.armorToast().ratio, 0.80f);
+
+    f.tick(1.5f);
+    EXPECT_NEAR(f.armorToast().timer, 1.5f, 1e-3f);
+    f.tick(2.0f);
+    EXPECT_FLOAT_EQ(f.armorToast().timer, 0.f);
+}
+
+TEST(EldenRingSurvival, InventoryArmorPointsAlwaysReflectsEquippedItems) {
+    mc::Inventory inv;
+    EXPECT_EQ(inv.totalArmorPoints(), 0);
+
+    // Equip diamond helmet (3 pts)
+    inv.setArmor(0, {mc::ItemId::DiamondHelmet, 1});
+    EXPECT_EQ(inv.totalArmorPoints(), 3);
+
+    // Equip diamond chestplate (8 pts), leggings (6 pts), boots (3 pts)
+    inv.setArmor(1, {mc::ItemId::DiamondChestplate, 1});
+    inv.setArmor(2, {mc::ItemId::DiamondLeggings, 1});
+    inv.setArmor(3, {mc::ItemId::DiamondBoots, 1});
+    EXPECT_EQ(inv.totalArmorPoints(), 20);
+
+    // Unequip chestplate -> immediately drops by 8 pts
+    inv.setArmor(1, {});
+    EXPECT_EQ(inv.totalArmorPoints(), 12);
+}
+
+TEST(EldenRingSurvival, InventoryDefenseReductionRatioMatchesFormula) {
+    mc::Inventory inv;
+    EXPECT_FLOAT_EQ(inv.defenseReductionRatio(), 0.0f);
+
+    inv.setArmor(0, {mc::ItemId::DiamondHelmet, 1}); // 3 pts -> 12%
+    EXPECT_FLOAT_EQ(inv.defenseReductionRatio(), 0.12f);
+
+    inv.setArmor(1, {mc::ItemId::DiamondChestplate, 1}); // +8 = 11 pts -> 44%
+    inv.setArmor(2, {mc::ItemId::DiamondLeggings, 1});   // +6 = 17 pts -> 68%
+    inv.setArmor(3, {mc::ItemId::DiamondBoots, 1});      // +3 = 20 pts -> 80% (cap)
+    EXPECT_FLOAT_EQ(inv.defenseReductionRatio(), 0.80f);
+}
+

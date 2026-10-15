@@ -236,6 +236,8 @@ void OnDirectInputCreated(REFIID riid, void* iface) {
 }
 
 bool TakeLeftClick() { return g_left_edge.exchange(false); }
+bool LeftHeld() { return g_left_prev.load(); }
+
 
 bool TakeRightClick() { return g_right_edge.exchange(false); }
 bool RightHeld() { return g_right_prev.load(); }

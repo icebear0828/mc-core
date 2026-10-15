@@ -91,18 +91,26 @@ TEST(EldenRingMelee, ErDamageScalesWithEnemyMaxHp) {
     mc::HitIntent sword;
     sword.damage = 7.f;
     sword.max_hp_percent = 0.05f;
-    EXPECT_EQ(erDamage(sword, 1000), 50);   // a full sword hit = 5% of max HP
-    EXPECT_EQ(erDamage(sword, 20000), 1000);
+    // Default hybrid scaling: 140 base + 50 (5% of 1000) = 190
+    EXPECT_EQ(erDamage(sword, 1000), 190);
+    // On 20,000 HP: 140 base + 1,000 = 1,140
+    EXPECT_EQ(erDamage(sword, 20000), 1140);
 
     mc::HitIntent half = sword;
-    half.damage = 3.5f; // half charge
-    EXPECT_EQ(erDamage(half, 1000), 25);
+    half.damage = 3.5f; // half charge: 70 base + 25 = 95
+    EXPECT_EQ(erDamage(half, 1000), 95);
 
     mc::HitIntent tiny = sword;
-    tiny.damage = 0.1f;
-    EXPECT_EQ(erDamage(tiny, 100), 1); // never below 1 for a landed hit
-    EXPECT_EQ(erDamage(sword, 0), 0);  // unknown max HP: nothing to scale
+    tiny.damage = 0.1f; // tiny: 2 base + 0.07 = 2 (at least 1)
+    EXPECT_GE(erDamage(tiny, 100), 1);
+    // When max HP is unknown (0), still deals 140 base damage
+    EXPECT_EQ(erDamage(sword, 0), 140);
+
+    // Explicit pure percent scaling (base_scale = 0.0f)
+    EXPECT_EQ(erDamage(sword, 1000, 0.0f), 50);
+    EXPECT_EQ(erDamage(sword, 0, 0.0f), 0);
 }
+
 
 TEST(EldenRingJump, PressStartsAJumpThatEndsOnLanding) {
     JumpTracker j;

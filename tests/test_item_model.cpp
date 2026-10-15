@@ -159,6 +159,7 @@ TEST(ItemModelTest, WhichItemsAreHeldAsFlatSpritesAndWithWhatStyle) {
     EXPECT_TRUE(isHeldAsFlatSprite(ItemId::Bow));
     EXPECT_TRUE(isHeldAsFlatSprite(ItemId::GoldenApple));
     EXPECT_TRUE(isHeldAsFlatSprite(ItemId::TotemOfUndying));
+    EXPECT_TRUE(isHeldAsFlatSprite(ItemId::Shield));
     EXPECT_FALSE(isHeldAsFlatSprite(ItemId::None));
     EXPECT_FALSE(isHeldAsFlatSprite(ItemId::BlockDirt)) << "block icons in the atlas are isometric renders, not sprites";
     EXPECT_FALSE(isHeldAsFlatSprite(ItemId::BlockTnt));
@@ -243,4 +244,290 @@ TEST(ItemModel, TheDrawnBowSpritesAreHeldAsFlatSpritesLikeTheBow) {
     EXPECT_TRUE(isHeldAsFlatSprite(ItemId::BowPulling0));
     EXPECT_TRUE(isHeldAsFlatSprite(ItemId::BowPulling1));
     EXPECT_TRUE(isHeldAsFlatSprite(ItemId::BowPulling2));
+}
+
+TEST(ItemModelTest, ShieldItemStyleIsShield) {
+    EXPECT_EQ(heldItemStyle(ItemId::Shield), HeldItemStyle::Shield);
+}
+
+TEST(ItemModelTest, BowPullingSpritesHaveBowStyle) {
+    EXPECT_EQ(heldItemStyle(ItemId::BowPulling0), HeldItemStyle::Bow);
+    EXPECT_EQ(heldItemStyle(ItemId::BowPulling1), HeldItemStyle::Bow);
+    EXPECT_EQ(heldItemStyle(ItemId::BowPulling2), HeldItemStyle::Bow);
+}
+
+TEST(ItemModelTest, BowStyleHasDistinctOrientationFromGeneratedStyle) {
+    // A diagonal bow arc: from (2, 2) to (14, 14)
+    Atlas a(16, 16);
+    for (int i = 0; i < 13; ++i) a.set(2 + i, 2 + i);
+    const RigMesh bow_mesh = buildHeldItemMesh(a.sprite(0, 0, 16, 16), HeldItemStyle::Bow, kCanonical);
+    const RigMesh gen_mesh = buildHeldItemMesh(a.sprite(0, 0, 16, 16), HeldItemStyle::Generated, kCanonical);
+    ASSERT_FALSE(bow_mesh.vertices.empty());
+    ASSERT_FALSE(gen_mesh.vertices.empty());
+
+    // Compute bounding boxes in canonical rig space (X forward, Y left, Z up)
+    auto bbox = [](const RigMesh& m) {
+        float xmin = 1e9f, xmax = -1e9f, ymin = 1e9f, ymax = -1e9f, zmin = 1e9f, zmax = -1e9f;
+        for (const auto& v : m.vertices) {
+            xmin = std::min(xmin, v.x); xmax = std::max(xmax, v.x);
+            ymin = std::min(ymin, v.y); ymax = std::max(ymax, v.y);
+            zmin = std::min(zmin, v.z); zmax = std::max(zmax, v.z);
+        }
+        return std::array<float, 3>{xmax - xmin, ymax - ymin, zmax - zmin};
+    };
+
+    const auto bow_span = bbox(bow_mesh);
+    const auto gen_span = bbox(gen_mesh);
+
+    // In Generated style, the item is unrotated [0,0,0], so its span along X and Y is completely different
+    // from Bow style [-80, 260, -40], which turns the bow forward and tilts it.
+    EXPECT_GT(std::fabs(bow_span[0] - gen_span[0]), 4.0f * kCmPerModelPixel) << "Bow style must have different forward span than Generated";
+    EXPECT_GT(std::fabs(bow_span[2] - gen_span[2]), 4.0f * kCmPerModelPixel) << "Bow style must have different vertical span than Generated";
+
+    // All pulling stages produce meshes consistent with Bow style, not Generated
+    for (ItemId pull_id : {ItemId::BowPulling0, ItemId::BowPulling1, ItemId::BowPulling2}) {
+        const RigMesh pull_mesh = buildHeldItemMesh(a.sprite(0, 0, 16, 16), heldItemStyle(pull_id), kCanonical);
+        const auto pull_span = bbox(pull_mesh);
+        EXPECT_NEAR(pull_span[0], bow_span[0], 1e-4f);
+        EXPECT_NEAR(pull_span[1], bow_span[1], 1e-4f);
+        EXPECT_NEAR(pull_span[2], bow_span[2], 1e-4f);
+    }
+}
+
+
+
+TEST(ItemModelTest, LeftHandItemsMirrorAcrossTheBody) {
+    Atlas a(16, 16);
+    for (int y = 2; y < 14; ++y) {
+        for (int x = 2; x < 14; ++x) a.set(x, y);
+    }
+    const RigMesh right = buildHeldItemMesh(a.sprite(0, 0, 16, 16), HeldItemStyle::Generated, kCanonical, Hand::Right);
+    const RigMesh left = buildHeldItemMesh(a.sprite(0, 0, 16, 16), HeldItemStyle::Generated, kCanonical, Hand::Left);
+    ASSERT_FALSE(right.vertices.empty());
+    ASSERT_FALSE(left.vertices.empty());
+    ASSERT_EQ(right.vertices.size(), left.vertices.size());
+
+    // In canonical frame (X forward, Y left, Z up):
+    // Right arm is at negative Y (around -20 cm); Left arm is at positive Y (around +20 cm).
+    float r_y_sum = 0.f, l_y_sum = 0.f;
+    for (const auto& v : right.vertices) r_y_sum += v.y;
+    for (const auto& v : left.vertices) l_y_sum += v.y;
+    const float r_y_avg = r_y_sum / static_cast<float>(right.vertices.size());
+    const float l_y_avg = l_y_sum / static_cast<float>(left.vertices.size());
+    EXPECT_LT(r_y_avg, -10.f) << "Right hand item should be on character's right side (negative Y)";
+    EXPECT_GT(l_y_avg, 10.f) << "Left hand item should be on character's left side (positive Y)";
+    EXPECT_NEAR(r_y_avg, -l_y_avg, 1.0f) << "Left and right hands should be symmetrical across Y = 0";
+}
+
+TEST(ItemModelTest, LeftHandShieldFitsArmForearmWith3DExtrusion) {
+    Atlas a(16, 16);
+    // Draw solid shield sprite with rim
+    for (int y = 2; y < 14; ++y) {
+        for (int x = 3; x < 13; ++x) a.set(x, y);
+    }
+    const RigMesh shield = buildHeldItemMesh(a.sprite(0, 0, 16, 16), HeldItemStyle::Shield, kCanonical, Hand::Left);
+    ASSERT_FALSE(shield.vertices.empty());
+    EXPECT_GE(shield.indices.size(), 36u);
+
+    // Verify 3D bounding box
+    float min_x = 1e9f, max_x = -1e9f;
+    float min_y = 1e9f, max_y = -1e9f;
+    float min_z = 1e9f, max_z = -1e9f;
+    for (const auto& v : shield.vertices) {
+        min_x = std::min(min_x, v.x); max_x = std::max(max_x, v.x);
+        min_y = std::min(min_y, v.y); max_y = std::max(max_y, v.y);
+        min_z = std::min(min_z, v.z); max_z = std::max(max_z, v.z);
+    }
+
+    // Shield should have realistic 3D thickness (non-zero depth along normal)
+    EXPECT_GT(max_x - min_x, 0.5f) << "Shield must have 3D extruded depth";
+    // Should be on character's left side (+Y in canonical)
+    EXPECT_GT(min_y, 10.f) << "Shield must sit on the left forearm";
+    // Height coverage (Z) should cover forearm (~15-35 cm above ground in rest pose)
+    EXPECT_GT(max_z - min_z, 20.f) << "Shield must be tall enough to cover the arm";
+}
+
+namespace {
+
+float signedVolume(const RigMesh& m) {
+    float vol = 0.f;
+    for (size_t i = 0; i + 2 < m.indices.size(); i += 3) {
+        const RigVertex &a = m.vertices[m.indices[i]], &b = m.vertices[m.indices[i + 1]], &c = m.vertices[m.indices[i + 2]];
+        vol += (a.x * (b.y * c.z - b.z * c.y) - a.y * (b.x * c.z - b.z * c.x) + a.z * (b.x * c.y - b.y * c.x)) / 6.f;
+    }
+    return vol;
+}
+
+// Does some face of the mesh cover exactly this texel rectangle of the 64x64 sheet (which fills the whole atlas in these tests)?
+bool hasFaceCovering(const RigMesh& m, float u0, float v0, float u1, float v1) {
+    for (size_t q = 0; q + 3 < m.vertices.size(); q += 4) {
+        float lo_u = 2.f, hi_u = -1.f, lo_v = 2.f, hi_v = -1.f;
+        for (size_t k = 0; k < 4; ++k) {
+            lo_u = std::min(lo_u, m.vertices[q + k].u); hi_u = std::max(hi_u, m.vertices[q + k].u);
+            lo_v = std::min(lo_v, m.vertices[q + k].v); hi_v = std::max(hi_v, m.vertices[q + k].v);
+        }
+        if (std::abs(lo_u - u0 / 64.f) < 1e-5f && std::abs(hi_u - u1 / 64.f) < 1e-5f && std::abs(lo_v - v0 / 64.f) < 1e-5f && std::abs(hi_v - v1 / 64.f) < 1e-5f) return true;
+    }
+    return false;
+}
+
+const UvRect kWholeSheet{0.f, 0.f, 1.f, 1.f};
+
+} // namespace
+
+TEST(ShieldModel, IsAPlateAndAHandleMappedOntoTheEntityTextureLikeTheGame) {
+    const RigMesh m = buildShieldMesh(kWholeSheet, kCanonical, Hand::Left);
+    EXPECT_EQ(m.vertices.size(), 48u); // two boxes, six faces each
+    EXPECT_EQ(m.indices.size(), 72u);
+    // plate box texOffs (0, 0), 12x22x1: the front (rivets) at (1, 1), the back at (14, 1), the edge strips around them
+    EXPECT_TRUE(hasFaceCovering(m, 1, 1, 13, 23));
+    EXPECT_TRUE(hasFaceCovering(m, 14, 1, 26, 23));
+    EXPECT_TRUE(hasFaceCovering(m, 1, 0, 13, 1));   // top strip
+    EXPECT_TRUE(hasFaceCovering(m, 13, 0, 25, 1));  // bottom strip
+    EXPECT_TRUE(hasFaceCovering(m, 0, 1, 1, 23));   // one side
+    EXPECT_TRUE(hasFaceCovering(m, 13, 1, 14, 23)); // the other side
+    // handle box texOffs (26, 0), 2x6x6: front/back 2x6 at (32, 6) and (40, 6), sides 6x6 at (26, 6) and (34, 6), top/bottom 2x6
+    EXPECT_TRUE(hasFaceCovering(m, 32, 6, 34, 12));
+    EXPECT_TRUE(hasFaceCovering(m, 40, 6, 42, 12));
+    EXPECT_TRUE(hasFaceCovering(m, 26, 6, 32, 12));
+    EXPECT_TRUE(hasFaceCovering(m, 34, 6, 40, 12));
+    EXPECT_TRUE(hasFaceCovering(m, 32, 0, 34, 6));
+    EXPECT_TRUE(hasFaceCovering(m, 34, 0, 36, 6));
+}
+
+TEST(ShieldModel, UvsAddressTheGivenCellOfTheAtlas) {
+    const UvRect cell{0.25f, 0.5f, 0.375f, 0.625f};
+    const RigMesh m = buildShieldMesh(cell, kCanonical, Hand::Right);
+    ASSERT_FALSE(m.vertices.empty());
+    for (const RigVertex& v : m.vertices) {
+        EXPECT_GE(v.u, cell.u0 - 1e-6f); EXPECT_LE(v.u, cell.u1 + 1e-6f);
+        EXPECT_GE(v.v, cell.v0 - 1e-6f); EXPECT_LE(v.v, cell.v1 + 1e-6f);
+    }
+}
+
+TEST(ShieldModel, EveryFaceIsWoundOutwardForBothHandsBlockingOrNotAndBothHostHandednesses) {
+    const float vol_px = 12.f * 22.f * 1.f + 2.f * 6.f * 6.f; // plate + handle, vanilla display scale 1
+    for (const Hand hand : {Hand::Left, Hand::Right}) {
+        for (const bool blocking : {false, true}) {
+            const RigMesh m = buildShieldMesh(kWholeSheet, kCanonical, hand, blocking);
+            const float k = kCmPerModelPixel;
+            EXPECT_NEAR(signedVolume(m), vol_px * k * k * k, 1e-3f * vol_px * k * k * k);
+        }
+    }
+    // a reflecting host (Sekiro's): the rule is "the cross product of the host coordinates points outward", so the volume is positive there too
+    const RigMesh s = buildShieldMesh(kWholeSheet, kSekiro, Hand::Left);
+    const float expected = vol_px * std::pow(kCmPerModelPixel * 0.01f, 3.f);
+    EXPECT_NEAR(signedVolume(s), expected, 0.01f * expected);
+}
+
+namespace {
+
+// Minecraft model space (x towards the character's left, y down, z back; pixels) to the canonical host the tests use.
+Vec3 canonicalOfModel(float x, float y, float z) { return {-z * kCmPerModelPixel, x * kCmPerModelPixel, (24.f - y) * kCmPerModelPixel}; }
+
+struct FaceFrame {
+    Vec3 front_centre{}, back_centre{};
+    bool found{false};
+};
+
+// The centres of the plate's front (rivets) and back faces, found by the texels they show.
+FaceFrame plateFaces(const RigMesh& m) {
+    FaceFrame f;
+    int found = 0;
+    for (size_t q = 0; q + 3 < m.vertices.size(); q += 4) {
+        const RigMesh one{{m.vertices[q], m.vertices[q + 1], m.vertices[q + 2], m.vertices[q + 3]}, {}};
+        const bool front = hasFaceCovering(one, 1, 1, 13, 23), back = hasFaceCovering(one, 14, 1, 26, 23);
+        if (!front && !back) continue;
+        Vec3 c{0, 0, 0};
+        for (const RigVertex& v : one.vertices) { c.x += v.x / 4.f; c.y += v.y / 4.f; c.z += v.z / 4.f; }
+        (front ? f.front_centre : f.back_centre) = c;
+        ++found;
+    }
+    f.found = found == 2;
+    return f;
+}
+
+} // namespace
+
+TEST(ShieldModel, ThirdPersonPlacementIsMinecraftsItemInHandChainWithTheJarsDisplayTransforms) {
+    // models/item/shield.json and shield_blocking.json (1.21.8) through ItemInHandLayer on the rest pose of the arm; the numbers were computed
+    // independently (centre of the plate in model pixels, outward normal of the front face).
+    struct Case { Hand hand; bool blocking; float cx, cy, cz, nx, ny, nz; };
+    const Case cases[] = {
+        {Hand::Right, false, -9.500f, 8.000f, 0.000f, -1.000f, 0.000f, 0.000f},
+        {Hand::Right, true, -7.013f, 13.101f, -0.787f, -0.423f, 0.641f, -0.641f},
+        {Hand::Left, false, 9.500f, 8.000f, 0.000f, 1.000f, 0.000f, 0.000f},
+        {Hand::Left, true, 7.513f, 13.382f, -1.568f, 0.423f, 0.641f, -0.641f},
+    };
+    for (const Case& c : cases) {
+        const FaceFrame f = plateFaces(buildShieldMesh(kWholeSheet, kCanonical, c.hand, c.blocking));
+        ASSERT_TRUE(f.found);
+        const Vec3 centre{(f.front_centre.x + f.back_centre.x) / 2.f, (f.front_centre.y + f.back_centre.y) / 2.f, (f.front_centre.z + f.back_centre.z) / 2.f};
+        const Vec3 want = canonicalOfModel(c.cx, c.cy, c.cz);
+        EXPECT_NEAR(centre.x, want.x, 0.01f * kCmPerModelPixel);
+        EXPECT_NEAR(centre.y, want.y, 0.01f * kCmPerModelPixel);
+        EXPECT_NEAR(centre.z, want.z, 0.01f * kCmPerModelPixel);
+        // the front face looks along the outward normal: front centre minus back centre
+        Vec3 n{f.front_centre.x - f.back_centre.x, f.front_centre.y - f.back_centre.y, f.front_centre.z - f.back_centre.z};
+        const float len = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+        const Vec3 wn{-c.nz, c.nx, -c.ny}; // the linear part of canonicalOfModel
+        EXPECT_NEAR(n.x / len, wn.x, 0.01f);
+        EXPECT_NEAR(n.y / len, wn.y, 0.01f);
+        EXPECT_NEAR(n.z / len, wn.z, 0.01f);
+    }
+}
+
+TEST(ShieldModel, TheLeftAndRightShieldsSitOnOppositeSidesOfTheBody) {
+    auto centreY = [](const RigMesh& m) { float y = 0.f; for (const RigVertex& v : m.vertices) y += v.y; return y / static_cast<float>(m.vertices.size()); };
+    // canonical host: +Y is the character's left
+    for (const bool blocking : {false, true}) {
+        EXPECT_GT(centreY(buildShieldMesh(kWholeSheet, kCanonical, Hand::Left, blocking)), 0.f);
+        EXPECT_LT(centreY(buildShieldMesh(kWholeSheet, kCanonical, Hand::Right, blocking)), 0.f);
+    }
+}
+
+TEST(ShieldModel, TheHandleReachesBackFromThePlateTowardsTheHand) {
+    // the handle is behind the plate (further from the front face along the normal) and ends beside the forearm, not in front of the plate
+    const RigMesh m = buildShieldMesh(kWholeSheet, kCanonical, Hand::Right, false);
+    const FaceFrame f = plateFaces(m);
+    ASSERT_TRUE(f.found);
+    Vec3 n{f.front_centre.x - f.back_centre.x, f.front_centre.y - f.back_centre.y, f.front_centre.z - f.back_centre.z};
+    const float len = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+    n = {n.x / len, n.y / len, n.z / len};
+    float max_along = -1e9f, min_along = 1e9f;
+    for (const RigVertex& v : m.vertices) {
+        const float along = (v.x - f.front_centre.x) * n.x + (v.y - f.front_centre.y) * n.y + (v.z - f.front_centre.z) * n.z;
+        max_along = std::max(max_along, along);
+        min_along = std::min(min_along, along);
+    }
+    EXPECT_NEAR(max_along, 0.f, 1e-3f);                      // nothing sticks out in front of the rivets
+    EXPECT_NEAR(min_along, -6.f * kCmPerModelPixel - 1.f * kCmPerModelPixel, 0.01f * kCmPerModelPixel); // plate thickness 1 + handle depth 6
+}
+
+TEST(ShieldModel, FirstPersonMeshIsTheModelInMinecraftsItemSpaceWithTheFrontTowardsTheViewer) {
+    // item space after the shield renderer's scale(1, -1, -1) and the translate(-0.5, -0.5, -0.5) that precedes it: x right, y up, z towards the viewer,
+    // 1 unit = 1 block = 16 model pixels; the display transform (eldenring_fp.hpp) is applied on top.
+    const RigMesh m = buildShieldFirstPersonMesh(kWholeSheet);
+    EXPECT_EQ(m.vertices.size(), 48u);
+    float min_x = 1e9f, max_x = -1e9f, min_y = 1e9f, max_y = -1e9f, min_z = 1e9f, max_z = -1e9f;
+    for (const RigVertex& v : m.vertices) {
+        min_x = std::min(min_x, v.x); max_x = std::max(max_x, v.x);
+        min_y = std::min(min_y, v.y); max_y = std::max(max_y, v.y);
+        min_z = std::min(min_z, v.z); max_z = std::max(max_z, v.z);
+    }
+    EXPECT_NEAR(min_x, -0.5f - 6.f / 16.f, 1e-5f);  EXPECT_NEAR(max_x, -0.5f + 6.f / 16.f, 1e-5f);  // 12 px wide
+    EXPECT_NEAR(min_y, -0.5f - 11.f / 16.f, 1e-5f); EXPECT_NEAR(max_y, -0.5f + 11.f / 16.f, 1e-5f); // 22 px tall
+    EXPECT_NEAR(max_z, -0.5f + 2.f / 16.f, 1e-5f);                                                // the front face (model z = -2)
+    EXPECT_NEAR(min_z, -0.5f - 5.f / 16.f, 1e-5f);                                                // the handle's end (model z = 5)
+    EXPECT_TRUE(hasFaceCovering(m, 1, 1, 13, 23));
+    EXPECT_GT(signedVolume(m), 0.f);
+    for (size_t q = 0; q + 3 < m.vertices.size(); q += 4) {
+        const RigMesh face{{m.vertices[q], m.vertices[q + 1], m.vertices[q + 2], m.vertices[q + 3]}, {}};
+        if (!hasFaceCovering(face, 1, 1, 13, 23)) continue;
+        for (const RigVertex& v : face.vertices) {
+            EXPECT_NEAR(v.z, -0.5f + 2.f / 16.f, 1e-5f);
+            if (std::abs(v.u - 13.f / 64.f) < 1e-5f) EXPECT_GT(v.x, -0.5f); // larger u = to the right
+            if (std::abs(v.v - 1.f / 64.f) < 1e-5f) EXPECT_GT(v.y, -0.5f);  // smaller v = up
+        }
+    }
 }

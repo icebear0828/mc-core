@@ -20,15 +20,17 @@ inline constexpr size_t kMaxNameLength = 160;
 } // namespace rtti
 
 // The mangled type name behind a vtable address, or nullopt for anything that does not look like an x64 COL.
-inline std::optional<std::string> readTypeNameOfVtable(const IMemoryReader& reader, uintptr_t image_base, uint64_t vtable) {
+inline std::optional<std::string> readTypeNameOfVtable(const IMemoryReader& reader, uintptr_t image_base, uint64_t vtable, size_t image_size = 0x10000000) {
     if (vtable < sizeof(uint64_t)) return std::nullopt;
+    if (image_base != 0 && (vtable < image_base || vtable >= image_base + image_size)) return std::nullopt;
     uint64_t col = 0;
     if (!reader.read(static_cast<uintptr_t>(vtable) - sizeof(uint64_t), &col, sizeof(col)) || col == 0) return std::nullopt;
+    if (image_base != 0 && (col < image_base || col >= image_base + image_size)) return std::nullopt;
     uint32_t signature = 0, td_rva = 0;
     if (!reader.read(static_cast<uintptr_t>(col), &signature, sizeof(signature)) || signature != rtti::kColSignatureX64) {
         return std::nullopt;
     }
-    if (!reader.read(static_cast<uintptr_t>(col) + rtti::kTypeDescriptorRvaInCol, &td_rva, sizeof(td_rva)) || td_rva == 0) {
+    if (!reader.read(static_cast<uintptr_t>(col) + rtti::kTypeDescriptorRvaInCol, &td_rva, sizeof(td_rva)) || td_rva == 0 || (image_base != 0 && td_rva >= image_size)) {
         return std::nullopt;
     }
     std::string name;

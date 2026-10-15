@@ -261,13 +261,21 @@ HUD_KEYS = [
     "block_dirt", "block_stone", "block_tnt_top", "block_tnt_side", "block_tnt_bottom",
     "heart_container_blinking", "heart_full_blinking", "heart_half_blinking", "xp_bar_background", "xp_bar_progress",
     "item_zombie_spawn_egg", "item_bow_pulling_0", "item_bow_pulling_1", "item_bow_pulling_2",
+    "hotbar_offhand_left", "item_shield", "entity_shield",
+    "item_diamond_helmet", "item_diamond_chestplate", "item_diamond_leggings", "item_diamond_boots",
+    "empty_armor_slot_helmet", "empty_armor_slot_chestplate", "empty_armor_slot_leggings", "empty_armor_slot_boots",
+    "armor_empty", "armor_half", "armor_full",
+    *[f"destroy_stage_{i}" for i in range(10)],
 ]
+
 HUD_SIZES = {
     "heart_absorb_full": (9, 9), "heart_absorb_half": (9, 9), "particle_crit": (8, 8), "particle_damage": (8, 8),
     **{f"particle_sweep_{i}": (32, 32) for i in range(8)},
     "crosshair": (15, 15), "hotbar": (182, 22), "hotbar_selection": (24, 23),
+    "hotbar_offhand_left": (29, 24), "entity_shield": (64, 64),
     "heart_container": (9, 9), "heart_full": (9, 9), "heart_half": (9, 9),
     "hunger_container": (9, 9), "hunger_full": (9, 9), "hunger_half": (9, 9),
+    "armor_empty": (9, 9), "armor_half": (9, 9), "armor_full": (9, 9),
     "container_top": (176, 71), "container_bottom": (176, 96),
     "xp_bar_background": (182, 5), "xp_bar_progress": (182, 5),
     "heart_container_blinking": (9, 9), "heart_full_blinking": (9, 9), "heart_half_blinking": (9, 9),
@@ -319,7 +327,22 @@ def _sprite_colors():
         "gui/sprites/hud/heart/half_blinking.png": _solid((9, 9), (67, 68, 69, 255)),
         "gui/sprites/hud/experience_bar_background.png": _solid((182, 5), (70, 71, 72, 255)),
         "gui/sprites/hud/experience_bar_progress.png": _solid((182, 5), (73, 74, 75, 255)),
+        "gui/sprites/hud/hotbar_offhand_left.png": _solid((29, 24), (80, 81, 82, 255)),
+        "gui/sprites/container/slot/shield.png": _solid((16, 16), (83, 84, 85, 255)),
+        "item/diamond_helmet.png": _solid((16, 16), (86, 87, 88, 255)),
+        "item/diamond_chestplate.png": _solid((16, 16), (89, 90, 91, 255)),
+        "item/diamond_leggings.png": _solid((16, 16), (92, 93, 94, 255)),
+        "item/diamond_boots.png": _solid((16, 16), (95, 96, 97, 255)),
+        "gui/sprites/container/slot/helmet.png": _solid((16, 16), (98, 99, 100, 255)),
+        "gui/sprites/container/slot/chestplate.png": _solid((16, 16), (101, 102, 103, 255)),
+        "gui/sprites/container/slot/leggings.png": _solid((16, 16), (104, 105, 106, 255)),
+        "gui/sprites/container/slot/boots.png": _solid((16, 16), (107, 108, 109, 255)),
+        "gui/sprites/hud/armor_empty.png": _solid((9, 9), (110, 111, 112, 255)),
+        "gui/sprites/hud/armor_half.png": _solid((9, 9), (113, 114, 115, 255)),
+        "gui/sprites/hud/armor_full.png": _solid((9, 9), (116, 117, 118, 255)),
+        **{f"block/destroy_stage_{i}.png": _solid((16, 16), (120 + i * 5, 120, 120, 255)) for i in range(10)},
     }
+
 
 
 def _hud_jar(path: Path) -> Path:
@@ -507,6 +530,59 @@ def test_blinking_hearts_and_the_experience_bar_are_copied(tmp_path):
     for key, color in expect.items():
         region = _hud_region(atlas, uv[key])
         assert {region.getpixel((x, y)) for x in range(region.width) for y in range(region.height)} == {color}, key
+
+
+def test_offhand_slot_and_shield_icon_copied(tmp_path):
+    from extract_mc_assets import build_hud_atlas
+
+    atlas, uv = build_hud_atlas(_hud_jar(tmp_path / "client.jar"))
+    offhand = _hud_region(atlas, uv["hotbar_offhand_left"])
+    assert offhand.size == (29, 24)
+    assert {offhand.getpixel((x, y)) for x in range(29) for y in range(24)} == {(80, 81, 82, 255)}
+
+    assert _hud_region(atlas, uv["item_shield"]).size == (16, 16)
+
+
+def test_canonical_item_shield_is_solid_with_iron_rim_and_wood_planks():
+    from extract_mc_assets import create_canonical_sprite
+
+    shield = create_canonical_sprite("item_shield")
+    assert shield.size == (16, 16)
+    # 1. No semi-transparent pixels (all pixels must be either completely transparent 0 or completely solid 255)
+    alphas = [shield.getpixel((x, y))[3] for x in range(16) for y in range(16)]
+    assert all(a in (0, 255) for a in alphas), "Shield must have zero translucent pixels"
+
+    # 2. Substantial coverage for 3D extrusion (at least 70 opaque pixels)
+    solid_pixels = [(x, y) for x in range(16) for y in range(16) if shield.getpixel((x, y))[3] == 255]
+    assert len(solid_pixels) >= 70, f"Shield has too few solid pixels: {len(solid_pixels)}"
+
+    # 3. Must contain iron rim colors (high silver/grey) and wood colors
+    colors = [shield.getpixel(pos)[:3] for pos in solid_pixels]
+    has_iron = any(r > 150 and g > 150 and b > 150 and abs(r - g) < 20 and abs(g - b) < 20 for r, g, b in colors)
+    has_wood = any(r > 100 and g > 60 and b < 80 for r, g, b in colors)
+    assert has_iron, "Shield must have distinct metallic iron rim"
+    assert has_wood, "Shield must have distinct wood plank body"
+
+
+def test_hud_atlas_with_jar_having_only_slot_shield_does_not_make_item_transparent(tmp_path):
+    import zipfile
+    from extract_mc_assets import build_hud_atlas
+
+    # Simulate real vanilla client.jar:
+    # Vanilla Java Edition ONLY has gui/sprites/container/slot/shield.png (which is translucent 30% alpha for empty slot).
+    # It does NOT have item/shield.png.
+    jar_path = tmp_path / "real_style_client.jar"
+    with zipfile.ZipFile(jar_path, "w") as z:
+        # Create a semi-transparent slot watermark (alpha 70) like Mojang's slot/shield.png
+        slot_img = Image.new("RGBA", (16, 16), (255, 255, 255, 70))
+        z.writestr("assets/minecraft/textures/gui/sprites/container/slot/shield.png", _png(slot_img))
+
+    atlas, uv = build_hud_atlas(jar_path)
+    shield = _hud_region(atlas, uv["item_shield"])
+    # The shield item MUST be solid (not polluted by the translucent slot watermark)
+    solid_pixels = [shield.getpixel((x, y)) for x in range(16) for y in range(16) if shield.getpixel((x, y))[3] > 0]
+    assert len(solid_pixels) >= 70
+    assert all(p[3] == 255 for p in solid_pixels), "item_shield must not take translucent pixels from slot/shield.png"
 
 
 def test_committed_generated_headers_match_the_tool_output(tmp_path):
@@ -718,3 +794,81 @@ def test_export_entity_models(tmp_path: Path):
         assert f.stat().st_size > 0
 
 
+
+
+def _shield_entity_texture() -> Image.Image:
+    # the plate of the shield model: the front face is 12x22 at (1, 1), the back face 12x22 at (14, 1)
+    tex = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    for x in range(1, 13):
+        for y in range(1, 23):
+            tex.putpixel((x, y), (120, 80, 40, 255))
+    for x in range(14, 26):
+        for y in range(1, 23):
+            tex.putpixel((x, y), (10, 20, 30, 255))
+    return tex
+
+
+def test_shield_icon_is_the_front_face_of_the_real_shield_texture(tmp_path):
+    import zipfile
+    from extract_mc_assets import build_hud_atlas
+
+    jar = _hud_jar(tmp_path / "client.jar")
+    with zipfile.ZipFile(jar, "a") as z:
+        z.writestr("assets/minecraft/textures/entity/shield_base_nopattern.png", _png(_shield_entity_texture()))
+    atlas, uv = build_hud_atlas(jar)
+    icon = _hud_region(atlas, uv["item_shield"])
+    assert icon.size == (16, 16)
+    # the face is scaled to the full height and centred; its centre is the front colour, never the back one
+    assert icon.getpixel((8, 8)) == (120, 80, 40, 255)
+    assert icon.getpixel((8, 0))[3] == 255 and icon.getpixel((8, 15))[3] == 255
+    assert icon.getpixel((0, 8))[3] == 0 and icon.getpixel((15, 8))[3] == 0
+    assert (10, 20, 30, 255) not in {icon.getpixel((x, y)) for x in range(16) for y in range(16)}
+
+
+def test_shield_icon_falls_back_to_the_placeholder_when_the_jar_has_no_shield_texture(tmp_path):
+    from extract_mc_assets import build_hud_atlas, create_canonical_sprite
+
+    atlas, uv = build_hud_atlas(_hud_jar(tmp_path / "client.jar"))
+    assert _hud_region(atlas, uv["item_shield"]).tobytes() == create_canonical_sprite("item_shield").tobytes()
+
+
+def test_atlas_holds_the_whole_shield_entity_texture_unchanged_for_the_3d_model(tmp_path):
+    import zipfile
+    from extract_mc_assets import build_hud_atlas
+
+    jar = _hud_jar(tmp_path / "client.jar")
+    sheet = _shield_entity_texture()
+    with zipfile.ZipFile(jar, "a") as z:
+        z.writestr("assets/minecraft/textures/entity/shield_base_nopattern.png", _png(sheet))
+    atlas, uv = build_hud_atlas(jar)
+    region = _hud_region(atlas, uv["entity_shield"])
+    assert region.size == (64, 64)
+    assert region.tobytes() == sheet.tobytes()  # every texel where the model's box layout expects it
+
+
+def test_shield_entity_placeholder_has_a_riveted_front_a_plain_back_and_a_handle():
+    from extract_mc_assets import create_canonical_sprite
+
+    sheet = create_canonical_sprite("entity_shield")
+    assert sheet.size == (64, 64)
+    front = sheet.crop((1, 1, 13, 23))   # the plate's front face of the model: 12x22 at (1, 1)
+    back = sheet.crop((14, 1, 26, 23))   # the back face: 12x22 at (14, 1)
+    assert all(front.getpixel((x, y))[3] == 255 for x in range(12) for y in range(22))
+    assert all(back.getpixel((x, y))[3] == 255 for x in range(12) for y in range(22))
+    assert front.tobytes() != back.tobytes(), "the two faces of the shield must not look the same"
+    handle = sheet.crop((26, 0, 38, 12))  # the handle box texOffs (26, 0): 2x6x6
+    assert any(handle.getpixel((x, y))[3] == 255 for x in range(12) for y in range(12))
+
+
+def test_hud_atlas_contains_armor_icons(tmp_path):
+    from extract_mc_assets import build_hud_atlas, create_canonical_sprite
+
+    jar = _hud_jar(tmp_path / "client.jar")
+    atlas, uv = build_hud_atlas(jar)
+
+    for name in ("armor_empty", "armor_half", "armor_full"):
+        assert name in uv, f"{name} must be present in HUD atlas UV mapping"
+        sprite = create_canonical_sprite(name)
+        assert sprite.size == (9, 9), f"{name} must be standard 9x9 HUD icon"
+        # Check non-empty pixels
+        assert any(sprite.getpixel((x, y))[3] > 0 for x in range(9) for y in range(9))

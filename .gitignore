@@ -36,3 +36,10 @@ Testing/
 *.gcda
 *.gcno
 *.gcov
+*.log
+
+# Authentic extracted game assets (never commit official Minecraft assets)
+*.authentic.png
+assets/exported/
+
+

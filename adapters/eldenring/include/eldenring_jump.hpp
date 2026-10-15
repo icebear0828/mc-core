@@ -1,58 +1,52 @@
 #pragma once
 
-// Minecraft's jump numbers and a small recorder for the jump experiment (mc_jump=1): the peak and the air time of a jump, and the gravity
-// the game applies, estimated from the vertical speed it shows. Pure logic.
-
-#include <algorithm>
-#include <cmath>
+#include "mc/jump.hpp"
 
 namespace eldenring::live {
 
-inline constexpr float kMcJumpSpeed = 8.4f; // 0.42 blocks per tick, 20 ticks per second
-inline constexpr float kMcGravity = 32.f;   // 0.08 blocks per tick squared
-
-// The peak of a Minecraft jump, simulated tick by tick (gravity 0.08 and the 0.98 vertical drag).
-inline float mcJumpPeakHeight() {
-    float y = 0.f, vy = 0.42f, peak = 0.f;
-    for (int i = 0; i < 40; ++i) {
-        y += vy;
-        peak = std::max(peak, y);
-        vy = (vy - 0.08f) * 0.98f;
-    }
-    return peak;
-}
-
-class JumpTrace {
-public:
-    void start(float y) {
-        y0_ = y;
-        peak_ = 0.f;
-        t_ = 0.f;
-        have_v_ = false;
-        n_g_ = 0;
-        g_sum_ = 0.f;
-    }
-    // One frame: the feet height, the frame time, and optionally the vertical speed the game reports.
-    void sample(float y, float dt, float vy = NAN) {
-        t_ += dt;
-        peak_ = std::max(peak_, y - y0_);
-        if (!std::isnan(vy)) {
-            if (have_v_ && dt > 1e-4f) {
-                g_sum_ += (prev_v_ - vy) / dt; // the speed falls by g every second
-                ++n_g_;
-            }
-            prev_v_ = vy;
-            have_v_ = true;
-        }
-    }
-    [[nodiscard]] float peak() const { return peak_; }
-    [[nodiscard]] float seconds() const { return t_; }
-    [[nodiscard]] float estimatedGravity() const { return n_g_ > 0 ? g_sum_ / static_cast<float>(n_g_) : 0.f; }
-
-private:
-    float y0_{0.f}, peak_{0.f}, t_{0.f}, prev_v_{0.f}, g_sum_{0.f};
-    bool have_v_{false};
-    int n_g_{0};
-};
+using mc::kMcJumpSpeed;
+using mc::kMcGravity;
+using mc::mcJumpPeakHeight;
+using mc::JumpTrace;
 
 } // namespace eldenring::live
+
+namespace eldenring::jump {
+
+using mc::kMcJumpInitialVelocity;
+using mc::kMcJumpSprintBoost;
+using mc::kMcJumpGravity;
+using mc::kMcAirDrag;
+using mc::kMaxJumpDt;
+using mc::kJumpPeakTarget;
+using mc::canTakeOff;
+using mc::JumpStepResult;
+using mc::MinecraftJumpController;
+using mc::JumpController;
+
+// Determines Havok physics flags on landing based on whether landing on voxel blocks vs native terrain.
+// Standing on a block requires airborne_flag = true (0x1D0 = 1) so Havok integrates +0x120 velocity.
+struct LandingResolution {
+    bool on_ground_flag{false};   // module + 0x92
+    bool airborne_flag{false};    // module + 0x1D0
+    bool support_flag{false};     // module + 0x1D1
+};
+
+inline LandingResolution computeLandingFlags(bool landed_on_block) {
+    LandingResolution res;
+    if (landed_on_block) {
+        // Landing on placed voxel blocks:
+        // Must maintain airborne_flag = true (0x1D0 = 1) so Havok continues consuming +0x120 horizontal velocity!
+        res.on_ground_flag = true;
+        res.airborne_flag = true;
+        res.support_flag = true;
+    } else {
+        // Landing on native terrain: restore native grounded state
+        res.on_ground_flag = true;
+        res.airborne_flag = false;
+        res.support_flag = true;
+    }
+    return res;
+}
+
+} // namespace eldenring::jump

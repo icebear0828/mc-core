@@ -266,3 +266,108 @@ TEST(EldenRingMobs, TheDrawCarriesTheFeetSoTheShadowCanBePlacedUnderIt) {
     EXPECT_FLOAT_EQ(draws[0].feet[1], 7.f);
     EXPECT_FLOAT_EQ(draws[0].feet[2], 2.f);
 }
+
+TEST(EldenRingMobs, MultiModelRegistrySupportsDifferentEntityModelsConcurrently) {
+    const auto zombie = loadZombie();
+    std::ifstream skel_file(std::string(MC_ASSET_DIR) + "/models/entities/skeleton.geo.json");
+    std::stringstream ss;
+    ss << skel_file.rdbuf();
+    const auto skeleton = mc::model::EntityModel::fromJson(ss.str()).value();
+
+    MobRegistry r;
+    r.registerModel("zombie", &zombie);
+    r.registerModel("skeleton", &skeleton);
+
+    MobSnapshot s1 = at(1, 2.f, 3.f);
+    s1.model_type = "zombie";
+    MobSnapshot s2 = at(2, 5.f, 6.f);
+    s2.model_type = "skeleton";
+
+    const auto draws = r.update(1.f / 60.f, {s1, s2});
+    ASSERT_EQ(draws.size(), 2u);
+    EXPECT_EQ(draws[0].id, 1u);
+    EXPECT_EQ(draws[0].model_type, "zombie");
+    EXPECT_EQ(draws[0].bones.size(), zombie.bones.size());
+
+    EXPECT_EQ(draws[1].id, 2u);
+    EXPECT_EQ(draws[1].model_type, "skeleton");
+    EXPECT_EQ(draws[1].bones.size(), skeleton.bones.size());
+}
+
+TEST(EldenRingMobs, CreeperQuadrupedLegsSwingAlternatelyDuringWalk) {
+    std::ifstream creeper_file(std::string(MC_ASSET_DIR) + "/models/entities/creeper.geo.json");
+    std::stringstream ss;
+    ss << creeper_file.rdbuf();
+    const auto creeper = mc::model::EntityModel::fromJson(ss.str()).value();
+
+    MobRegistry r;
+    r.registerModel("creeper", &creeper);
+
+    const size_t ix_leg0 = boneIx(creeper, "leg0");
+    const size_t ix_leg1 = boneIx(creeper, "leg1");
+    const size_t ix_leg2 = boneIx(creeper, "leg2");
+    const size_t ix_leg3 = boneIx(creeper, "leg3");
+
+    float x = 0.f;
+    std::vector<MobDraw> draws;
+    for (int i = 0; i < 30; ++i) {
+        x += 3.f / 60.f; // walk along +X
+        MobSnapshot s = at(42, x, 0.f);
+        s.model_type = "creeper";
+        draws = r.update(1.f / 60.f, {s});
+    }
+
+    ASSERT_EQ(draws.size(), 1u);
+    EXPECT_TRUE(draws[0].generic);
+    EXPECT_EQ(draws[0].bones.size(), creeper.bones.size());
+
+    // In a quadruped walk:
+    // leg0 (right front) and leg3 (left back) swing in sync
+    // leg1 (left front) and leg2 (right back) swing in sync
+    // leg0 and leg1 swing in opposite directions
+    const auto& m_leg0 = draws[0].bones[ix_leg0];
+    const auto& m_leg1 = draws[0].bones[ix_leg1];
+    const auto& m_leg2 = draws[0].bones[ix_leg2];
+    const auto& m_leg3 = draws[0].bones[ix_leg3];
+
+    // leg0 and leg3 have identical rotations
+    for (int k = 0; k < 12; ++k) {
+        EXPECT_NEAR(m_leg0.m[k], m_leg3.m[k], 1e-4f);
+        EXPECT_NEAR(m_leg1.m[k], m_leg2.m[k], 1e-4f);
+    }
+    // leg0 and leg1 differ (opposite swing)
+    bool differs = false;
+    for (int k = 0; k < 12; ++k) {
+        differs = differs || (std::fabs(m_leg0.m[k] - m_leg1.m[k]) > 1e-3f);
+    }
+    EXPECT_TRUE(differs);
+}
+
+TEST(EldenRingMobs, SwellScalesBonesOutwardFromFeet) {
+    MobRegistry r;
+    MobSnapshot unscaled = at(1, 0.f, 0.f);
+    unscaled.scale = 1.0f;
+    unscaled.white_flash = 0.0f;
+
+    MobSnapshot scaled = at(2, 0.f, 0.f);
+    scaled.scale = 1.35f;
+    scaled.white_flash = 1.0f;
+
+    auto draws = r.update(1.f / 60.f, {unscaled, scaled});
+    ASSERT_EQ(draws.size(), 2u);
+
+    EXPECT_FLOAT_EQ(draws[0].scale, 1.0f);
+    EXPECT_FLOAT_EQ(draws[0].white_flash, 0.0f);
+    EXPECT_FLOAT_EQ(draws[1].scale, 1.35f);
+    EXPECT_FLOAT_EQ(draws[1].white_flash, 1.0f);
+
+    // Diagonal elements of the matrix are scaled by 1.35x
+    const auto head = static_cast<size_t>(mc::StevePart::Head);
+    EXPECT_FLOAT_EQ(draws[0].parts[head].m[0], 1.0f);
+    EXPECT_FLOAT_EQ(draws[1].parts[head].m[0], 1.35f);
+    EXPECT_FLOAT_EQ(draws[1].parts[head].m[5], 1.35f);
+    EXPECT_FLOAT_EQ(draws[1].parts[head].m[10], 1.35f);
+}
+
+
+
