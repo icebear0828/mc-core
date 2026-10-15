@@ -26,17 +26,17 @@ public:
 
     SprintController() = default;
 
-    void update(float dt, bool w_down, bool s_down, bool ctrl_down, int food_level) {
+    void update(float dt, bool w_down, bool s_down, bool ctrl_down, int food_level, bool blocking = false) {
         // Condition checks
         const bool hunger_allows = food_level > kMinFoodLevelForSprint;
         const bool moving_backward = s_down;
 
-        if (!hunger_allows || moving_backward || !w_down) {
+        if (!hunger_allows || moving_backward || !w_down || blocking) {
             is_sprinting_ = false;
         }
 
         // Direct Ctrl sprint trigger
-        if (ctrl_down && w_down && !moving_backward && hunger_allows) {
+        if (ctrl_down && w_down && !moving_backward && hunger_allows && !blocking) {
             is_sprinting_ = true;
         } else if (!ctrl_down && !enable_double_tap) {
             is_sprinting_ = false;
@@ -45,7 +45,7 @@ public:
         // Optional double-tap W detection (when enabled)
         if (enable_double_tap) {
             if (!prev_w_down_ && w_down) {
-                if (w_tapped_once_ && (time_since_w_released_ <= kDoubleTapWindowSec) && hunger_allows && !moving_backward) {
+                if (w_tapped_once_ && (time_since_w_released_ <= kDoubleTapWindowSec) && hunger_allows && !moving_backward && !blocking) {
                     is_sprinting_ = true;
                     w_tapped_once_ = false;
                 }
@@ -72,6 +72,10 @@ public:
         // Smooth dynamic FOV scaling
         const float target_fov = is_sprinting_ ? kFovSprintMultiplier : 1.0f;
         fov_multiplier_ += (target_fov - fov_multiplier_) * std::clamp(dt * kFovLerpSpeed, 0.0f, 1.0f);
+    }
+
+    void cancel() noexcept {
+        is_sprinting_ = false;
     }
 
     void reset() {

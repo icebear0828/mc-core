@@ -13,6 +13,21 @@ namespace mc {
 inline constexpr float kBlockMinDot = 0.6427876f;
 // Minecraft shield raise delay is ~5 ticks = 0.25 seconds
 inline constexpr float kShieldRaiseDelaySec = 0.25f;
+// Vanilla Minecraft movement speed multiplier while blocking with shield (~30% of normal speed, equivalent to sneak speed)
+inline constexpr float kShieldBlockSpeedMultiplier = 0.3f;
+
+// Evaluates effective movement speed considering sneak, sprint, and shield blocking.
+// Shield blocking forces speed to sneak speed (~20%~30% of normal walk) and cancels sprint.
+inline float effectiveMovementSpeed(float walk_speed, float sprint_speed, float sneak_speed,
+                                    bool sneaking, bool sprinting, bool blocking) {
+    if (blocking || sneaking) {
+        return sneak_speed;
+    }
+    if (sprinting) {
+        return sprint_speed;
+    }
+    return walk_speed;
+}
 
 // Cosine between the direction the player faces and the direction to the attacker, on the ground plane (1 = dead ahead, -1 = behind).
 // Forward vector is (sin(yaw), 0, cos(yaw)). An attacker directly on top of the player counts as dead ahead.

@@ -154,3 +154,39 @@ TEST(EldenRingSprintTest, BoostSpeedReturnsActiveSpeedOnSprint) {
     EXPECT_FALSE(ctrl.isSprinting());
     EXPECT_FLOAT_EQ(ctrl.boostSpeed(), 0.0f);
 }
+
+TEST(EldenRingSprintTest, BlockingWithShieldCancelsAndPreventsSprint) {
+    SprintController ctrl;
+    // 1. Activate sprint via Ctrl + W
+    ctrl.update(0.016f, /*w_down=*/true, false, /*ctrl_down=*/true, 20);
+    EXPECT_TRUE(ctrl.isSprinting());
+    EXPECT_FLOAT_EQ(ctrl.boostSpeed(), 2.5f);
+
+    // 2. Raising shield (blocking = true) must forcefully cancel sprint
+    ctrl.update(0.016f, /*w_down=*/true, false, /*ctrl_down=*/true, 20, /*blocking=*/true);
+    EXPECT_FALSE(ctrl.isSprinting());
+    EXPECT_FLOAT_EQ(ctrl.boostSpeed(), 0.0f);
+
+    // 3. While blocking, Ctrl + W cannot initiate sprint
+    ctrl.update(0.016f, /*w_down=*/true, false, /*ctrl_down=*/true, 20, /*blocking=*/true);
+    EXPECT_FALSE(ctrl.isSprinting());
+
+    // 4. Double tap W while blocking cannot initiate sprint
+    ctrl.enable_double_tap = true;
+    ctrl.update(0.016f, /*w_down=*/false, false, false, 20, /*blocking=*/true);
+    ctrl.update(0.016f, /*w_down=*/true, false, false, 20, /*blocking=*/true);
+    ctrl.update(0.100f, /*w_down=*/false, false, false, 20, /*blocking=*/true);
+    ctrl.update(0.016f, /*w_down=*/true, false, false, 20, /*blocking=*/true);
+    EXPECT_FALSE(ctrl.isSprinting());
+
+    // 5. Explicit cancel() method immediately clears sprinting
+    ctrl.update(0.016f, /*w_down=*/true, false, /*ctrl_down=*/true, 20, /*blocking=*/false);
+    EXPECT_TRUE(ctrl.isSprinting());
+    ctrl.cancel();
+    EXPECT_FALSE(ctrl.isSprinting());
+
+    // 6. When shield is lowered (blocking = false), sprint can be resumed
+    ctrl.update(0.016f, /*w_down=*/true, false, /*ctrl_down=*/true, 20, /*blocking=*/false);
+    EXPECT_TRUE(ctrl.isSprinting());
+}
+

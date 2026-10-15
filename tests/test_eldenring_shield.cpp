@@ -162,3 +162,28 @@ TEST(EldenRingShield, YawFromForwardIsTheInverseOfTheForwardVectorTheArcUses) {
     EXPECT_NEAR(yawFromForward(0.f, 1.f), 0.f, 1e-6f);
     EXPECT_NEAR(yawFromForward(1.f, 0.f), 1.5707963f, 1e-5f);
 }
+
+TEST(EldenRingShield, ShieldBlockingEnforcesSneakSpeedAndOverridesSprint) {
+    const float walk = 4.317f;
+    const float sprint = 5.612f;
+    const float sneak = 1.295f;
+
+    // Normal walking
+    EXPECT_FLOAT_EQ(effectiveMovementSpeed(walk, sprint, sneak, false, false, false), walk);
+
+    // Sprinting without shield
+    EXPECT_FLOAT_EQ(effectiveMovementSpeed(walk, sprint, sneak, false, true, false), sprint);
+
+    // Sneaking without shield
+    EXPECT_FLOAT_EQ(effectiveMovementSpeed(walk, sprint, sneak, true, false, false), sneak);
+
+    // Shield blocking while idle/walking -> reduced to sneak speed (~30% of walk speed)
+    EXPECT_FLOAT_EQ(effectiveMovementSpeed(walk, sprint, sneak, false, false, true), sneak);
+
+    // Shield blocking overrides sprinting -> reduced to sneak speed
+    EXPECT_FLOAT_EQ(effectiveMovementSpeed(walk, sprint, sneak, false, true, true), sneak);
+
+    // Shield blocking and sneaking -> sneak speed
+    EXPECT_FLOAT_EQ(effectiveMovementSpeed(walk, sprint, sneak, true, false, true), sneak);
+}
+

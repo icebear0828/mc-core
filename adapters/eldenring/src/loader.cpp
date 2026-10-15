@@ -2416,13 +2416,16 @@ void DriveVelocityFromKeys(uintptr_t module, bool force_zero) {
         const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
         const bool sneak_key_down = ((GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0) ||
                                     ((GetAsyncKeyState('X') & 0x8000) != 0);
+        const bool blocking = g_shield_blocking.load(std::memory_order_relaxed);
         const bool sneaking = sneak_key_down;
-        const bool sprinting = !sneaking && g_sprint_active.load(std::memory_order_relaxed);
+        const bool sprinting = !sneaking && !blocking && g_sprint_active.load(std::memory_order_relaxed);
         g_sneak_active.store(sneaking, std::memory_order_relaxed);
 
-        const float target_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
-                                  : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
-                                  : g_block_walk_speed.load(std::memory_order_relaxed);
+        const float target_speed = eldenring::shield::effectiveMovementSpeed(
+            g_block_walk_speed.load(std::memory_order_relaxed),
+            g_sprint_speed.load(std::memory_order_relaxed),
+            g_sneak_speed.load(std::memory_order_relaxed),
+            sneaking, sprinting, blocking);
 
         const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
         CameraPose cam;
@@ -2727,10 +2730,13 @@ void BlocksCollisionStep() {
     if (supported && !pinned && fg) {
         const float fwd_key = (key_w ? 1.f : 0.f) - (key_s ? 1.f : 0.f);
         const float right_key = (key_d ? 1.f : 0.f) - (key_a ? 1.f : 0.f);
-        const bool sprinting = !sneaking && g_sprint_active.load(std::memory_order_relaxed);
-        const float target_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
-                                  : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
-                                  : g_block_walk_speed.load(std::memory_order_relaxed);
+        const bool blocking = g_shield_blocking.load(std::memory_order_relaxed);
+        const bool sprinting = !sneaking && !blocking && g_sprint_active.load(std::memory_order_relaxed);
+        const float target_speed = eldenring::shield::effectiveMovementSpeed(
+            g_block_walk_speed.load(std::memory_order_relaxed),
+            g_sprint_speed.load(std::memory_order_relaxed),
+            g_sneak_speed.load(std::memory_order_relaxed),
+            sneaking, sprinting, blocking);
 
         const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
         CameraPose cam;
@@ -2766,9 +2772,10 @@ void BlocksCollisionStep() {
         }
     }
 
-    // Native terrain sneak speed limiting:
+    // Native terrain sneak & shield speed limiting:
     // When walking on Elden Ring's native ground, clamp horizontal displacement per frame to Minecraft sneak speed (1.295 m/s)
-    if (!supported && sneaking && have_prev && !jumped && !pinned && fg) {
+    const bool clamp_speed = sneaking || g_shield_blocking.load(std::memory_order_relaxed);
+    if (!supported && clamp_speed && have_prev && !jumped && !pinned && fg) {
         const float cur_dx = final_feet[0] - prev[0];
         const float cur_dz = final_feet[2] - prev[2];
         const float h_dist = std::sqrt(cur_dx * cur_dx + cur_dz * cur_dz);
@@ -2840,7 +2847,7 @@ void BlocksCollisionStep() {
 std::atomic<float> g_sprint_boost{2.5f}; // mc_er_steve.txt: sprint_boost=<m/s> (extra speed boost applied while sprinting on ground, default 2.5 m/s)
 
 void GroundSprintStep(float dt) {
-    if (!g_sprint_active.load(std::memory_order_relaxed) || !g_mc_mode.load()) return;
+    if (!g_sprint_active.load(std::memory_order_relaxed) || !g_mc_mode.load() || g_shield_blocking.load(std::memory_order_relaxed)) return;
     if (g_flying.load(std::memory_order_relaxed) || PlayerAirborne() || PlayerDead()) return;
     if (!GameInForeground() || !WantSuppress()) return;
 
@@ -3214,11 +3221,14 @@ void McJumpStep() {
             const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
             const bool sneak_key_down = ((GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0) ||
                                         ((GetAsyncKeyState('X') & 0x8000) != 0);
+            const bool blocking = g_shield_blocking.load(std::memory_order_relaxed);
             const bool sneaking = sneak_key_down;
-            const bool sprinting = !sneaking && g_sprint_active.load(std::memory_order_relaxed);
-            const float target_speed = sneaking ? g_sneak_speed.load(std::memory_order_relaxed)
-                                      : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
-                                      : g_block_walk_speed.load(std::memory_order_relaxed);
+            const bool sprinting = !sneaking && !blocking && g_sprint_active.load(std::memory_order_relaxed);
+            const float target_speed = eldenring::shield::effectiveMovementSpeed(
+                g_block_walk_speed.load(std::memory_order_relaxed),
+                g_sprint_speed.load(std::memory_order_relaxed),
+                g_sneak_speed.load(std::memory_order_relaxed),
+                sneaking, sprinting, blocking);
 
             float init_vx = 0.f, init_vz = 0.f;
             const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
@@ -3250,10 +3260,13 @@ void McJumpStep() {
     const float right_key = ((GetAsyncKeyState('D') & 0x8000) ? 1.f : 0.f) - ((GetAsyncKeyState('A') & 0x8000) ? 1.f : 0.f);
     const bool steer_sneak = ((GetAsyncKeyState(g_sneak_vk.load(std::memory_order_relaxed)) & 0x8000) != 0) ||
                              ((GetAsyncKeyState('X') & 0x8000) != 0);
-    const bool sprinting = !steer_sneak && g_sprint_active.load(std::memory_order_relaxed);
-    const float steer_speed = steer_sneak ? g_sneak_speed.load(std::memory_order_relaxed)
-                            : sprinting ? g_sprint_speed.load(std::memory_order_relaxed)
-                            : g_block_walk_speed.load(std::memory_order_relaxed);
+    const bool blocking = g_shield_blocking.load(std::memory_order_relaxed);
+    const bool sprinting = !steer_sneak && !blocking && g_sprint_active.load(std::memory_order_relaxed);
+    const float steer_speed = eldenring::shield::effectiveMovementSpeed(
+        g_block_walk_speed.load(std::memory_order_relaxed),
+        g_sprint_speed.load(std::memory_order_relaxed),
+        g_sneak_speed.load(std::memory_order_relaxed),
+        steer_sneak, sprinting, blocking);
 
     float dir[2] = {0.f, 0.f};
     bool has_steer = false;
@@ -3701,7 +3714,8 @@ DWORD WINAPI KeyThread(LPVOID) {
                 std::lock_guard<std::mutex> g(g_melee_mutex);
                 food_lvl = g_hunger.food();
             }
-            g_sprint.update(dt, key_w, key_s, key_ctrl, food_lvl);
+            const bool blocking = g_shield_blocking.load(std::memory_order_relaxed);
+            g_sprint.update(dt, key_w, key_s, key_ctrl, food_lvl, blocking);
         } else {
             g_sprint.reset();
         }
@@ -3852,7 +3866,11 @@ DWORD WINAPI KeyThread(LPVOID) {
             s_shield.update(dt, right_held, shield_usable);
             const bool prev_blocking = g_shield_blocking.load(std::memory_order_relaxed);
             const bool now_blocking = s_shield.isBlocking();
-            if (!prev_blocking && now_blocking) Log("shield: raised (blocking active)");
+            if (!prev_blocking && now_blocking) {
+                Log("shield: raised (blocking active)");
+                g_sprint.cancel();
+                g_sprint_active.store(false, std::memory_order_relaxed);
+            }
             if (prev_blocking && !now_blocking) Log("shield: lowered");
             g_shield_blocking.store(now_blocking, std::memory_order_relaxed);
         }
@@ -4753,7 +4771,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.block_offhand = g_shield_offhand.load(std::memory_order_relaxed);
         steve.bow_ticks = steve_dead_now ? 0.f : g_bow_ticks.load(std::memory_order_relaxed);
         steve.sneaking = steve_dead_now ? false : g_sneak_active.load(std::memory_order_relaxed);
-        steve.sprinting = (steve_dead_now || steve.sneaking) ? false : g_sprint_active.load(std::memory_order_relaxed);
+        steve.sprinting = (steve_dead_now || steve.sneaking || steve.blocking) ? false : g_sprint_active.load(std::memory_order_relaxed);
         out.totem = g_feedback.totem();
         steve.swing = steve_dead_now ? 0.f : g_melee.swingProgress();
         out.hit = g_feedback.hit();
