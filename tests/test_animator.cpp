@@ -387,49 +387,52 @@ TEST(SteveAnimatorTest, JumpAndAirStanceKinematicsDynamics) {
     const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
     const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
 
-    mc::SteveAnimator anim_ground_run, anim_jump_up, anim_fall_down;
-    mc::SteveAnimInput in_ground_run{}, in_jump_up{}, in_fall_down{};
+    mc::SteveAnimator anim_vert_jump, anim_vert_fall, anim_air_move;
+    mc::SteveAnimInput in_vert_jump{}, in_vert_fall{}, in_air_move{};
 
-    // Ground run: 4.317 m/s on ground
-    in_ground_run.forward_speed = 4.317f;
-    in_ground_run.on_ground = true;
+    // 1. Pure vertical jump / fall (No horizontal keys pressed: forward_speed = 0, strafe_speed = 0)
+    // Vanilla Minecraft: limbs remain completely straight, motionless and neutral (no bicycle, no artificial splay)
+    in_vert_jump.forward_speed = 0.f;
+    in_vert_jump.strafe_speed = 0.f;
+    in_vert_jump.on_ground = false;
+    in_vert_jump.vertical_speed = 4.5f;
 
-    // Jump rising: horizontal speed + vy = +4.5 m/s (rising phase)
-    in_jump_up.forward_speed = 4.317f;
-    in_jump_up.on_ground = false;
-    in_jump_up.vertical_speed = 4.5f;
+    in_vert_fall.forward_speed = 0.f;
+    in_vert_fall.strafe_speed = 0.f;
+    in_vert_fall.on_ground = false;
+    in_vert_fall.vertical_speed = -6.0f;
 
-    // Falling: vy = -6.0 m/s (falling phase)
-    in_fall_down.forward_speed = 4.317f;
-    in_fall_down.on_ground = false;
-    in_fall_down.vertical_speed = -6.0f;
+    // 2. Air movement / Running jump (WASD held in mid-air: forward_speed > 0)
+    // Vanilla Minecraft: limbSwing is driven by horizontal displacement. Limbs continue their
+    // natural rhythmic swinging in the air ("moonwalk / space-stepping" effect).
+    in_air_move.forward_speed = 4.317f;
+    in_air_move.on_ground = false;
+    in_air_move.vertical_speed = 3.0f;
 
     for (int i = 0; i < 10; ++i) {
-        anim_ground_run.update(0.05f, in_ground_run);
-        anim_jump_up.update(0.05f, in_jump_up);
-        anim_fall_down.update(0.05f, in_fall_down);
+        anim_vert_jump.update(0.05f, in_vert_jump);
+        anim_vert_fall.update(0.05f, in_vert_fall);
+        anim_air_move.update(0.05f, in_air_move);
     }
 
-    const auto& t_jump = anim_jump_up.getTransforms();
-    const auto& t_fall = anim_fall_down.getTransforms();
+    const auto& t_vert_jump = anim_vert_jump.getTransforms();
+    const auto& t_vert_fall = anim_vert_fall.getTransforms();
+    const auto& t_air_move = anim_air_move.getTransforms();
 
-    // 1. Air Decoupling: In the air, legs do not bicycle/stride with ground frequency;
-    // Rising jump legs tilt backwards (pitch > 0) with slight outward splay
-    EXPECT_GT(t_jump[rl].rot.y, 0.05f) << "Right leg must tilt back in rising jump (pitch > 0)";
-    EXPECT_GT(t_jump[ll].rot.y, 0.05f) << "Left leg must tilt back in rising jump (pitch > 0)";
+    // 1. Vertical Jump & Fall: Legs and arms remain completely straight and parallel
+    EXPECT_FLOAT_EQ(t_vert_jump[rl].rot.y, 0.0f) << "Vertical jump legs stay completely straight (pitch == 0)";
+    EXPECT_FLOAT_EQ(t_vert_jump[ll].rot.y, 0.0f) << "Vertical jump legs stay completely straight (pitch == 0)";
+    EXPECT_FLOAT_EQ(t_vert_jump[rl].rot.x, 0.0f) << "Vertical jump legs do not artificially splay outward";
+    EXPECT_FLOAT_EQ(t_vert_jump[ll].rot.x, 0.0f) << "Vertical jump legs do not artificially splay outward";
 
-    // 2. Outward splay of legs during jump (Roll):
-    // Right leg rolls slightly right, left leg rolls slightly left for aerodynamic balance
-    EXPECT_GT(t_jump[rl].rot.x, 0.0f) << "Right leg rolls slightly outward";
-    EXPECT_LT(t_jump[ll].rot.x, 0.0f) << "Left leg rolls slightly outward";
+    EXPECT_FLOAT_EQ(t_vert_fall[rl].rot.y, 0.0f) << "Vertical fall legs stay completely straight (pitch == 0)";
+    EXPECT_FLOAT_EQ(t_vert_fall[ll].rot.y, 0.0f) << "Vertical fall legs stay completely straight (pitch == 0)";
 
-    // 3. Arms poise during jump: arms spread slightly outward and raise for balance
-    EXPECT_LT(t_jump[ra].rot.y, 0.0f) << "Right arm raises slightly during jump";
-    EXPECT_LT(t_jump[la].rot.y, 0.0f) << "Left arm raises slightly during jump";
-
-    // 4. Falling phase: legs extend downward to prepare for touchdown (pitch diminishes towards 0)
-    EXPECT_LT(t_fall[rl].rot.y, t_jump[rl].rot.y) << "Legs straighten downward during fall to meet ground";
-    EXPECT_LT(t_fall[ll].rot.y, t_jump[ll].rot.y) << "Legs straighten downward during fall to meet ground";
+    // 2. Air Movement with Horizontal Speed: limbs swing rhythmically (authentic vanilla space-step)
+    EXPECT_NE(t_air_move[rl].rot.y, 0.0f) << "Legs swing when moving horizontally in mid-air";
+    EXPECT_NE(t_air_move[ll].rot.y, 0.0f) << "Legs swing when moving horizontally in mid-air";
+    EXPECT_NE(t_air_move[ra].rot.y, 0.0f) << "Arms swing when moving horizontally in mid-air";
+    EXPECT_NE(t_air_move[la].rot.y, 0.0f) << "Arms swing when moving horizontally in mid-air";
 }
 
 
