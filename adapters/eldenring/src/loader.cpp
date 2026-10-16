@@ -47,6 +47,7 @@
 #include "eldenring_buddy.hpp"
 #include "eldenring_chrscan.hpp"
 #include "eldenring_mobs.hpp"
+#include "eldenring_virtual_summon.hpp"
 #include "eldenring_creative.hpp"
 #include "eldenring_flight.hpp"
 #include "eldenring_los.hpp"
@@ -593,6 +594,7 @@ std::mutex g_summon_mutex;
 std::vector<eldenring::mobs::MobSnapshot> g_summon_list; // the team 47 summons seen by the last HideSummonModels (render thread), read by the HUD provider
 float g_mob_yaw_offset = eldenring::live::summon::kDefaultMobYawOffset; // monster/wolf orientation quaternion aligns forward; default 0 (mob_yaw_offset_deg)
 eldenring::creeper::CreeperManager g_creeper_mgr;
+eldenring::summon::VirtualSummonManager g_virtual_summons;
 
 std::set<uintptr_t> g_hidden_flag_addresses; // the disp_flags words whose drawn bit we cleared (render thread only), to put it back
 std::map<uintptr_t, uint16_t> g_suppressed_sfx_slots; // the sfx slot control words whose skip bit we set, to restore on exit
@@ -713,7 +715,66 @@ void HideSummonModels() {
             it = last_hp.erase(it);
         }
     }
-    if (!mc_on) g_hidden_flag_addresses.clear(); // the ones left belong to summons that are gone: nothing to put back
+    if (!mc_on || PlayerDead()) {
+        g_hidden_flag_addresses.clear(); // the ones left belong to summons that are gone: nothing to put back
+        g_virtual_summons.dismissAll();
+    } else {
+        const uintptr_t player = PlayerChrPtr();
+        if (player != 0) {
+            float p_pos[3], p_q[4];
+            if (detail::readPhysicsPosition(g_reader, g_img.base, player, p_pos) &&
+                detail::readPhysicsOrientation(g_reader, g_img.base, player, p_q)) {
+                eldenring::summon::PlayerPose pp;
+                pp.pos[0] = p_pos[0];
+                pp.pos[1] = p_pos[1];
+                pp.pos[2] = p_pos[2];
+                pp.yaw = eldenring::render::yawFromQuat(p_q[0], p_q[1], p_q[2], p_q[3]);
+
+                std::vector<eldenring::summon::EnemyTarget> enemy_targets;
+                for (const EnemyInfo& e : list) {
+                    if (e.team != eldenring::live::summon::kTeam && e.hp > 0 && e.chr != player) {
+                        eldenring::summon::EnemyTarget et;
+                        et.chr_ins = e.chr;
+                        et.hp = e.hp;
+                        et.max_hp = e.max_hp;
+                        et.is_hostile = true;
+                        detail::readPhysicsPosition(g_reader, g_img.base, e.chr, et.pos);
+                        enemy_targets.push_back(et);
+                    }
+                }
+
+                static uint64_t last_time_ms = 0;
+                const uint64_t now_ms = GetTickCount64();
+                float dt = last_time_ms > 0 ? static_cast<float>(now_ms - last_time_ms) / 1000.0f : 0.016f;
+                last_time_ms = now_ms;
+                if (dt <= 0.0f || dt > 0.1f) dt = 0.016f;
+
+                g_virtual_summons.update(dt, pp, enemy_targets);
+
+                auto intents = g_virtual_summons.drainDamageIntents();
+                for (const auto& in : intents) {
+                    g_queue.enqueue(in.target_chr_ins, static_cast<int>(in.damage_amount), NowTick());
+                }
+
+                auto proj_intents = g_virtual_summons.drainProjectileIntents();
+                for (const auto& pi : proj_intents) {
+                    eraudio::Play("entity.arrow.shoot", 1.0f);
+                    Log("virtual ranged summon: fired projectile at target %llX (damage=%.1f)",
+                        static_cast<unsigned long long>(pi.target_chr_ins), pi.damage);
+                }
+
+                auto exp_events = g_virtual_summons.drainExplosionEvents();
+                for (const auto& ev : exp_events) {
+                    eraudio::Play("entity.generic.explode", 1.0f);
+                    Log("virtual creeper: DETONATION at (%.2f %.2f %.2f)!", ev.pos[0], ev.pos[1], ev.pos[2]);
+                    eldenring::world::VoxelWorldRuntime::Instance().enqueueTntIntent(ev.pos, ev.radius, ev.damage);
+                }
+
+                const auto virt_snaps = g_virtual_summons.generateSnapshots();
+                seen.insert(seen.end(), virt_snaps.begin(), virt_snaps.end());
+            }
+        }
+    }
     std::lock_guard<std::mutex> g(g_summon_mutex);
     g_summon_list = mc_on ? seen : std::vector<eldenring::mobs::MobSnapshot>{};
 }
@@ -1288,65 +1349,8 @@ bool ReadFileAll(const std::string& path, std::vector<uint8_t>& out); // defined
 void LogPlayerPoseForBuddy(); // defined below
 
 void RunSummonExperiment() {
-    int32_t summon_request = eldenring::buddy::kKaidenWarriorRequest; // default to 1.95m humanoid for correct hitbox
-    std::vector<uint8_t> summon_txt;
-    if (ReadFileAll(g_game_dir + "mc_er_summon.txt", summon_txt) && !summon_txt.empty()) {
-        std::string content(reinterpret_cast<const char*>(summon_txt.data()), summon_txt.size());
-        size_t first = content.find_first_not_of(" \t\r\n");
-        size_t last = content.find_last_not_of(" \t\r\n");
-        if (first != std::string::npos && last != std::string::npos) {
-            std::string token = content.substr(first, last - first + 1);
-            summon_request = eldenring::buddy::resolveSummonRequest(token);
-        }
-    }
-    constexpr int32_t kTabletEntityId = 1042360100;  // the tablet entity observed with it (Limgrave tile 42_36)
-    using eldenring::buddy::sample;
-    const auto before = sample(g_reader, g_img.base);
-    const char* why = eldenring::buddy::refusalReason(before);
-    if (why[0] != '\0') {
-        Log("summon: refused: %s", why);
-        return;
-    }
-    const uintptr_t player = PlayerChrPtr();
-    float pos[3], q[4];
-    if (player == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, pos) ||
-        !detail::readPhysicsOrientation(g_reader, g_img.base, player, q)) {
-        Log("summon: refused: the player's position is not readable");
-        return;
-    }
-    const auto spawn = eldenring::buddy::spawnPointAhead(pos, eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]));
-    const auto plan = eldenring::buddy::planSummon(before, summon_request, kTabletEntityId, spawn);
-    if (!plan) {
-        Log("summon: no plan for request %d", summon_request);
-        return;
-    }
-
-    bool sp_ok = true;
-    for (int i = 0; i < 4; ++i) {
-        uint32_t bits;
-        std::memcpy(&bits, &plan->spawn.pos[i], sizeof(bits));
-        sp_ok = SafeWrite32(plan->spawn_address + 4 * static_cast<uintptr_t>(i), bits) && sp_ok;
-    }
-    uint32_t yaw_bits;
-    std::memcpy(&yaw_bits, &plan->spawn.yaw, sizeof(yaw_bits));
-    sp_ok = SafeWrite32(plan->yaw_address, yaw_bits) && sp_ok;
-    if (!sp_ok) {
-        Log("summon: writing the spawn point failed; nothing else was written");
-        return;
-    }
-    const bool t_ok = SafeWrite32(plan->tablet_address, static_cast<uint32_t>(plan->tablet));
-    const bool r_ok = t_ok && SafeWrite32(plan->request_address, static_cast<uint32_t>(plan->request));
-    const auto after = sample(g_reader, g_img.base);
-    Log("summon: wrote tablet=%d request=%d (%s) | before request=%d active=%d tablet=%d | right after request=%d active=%d tablet=%d",
-        plan->tablet, plan->request, r_ok ? "ok" : "WRITE FAILED", before.request, before.active, before.tablet, after.request, after.active,
-        after.tablet);
-    Log("summon: wrote spawn=(%.2f %.2f %.2f %.2f) yaw=%.2f for the player at (%.2f %.2f %.2f)", static_cast<double>(plan->spawn.pos[0]),
-        static_cast<double>(plan->spawn.pos[1]), static_cast<double>(plan->spawn.pos[2]), static_cast<double>(plan->spawn.pos[3]),
-        static_cast<double>(plan->spawn.yaw), static_cast<double>(pos[0]), static_cast<double>(pos[1]), static_cast<double>(pos[2]));
-    Log("summon: spawn point in the manager was (%.2f %.2f %.2f %.2f) yaw=%.2f", static_cast<double>(before.spawn_pos[0]),
-        static_cast<double>(before.spawn_pos[1]), static_cast<double>(before.spawn_pos[2]), static_cast<double>(before.spawn_pos[3]),
-        static_cast<double>(before.spawn_yaw));
-    LogPlayerPoseForBuddy();
+    // Deprecated: CSBuddyMan spirit ash pipeline is completely replaced by client-managed VirtualSummonManager.
+    // Intentionally no-op to eliminate all native Dismiss crashing.
 }
 
 void RunBulletFire(); // defined with the spawn_bullet logger below
@@ -1657,27 +1661,47 @@ struct SummonWatch {
 };
 SummonWatch g_summon_watch;
 std::atomic<uint64_t> g_last_summon_ms{0};
-constexpr uint64_t kSummonCooldownMs = 3000; // one request at a time: the manager consumes it on the next frame and spawns for a few seconds
+constexpr uint64_t kSummonCooldownMs = 200; // Fast and responsive virtual summon (no FromSoftware engine locks)
 
-// Returns false when the feature is off (no mc_er_summon.txt) or a request is still in flight.
+// Returns false when capacity is full or player pose unreadable. Completely decoupled from CSBuddyMan.
 bool QueueSummon(const char* source) {
-    if (!FileExists(g_game_dir + "mc_er_summon.txt")) {
-        Log("%s: ignored (no mc_er_summon.txt in the game directory)", source);
-        return false;
-    }
     const uint64_t now = GetTickCount64();
     if (now - g_last_summon_ms.load(std::memory_order_relaxed) < kSummonCooldownMs) return false;
     g_last_summon_ms.store(now);
-    g_summon_watch.baseline.clear();
-    std::vector<EnemyInfo> before;
-    if (enumerateEnemies(g_reader, g_img.base, before, 4000)) {
-        for (const EnemyInfo& e : before) g_summon_watch.baseline.push_back(e.chr);
+
+    const uintptr_t player = PlayerChrPtr();
+    if (player == 0) {
+        Log("%s: refused (no player entity)", source);
+        return false;
     }
-    g_summon_watch.t0_ms = now;
-    g_summon_watch.reports_left = 2;
-    g_chrscan_count = 0;
-    g_summon_pending.store(true);
-    Log("%s: summon queued for the game thread (%zu entities in the baseline)", source, g_summon_watch.baseline.size());
+    float pos[3], q[4];
+    if (!detail::readPhysicsPosition(g_reader, g_img.base, player, pos) ||
+        !detail::readPhysicsOrientation(g_reader, g_img.base, player, q)) {
+        Log("%s: refused (player position/orientation not readable)", source);
+        return false;
+    }
+
+    eldenring::summon::PlayerPose p;
+    p.pos[0] = pos[0];
+    p.pos[1] = pos[1];
+    p.pos[2] = pos[2];
+    p.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]);
+
+    std::string model_type = "creeper"; // Default to creeper for active summon feature
+    std::vector<uint8_t> summon_txt;
+    if (ReadFileAll(g_game_dir + "mc_er_summon.txt", summon_txt) && !summon_txt.empty()) {
+        std::string content(reinterpret_cast<const char*>(summon_txt.data()), summon_txt.size());
+        for (char& c : content) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (content.find("creeper") != std::string::npos) model_type = "creeper";
+        else if (content.find("skeleton") != std::string::npos) model_type = "skeleton";
+        else if (content.find("iron_golem") != std::string::npos || content.find("golem") != std::string::npos) model_type = "iron_golem";
+        else if (content.find("wolf") != std::string::npos) model_type = "wolf";
+        else if (content.find("zombie") != std::string::npos) model_type = "zombie";
+    }
+
+    uint64_t id = g_virtual_summons.spawnMob(model_type, p, 2.5f);
+    Log("%s: virtual summon created (type=%s, id=%llu, active=%zu) at (%.2f, %.2f, %.2f) yaw=%.2f",
+        source, model_type.c_str(), id, g_virtual_summons.activeCount(), pos[0], pos[1], pos[2], p.yaw);
     return true;
 }
 
@@ -1754,7 +1778,11 @@ bool TryIgniteCreeper() {
         const float dz = s.feet[2] - player_feet[2];
         const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
         if (dist <= 4.5f) {
-            if (g_creeper_mgr.ignite(s.id)) {
+            bool ignited = g_virtual_summons.igniteCreeper(s.id);
+            if (!ignited) {
+                ignited = g_creeper_mgr.ignite(s.id);
+            }
+            if (ignited) {
                 eraudio::Play("entity.tnt.primed", 1.0f);
                 Log("creeper: manually ignited creeper %p with flint and steel!", reinterpret_cast<void*>(s.id));
                 std::lock_guard<std::mutex> g(g_melee_mutex);
@@ -1976,17 +2004,22 @@ void ProcessCreeperExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies,
             eraudio::Play("entity.generic.explode", 1.0f);
             Log("creeper: DETONATION at (%.2f %.2f %.2f)!", cev.pos[0], cev.pos[1], cev.pos[2]);
             eldenring::world::VoxelWorldRuntime::Instance().enqueueTntIntent(cev.pos, cev.radius, cev.damage);
-            const int p_dmg = eldenring::tnt::computeTntExplosionDamage(cev.pos, player_feet, cev.radius, 350.0f);
+            int p_dmg = eldenring::tnt::computeTntExplosionDamage(cev.pos, player_feet, cev.radius, 350.0f);
             if (p_dmg > 0 && CurrentGameMode() == creative::GameMode::Survival) {
                 const uintptr_t p_chr = PlayerChrPtr();
-                const uintptr_t p_data = DataModuleOfChr(p_chr);
-                if (p_data != 0) {
-                    int32_t cur_hp = 0;
-                    if (SafeCopy(p_data + layout::kDataHp, &cur_hp, sizeof(cur_hp))) {
-                        SetChrHp(p_chr, std::max(0, cur_hp - p_dmg));
+                auto& r_ctx = eldenring::RuntimeContext::Instance();
+                r_ctx.mode().shield_blocking.store(g_shield_blocking.load(std::memory_order_relaxed), std::memory_order_relaxed);
+                p_dmg = eldenring::combat::CombatService::Instance().evaluateExplosionShieldBlock(p_chr, cev.pos, p_dmg, r_ctx);
+                if (p_dmg > 0) {
+                    const uintptr_t p_data = DataModuleOfChr(p_chr);
+                    if (p_data != 0) {
+                        int32_t cur_hp = 0;
+                        if (SafeCopy(p_data + layout::kDataHp, &cur_hp, sizeof(cur_hp))) {
+                            SetChrHp(p_chr, std::max(0, cur_hp - p_dmg));
+                        }
                     }
+                    eraudio::Play("entity.player.hurt");
                 }
-                eraudio::Play("entity.player.hurt");
             }
             {
                 std::lock_guard<std::mutex> gb(g_blocks_mutex);
@@ -1995,7 +2028,7 @@ void ProcessCreeperExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies,
                     SendBlockMesh();
                 }
             }
-            if (cev.kill_creeper && cev.creeper_id != 0) {
+            if (cev.kill_creeper && cev.creeper_id >= 0x100000000ULL) {
                 KillChr(cev.creeper_id);
                 {
                     std::lock_guard<std::mutex> gs(g_summon_mutex);
@@ -2046,6 +2079,7 @@ void BlocksTick() {
             if (g_blocks.count() != 0) Log("blocks: loading screen, %zu blocks forgotten", g_blocks.count());
             g_blocks.clear();
             g_tnt_mgr.clear();
+            g_virtual_summons.dismissAll();
         }
         prev_loading = ls.screen_loading;
     }
@@ -2403,7 +2437,9 @@ DWORD WINAPI KeyThread(LPVOID) {
                 shield_in_offhand = !(g_melee.heldItem() == mc::ItemId::Shield && g_melee.countAt(g_melee.selectedSlot()) > 0);
             }
             g_shield_offhand.store(shield_in_offhand, std::memory_order_relaxed);
-            const bool right_held = g_input_enabled.load() && erin::RightHeld() && fg && WantSuppress() && !inv_open && !PlayerDead() && g_mc_mode.load();
+            const bool right_held = g_input_enabled.load() &&
+                                    (erin::RightHeld() || (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0) &&
+                                    fg && WantSuppress() && !inv_open && !PlayerDead() && g_mc_mode.load();
             const bool is_drawing_bow = g_bow_ticks.load(std::memory_order_relaxed) > 0;
             const bool is_eating = g_eating.isEating();
             const bool shield_usable = has_shield && !is_drawing_bow && !is_eating;

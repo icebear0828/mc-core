@@ -86,6 +86,7 @@ public:
 
     // Shield evaluation
     ShieldVerdict evaluateShield(uintptr_t player, uintptr_t attacker_chr);
+    int evaluateExplosionShieldBlock(uintptr_t player, const float explosion_pos[3], int raw_damage, RuntimeContext& ctx);
 
     // Natural hits on player: shield blocking, absorption, armor reduction, totem of undying
     bool playerHitSurvival(void* module, void* attacker, uint8_t* ctx_ptr, uint8_t blocked,

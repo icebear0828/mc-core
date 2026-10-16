@@ -58,6 +58,36 @@ ShieldVerdict CombatService::evaluateShield(uintptr_t player, uintptr_t attacker
     return v;
 }
 
+int CombatService::evaluateExplosionShieldBlock(uintptr_t player, const float explosion_pos[3], int raw_damage, RuntimeContext& ctx) {
+    if (raw_damage <= 0 || !ctx.mode().shield_blocking.load(std::memory_order_relaxed) || !callbacks_.read_physics_pos) {
+        return raw_damage;
+    }
+    float pp[3]{};
+    if (!callbacks_.read_physics_pos(player, pp)) {
+        return raw_damage;
+    }
+
+    CameraPose cam{};
+    float q[4]{};
+    const bool ok_cam = callbacks_.read_camera && callbacks_.read_camera(cam);
+    const bool ok_orient = callbacks_.read_physics_orient && callbacks_.read_physics_orient(player, q);
+    if (!ok_cam && !ok_orient) {
+        return raw_damage;
+    }
+
+    const float yaw = ok_cam ? eldenring::shield::yawFromForward(cam.forward[0], cam.forward[2])
+                             : eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]);
+
+    if (mc::isAttackBlocked(pp, yaw, explosion_pos)) {
+        if (callbacks_.play_sound) {
+            callbacks_.play_sound("item.shield.block", 1.0f);
+        }
+        log("SHIELD: blocked explosion at (%.2f %.2f %.2f) (dmg %d -> 0)", explosion_pos[0], explosion_pos[1], explosion_pos[2], raw_damage);
+        return 0;
+    }
+    return raw_damage;
+}
+
 bool CombatService::playerHitSurvival(void* module, void* attacker, uint8_t* ctx_ptr, uint8_t blocked,
                                      uint32_t& popped_heal_target, MeleeController& melee,
                                      SurvivalState& survival,
