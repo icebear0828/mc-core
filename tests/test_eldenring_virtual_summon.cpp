@@ -244,3 +244,81 @@ TEST(VirtualSummonTest, DismissAllSafelyClearsAllVirtualSummonsWithoutHook) {
     EXPECT_EQ(mgr.activeCount(), 0u);
     EXPECT_TRUE(mgr.generateSnapshots().empty());
 }
+
+TEST(VirtualSummonTest, CreeperNeverGeneratesMeleeDamageIntents) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t creeper_id = mgr.spawnMob("creeper", p, 1.0f);
+    ASSERT_NE(creeper_id, 0u);
+
+    // Enemy within 1.0m
+    std::vector<EnemyTarget> enemies = {
+        makeEnemy(0xDEAD, 0.0f, 0.0f, 0.0f, 500, 500)
+    };
+
+    // Update creeper: even within attack range, creeper must NEVER generate DamageIntent (only zombie/melee mobs do)
+    mgr.update(0.1f, p, enemies);
+    auto intents = mgr.drainDamageIntents();
+    EXPECT_TRUE(intents.empty());
+}
+
+TEST(VirtualSummonTest, FlintAndSteelIgniteStartsFuseImmediately) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t creeper_id = mgr.spawnMob("creeper", p, 2.0f);
+    ASSERT_NE(creeper_id, 0u);
+
+    const auto* mob_before = mgr.findMob(creeper_id);
+    ASSERT_NE(mob_before, nullptr);
+    EXPECT_FALSE(mob_before->is_primed);
+
+    // Manually ignite via flint and steel
+    bool ignited = mgr.igniteCreeper(creeper_id);
+    EXPECT_TRUE(ignited);
+
+    const auto* mob_after = mgr.findMob(creeper_id);
+    ASSERT_NE(mob_after, nullptr);
+    EXPECT_TRUE(mob_after->is_primed);
+    EXPECT_FLOAT_EQ(mob_after->fuse_timer, mob_after->fuse_duration);
+
+    // Advance 1.55s -> Detonates even with 0 enemies nearby!
+    std::vector<EnemyTarget> no_enemies;
+    mgr.update(1.55f, p, no_enemies);
+
+    auto exp = mgr.drainExplosionEvents();
+    ASSERT_EQ(exp.size(), 1u);
+    EXPECT_EQ(exp[0].source_mob_id, creeper_id);
+    EXPECT_EQ(mgr.activeCount(), 0u);
+}
+
+TEST(VirtualSummonTest, CreeperExplosionDamagesNearbySummonsChainDetonation) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t c1 = mgr.spawnMob("creeper", p, 1.0f); // at (0, 0, -1)
+    uint64_t c2 = mgr.spawnMob("creeper", p, 3.0f); // at (0, 0, -3), 2.0m away from c1
+    ASSERT_NE(c1, 0u);
+    ASSERT_NE(c2, 0u);
+    EXPECT_EQ(mgr.activeCount(), 2u);
+
+    // Igniting c1 manually
+    EXPECT_TRUE(mgr.igniteCreeper(c1));
+
+    // Wait until c1 explodes (1.55s)
+    std::vector<EnemyTarget> no_enemies;
+    mgr.update(1.55f, p, no_enemies);
+
+    auto exp = mgr.drainExplosionEvents();
+    ASSERT_EQ(exp.size(), 1u);
+    EXPECT_EQ(exp[0].source_mob_id, c1);
+
+    // c1 is destroyed by its own explosion
+    EXPECT_EQ(mgr.findMob(c1), nullptr);
+
+    // c2 was in range (2.0m <= 7.0m radius, 1500 damage >> 20 HP) -> c2 must have taken lethal damage!
+    const auto* mob2 = mgr.findMob(c2);
+    // Either c2 died immediately or is in dying state
+    if (mob2) {
+        EXPECT_TRUE(mob2->is_dying);
+        EXPECT_EQ(mob2->hp, 0);
+    }
+}

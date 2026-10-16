@@ -715,7 +715,7 @@ void HideSummonModels() {
             it = last_hp.erase(it);
         }
     }
-    if (!mc_on) {
+    if (!mc_on || PlayerDead()) {
         g_hidden_flag_addresses.clear(); // the ones left belong to summons that are gone: nothing to put back
         g_virtual_summons.dismissAll();
     } else {
@@ -1769,7 +1769,11 @@ bool TryIgniteCreeper() {
         const float dz = s.feet[2] - player_feet[2];
         const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
         if (dist <= 4.5f) {
-            if (g_creeper_mgr.ignite(s.id)) {
+            bool ignited = g_virtual_summons.igniteCreeper(s.id);
+            if (!ignited) {
+                ignited = g_creeper_mgr.ignite(s.id);
+            }
+            if (ignited) {
                 eraudio::Play("entity.tnt.primed", 1.0f);
                 Log("creeper: manually ignited creeper %p with flint and steel!", reinterpret_cast<void*>(s.id));
                 std::lock_guard<std::mutex> g(g_melee_mutex);
@@ -2061,6 +2065,7 @@ void BlocksTick() {
             if (g_blocks.count() != 0) Log("blocks: loading screen, %zu blocks forgotten", g_blocks.count());
             g_blocks.clear();
             g_tnt_mgr.clear();
+            g_virtual_summons.dismissAll();
         }
         prev_loading = ls.screen_loading;
     }
