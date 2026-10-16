@@ -596,3 +596,10 @@ void WukongAdapter::setEquippedItems(ItemId main, ItemId off) {
 }
 
 } // namespace mc::adapter
+
+namespace b1::native {
+UKismetSystemLibrary::LineTraceHandler& UKismetSystemLibrary::customLineTrace() {
+    static LineTraceHandler s_handler{nullptr};
+    return s_handler;
+}
+} // namespace b1::native
