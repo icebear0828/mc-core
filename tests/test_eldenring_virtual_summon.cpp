@@ -379,3 +379,151 @@ TEST(VirtualSummonTest, AntiClippingStopsMobFromPenetratingTargetAabb) {
     // Pushout must separate them so dist >= 0.65m!
     EXPECT_GE(dist, 0.65f);
 }
+
+TEST(VirtualSummonTest, ArchetypeRegistryHasDefaultsAndAllowsCustom) {
+    VirtualSummonManager mgr;
+
+    // Verify default archetypes
+    const auto* skel_arch = mgr.findArchetype("skeleton");
+    ASSERT_NE(skel_arch, nullptr);
+    EXPECT_EQ(skel_arch->id, "skeleton");
+    EXPECT_EQ(skel_arch->attack_style, MobAttackStyle::Ranged);
+    EXPECT_EQ(skel_arch->max_hp, 20);
+    EXPECT_FLOAT_EQ(skel_arch->attack_range, 14.0f);
+    EXPECT_FLOAT_EQ(skel_arch->attack_min_range, 4.0f);
+    EXPECT_FLOAT_EQ(skel_arch->damage, 7.0f);
+
+    const auto* golem_arch = mgr.findArchetype("iron_golem");
+    ASSERT_NE(golem_arch, nullptr);
+    EXPECT_EQ(golem_arch->id, "iron_golem");
+    EXPECT_EQ(golem_arch->attack_style, MobAttackStyle::Melee);
+    EXPECT_EQ(golem_arch->max_hp, 100);
+    EXPECT_FLOAT_EQ(golem_arch->damage, 21.0f);
+    EXPECT_FLOAT_EQ(golem_arch->scale, 1.2f);
+
+    // Register custom archetype
+    MobArchetype custom;
+    custom.id = "snow_golem";
+    custom.max_hp = 10;
+    custom.speed = 3.0f;
+    custom.attack_style = MobAttackStyle::Ranged;
+    custom.attack_range = 10.0f;
+    custom.attack_min_range = 3.0f;
+    custom.damage = 1.0f;
+    custom.attack_cooldown = 0.8f;
+    mgr.registerArchetype(custom);
+
+    const auto* registered = mgr.findArchetype("snow_golem");
+    ASSERT_NE(registered, nullptr);
+    EXPECT_EQ(registered->max_hp, 10);
+
+    // Spawn custom mob and verify properties propagated
+    const auto p = makePlayer();
+    uint64_t snow_id = mgr.spawnMob("snow_golem", p, 2.0f);
+    const auto* snow_mob = mgr.findMob(snow_id);
+    ASSERT_NE(snow_mob, nullptr);
+    EXPECT_EQ(snow_mob->hp, 10);
+    EXPECT_EQ(snow_mob->max_hp, 10);
+    EXPECT_FLOAT_EQ(snow_mob->speed, 3.0f);
+}
+
+TEST(VirtualSummonTest, SkeletonRangedCombatMaintainsStandoffAndFires) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    // Skeleton spawned at (0, 0, -2.0)
+    uint64_t skel_id = mgr.spawnMob("skeleton", p, 2.0f);
+    ASSERT_NE(skel_id, 0u);
+
+    // Enemy placed at (0, 0, 8.0) -> distance is 10.0m
+    // (within attack_range 14.0m and > attack_min_range 4.0m)
+    std::vector<EnemyTarget> enemies = {
+        makeEnemy(0xAAAA, 0.0f, 0.0f, 8.0f, 200, 200)
+    };
+
+    // Step 0.1s
+    mgr.update(0.1f, p, enemies);
+
+    const auto* skel = mgr.findMob(skel_id);
+    ASSERT_NE(skel, nullptr);
+
+    // Skeleton should face the enemy (+Z direction has yaw = +-pi)
+    EXPECT_NEAR(std::abs(skel->yaw), 3.1415926f, 0.1f);
+
+    // Skeleton should NOT charge blindly into melee range; it maintains standoff
+    EXPECT_NEAR(skel->pos[2], -2.0f, 0.5f);
+
+    // Fired projectile and damage intent
+    auto dmg_intents = mgr.drainDamageIntents();
+    ASSERT_EQ(dmg_intents.size(), 1u);
+    EXPECT_EQ(dmg_intents[0].target_chr_ins, 0xAAAAu);
+    EXPECT_FLOAT_EQ(dmg_intents[0].damage_amount, 7.0f);
+    EXPECT_EQ(dmg_intents[0].source_mob_id, skel_id);
+
+    auto proj_intents = mgr.drainProjectileIntents();
+    ASSERT_EQ(proj_intents.size(), 1u);
+    EXPECT_EQ(proj_intents[0].target_chr_ins, 0xAAAAu);
+    EXPECT_FLOAT_EQ(proj_intents[0].damage, 7.0f);
+    EXPECT_FLOAT_EQ(proj_intents[0].speed, 22.0f);
+
+    // Cooldown in effect: step another 0.5s (0.6s total < 1.5s cooldown) -> no new intents
+    mgr.update(0.5f, p, enemies);
+    EXPECT_TRUE(mgr.drainDamageIntents().empty());
+    EXPECT_TRUE(mgr.drainProjectileIntents().empty());
+
+    // Step 1.0s more (total 1.6s > 1.5s cooldown) -> fires second arrow!
+    mgr.update(1.0f, p, enemies);
+    auto second_shots = mgr.drainDamageIntents();
+    EXPECT_EQ(second_shots.size(), 1u);
+}
+
+TEST(VirtualSummonTest, SkeletonKitingWhenEnemyRushesClose) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    // Skeleton spawned at (0, 0, -2.0)
+    uint64_t skel_id = mgr.spawnMob("skeleton", p, 2.0f);
+    ASSERT_NE(skel_id, 0u);
+
+    // Enemy placed at (0, 0, 0.0) -> distance is 2.0m, which is LESS than attack_min_range (4.0m)
+    std::vector<EnemyTarget> enemies = {
+        makeEnemy(0xBBBB, 0.0f, 0.0f, 0.0f, 200, 200)
+    };
+
+    float initial_z = mgr.findMob(skel_id)->pos[2]; // -2.0f
+
+    // Step 0.5s: skeleton should back up (kite) away from enemy at (0, 0, 0)
+    // Moving backwards means Z decreases further (e.g. from -2.0 to -2.5)
+    mgr.update(0.5f, p, enemies);
+
+    const auto* skel = mgr.findMob(skel_id);
+    ASSERT_NE(skel, nullptr);
+    EXPECT_LT(skel->pos[2], initial_z); // Kited backwards away from enemy!
+}
+
+TEST(VirtualSummonTest, IronGolemHeavyMeleeDamageAndTankStats) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t golem_id = mgr.spawnMob("iron_golem", p, 2.0f);
+    ASSERT_NE(golem_id, 0u);
+
+    const auto* golem = mgr.findMob(golem_id);
+    ASSERT_NE(golem, nullptr);
+    EXPECT_EQ(golem->hp, 100);
+    EXPECT_EQ(golem->max_hp, 100);
+    EXPECT_FLOAT_EQ(golem->scale, 1.2f);
+
+    // Enemy placed at 2.0m (within attack_range 2.5m)
+    std::vector<EnemyTarget> enemies = {
+        makeEnemy(0xCCCC, 0.0f, 0.0f, 0.0f, 500, 500)
+    };
+
+    mgr.update(0.1f, p, enemies);
+    auto intents = mgr.drainDamageIntents();
+    ASSERT_EQ(intents.size(), 1u);
+    EXPECT_FLOAT_EQ(intents[0].damage_amount, 21.0f); // Massive iron golem slap
+
+    // Tankiness: taking 30 damage doesn't kill it
+    bool alive = mgr.applyDamage(golem_id, 30);
+    EXPECT_TRUE(alive);
+    EXPECT_EQ(mgr.findMob(golem_id)->hp, 70);
+}
+

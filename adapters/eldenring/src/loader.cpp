@@ -756,6 +756,13 @@ void HideSummonModels() {
                     g_queue.enqueue(in.target_chr_ins, static_cast<int>(in.damage_amount), NowTick());
                 }
 
+                auto proj_intents = g_virtual_summons.drainProjectileIntents();
+                for (const auto& pi : proj_intents) {
+                    eraudio::Play("entity.arrow.shoot", 1.0f);
+                    Log("virtual ranged summon: fired projectile at target %llX (damage=%.1f)",
+                        static_cast<unsigned long long>(pi.target_chr_ins), pi.damage);
+                }
+
                 auto exp_events = g_virtual_summons.drainExplosionEvents();
                 for (const auto& ev : exp_events) {
                     eraudio::Play("entity.generic.explode", 1.0f);
@@ -1687,6 +1694,8 @@ bool QueueSummon(const char* source) {
         for (char& c : content) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         if (content.find("creeper") != std::string::npos) model_type = "creeper";
         else if (content.find("skeleton") != std::string::npos) model_type = "skeleton";
+        else if (content.find("iron_golem") != std::string::npos || content.find("golem") != std::string::npos) model_type = "iron_golem";
+        else if (content.find("wolf") != std::string::npos) model_type = "wolf";
         else if (content.find("zombie") != std::string::npos) model_type = "zombie";
     }
 

@@ -37,6 +37,37 @@ struct CreeperExplosionEvent {
     float damage{1500.0f};
 };
 
+enum class MobAttackStyle {
+    Melee,
+    Ranged,
+    SuicideExplode,
+    Passive
+};
+
+struct MobArchetype {
+    std::string id{"zombie"};
+    int max_hp{20};
+    float speed{3.8f};
+    MobAttackStyle attack_style{MobAttackStyle::Melee};
+    float attack_range{1.8f};
+    float attack_min_range{0.0f};
+    float attack_cooldown{1.0f};
+    float damage{6.0f};
+    float scale{1.0f};
+    float fuse_duration{1.5f};
+    float explosion_radius{7.0f};
+    float explosion_damage{1500.0f};
+};
+
+struct ProjectileIntent {
+    uint64_t source_mob_id{0};
+    uintptr_t target_chr_ins{0};
+    float origin[3]{0.0f, 0.0f, 0.0f};
+    float direction[3]{0.0f, 0.0f, 0.0f};
+    float damage{7.0f};
+    float speed{22.0f};
+};
+
 struct VirtualMob {
     uint64_t id{0};
     std::string model_type{"zombie"};
@@ -57,6 +88,11 @@ struct VirtualMob {
     float fuse_duration{1.5f};
     bool exploded{false};
     float white_flash{0.0f};
+    MobAttackStyle attack_style{MobAttackStyle::Melee};
+    float attack_range{1.8f};
+    float attack_min_range{0.0f};
+    float cooldown_duration{1.0f};
+    float damage{6.0f};
 };
 
 class VirtualSummonManager {
@@ -70,6 +106,99 @@ public:
     static constexpr float kAttackCooldownSeconds = 1.0f;
     static constexpr float kDeathMaxSeconds = 1.0f;
     static constexpr float kHurtMaxSeconds = 0.5f;
+
+    VirtualSummonManager() {
+        initDefaultArchetypes();
+    }
+
+    void initDefaultArchetypes() {
+        archetypes_.clear();
+
+        // 1. Zombie: standard melee humanoid
+        MobArchetype zombie;
+        zombie.id = "zombie";
+        zombie.max_hp = 20;
+        zombie.speed = 3.8f;
+        zombie.attack_style = MobAttackStyle::Melee;
+        zombie.attack_range = 1.8f;
+        zombie.attack_min_range = 0.0f;
+        zombie.attack_cooldown = 1.0f;
+        zombie.damage = 6.0f;
+        zombie.scale = 1.0f;
+        archetypes_.push_back(zombie);
+
+        // 2. Creeper: autonomous suicide detonation
+        MobArchetype creeper;
+        creeper.id = "creeper";
+        creeper.max_hp = 20;
+        creeper.speed = 3.8f;
+        creeper.attack_style = MobAttackStyle::SuicideExplode;
+        creeper.attack_range = 3.5f; // ignite distance
+        creeper.attack_min_range = 0.0f;
+        creeper.attack_cooldown = 0.0f;
+        creeper.damage = 0.0f; // damages via explosion
+        creeper.fuse_duration = 1.5f;
+        creeper.explosion_radius = 7.0f;
+        creeper.explosion_damage = 1500.0f;
+        creeper.scale = 1.0f;
+        archetypes_.push_back(creeper);
+
+        // 3. Skeleton: ranged archer with kiting
+        MobArchetype skeleton;
+        skeleton.id = "skeleton";
+        skeleton.max_hp = 20;
+        skeleton.speed = 4.0f;
+        skeleton.attack_style = MobAttackStyle::Ranged;
+        skeleton.attack_range = 14.0f;
+        skeleton.attack_min_range = 4.0f;
+        skeleton.attack_cooldown = 1.5f;
+        skeleton.damage = 7.0f;
+        skeleton.scale = 1.0f;
+        archetypes_.push_back(skeleton);
+
+        // 4. Iron Golem: tank melee powerhouse
+        MobArchetype iron_golem;
+        iron_golem.id = "iron_golem";
+        iron_golem.max_hp = 100;
+        iron_golem.speed = 3.2f;
+        iron_golem.attack_style = MobAttackStyle::Melee;
+        iron_golem.attack_range = 2.5f;
+        iron_golem.attack_min_range = 0.0f;
+        iron_golem.attack_cooldown = 1.2f;
+        iron_golem.damage = 21.0f;
+        iron_golem.scale = 1.2f;
+        archetypes_.push_back(iron_golem);
+
+        // 5. Wolf: fast melee companion
+        MobArchetype wolf;
+        wolf.id = "wolf";
+        wolf.max_hp = 20;
+        wolf.speed = 4.5f;
+        wolf.attack_style = MobAttackStyle::Melee;
+        wolf.attack_range = 1.6f;
+        wolf.attack_min_range = 0.0f;
+        wolf.attack_cooldown = 0.8f;
+        wolf.damage = 5.0f;
+        wolf.scale = 0.8f;
+        archetypes_.push_back(wolf);
+    }
+
+    void registerArchetype(const MobArchetype& archetype) {
+        for (auto& a : archetypes_) {
+            if (a.id == archetype.id) {
+                a = archetype;
+                return;
+            }
+        }
+        archetypes_.push_back(archetype);
+    }
+
+    [[nodiscard]] const MobArchetype* findArchetype(std::string_view id) const noexcept {
+        for (const auto& a : archetypes_) {
+            if (a.id == id) return &a;
+        }
+        return nullptr;
+    }
 
     [[nodiscard]] size_t activeCount() const noexcept {
         return mobs_.size();
@@ -95,24 +224,33 @@ public:
             mobs_.erase(mobs_.begin());
         }
 
+        std::string target_type = model_type.empty() ? "zombie" : std::string(model_type);
+        const MobArchetype* arch = findArchetype(target_type);
+        if (!arch) arch = findArchetype("zombie");
+
         VirtualMob mob;
         mob.id = next_id_++;
-        mob.model_type = model_type.empty() ? "zombie" : std::string(model_type);
-        mob.hp = 20;
-        mob.max_hp = 20;
+        mob.model_type = target_type;
+        mob.hp = arch ? arch->max_hp : 20;
+        mob.max_hp = arch ? arch->max_hp : 20;
         mob.is_dying = false;
         mob.hurt_timer = 0.0f;
         mob.death_timer = 0.0f;
         mob.attack_cooldown = 0.0f;
         mob.target_chr_ins = 0;
         mob.manual_primed = false;
-        mob.scale = 1.0f;
-        mob.speed = 3.8f;
+        mob.scale = arch ? arch->scale : 1.0f;
+        mob.speed = arch ? arch->speed : 3.8f;
         mob.is_primed = false;
-        mob.fuse_timer = 1.5f;
-        mob.fuse_duration = 1.5f;
+        mob.fuse_duration = arch ? arch->fuse_duration : 1.5f;
+        mob.fuse_timer = mob.fuse_duration;
         mob.exploded = false;
         mob.white_flash = 0.0f;
+        mob.attack_style = arch ? arch->attack_style : MobAttackStyle::Melee;
+        mob.attack_range = arch ? arch->attack_range : 1.8f;
+        mob.attack_min_range = arch ? arch->attack_min_range : 0.0f;
+        mob.cooldown_duration = arch ? arch->attack_cooldown : 1.0f;
+        mob.damage = arch ? arch->damage : 6.0f;
 
         // Spawn position ahead of player matching heading
         mob.pos[0] = player.pos[0] - std::sin(player.yaw) * forward_distance;
@@ -126,7 +264,7 @@ public:
 
     bool igniteCreeper(uint64_t id) {
         VirtualMob* mob = findMobMut(id);
-        if (!mob || mob->is_dying || mob->model_type != "creeper") return false;
+        if (!mob || mob->is_dying || mob->attack_style != MobAttackStyle::SuicideExplode) return false;
         mob->is_primed = true;
         mob->manual_primed = true;
         mob->fuse_timer = mob->fuse_duration;
@@ -169,7 +307,7 @@ public:
                 mob.attack_cooldown = std::max(0.0f, mob.attack_cooldown - dt);
             }
 
-            const bool is_creeper = (mob.model_type == "creeper");
+            const bool is_creeper = (mob.attack_style == MobAttackStyle::SuicideExplode);
 
             // Handle manual ignition (e.g. from Flint and Steel) even without hostile enemies
             if (is_creeper && mob.manual_primed) {
@@ -260,16 +398,60 @@ public:
                         mob.pos[2] += dir_z * step;
                         mob.pos[1] = target_pos[1];
                     }
-                } else {
-                    // Standard melee attack for zombie/skeleton/iron_golem (Creeper never enters here)
-                    if (dist <= kAttackRange) {
+                } else if (mob.attack_style == MobAttackStyle::Ranged) {
+                    // Ranged attack (e.g. skeleton bow, snow golem snowball)
+                    if (dist > mob.attack_range) {
+                        float step = std::min(dist - mob.attack_range * 0.9f, mob.speed * dt);
+                        float dir_x = dx / dist;
+                        float dir_z = dz / dist;
+                        mob.pos[0] += dir_x * step;
+                        mob.pos[2] += dir_z * step;
+                        mob.pos[1] = target_pos[1];
+                    } else if (mob.attack_min_range > 0.0f && dist < mob.attack_min_range) {
+                        // Enemy rushed too close: kite backwards away from target!
+                        float back_step = std::min(mob.attack_min_range - dist, mob.speed * 0.75f * dt);
+                        float dir_x = dx / dist;
+                        float dir_z = dz / dist;
+                        mob.pos[0] -= dir_x * back_step;
+                        mob.pos[2] -= dir_z * back_step;
+                        mob.pos[1] = target_pos[1];
+                    }
+
+                    // Fire ranged attack when within attack range and cooldown ready
+                    if (dist <= mob.attack_range) {
                         if (mob.attack_cooldown <= 0.0f) {
                             DamageIntent intent;
                             intent.target_chr_ins = best_target;
-                            intent.damage_amount = 6.0f;
+                            intent.damage_amount = mob.damage;
                             intent.source_mob_id = mob.id;
                             damage_intents_.push_back(intent);
-                            mob.attack_cooldown = kAttackCooldownSeconds;
+
+                            ProjectileIntent proj;
+                            proj.source_mob_id = mob.id;
+                            proj.target_chr_ins = best_target;
+                            proj.origin[0] = mob.pos[0];
+                            proj.origin[1] = mob.pos[1] + 1.4f;
+                            proj.origin[2] = mob.pos[2];
+                            proj.direction[0] = dx / dist;
+                            proj.direction[1] = (target_pos[1] - (mob.pos[1] + 1.4f)) / dist;
+                            proj.direction[2] = dz / dist;
+                            proj.damage = mob.damage;
+                            proj.speed = 22.0f;
+                            projectile_intents_.push_back(proj);
+
+                            mob.attack_cooldown = mob.cooldown_duration;
+                        }
+                    }
+                } else if (mob.attack_style == MobAttackStyle::Melee) {
+                    // Standard melee attack for zombie/iron_golem/wolf
+                    if (dist <= mob.attack_range) {
+                        if (mob.attack_cooldown <= 0.0f) {
+                            DamageIntent intent;
+                            intent.target_chr_ins = best_target;
+                            intent.damage_amount = mob.damage;
+                            intent.source_mob_id = mob.id;
+                            damage_intents_.push_back(intent);
+                            mob.attack_cooldown = mob.cooldown_duration;
                         }
                     } else {
                         float step = std::min(dist, mob.speed * dt);
@@ -401,6 +583,12 @@ public:
         return out;
     }
 
+    [[nodiscard]] std::vector<ProjectileIntent> drainProjectileIntents() {
+        std::vector<ProjectileIntent> out = std::move(projectile_intents_);
+        projectile_intents_.clear();
+        return out;
+    }
+
     [[nodiscard]] std::vector<CreeperExplosionEvent> drainExplosionEvents() {
         std::vector<CreeperExplosionEvent> out = std::move(explosion_events_);
         explosion_events_.clear();
@@ -431,13 +619,16 @@ public:
     void dismissAll() noexcept {
         mobs_.clear();
         damage_intents_.clear();
+        projectile_intents_.clear();
         explosion_events_.clear();
     }
 
 private:
     uint64_t next_id_{0x10001};
+    std::vector<MobArchetype> archetypes_;
     std::vector<VirtualMob> mobs_;
     std::vector<DamageIntent> damage_intents_;
+    std::vector<ProjectileIntent> projectile_intents_;
     std::vector<CreeperExplosionEvent> explosion_events_;
 };
 
