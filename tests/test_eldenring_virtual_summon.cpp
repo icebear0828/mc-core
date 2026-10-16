@@ -5,6 +5,8 @@
 
 #include <cmath>
 #include <vector>
+#include <thread>
+#include <atomic>
 
 using namespace eldenring::summon;
 
@@ -567,5 +569,67 @@ TEST(VirtualSummonTest, NonCreeperMobsNeverExplodeOrIgniteUnderEnemyProximity) {
     for (const auto& s : snaps) {
         EXPECT_FLOAT_EQ(s.white_flash, 0.0f);
     }
+}
+
+TEST(VirtualSummonTest, ConcurrentMultiThreadedSafety) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    std::vector<EnemyTarget> enemies = {
+        makeEnemy(0x1000, 5.0f, 0.0f, 5.0f, 100, 100),
+        makeEnemy(0x2000, -5.0f, 0.0f, -5.0f, 100, 100)
+    };
+
+    std::atomic<bool> running{true};
+    std::atomic<int> update_ticks{0};
+    std::atomic<int> snapshot_ticks{0};
+    std::atomic<int> spawn_ticks{0};
+
+    // Thread 1: Game thread physics / AI update
+    std::thread game_thread([&]() {
+        while (running.load(std::memory_order_relaxed)) {
+            mgr.update(0.016f, p, enemies);
+            auto dmg = mgr.drainDamageIntents();
+            auto proj = mgr.drainProjectileIntents();
+            auto exp = mgr.drainExplosionEvents();
+            (void)dmg; (void)proj; (void)exp;
+            ++update_ticks;
+            std::this_thread::yield();
+        }
+    });
+
+    // Thread 2: Render thread snapshot generation
+    std::thread render_thread([&]() {
+        while (running.load(std::memory_order_relaxed)) {
+            auto snaps = mgr.generateSnapshots();
+            (void)snaps;
+            ++snapshot_ticks;
+            std::this_thread::yield();
+        }
+    });
+
+    // Thread 3: Key / Input thread spawning & interactions
+    std::thread input_thread([&]() {
+        const char* types[] = {"creeper", "skeleton", "zombie", "iron_golem", "wolf"};
+        for (int i = 0; i < 50; ++i) {
+            uint64_t id = mgr.spawnMob(types[i % 5], p, 2.0f);
+            if (i % 3 == 0) {
+                mgr.igniteCreeper(id);
+            }
+            if (i % 4 == 0) {
+                mgr.applyDamage(id, 10);
+            }
+            ++spawn_ticks;
+            std::this_thread::yield();
+        }
+    });
+
+    input_thread.join();
+    running.store(false, std::memory_order_relaxed);
+    game_thread.join();
+    render_thread.join();
+
+    EXPECT_GT(update_ticks.load(), 0);
+    EXPECT_GT(snapshot_ticks.load(), 0);
+    EXPECT_EQ(spawn_ticks.load(), 50);
 }
 

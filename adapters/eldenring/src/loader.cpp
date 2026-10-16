@@ -574,6 +574,7 @@ void McJumpStep();          // defined after them
 void FlightStep();          // defined after them
 void DriveVelocityFromKeys(uintptr_t module, bool force_zero);
 void GroundSprintStep(float dt);
+void VirtualSummonsStep(float dt);
 extern std::atomic<bool> g_flying;
 std::atomic<unsigned> g_camstep_calls{0}, g_camstep_changed{0};
 
@@ -716,66 +717,75 @@ void HideSummonModels() {
     }
     if (!mc_on || PlayerDead()) {
         g_hidden_flag_addresses.clear(); // the ones left belong to summons that are gone: nothing to put back
-        g_virtual_summons.dismissAll();
     } else {
-        const uintptr_t player = PlayerChrPtr();
-        if (player != 0) {
-            float p_pos[3], p_q[4];
-            if (detail::readPhysicsPosition(g_reader, g_img.base, player, p_pos) &&
-                detail::readPhysicsOrientation(g_reader, g_img.base, player, p_q)) {
-                eldenring::summon::PlayerPose pp;
-                pp.pos[0] = p_pos[0];
-                pp.pos[1] = p_pos[1];
-                pp.pos[2] = p_pos[2];
-                pp.yaw = eldenring::render::yawFromQuat(p_q[0], p_q[1], p_q[2], p_q[3]);
-
-                std::vector<eldenring::summon::EnemyTarget> enemy_targets;
-                for (const EnemyInfo& e : list) {
-                    if (e.team != eldenring::live::summon::kTeam && e.hp > 0 && e.chr != player) {
-                        eldenring::summon::EnemyTarget et;
-                        et.chr_ins = e.chr;
-                        et.hp = e.hp;
-                        et.max_hp = e.max_hp;
-                        et.is_hostile = true;
-                        detail::readPhysicsPosition(g_reader, g_img.base, e.chr, et.pos);
-                        enemy_targets.push_back(et);
-                    }
-                }
-
-                static uint64_t last_time_ms = 0;
-                const uint64_t now_ms = GetTickCount64();
-                float dt = last_time_ms > 0 ? static_cast<float>(now_ms - last_time_ms) / 1000.0f : 0.016f;
-                last_time_ms = now_ms;
-                if (dt <= 0.0f || dt > 0.1f) dt = 0.016f;
-
-                g_virtual_summons.update(dt, pp, enemy_targets);
-
-                auto intents = g_virtual_summons.drainDamageIntents();
-                for (const auto& in : intents) {
-                    g_queue.enqueue(in.target_chr_ins, static_cast<int>(in.damage_amount), NowTick());
-                }
-
-                auto proj_intents = g_virtual_summons.drainProjectileIntents();
-                for (const auto& pi : proj_intents) {
-                    eraudio::Play("entity.arrow.shoot", 1.0f);
-                    Log("virtual ranged summon: fired projectile at target %llX (damage=%.1f)",
-                        static_cast<unsigned long long>(pi.target_chr_ins), pi.damage);
-                }
-
-                auto exp_events = g_virtual_summons.drainExplosionEvents();
-                for (const auto& ev : exp_events) {
-                    eraudio::Play("entity.generic.explode", 1.0f);
-                    Log("virtual creeper: DETONATION at (%.2f %.2f %.2f)!", ev.pos[0], ev.pos[1], ev.pos[2]);
-                    eldenring::world::VoxelWorldRuntime::Instance().enqueueTntIntent(ev.pos, ev.radius, ev.damage);
-                }
-
-                const auto virt_snaps = g_virtual_summons.generateSnapshots();
-                seen.insert(seen.end(), virt_snaps.begin(), virt_snaps.end());
-            }
-        }
+        const auto virt_snaps = g_virtual_summons.generateSnapshots();
+        seen.insert(seen.end(), virt_snaps.begin(), virt_snaps.end());
     }
     std::lock_guard<std::mutex> g(g_summon_mutex);
     g_summon_list = mc_on ? seen : std::vector<eldenring::mobs::MobSnapshot>{};
+}
+
+void VirtualSummonsStep(float dt) {
+    const bool mc_on = g_mc_mode.load(std::memory_order_relaxed);
+    if (!mc_on || PlayerDead()) {
+        g_virtual_summons.dismissAll();
+        return;
+    }
+    if (g_virtual_summons.activeCount() == 0) return;
+
+    const uintptr_t player = PlayerChrPtr();
+    if (player == 0) return;
+
+    float p_pos[3], p_q[4];
+    if (!detail::readPhysicsPosition(g_reader, g_img.base, player, p_pos) ||
+        !detail::readPhysicsOrientation(g_reader, g_img.base, player, p_q)) {
+        return;
+    }
+
+    eldenring::summon::PlayerPose pp;
+    pp.pos[0] = p_pos[0];
+    pp.pos[1] = p_pos[1];
+    pp.pos[2] = p_pos[2];
+    pp.yaw = eldenring::render::yawFromQuat(p_q[0], p_q[1], p_q[2], p_q[3]);
+
+    std::vector<EnemyInfo> enemies;
+    enumerateEnemies(g_reader, g_img.base, enemies, 512);
+
+    std::vector<eldenring::summon::EnemyTarget> enemy_targets;
+    for (const EnemyInfo& e : enemies) {
+        if (e.team != eldenring::live::summon::kTeam && e.hp > 0 && e.chr != player) {
+            eldenring::summon::EnemyTarget et;
+            et.chr_ins = e.chr;
+            et.hp = e.hp;
+            et.max_hp = e.max_hp;
+            et.is_hostile = true;
+            detail::readPhysicsPosition(g_reader, g_img.base, e.chr, et.pos);
+            enemy_targets.push_back(et);
+        }
+    }
+
+    if (dt <= 0.0f || dt > 0.1f) dt = 0.016f;
+
+    g_virtual_summons.update(dt, pp, enemy_targets);
+
+    auto intents = g_virtual_summons.drainDamageIntents();
+    for (const auto& in : intents) {
+        g_queue.enqueue(in.target_chr_ins, static_cast<int>(in.damage_amount), NowTick());
+    }
+
+    auto proj_intents = g_virtual_summons.drainProjectileIntents();
+    for (const auto& pi : proj_intents) {
+        eraudio::Play("entity.arrow.shoot", 1.0f);
+        Log("virtual ranged summon: fired projectile at target %llX (damage=%.1f)",
+            static_cast<unsigned long long>(pi.target_chr_ins), pi.damage);
+    }
+
+    auto exp_events = g_virtual_summons.drainExplosionEvents();
+    for (const auto& ev : exp_events) {
+        eraudio::Play("entity.generic.explode", 1.0f);
+        Log("virtual creeper: DETONATION at (%.2f %.2f %.2f)!", ev.pos[0], ev.pos[1], ev.pos[2]);
+        eldenring::world::VoxelWorldRuntime::Instance().enqueueTntIntent(ev.pos, ev.radius, ev.damage);
+    }
 }
 
 bool ChrCamPosAddress(uintptr_t& addr) {
@@ -839,6 +849,7 @@ uint64_t __fastcall CameraStepDetour(uint64_t self, float dt, uint64_t chr, uint
             EnemiesBlockCollisionStep(p_feet);
         }
     }
+    VirtualSummonsStep(dt);
     uintptr_t addr = 0;
     float before[3] = {};
     // Only the player's ChrCam is touched; the function runs for any camera object.
