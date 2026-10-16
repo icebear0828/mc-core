@@ -593,7 +593,6 @@ bool WriteBytesSafe(uintptr_t address, const void* src, size_t n) {
 std::mutex g_summon_mutex;
 std::vector<eldenring::mobs::MobSnapshot> g_summon_list; // the team 47 summons seen by the last HideSummonModels (render thread), read by the HUD provider
 float g_mob_yaw_offset = eldenring::live::summon::kDefaultMobYawOffset; // monster/wolf orientation quaternion aligns forward; default 0 (mob_yaw_offset_deg)
-eldenring::creeper::CreeperManager g_creeper_mgr;
 eldenring::summon::VirtualSummonManager g_virtual_summons;
 
 std::set<uintptr_t> g_hidden_flag_addresses; // the disp_flags words whose drawn bit we cleared (render thread only), to put it back
@@ -661,8 +660,8 @@ void HideSummonModels() {
             snap.id = e.chr;
             snap.hp = e.hp;
             snap.max_hp = e.max_hp;
-            snap.scale = g_creeper_mgr.getScale(e.chr);
-            snap.white_flash = g_creeper_mgr.isWhiteFlash(e.chr) ? 1.0f : 0.0f;
+            snap.scale = 1.0f;
+            snap.white_flash = 0.0f;
             if (detail::readPhysicsPosition(g_reader, g_img.base, e.chr, snap.feet) && detail::readPhysicsOrientation(g_reader, g_img.base, e.chr, q)) {
                 snap.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) + g_mob_yaw_offset;
                 seen.push_back(snap);
@@ -1778,10 +1777,7 @@ bool TryIgniteCreeper() {
         const float dz = s.feet[2] - player_feet[2];
         const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
         if (dist <= 4.5f) {
-            bool ignited = g_virtual_summons.igniteCreeper(s.id);
-            if (!ignited) {
-                ignited = g_creeper_mgr.ignite(s.id);
-            }
+            const bool ignited = g_virtual_summons.igniteCreeper(s.id);
             if (ignited) {
                 eraudio::Play("entity.tnt.primed", 1.0f);
                 Log("creeper: manually ignited creeper %p with flint and steel!", reinterpret_cast<void*>(s.id));
@@ -1953,99 +1949,6 @@ void ProcessTntExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies) {
     eldenring::world::VoxelWorldRuntime::Instance().processTntExplosions(enemies, g_ctx);
 }
 
-void ProcessCreeperExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies, const float player_feet[3]) {
-    std::vector<eldenring::creeper::CreeperTarget> creeper_targets;
-    {
-        std::lock_guard<std::mutex> g(g_summon_mutex);
-        for (const auto& s : g_summon_list) {
-            eldenring::creeper::CreeperTarget t;
-            t.id = s.id;
-            t.feet[0] = s.feet[0];
-            t.feet[1] = s.feet[1];
-            t.feet[2] = s.feet[2];
-            t.hp = s.hp;
-            t.max_hp = s.max_hp;
-            t.is_creeper = true;
-            creeper_targets.push_back(t);
-        }
-    }
-    if (creeper_targets.empty()) return;
-
-    std::vector<eldenring::creeper::CreeperEnemyTarget> enemy_targets;
-    for (const auto& e : enemies) {
-        if (e.chr == 0 || e.hp <= 0) continue;
-        float ef[3]{};
-        if (!detail::readPhysicsPosition(g_reader, g_img.base, e.chr, ef)) continue;
-        eldenring::creeper::CreeperEnemyTarget et;
-        et.chr = e.chr;
-        et.feet[0] = ef[0];
-        et.feet[1] = ef[1];
-        et.feet[2] = ef[2];
-        et.hostile = e.hostile;
-        et.hp = e.hp;
-        enemy_targets.push_back(et);
-    }
-
-    static uint64_t last_creeper_tick_ms = 0;
-    const uint64_t now_tick_ms = GetTickCount64();
-    if (last_creeper_tick_ms == 0) last_creeper_tick_ms = now_tick_ms;
-    const float c_dt = std::clamp(static_cast<float>(now_tick_ms - last_creeper_tick_ms) / 1000.f, 0.001f, 0.1f);
-    last_creeper_tick_ms = now_tick_ms;
-
-
-    auto c_events = g_creeper_mgr.update(c_dt, creeper_targets, enemy_targets);
-    for (const auto& cev : c_events) {
-        if (cev.kind == eldenring::creeper::CreeperEventKind::Hiss) {
-            eraudio::Play("entity.creeper.primed", 1.0f);
-            Log("creeper: %p started hissing (fuse primed)!", reinterpret_cast<void*>(cev.creeper_id));
-        } else if (cev.kind == eldenring::creeper::CreeperEventKind::Defuse) {
-            Log("creeper: %p defused", reinterpret_cast<void*>(cev.creeper_id));
-        } else if (cev.kind == eldenring::creeper::CreeperEventKind::Explosion) {
-            eraudio::Play("entity.generic.explode", 1.0f);
-            Log("creeper: DETONATION at (%.2f %.2f %.2f)!", cev.pos[0], cev.pos[1], cev.pos[2]);
-            eldenring::world::VoxelWorldRuntime::Instance().enqueueTntIntent(cev.pos, cev.radius, cev.damage);
-            int p_dmg = eldenring::tnt::computeTntExplosionDamage(cev.pos, player_feet, cev.radius, 350.0f);
-            if (p_dmg > 0 && CurrentGameMode() == creative::GameMode::Survival) {
-                const uintptr_t p_chr = PlayerChrPtr();
-                auto& r_ctx = eldenring::RuntimeContext::Instance();
-                r_ctx.mode().shield_blocking.store(g_shield_blocking.load(std::memory_order_relaxed), std::memory_order_relaxed);
-                p_dmg = eldenring::combat::CombatService::Instance().evaluateExplosionShieldBlock(p_chr, cev.pos, p_dmg, r_ctx);
-                if (p_dmg > 0) {
-                    const uintptr_t p_data = DataModuleOfChr(p_chr);
-                    if (p_data != 0) {
-                        int32_t cur_hp = 0;
-                        if (SafeCopy(p_data + layout::kDataHp, &cur_hp, sizeof(cur_hp))) {
-                            SetChrHp(p_chr, std::max(0, cur_hp - p_dmg));
-                        }
-                    }
-                    eraudio::Play("entity.player.hurt");
-                }
-            }
-            {
-                std::lock_guard<std::mutex> gb(g_blocks_mutex);
-                if (g_blocks.count() > 0) {
-                    g_tnt_mgr.detonateAt(g_blocks, cev.pos, cev.radius);
-                    SendBlockMesh();
-                }
-            }
-            if (cev.kill_creeper && cev.creeper_id >= 0x100000000ULL) {
-                KillChr(cev.creeper_id);
-                {
-                    std::lock_guard<std::mutex> gs(g_summon_mutex);
-                    for (auto it = g_summon_list.begin(); it != g_summon_list.end(); ) {
-                        if (it->id == cev.creeper_id) {
-                            it = g_summon_list.erase(it);
-                        } else {
-                            ++it;
-                        }
-                    }
-                }
-                Log("creeper: %p killed and removed after explosion", reinterpret_cast<void*>(cev.creeper_id));
-            }
-        }
-    }
-}
-
 void EnemiesBlockCollisionStep(const float player_feet[3]) {
     if (!g_mc_mode.load(std::memory_order_relaxed)) return;
     std::vector<EnemyInfo> enemies;
@@ -2058,7 +1961,6 @@ void EnemiesBlockCollisionStep(const float player_feet[3]) {
 
     // Process queued TNT explosion damage intents on game thread!
     ProcessTntExplosionsOnGameThread(enemies);
-    ProcessCreeperExplosionsOnGameThread(enemies, player_feet);
 
     eldenring::world::VoxelWorldRuntime::Instance().stepEnemyBlockCollision(player_feet, g_ctx);
 }
