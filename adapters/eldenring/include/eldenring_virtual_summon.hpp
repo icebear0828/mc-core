@@ -287,7 +287,8 @@ public:
                 float dz = player.pos[2] - mob.pos[2];
                 float dist = std::sqrt(dx * dx + dz * dz);
 
-                if (dist > kFollowRadiusMax) {
+                // Creepers NEVER teleport snap to player (teleport is only for tamed pets or generic minions)
+                if (dist > kFollowRadiusMax && !is_creeper) {
                     mob.pos[0] = player.pos[0] - std::sin(player.yaw) * 2.0f;
                     mob.pos[1] = player.pos[1];
                     mob.pos[2] = player.pos[2] - std::cos(player.yaw) * 2.0f;

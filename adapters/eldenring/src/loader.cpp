@@ -1680,7 +1680,7 @@ bool QueueSummon(const char* source) {
     p.pos[2] = pos[2];
     p.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]);
 
-    std::string model_type = "zombie";
+    std::string model_type = "creeper"; // Default to creeper for active summon feature
     std::vector<uint8_t> summon_txt;
     if (ReadFileAll(g_game_dir + "mc_er_summon.txt", summon_txt) && !summon_txt.empty()) {
         std::string content(reinterpret_cast<const char*>(summon_txt.data()), summon_txt.size());
@@ -2014,7 +2014,7 @@ void ProcessCreeperExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies,
                     SendBlockMesh();
                 }
             }
-            if (cev.kill_creeper && cev.creeper_id != 0) {
+            if (cev.kill_creeper && cev.creeper_id >= 0x100000000ULL) {
                 KillChr(cev.creeper_id);
                 {
                     std::lock_guard<std::mutex> gs(g_summon_mutex);
