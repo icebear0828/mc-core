@@ -306,6 +306,55 @@ public:
 
             ++it;
         }
+
+        // Anti-clipping Pushout Pass: separate overlapping summons from each other
+        constexpr float kMinMobSeparation = 0.6f; // diameter of typical mob (2 * 0.3m)
+        for (size_t i = 0; i < mobs_.size(); ++i) {
+            if (mobs_[i].is_dying) continue;
+            for (size_t j = i + 1; j < mobs_.size(); ++j) {
+                if (mobs_[j].is_dying) continue;
+                float pdx = mobs_[j].pos[0] - mobs_[i].pos[0];
+                float pdz = mobs_[j].pos[2] - mobs_[i].pos[2];
+                float pdist_sq = pdx * pdx + pdz * pdz;
+                if (pdist_sq < kMinMobSeparation * kMinMobSeparation) {
+                    float pdist = std::sqrt(pdist_sq);
+                    float push = (kMinMobSeparation - pdist) * 0.5f;
+                    float nx = 1.0f, nz = 0.0f;
+                    if (pdist > 1e-4f) {
+                        nx = pdx / pdist;
+                        nz = pdz / pdist;
+                    }
+                    mobs_[i].pos[0] -= nx * push;
+                    mobs_[i].pos[2] -= nz * push;
+                    mobs_[j].pos[0] += nx * push;
+                    mobs_[j].pos[2] += nz * push;
+                }
+            }
+        }
+
+        // Anti-clipping Target Boundary Pass: ensure mobs do not penetrate inside target enemies
+        constexpr float kMinTargetSeparation = 0.7f; // mob radius ~0.3m + target radius ~0.35m = ~0.65m
+        for (auto& mob : mobs_) {
+            if (mob.is_dying || mob.target_chr_ins == 0) continue;
+            for (const auto& enemy : enemies) {
+                if (enemy.chr_ins != mob.target_chr_ins) continue;
+                float tdx = mob.pos[0] - enemy.pos[0];
+                float tdz = mob.pos[2] - enemy.pos[2];
+                float tdist_sq = tdx * tdx + tdz * tdz;
+                if (tdist_sq < kMinTargetSeparation * kMinTargetSeparation) {
+                    float tdist = std::sqrt(tdist_sq);
+                    float push = kMinTargetSeparation - tdist;
+                    float nx = 0.0f, nz = -1.0f;
+                    if (tdist > 1e-4f) {
+                        nx = tdx / tdist;
+                        nz = tdz / tdist;
+                    }
+                    mob.pos[0] += nx * push;
+                    mob.pos[2] += nz * push;
+                }
+                break;
+            }
+        }
     }
 
 private:

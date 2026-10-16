@@ -1995,17 +1995,22 @@ void ProcessCreeperExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies,
             eraudio::Play("entity.generic.explode", 1.0f);
             Log("creeper: DETONATION at (%.2f %.2f %.2f)!", cev.pos[0], cev.pos[1], cev.pos[2]);
             eldenring::world::VoxelWorldRuntime::Instance().enqueueTntIntent(cev.pos, cev.radius, cev.damage);
-            const int p_dmg = eldenring::tnt::computeTntExplosionDamage(cev.pos, player_feet, cev.radius, 350.0f);
+            int p_dmg = eldenring::tnt::computeTntExplosionDamage(cev.pos, player_feet, cev.radius, 350.0f);
             if (p_dmg > 0 && CurrentGameMode() == creative::GameMode::Survival) {
                 const uintptr_t p_chr = PlayerChrPtr();
-                const uintptr_t p_data = DataModuleOfChr(p_chr);
-                if (p_data != 0) {
-                    int32_t cur_hp = 0;
-                    if (SafeCopy(p_data + layout::kDataHp, &cur_hp, sizeof(cur_hp))) {
-                        SetChrHp(p_chr, std::max(0, cur_hp - p_dmg));
+                auto& r_ctx = eldenring::RuntimeContext::Instance();
+                r_ctx.mode().shield_blocking.store(g_shield_blocking.load(std::memory_order_relaxed), std::memory_order_relaxed);
+                p_dmg = eldenring::combat::CombatService::Instance().evaluateExplosionShieldBlock(p_chr, cev.pos, p_dmg, r_ctx);
+                if (p_dmg > 0) {
+                    const uintptr_t p_data = DataModuleOfChr(p_chr);
+                    if (p_data != 0) {
+                        int32_t cur_hp = 0;
+                        if (SafeCopy(p_data + layout::kDataHp, &cur_hp, sizeof(cur_hp))) {
+                            SetChrHp(p_chr, std::max(0, cur_hp - p_dmg));
+                        }
                     }
+                    eraudio::Play("entity.player.hurt");
                 }
-                eraudio::Play("entity.player.hurt");
             }
             {
                 std::lock_guard<std::mutex> gb(g_blocks_mutex);
@@ -2423,7 +2428,9 @@ DWORD WINAPI KeyThread(LPVOID) {
                 shield_in_offhand = !(g_melee.heldItem() == mc::ItemId::Shield && g_melee.countAt(g_melee.selectedSlot()) > 0);
             }
             g_shield_offhand.store(shield_in_offhand, std::memory_order_relaxed);
-            const bool right_held = g_input_enabled.load() && erin::RightHeld() && fg && WantSuppress() && !inv_open && !PlayerDead() && g_mc_mode.load();
+            const bool right_held = g_input_enabled.load() &&
+                                    (erin::RightHeld() || (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0) &&
+                                    fg && WantSuppress() && !inv_open && !PlayerDead() && g_mc_mode.load();
             const bool is_drawing_bow = g_bow_ticks.load(std::memory_order_relaxed) > 0;
             const bool is_eating = g_eating.isEating();
             const bool shield_usable = has_shield && !is_drawing_bow && !is_eating;

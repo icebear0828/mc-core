@@ -325,3 +325,49 @@ TEST(EldenRingCombatService, BreakTestSoftensReactionForPlayerInMcMode) {
     bool enemy_broke = svc.handleBreakTest(reinterpret_cast<void*>(kEnemyDmgMod), hit_ctx, true, ctx);
     EXPECT_TRUE(enemy_broke);
 }
+
+TEST(EldenRingCombatService, ShieldBlocksExplosionDamageWhenFacingDetonation) {
+    auto& svc = CombatService::Instance();
+    svc.resetForTesting();
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+    ctx.mode().shield_blocking.store(true);
+
+    const uintptr_t kP = 0x1000;
+    float p_feet[3] = {0.f, 0.f, 0.f};
+    float exp_pos[3] = {0.f, 0.f, 3.f}; // In front (+Z)
+
+    CombatCallbacks cb{};
+    cb.get_player_chr = [&]() { return kP; };
+    cb.read_physics_pos = [&](uintptr_t chr, float out_pos[3]) {
+        if (chr == kP) {
+            std::memcpy(out_pos, p_feet, sizeof(p_feet));
+            return true;
+        }
+        return false;
+    };
+    cb.read_camera = [](CameraPose& cam) {
+        // Looking forward along +Z
+        cam.forward[0] = 0.f; cam.forward[1] = 0.f; cam.forward[2] = 1.f;
+        cam.position[0] = 0.f; cam.position[1] = 1.6f; cam.position[2] = -1.f;
+        return true;
+    };
+    std::string last_sound;
+    cb.play_sound = [&](const char* snd, float) { last_sound = snd; };
+    svc.setCallbacks(cb);
+
+    // Initial damage = 350
+    int raw_dmg = 350;
+    int final_dmg = svc.evaluateExplosionShieldBlock(kP, exp_pos, raw_dmg, ctx);
+
+    // Frontal explosion must be blocked (damage reduced to 0, play shield block sound)
+    EXPECT_EQ(final_dmg, 0);
+    EXPECT_EQ(last_sound, "item.shield.block");
+
+    // Explosion behind player (at 0, 0, -3) -> Not blocked
+    float exp_behind[3] = {0.f, 0.f, -3.f};
+    int unblocked_dmg = svc.evaluateExplosionShieldBlock(kP, exp_behind, raw_dmg, ctx);
+    EXPECT_EQ(unblocked_dmg, raw_dmg);
+}

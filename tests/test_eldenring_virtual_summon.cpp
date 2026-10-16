@@ -342,3 +342,53 @@ TEST(VirtualSummonTest, CreeperExplosionDamagesNearbySummonsChainDetonation) {
         EXPECT_EQ(mob2->hp, 0);
     }
 }
+
+TEST(VirtualSummonTest, AntiClippingPushoutSeparatesSummonsFromOverlapping) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    // Spawn two mobs at virtually identical positions (e.g. 0.05m apart)
+    uint64_t m1 = mgr.spawnMob("creeper", p, 2.0f);
+    uint64_t m2 = mgr.spawnMob("creeper", p, 2.05f);
+
+    std::vector<EnemyTarget> no_enemies;
+    // Step a couple frames
+    mgr.update(0.1f, p, no_enemies);
+
+    const auto* mob1 = mgr.findMob(m1);
+    const auto* mob2 = mgr.findMob(m2);
+    ASSERT_NE(mob1, nullptr);
+    ASSERT_NE(mob2, nullptr);
+
+    float dx = mob1->pos[0] - mob2->pos[0];
+    float dz = mob1->pos[2] - mob2->pos[2];
+    float dist = std::sqrt(dx * dx + dz * dz);
+
+    // Two mobs must have pushed each other apart to prevent clipping (min separation >= 0.5m)
+    EXPECT_GE(dist, 0.5f);
+}
+
+TEST(VirtualSummonTest, AntiClippingStopsMobFromPenetratingTargetAabb) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    // Mob spawned at (0, 0, -2.0)
+    uint64_t id = mgr.spawnMob("creeper", p, 2.0f);
+
+    // Enemy placed at (0, 0, -1.5), distance is 0.5m (less than collision separation radius 0.65m)
+    std::vector<EnemyTarget> enemies = {
+        makeEnemy(0xEE11, 0.0f, 0.0f, -1.5f, 100, 100)
+    };
+
+    // Update for 0.5 second of pursuit
+    mgr.update(0.5f, p, enemies);
+
+    const auto* mob = mgr.findMob(id);
+    ASSERT_NE(mob, nullptr);
+
+    float dx = mob->pos[0] - 0.0f;
+    float dz = mob->pos[2] - (-1.5f);
+    float dist = std::sqrt(dx * dx + dz * dz);
+
+    // Sum of radiuses: creeper ~0.3m + target ~0.35m = ~0.65m.
+    // Pushout must separate them so dist >= 0.65m!
+    EXPECT_GE(dist, 0.65f);
+}
