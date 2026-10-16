@@ -136,7 +136,8 @@ void PlayerLocomotion::driveVelocity(uintptr_t module, bool force_zero, RuntimeC
         const float right_key = (isKeyDown('D') ? 1.f : 0.f) - (isKeyDown('A') ? 1.f : 0.f);
         const bool sneak_key_down = isKeyDown(ctx.mode().sneak_vk.load(std::memory_order_relaxed)) ||
                                     isKeyDown('X');
-        const bool blocking = ctx.combat().shield.isBlocking();
+        const bool blocking = ctx.mode().shield_blocking.load(std::memory_order_relaxed) ||
+                              ctx.combat().shield.isBlocking();
         const bool sneaking = sneak_key_down;
         const bool sprinting = !sneaking && !blocking && ctx.player().sprint_active.load(std::memory_order_relaxed);
         ctx.mode().sneak_active.store(sneaking, std::memory_order_relaxed);
@@ -216,9 +217,11 @@ void PlayerLocomotion::driveVelocity(uintptr_t module, bool force_zero, RuntimeC
 }
 
 void PlayerLocomotion::stepGroundSprint(float dt, RuntimeContext& ctx) {
+    const bool blocking = ctx.mode().shield_blocking.load(std::memory_order_relaxed) ||
+                          ctx.combat().shield.isBlocking();
     if (!ctx.player().sprint_active.load(std::memory_order_relaxed) ||
         !ctx.mode().mc_mode.load(std::memory_order_relaxed) ||
-        ctx.combat().shield.isBlocking()) {
+        blocking) {
         return;
     }
     if (isFlying() || (callbacks_.is_player_airborne && callbacks_.is_player_airborne()) ||
@@ -318,7 +321,8 @@ void PlayerLocomotion::stepJump(float dt, uint64_t now_ms, RuntimeContext& ctx) 
             const float right_key = (isKeyDown('D') ? 1.f : 0.f) - (isKeyDown('A') ? 1.f : 0.f);
             const bool sneak_key_down = isKeyDown(ctx.mode().sneak_vk.load(std::memory_order_relaxed)) ||
                                         isKeyDown('X');
-            const bool blocking = ctx.combat().shield.isBlocking();
+            const bool blocking = ctx.mode().shield_blocking.load(std::memory_order_relaxed) ||
+                                  ctx.combat().shield.isBlocking();
             const bool sneaking = sneak_key_down;
             const bool sprinting = !sneaking && !blocking && ctx.player().sprint_active.load(std::memory_order_relaxed);
             const float target_speed = eldenring::shield::effectiveMovementSpeed(
@@ -354,7 +358,8 @@ void PlayerLocomotion::stepJump(float dt, uint64_t now_ms, RuntimeContext& ctx) 
     const float right_key = (isKeyDown('D') ? 1.f : 0.f) - (isKeyDown('A') ? 1.f : 0.f);
     const bool steer_sneak = isKeyDown(ctx.mode().sneak_vk.load(std::memory_order_relaxed)) ||
                              isKeyDown('X');
-    const bool blocking = ctx.combat().shield.isBlocking();
+    const bool blocking = ctx.mode().shield_blocking.load(std::memory_order_relaxed) ||
+                          ctx.combat().shield.isBlocking();
     const bool sprinting = !steer_sneak && !blocking && ctx.player().sprint_active.load(std::memory_order_relaxed);
     const float steer_speed = eldenring::shield::effectiveMovementSpeed(
         ctx.mode().block_walk_speed.load(std::memory_order_relaxed),

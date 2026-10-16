@@ -263,3 +263,153 @@ TEST(EldenRingWorldRuntime, EnemyBlockCollisionSweptBoxPush) {
     mem.readBytes(kEnemyModule + layout::kPhysicsPosition, final_feet, sizeof(final_feet));
     EXPECT_NE(final_feet[0], e_feet[0]);
 }
+
+TEST(EldenRingWorldRuntime, StepBlockCollisionDrivesVelocityAndUnlocksAir) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x2000;
+
+    float feet[3] = {0.5f, 1.0f, 0.5f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, feet, sizeof(feet));
+
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+
+    bool drive_called = false;
+    bool reset_fall_called = false;
+    bool unlock_air_called = false;
+
+    WorldRuntimeCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.read_physics_pos = [&](uintptr_t, float out_f[3]) {
+        return mem.readBytes(kModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+    };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.drive_velocity = [&](uintptr_t, bool, RuntimeContext&) { drive_called = true; };
+    cb.reset_fall_timer = [&](uintptr_t) { reset_fall_called = true; };
+    cb.unlock_air_movement = [&](uintptr_t) { unlock_air_called = true; };
+    runtime.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+    ctx.mode().block_collision.store(true);
+    ctx.mode().block_drive.store(true);
+
+    {
+        std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+        ctx.world().block_grid.place({0, 0, 0}, mc::BlockId::Dirt);
+    }
+
+    runtime.stepPlayerBlockCollision(ctx);
+
+    EXPECT_TRUE(ctx.mode().block_supported.load());
+    EXPECT_TRUE(drive_called);
+    EXPECT_TRUE(reset_fall_called);
+    EXPECT_TRUE(unlock_air_called);
+}
+
+TEST(EldenRingWorldRuntime, StepBlockCollisionDirectDriveMovesPlayerOnBlock) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x2000;
+
+    float feet[3] = {0.5f, 1.0f, 0.5f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, feet, sizeof(feet));
+
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+    runtime.setDeltaTimeOverrideForTesting(0.016f);
+    // Press 'W'
+    runtime.setInputProvider([](int vk) { return vk == 'W'; });
+
+    WorldRuntimeCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.read_physics_pos = [&](uintptr_t, float out_f[3]) {
+        return mem.readBytes(kModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+    };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.is_game_in_foreground = []() { return true; };
+    cb.read_camera = [](CameraPose& cam) {
+        cam.forward[0] = 0.f; cam.forward[1] = 0.f; cam.forward[2] = 1.f;
+        cam.right[0] = 1.f; cam.right[1] = 0.f; cam.right[2] = 0.f;
+        return true;
+    };
+    runtime.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+    ctx.mode().block_collision.store(true);
+
+    {
+        std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+        for (int x = -1; x <= 1; ++x) {
+            for (int z = -1; z <= 2; ++z) {
+                ctx.world().block_grid.place({x, 0, z}, mc::BlockId::Stone);
+            }
+        }
+    }
+
+    // Step 1: Initialize
+    runtime.stepPlayerBlockCollision(ctx);
+
+    // Step 2: Step forward with W held
+    runtime.stepPlayerBlockCollision(ctx);
+
+    float written_feet[3] = {};
+    mem.readBytes(kModule + layout::kPhysicsPosition, written_feet, sizeof(written_feet));
+    // The player must have moved forward along Z (Z > 0.505f)!
+    EXPECT_GT(written_feet[2], 0.505f);
+}
+
+TEST(EldenRingWorldRuntime, StepBlockCollisionClampsNativeTerrainDisplacementWhenShieldingOrSneaking) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x2000;
+
+    // Start on native terrain (no blocks placed)
+    float feet[3] = {0.0f, 0.0f, 0.0f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, feet, sizeof(feet));
+
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+    runtime.setDeltaTimeOverrideForTesting(0.016f);
+    runtime.setInputProvider([](int) { return false; });
+
+    WorldRuntimeCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.read_physics_pos = [&](uintptr_t, float out_f[3]) {
+        return mem.readBytes(kModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+    };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.is_game_in_foreground = []() { return true; };
+    runtime.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+    ctx.mode().block_collision.store(true);
+    ctx.mode().shield_blocking.store(true); // Player is holding up shield!
+
+    // Step 1: Establish baseline at (0, 0, 0)
+    runtime.stepPlayerBlockCollision(ctx);
+
+    // Step 2: Game engine attempts to displace player by 1.0m (unclamped normal speed)
+    float new_feet[3] = {0.0f, 0.0f, 1.0f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, new_feet, sizeof(new_feet));
+
+    runtime.stepPlayerBlockCollision(ctx);
+
+    // Result written to memory must be clamped to sneak speed * dt (far less than 1.0m, e.g. < 0.20m)!
+    float written_feet[3] = {};
+    mem.readBytes(kModule + layout::kPhysicsPosition, written_feet, sizeof(written_feet));
+    EXPECT_LT(written_feet[2], 0.20f);
+    EXPECT_GT(written_feet[2], 0.001f);
+}

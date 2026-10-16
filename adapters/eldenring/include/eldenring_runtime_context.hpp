@@ -154,6 +154,7 @@ struct PlayerSystems {
     std::atomic<float> sprint_anim{1.0f};
     std::atomic<float> ground_y{0.f};
     std::atomic<bool> ground_valid{false};
+    std::atomic<uint64_t> movement_layer_ms{0};
 };
 
 struct WorldSystems {
@@ -289,6 +290,7 @@ public:
         player_.sprint_anim.store(1.0f);
         player_.ground_y.store(0.f);
         player_.ground_valid.store(false);
+        player_.movement_layer_ms.store(0);
 
         // Reset World
         {
