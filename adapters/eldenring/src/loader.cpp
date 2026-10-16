@@ -756,6 +756,13 @@ void HideSummonModels() {
                     g_queue.enqueue(in.target_chr_ins, static_cast<int>(in.damage_amount), NowTick());
                 }
 
+                auto exp_events = g_virtual_summons.drainExplosionEvents();
+                for (const auto& ev : exp_events) {
+                    eraudio::Play("entity.generic.explode", 1.0f);
+                    Log("virtual creeper: DETONATION at (%.2f %.2f %.2f)!", ev.pos[0], ev.pos[1], ev.pos[2]);
+                    eldenring::world::VoxelWorldRuntime::Instance().enqueueTntIntent(ev.pos, ev.radius, ev.damage);
+                }
+
                 const auto virt_snaps = g_virtual_summons.generateSnapshots();
                 seen.insert(seen.end(), virt_snaps.begin(), virt_snaps.end());
             }
@@ -1673,13 +1680,19 @@ bool QueueSummon(const char* source) {
     p.pos[2] = pos[2];
     p.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]);
 
-    uint64_t id = g_virtual_summons.spawnMob("zombie", p, 2.5f);
-    if (id == 0) {
-        Log("%s: virtual summon capacity reached (%zu active)", source, g_virtual_summons.activeCount());
-        return false;
+    std::string model_type = "zombie";
+    std::vector<uint8_t> summon_txt;
+    if (ReadFileAll(g_game_dir + "mc_er_summon.txt", summon_txt) && !summon_txt.empty()) {
+        std::string content(reinterpret_cast<const char*>(summon_txt.data()), summon_txt.size());
+        for (char& c : content) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (content.find("creeper") != std::string::npos) model_type = "creeper";
+        else if (content.find("skeleton") != std::string::npos) model_type = "skeleton";
+        else if (content.find("zombie") != std::string::npos) model_type = "zombie";
     }
-    Log("%s: virtual summon created (id=%llu, active=%zu) at (%.2f, %.2f, %.2f) yaw=%.2f",
-        source, id, g_virtual_summons.activeCount(), pos[0], pos[1], pos[2], p.yaw);
+
+    uint64_t id = g_virtual_summons.spawnMob(model_type, p, 2.5f);
+    Log("%s: virtual summon created (type=%s, id=%llu, active=%zu) at (%.2f, %.2f, %.2f) yaw=%.2f",
+        source, model_type.c_str(), id, g_virtual_summons.activeCount(), pos[0], pos[1], pos[2], p.yaw);
     return true;
 }
 

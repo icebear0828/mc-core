@@ -57,18 +57,57 @@ TEST(VirtualSummonTest, SpawnCreatesEntityWithUniqueIdAndInitialState) {
     EXPECT_EQ(mgr.activeCount(), 2u);
 }
 
-TEST(VirtualSummonTest, CapacityClampedToPreventAbuse) {
+TEST(VirtualSummonTest, CapacityRollingEvictionEnsuresSpawningNeverFails) {
     VirtualSummonManager mgr;
     const auto p = makePlayer();
+    std::vector<uint64_t> ids;
     for (size_t i = 0; i < VirtualSummonManager::kMaxVirtualSummons; ++i) {
-        EXPECT_NE(mgr.spawnMob("zombie", p, 2.0f), 0u);
+        uint64_t id = mgr.spawnMob("zombie", p, 2.0f);
+        EXPECT_NE(id, 0u);
+        ids.push_back(id);
     }
     EXPECT_EQ(mgr.activeCount(), VirtualSummonManager::kMaxVirtualSummons);
 
-    // Exceeding capacity is cleanly rejected without throwing or crashing
-    uint64_t rejected = mgr.spawnMob("zombie", p, 2.0f);
-    EXPECT_EQ(rejected, 0u);
+    // 17th spawn should NOT fail/reject; it should evict the oldest mob and successfully spawn!
+    uint64_t new_id = mgr.spawnMob("creeper", p, 2.0f);
+    EXPECT_NE(new_id, 0u);
     EXPECT_EQ(mgr.activeCount(), VirtualSummonManager::kMaxVirtualSummons);
+    // Oldest mob must have been evicted cleanly
+    EXPECT_EQ(mgr.findMob(ids[0]), nullptr);
+    EXPECT_NE(mgr.findMob(new_id), nullptr);
+}
+
+TEST(VirtualSummonTest, CreeperAutonomousDetonationPipeline) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t creeper_id = mgr.spawnMob("creeper", p, 2.0f);
+    ASSERT_NE(creeper_id, 0u);
+
+    // Hostile enemy at (0, 0, 0) is 2.0m away from creeper at (0, 0, -2) (within 3.5m ignite range)
+    std::vector<EnemyTarget> enemies = {
+        makeEnemy(0xABCD, 0.0f, 0.0f, 0.0f, 500, 500)
+    };
+
+    // Step 1: Creeper detects enemy and enters primed state
+    mgr.update(0.1f, p, enemies);
+    const auto* mob = mgr.findMob(creeper_id);
+    ASSERT_NE(mob, nullptr);
+    EXPECT_TRUE(mob->is_primed);
+    EXPECT_GT(mob->scale, 1.0f); // Starts swelling
+
+    // Step 2: Step 1.45s (total 1.55s >= 1.5s fuse) -> Detonation!
+    mgr.update(1.45f, p, enemies);
+
+    // Drain explosion events
+    auto exp_events = mgr.drainExplosionEvents();
+    ASSERT_EQ(exp_events.size(), 1u);
+    EXPECT_EQ(exp_events[0].source_mob_id, creeper_id);
+    EXPECT_GT(exp_events[0].radius, 5.0f);
+    EXPECT_GT(exp_events[0].damage, 1000.0f);
+
+    // Creeper is now destroyed by its own explosion
+    EXPECT_EQ(mgr.findMob(creeper_id), nullptr);
+    EXPECT_EQ(mgr.activeCount(), 0u);
 }
 
 TEST(VirtualSummonTest, FollowsPlayerWhenBeyondIdleRadius) {

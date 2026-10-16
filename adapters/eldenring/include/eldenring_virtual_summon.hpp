@@ -30,6 +30,13 @@ struct DamageIntent {
     uint64_t source_mob_id{0};
 };
 
+struct CreeperExplosionEvent {
+    uint64_t source_mob_id{0};
+    float pos[3]{0.0f, 0.0f, 0.0f};
+    float radius{7.0f};
+    float damage{1500.0f};
+};
+
 struct VirtualMob {
     uint64_t id{0};
     std::string model_type{"zombie"};
@@ -44,6 +51,11 @@ struct VirtualMob {
     uintptr_t target_chr_ins{0};
     float scale{1.0f};
     float speed{3.8f};
+    bool is_primed{false};
+    float fuse_timer{1.5f};
+    float fuse_duration{1.5f};
+    bool exploded{false};
+    float white_flash{0.0f};
 };
 
 class VirtualSummonManager {
@@ -52,6 +64,8 @@ public:
     static constexpr float kFollowRadiusMin = 2.5f;
     static constexpr float kFollowRadiusMax = 32.0f;
     static constexpr float kAttackRange = 1.8f;
+    static constexpr float kCreeperIgniteDistance = 3.5f;
+    static constexpr float kCreeperDefuseDistance = 7.0f;
     static constexpr float kDetectRadius = 16.0f;
     static constexpr float kAttackCooldownSeconds = 1.0f;
     static constexpr float kDeathMaxSeconds = 1.0f;
@@ -76,8 +90,9 @@ public:
     }
 
     uint64_t spawnMob(std::string_view model_type, const PlayerPose& player, float forward_distance = 2.5f) {
+        // Fix #1: Rolling eviction when at maximum capacity so summoning always succeeds
         if (mobs_.size() >= kMaxVirtualSummons) {
-            return 0;
+            mobs_.erase(mobs_.begin());
         }
 
         VirtualMob mob;
@@ -92,6 +107,11 @@ public:
         mob.target_chr_ins = 0;
         mob.scale = 1.0f;
         mob.speed = 3.8f;
+        mob.is_primed = false;
+        mob.fuse_timer = 1.5f;
+        mob.fuse_duration = 1.5f;
+        mob.exploded = false;
+        mob.white_flash = 0.0f;
 
         // Spawn position ahead of player matching heading
         mob.pos[0] = player.pos[0] - std::sin(player.yaw) * forward_distance;
@@ -161,7 +181,7 @@ public:
             mob.target_chr_ins = best_target;
 
             if (best_target != 0) {
-                // Moving toward or attacking target
+                // Moving toward or attacking target (As designed per item 2: mob pursues target)
                 float dx = target_pos[0] - mob.pos[0];
                 float dz = target_pos[2] - mob.pos[2];
                 float dist = std::sqrt(dx * dx + dz * dz);
@@ -170,39 +190,95 @@ public:
                     mob.yaw = std::atan2(-dx, -dz);
                 }
 
-                if (dist <= kAttackRange) {
-                    // In attack range
-                    if (mob.attack_cooldown <= 0.0f) {
-                        DamageIntent intent;
-                        intent.target_chr_ins = best_target;
-                        intent.damage_amount = 6.0f; // Standard MC zombie damage
-                        intent.source_mob_id = mob.id;
-                        damage_intents_.push_back(intent);
-                        mob.attack_cooldown = kAttackCooldownSeconds;
+                const bool is_creeper = (mob.model_type == "creeper");
+
+                if (is_creeper) {
+                    // Fix #3: Creeper autonomous fuse, swelling, and detonation pipeline
+                    if (!mob.is_primed) {
+                        if (dist <= kCreeperIgniteDistance) {
+                            mob.is_primed = true;
+                            mob.fuse_timer = std::max(0.0f, mob.fuse_duration - dt);
+                        }
+                    } else {
+                        // Smooth defuse if enemy moves too far (> 7.0m) and fuse is not in final commitment stage (<= 0.5s)
+                        if (dist > kCreeperDefuseDistance && mob.fuse_timer > 0.5f) {
+                            mob.fuse_timer = std::min(mob.fuse_duration, mob.fuse_timer + 0.5f * dt);
+                            if (mob.fuse_timer >= mob.fuse_duration) {
+                                mob.is_primed = false;
+                            }
+                        } else {
+                            mob.fuse_timer -= dt;
+                        }
+
+                        // Detonation!
+                        if (mob.fuse_timer <= 0.0f) {
+                            mob.exploded = true;
+                            CreeperExplosionEvent cev;
+                            cev.source_mob_id = mob.id;
+                            cev.pos[0] = mob.pos[0];
+                            cev.pos[1] = mob.pos[1];
+                            cev.pos[2] = mob.pos[2];
+                            cev.radius = 7.0f;
+                            cev.damage = 1500.0f;
+                            explosion_events_.push_back(cev);
+
+                            // Creeper is consumed by explosion
+                            it = mobs_.erase(it);
+                            continue;
+                        }
+                    }
+
+                    if (mob.is_primed) {
+                        // Swell scale 1.0 -> 1.35x
+                        const float swell = std::clamp(1.0f - mob.fuse_timer / mob.fuse_duration, 0.0f, 1.0f);
+                        mob.scale = 1.0f + 0.35f * swell;
+                        mob.white_flash = std::fmod(mob.fuse_timer, 0.2f) < 0.1f ? 1.0f : 0.0f;
+                    } else {
+                        mob.scale = 1.0f;
+                        mob.white_flash = 0.0f;
+                    }
+
+                    // Approach target if not yet in detonation contact
+                    if (dist > 1.2f) {
+                        float step = std::min(dist, mob.speed * dt);
+                        float dir_x = dx / dist;
+                        float dir_z = dz / dist;
+                        mob.pos[0] += dir_x * step;
+                        mob.pos[2] += dir_z * step;
+                        mob.pos[1] = target_pos[1];
                     }
                 } else {
-                    // Approach target
-                    float step = std::min(dist, mob.speed * dt);
-                    float dir_x = dx / dist;
-                    float dir_z = dz / dist;
-                    mob.pos[0] += dir_x * step;
-                    mob.pos[2] += dir_z * step;
-                    mob.pos[1] = target_pos[1];
+                    // Standard melee attack for zombie/skeleton/iron_golem
+                    if (dist <= kAttackRange) {
+                        if (mob.attack_cooldown <= 0.0f) {
+                            DamageIntent intent;
+                            intent.target_chr_ins = best_target;
+                            intent.damage_amount = 6.0f;
+                            intent.source_mob_id = mob.id;
+                            damage_intents_.push_back(intent);
+                            mob.attack_cooldown = kAttackCooldownSeconds;
+                        }
+                    } else {
+                        float step = std::min(dist, mob.speed * dt);
+                        float dir_x = dx / dist;
+                        float dir_z = dz / dist;
+                        mob.pos[0] += dir_x * step;
+                        mob.pos[2] += dir_z * step;
+                        mob.pos[1] = target_pos[1];
+                    }
                 }
             } else {
-                // Follow player
+                // Follow player when idle
                 float dx = player.pos[0] - mob.pos[0];
                 float dz = player.pos[2] - mob.pos[2];
                 float dist = std::sqrt(dx * dx + dz * dz);
 
                 if (dist > kFollowRadiusMax) {
-                    // Teleport to player
                     mob.pos[0] = player.pos[0] - std::sin(player.yaw) * 2.0f;
                     mob.pos[1] = player.pos[1];
                     mob.pos[2] = player.pos[2] - std::cos(player.yaw) * 2.0f;
                     mob.yaw = player.yaw;
                 } else if (dist > kFollowRadiusMin) {
-                    // Walk toward player
                     float step = std::min(dist - kFollowRadiusMin, mob.speed * dt);
                     float dir_x = dx / dist;
                     float dir_z = dz / dist;
@@ -223,6 +299,12 @@ public:
         return out;
     }
 
+    [[nodiscard]] std::vector<CreeperExplosionEvent> drainExplosionEvents() {
+        std::vector<CreeperExplosionEvent> out = std::move(explosion_events_);
+        explosion_events_.clear();
+        return out;
+    }
+
     [[nodiscard]] std::vector<eldenring::mobs::MobSnapshot> generateSnapshots() const {
         std::vector<eldenring::mobs::MobSnapshot> out;
         out.reserve(mobs_.size());
@@ -238,7 +320,7 @@ public:
             s.max_hp = mob.max_hp;
             s.model_type = mob.model_type;
             s.scale = mob.scale;
-            s.white_flash = 0.0f;
+            s.white_flash = mob.white_flash;
             out.push_back(s);
         }
         return out;
@@ -247,12 +329,14 @@ public:
     void dismissAll() noexcept {
         mobs_.clear();
         damage_intents_.clear();
+        explosion_events_.clear();
     }
 
 private:
     uint64_t next_id_{0x10001};
     std::vector<VirtualMob> mobs_;
     std::vector<DamageIntent> damage_intents_;
+    std::vector<CreeperExplosionEvent> explosion_events_;
 };
 
 } // namespace eldenring::summon
