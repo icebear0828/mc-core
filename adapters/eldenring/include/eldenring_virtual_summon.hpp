@@ -63,7 +63,6 @@ class VirtualSummonManager {
 public:
     static constexpr size_t kMaxVirtualSummons = 16;
     static constexpr float kFollowRadiusMin = 2.5f;
-    static constexpr float kFollowRadiusMax = 32.0f;
     static constexpr float kAttackRange = 1.8f;
     static constexpr float kCreeperIgniteDistance = 3.5f;
     static constexpr float kCreeperDefuseDistance = 7.0f;
@@ -283,17 +282,13 @@ public:
                 }
             } else if (!is_creeper || !mob.manual_primed) {
                 // Follow player when idle (if not manually primed creeper)
+                // In Minecraft / natural companion behaviour: summons NEVER instantly teleport snap to player.
+                // They only smoothly walk/pursue toward the player if outside kFollowRadiusMin.
                 float dx = player.pos[0] - mob.pos[0];
                 float dz = player.pos[2] - mob.pos[2];
                 float dist = std::sqrt(dx * dx + dz * dz);
 
-                // Creepers NEVER teleport snap to player (teleport is only for tamed pets or generic minions)
-                if (dist > kFollowRadiusMax && !is_creeper) {
-                    mob.pos[0] = player.pos[0] - std::sin(player.yaw) * 2.0f;
-                    mob.pos[1] = player.pos[1];
-                    mob.pos[2] = player.pos[2] - std::cos(player.yaw) * 2.0f;
-                    mob.yaw = player.yaw;
-                } else if (dist > kFollowRadiusMin) {
+                if (dist > kFollowRadiusMin) {
                     float step = std::min(dist - kFollowRadiusMin, mob.speed * dt);
                     float dir_x = dx / dist;
                     float dir_z = dz / dist;

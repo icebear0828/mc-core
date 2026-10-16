@@ -130,43 +130,30 @@ TEST(VirtualSummonTest, FollowsPlayerWhenBeyondIdleRadius) {
     EXPECT_GT(new_dist, 2.0f); // Still heading toward idle radius (~2.5m)
 }
 
-TEST(VirtualSummonTest, TeleportsWhenPlayerMovesTooFar) {
+TEST(VirtualSummonTest, NeverTeleportsWhenPlayerMovesTooFarSmoothFollowOnly) {
     VirtualSummonManager mgr;
     auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
-    uint64_t id = mgr.spawnMob("zombie", p, 2.0f);
-
-    // Player suddenly moves 100 metres away (fast travel, sprint or warp)
-    p = makePlayer(100.0f, 0.0f, 200.0f, 0.0f);
-    std::vector<EnemyTarget> no_enemies;
-    mgr.update(0.1f, p, no_enemies);
-
-    const auto* mob = mgr.findMob(id);
-    ASSERT_NE(mob, nullptr);
-    float dx = mob->pos[0] - p.pos[0];
-    float dz = mob->pos[2] - p.pos[2];
-    float dist = std::sqrt(dx * dx + dz * dz);
-    // Should have teleported close to the player (< 5.0m)
-    EXPECT_LE(dist, 5.0f);
-}
-
-TEST(VirtualSummonTest, CreeperNeverTeleportsWhenPlayerMovesTooFar) {
-    VirtualSummonManager mgr;
-    auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
-    uint64_t id = mgr.spawnMob("creeper", p, 2.0f);
+    uint64_t z_id = mgr.spawnMob("zombie", p, 2.0f);
+    uint64_t c_id = mgr.spawnMob("creeper", p, 2.0f);
 
     // Player suddenly moves 100 metres away (sprint, torrent, warp)
     p = makePlayer(100.0f, 0.0f, 200.0f, 0.0f);
     std::vector<EnemyTarget> no_enemies;
     mgr.update(0.1f, p, no_enemies);
 
-    const auto* mob = mgr.findMob(id);
-    ASSERT_NE(mob, nullptr);
-    float dx = mob->pos[0] - p.pos[0];
-    float dz = mob->pos[2] - p.pos[2];
-    float dist = std::sqrt(dx * dx + dz * dz);
-    // In Minecraft, Creepers NEVER teleport to the player! They must only walk toward player without sudden coordinate snapping.
-    // At dt=0.1s and speed ~3.8m/s, it should move at most ~0.4m, definitely NOT teleported close (< 5m)!
-    EXPECT_GT(dist, 50.0f);
+    const auto* mob_z = mgr.findMob(z_id);
+    const auto* mob_c = mgr.findMob(c_id);
+    ASSERT_NE(mob_z, nullptr);
+    ASSERT_NE(mob_c, nullptr);
+
+    float z_dist = std::sqrt((mob_z->pos[0] - p.pos[0]) * (mob_z->pos[0] - p.pos[0]) +
+                             (mob_z->pos[2] - p.pos[2]) * (mob_z->pos[2] - p.pos[2]));
+    float c_dist = std::sqrt((mob_c->pos[0] - p.pos[0]) * (mob_c->pos[0] - p.pos[0]) +
+                             (mob_c->pos[2] - p.pos[2]) * (mob_c->pos[2] - p.pos[2]));
+
+    // Neither Zombie nor Creeper should ever teleport snap! They walk smoothly toward the player.
+    EXPECT_GT(z_dist, 50.0f);
+    EXPECT_GT(c_dist, 50.0f);
 }
 
 TEST(VirtualSummonTest, TargetsNearbyHostileAndGeneratesDamageIntent) {
