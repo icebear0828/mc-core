@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <mutex>
 
 namespace eldenring::summon {
 
@@ -184,6 +185,7 @@ public:
     }
 
     void registerArchetype(const MobArchetype& archetype) {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         for (auto& a : archetypes_) {
             if (a.id == archetype.id) {
                 a = archetype;
@@ -194,6 +196,7 @@ public:
     }
 
     [[nodiscard]] const MobArchetype* findArchetype(std::string_view id) const noexcept {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         for (const auto& a : archetypes_) {
             if (a.id == id) return &a;
         }
@@ -201,10 +204,12 @@ public:
     }
 
     [[nodiscard]] size_t activeCount() const noexcept {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         return mobs_.size();
     }
 
     [[nodiscard]] const VirtualMob* findMob(uint64_t id) const noexcept {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         for (const auto& mob : mobs_) {
             if (mob.id == id) return &mob;
         }
@@ -212,6 +217,7 @@ public:
     }
 
     [[nodiscard]] VirtualMob* findMobMut(uint64_t id) noexcept {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         for (auto& mob : mobs_) {
             if (mob.id == id) return &mob;
         }
@@ -219,6 +225,7 @@ public:
     }
 
     uint64_t spawnMob(std::string_view model_type, const PlayerPose& player, float forward_distance = 2.5f) {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         // Fix #1: Rolling eviction when at maximum capacity so summoning always succeeds
         if (mobs_.size() >= kMaxVirtualSummons) {
             mobs_.erase(mobs_.begin());
@@ -263,6 +270,7 @@ public:
     }
 
     bool igniteCreeper(uint64_t id) {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         VirtualMob* mob = findMobMut(id);
         if (!mob || mob->is_dying || mob->attack_style != MobAttackStyle::SuicideExplode) return false;
         mob->is_primed = true;
@@ -272,6 +280,7 @@ public:
     }
 
     bool applyDamage(uint64_t id, int damage) {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         VirtualMob* mob = findMobMut(id);
         if (!mob || mob->is_dying) return false;
 
@@ -287,6 +296,7 @@ public:
     }
 
     void update(float dt, const PlayerPose& player, const std::vector<EnemyTarget>& enemies) {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         for (auto it = mobs_.begin(); it != mobs_.end();) {
             VirtualMob& mob = *it;
 
@@ -578,24 +588,28 @@ private:
 
 public:
     [[nodiscard]] std::vector<DamageIntent> drainDamageIntents() {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         std::vector<DamageIntent> out = std::move(damage_intents_);
         damage_intents_.clear();
         return out;
     }
 
     [[nodiscard]] std::vector<ProjectileIntent> drainProjectileIntents() {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         std::vector<ProjectileIntent> out = std::move(projectile_intents_);
         projectile_intents_.clear();
         return out;
     }
 
     [[nodiscard]] std::vector<CreeperExplosionEvent> drainExplosionEvents() {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         std::vector<CreeperExplosionEvent> out = std::move(explosion_events_);
         explosion_events_.clear();
         return out;
     }
 
     [[nodiscard]] std::vector<eldenring::mobs::MobSnapshot> generateSnapshots() const {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         std::vector<eldenring::mobs::MobSnapshot> out;
         out.reserve(mobs_.size());
 
@@ -617,6 +631,7 @@ public:
     }
 
     void dismissAll() noexcept {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         mobs_.clear();
         damage_intents_.clear();
         projectile_intents_.clear();
@@ -624,6 +639,7 @@ public:
     }
 
 private:
+    mutable std::recursive_mutex mutex_;
     uint64_t next_id_{0x10001};
     std::vector<MobArchetype> archetypes_;
     std::vector<VirtualMob> mobs_;
