@@ -527,3 +527,45 @@ TEST(VirtualSummonTest, IronGolemHeavyMeleeDamageAndTankStats) {
     EXPECT_EQ(mgr.findMob(golem_id)->hp, 70);
 }
 
+TEST(VirtualSummonTest, NonCreeperMobsNeverExplodeOrIgniteUnderEnemyProximity) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t skel_id = mgr.spawnMob("skeleton", p, 2.0f);
+    uint64_t golem_id = mgr.spawnMob("iron_golem", p, 3.0f);
+    ASSERT_NE(skel_id, 0u);
+    ASSERT_NE(golem_id, 0u);
+
+    // Flint and steel ignition MUST be rejected for non-creepers!
+    EXPECT_FALSE(mgr.igniteCreeper(skel_id));
+    EXPECT_FALSE(mgr.igniteCreeper(golem_id));
+
+    // Enemy placed right next to them at 1.5m
+    std::vector<EnemyTarget> enemies = {
+        makeEnemy(0xEEEE, 0.0f, 0.0f, -2.5f, 200, 200)
+    };
+
+    // Update for 2.0s (longer than creeper fuse 1.5s)
+    mgr.update(2.0f, p, enemies);
+
+    // Zero explosion events should occur!
+    auto exp = mgr.drainExplosionEvents();
+    EXPECT_TRUE(exp.empty());
+
+    // Both mobs must still be active and alive!
+    EXPECT_EQ(mgr.activeCount(), 2u);
+    const auto* skel = mgr.findMob(skel_id);
+    const auto* golem = mgr.findMob(golem_id);
+    ASSERT_NE(skel, nullptr);
+    ASSERT_NE(golem, nullptr);
+    EXPECT_FALSE(skel->is_primed);
+    EXPECT_FALSE(golem->is_primed);
+    EXPECT_GT(skel->hp, 0);
+    EXPECT_GT(golem->hp, 0);
+
+    // Snapshots generated must not have white flash
+    auto snaps = mgr.generateSnapshots();
+    for (const auto& s : snaps) {
+        EXPECT_FLOAT_EQ(s.white_flash, 0.0f);
+    }
+}
+
