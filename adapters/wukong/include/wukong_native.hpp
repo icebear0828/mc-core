@@ -315,7 +315,22 @@ public:
         bool bIgnoreSelf
     )>;
 
-    static inline LineTraceHandler CustomLineTrace{nullptr};
+    static LineTraceHandler& customLineTrace();
+
+    struct CustomLineTraceProxy {
+        CustomLineTraceProxy& operator=(LineTraceHandler handler) {
+            UKismetSystemLibrary::customLineTrace() = std::move(handler);
+            return *this;
+        }
+        operator bool() const {
+            return static_cast<bool>(UKismetSystemLibrary::customLineTrace());
+        }
+        bool operator()(UObject* ctx, const FVector& s, const FVector& e, ETraceTypeQuery c, bool comp,
+                        const std::vector<AActor*>& ign, EDrawDebugTrace d, FHitResult& out, bool ign_self) const {
+            return UKismetSystemLibrary::customLineTrace()(ctx, s, e, c, comp, ign, d, out, ign_self);
+        }
+    };
+    static inline CustomLineTraceProxy CustomLineTrace;
 
     static bool LineTraceSingle(
         UObject* worldContext,
@@ -328,8 +343,8 @@ public:
         FHitResult& outHit,
         bool bIgnoreSelf
     ) {
-        if (CustomLineTrace) {
-            return CustomLineTrace(worldContext, start, end, traceChannel, bTraceComplex, actorsToIgnore, drawDebugType, outHit, bIgnoreSelf);
+        if (customLineTrace()) {
+            return customLineTrace()(worldContext, start, end, traceChannel, bTraceComplex, actorsToIgnore, drawDebugType, outHit, bIgnoreSelf);
         }
         (void)worldContext; (void)start; (void)end; (void)traceChannel;
         (void)bTraceComplex; (void)actorsToIgnore; (void)drawDebugType;

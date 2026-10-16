@@ -677,3 +677,10 @@ void SekiroAdapter::setEquippedItems(ItemId main, ItemId off) {
 }
 
 } // namespace mc::adapter
+
+namespace sekiro::native {
+DantelionEngineContext::RaycastHandler& DantelionEngineContext::customRaycast() {
+    static RaycastHandler s_handler{nullptr};
+    return s_handler;
+}
+} // namespace sekiro::native

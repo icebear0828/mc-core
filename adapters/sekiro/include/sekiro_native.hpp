@@ -136,7 +136,21 @@ public:
         uint64_t ignoreEntity
     )>;
 
-    static inline RaycastHandler CustomRaycast{nullptr};
+    static RaycastHandler& customRaycast();
+
+    struct CustomRaycastProxy {
+        CustomRaycastProxy& operator=(RaycastHandler handler) {
+            DantelionEngineContext::customRaycast() = std::move(handler);
+            return *this;
+        }
+        operator bool() const {
+            return static_cast<bool>(DantelionEngineContext::customRaycast());
+        }
+        bool operator()(const FVector3& s, const FVector3& e, HavokHitResult& out, uint64_t ignore) const {
+            return DantelionEngineContext::customRaycast()(s, e, out, ignore);
+        }
+    };
+    static inline CustomRaycastProxy CustomRaycast;
 
     static bool RaycastWorld(
         const FVector3& start,
@@ -144,8 +158,8 @@ public:
         HavokHitResult& outHit,
         uint64_t ignoreEntity
     ) {
-        if (CustomRaycast) {
-            return CustomRaycast(start, end, outHit, ignoreEntity);
+        if (customRaycast()) {
+            return customRaycast()(start, end, outHit, ignoreEntity);
         }
         (void)start; (void)end; (void)outHit; (void)ignoreEntity;
         return false;
