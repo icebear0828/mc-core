@@ -1050,8 +1050,8 @@ bool KillChr(uintptr_t chr) {
     return SetChrHp(chr, 0);
 }
 
-std::atomic<bool> g_shield_blocking{false};
-std::atomic<bool> g_shield_offhand{false}; // the shield being raised is the offhand's (the left arm goes up), else the main hand's
+std::atomic<bool>& g_shield_blocking = g_mode.shield_blocking;
+std::atomic<bool>& g_shield_offhand = g_mode.shield_offhand; // the shield being raised is the offhand's (the left arm goes up), else the main hand's
 
 // What the raised shield decides about a hit on the player. The shield guards where the player LOOKS: the horizontal part of the camera's forward
 // vector (live data 2026-10-11: ER's body orientation only turns when the character moves and a hit reaction can even turn it, so against it the
@@ -3619,6 +3619,15 @@ void SetupWorldRuntime() {
     };
     cb.play_sound = [](const char* snd, float vol) { eraudio::Play(snd, vol); };
     cb.spawn_fx = [](int kind, const float pos[3], int count) { erov::SpawnFx(static_cast<erov::FxKind>(kind), pos, count); };
+    cb.drive_velocity = [](uintptr_t module, bool pinned, eldenring::RuntimeContext& ctx) {
+        eldenring::movement::PlayerLocomotion::Instance().driveVelocity(module, pinned, ctx);
+    };
+    cb.reset_fall_timer = [](uintptr_t chr) {
+        eldenring::movement::PlayerLocomotion::Instance().resetFallTimer(chr);
+    };
+    cb.unlock_air_movement = [](uintptr_t chr) {
+        eldenring::movement::PlayerLocomotion::Instance().unlockAirMovement(chr);
+    };
     cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
     eldenring::world::VoxelWorldRuntime::Instance().setCallbacks(cb);
 }

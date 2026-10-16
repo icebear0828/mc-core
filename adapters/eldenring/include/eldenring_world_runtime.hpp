@@ -60,6 +60,11 @@ struct WorldRuntimeCallbacks {
     std::function<void(const char* sound, float vol)> play_sound;
     std::function<void(int fx_kind, const float pos[3], int count)> spawn_fx;
 
+    // Player locomotion integration on supported blocks
+    std::function<void(uintptr_t module, bool force_zero, RuntimeContext& ctx)> drive_velocity;
+    std::function<void(uintptr_t chr)> reset_fall_timer;
+    std::function<void(uintptr_t chr)> unlock_air_movement;
+
     // Diagnostics / logging
     std::function<void(const std::string&)> log;
 };
@@ -94,6 +99,7 @@ public:
     size_t pendingTntIntentCount() const;
 
     void resetForTesting();
+    void setDeltaTimeOverrideForTesting(float dt) { delta_time_override_ = dt; }
 
 private:
     VoxelWorldRuntime();
@@ -109,6 +115,10 @@ private:
     unsigned player_pushes_{0};
     bool anchored_{false};
     float anchor_[2]{0.f, 0.f};
+#ifdef _WIN32
+    LARGE_INTEGER last_block_qpc_{};
+#endif
+    float delta_time_override_{0.f};
 
     // Enemy collision tracking
     unsigned enemy_pushes_{0};
