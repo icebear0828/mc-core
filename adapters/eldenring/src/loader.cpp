@@ -1335,65 +1335,8 @@ bool ReadFileAll(const std::string& path, std::vector<uint8_t>& out); // defined
 void LogPlayerPoseForBuddy(); // defined below
 
 void RunSummonExperiment() {
-    int32_t summon_request = eldenring::buddy::kKaidenWarriorRequest; // default to 1.95m humanoid for correct hitbox
-    std::vector<uint8_t> summon_txt;
-    if (ReadFileAll(g_game_dir + "mc_er_summon.txt", summon_txt) && !summon_txt.empty()) {
-        std::string content(reinterpret_cast<const char*>(summon_txt.data()), summon_txt.size());
-        size_t first = content.find_first_not_of(" \t\r\n");
-        size_t last = content.find_last_not_of(" \t\r\n");
-        if (first != std::string::npos && last != std::string::npos) {
-            std::string token = content.substr(first, last - first + 1);
-            summon_request = eldenring::buddy::resolveSummonRequest(token);
-        }
-    }
-    constexpr int32_t kTabletEntityId = 1042360100;  // the tablet entity observed with it (Limgrave tile 42_36)
-    using eldenring::buddy::sample;
-    const auto before = sample(g_reader, g_img.base);
-    const char* why = eldenring::buddy::refusalReason(before);
-    if (why[0] != '\0') {
-        Log("summon: refused: %s", why);
-        return;
-    }
-    const uintptr_t player = PlayerChrPtr();
-    float pos[3], q[4];
-    if (player == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, pos) ||
-        !detail::readPhysicsOrientation(g_reader, g_img.base, player, q)) {
-        Log("summon: refused: the player's position is not readable");
-        return;
-    }
-    const auto spawn = eldenring::buddy::spawnPointAhead(pos, eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]));
-    const auto plan = eldenring::buddy::planSummon(before, summon_request, kTabletEntityId, spawn);
-    if (!plan) {
-        Log("summon: no plan for request %d", summon_request);
-        return;
-    }
-
-    bool sp_ok = true;
-    for (int i = 0; i < 4; ++i) {
-        uint32_t bits;
-        std::memcpy(&bits, &plan->spawn.pos[i], sizeof(bits));
-        sp_ok = SafeWrite32(plan->spawn_address + 4 * static_cast<uintptr_t>(i), bits) && sp_ok;
-    }
-    uint32_t yaw_bits;
-    std::memcpy(&yaw_bits, &plan->spawn.yaw, sizeof(yaw_bits));
-    sp_ok = SafeWrite32(plan->yaw_address, yaw_bits) && sp_ok;
-    if (!sp_ok) {
-        Log("summon: writing the spawn point failed; nothing else was written");
-        return;
-    }
-    const bool t_ok = SafeWrite32(plan->tablet_address, static_cast<uint32_t>(plan->tablet));
-    const bool r_ok = t_ok && SafeWrite32(plan->request_address, static_cast<uint32_t>(plan->request));
-    const auto after = sample(g_reader, g_img.base);
-    Log("summon: wrote tablet=%d request=%d (%s) | before request=%d active=%d tablet=%d | right after request=%d active=%d tablet=%d",
-        plan->tablet, plan->request, r_ok ? "ok" : "WRITE FAILED", before.request, before.active, before.tablet, after.request, after.active,
-        after.tablet);
-    Log("summon: wrote spawn=(%.2f %.2f %.2f %.2f) yaw=%.2f for the player at (%.2f %.2f %.2f)", static_cast<double>(plan->spawn.pos[0]),
-        static_cast<double>(plan->spawn.pos[1]), static_cast<double>(plan->spawn.pos[2]), static_cast<double>(plan->spawn.pos[3]),
-        static_cast<double>(plan->spawn.yaw), static_cast<double>(pos[0]), static_cast<double>(pos[1]), static_cast<double>(pos[2]));
-    Log("summon: spawn point in the manager was (%.2f %.2f %.2f %.2f) yaw=%.2f", static_cast<double>(before.spawn_pos[0]),
-        static_cast<double>(before.spawn_pos[1]), static_cast<double>(before.spawn_pos[2]), static_cast<double>(before.spawn_pos[3]),
-        static_cast<double>(before.spawn_yaw));
-    LogPlayerPoseForBuddy();
+    // Deprecated: CSBuddyMan spirit ash pipeline is completely replaced by client-managed VirtualSummonManager.
+    // Intentionally no-op to eliminate all native Dismiss crashing.
 }
 
 void RunBulletFire(); // defined with the spawn_bullet logger below
