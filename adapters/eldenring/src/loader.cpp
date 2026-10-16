@@ -47,6 +47,7 @@
 #include "eldenring_buddy.hpp"
 #include "eldenring_chrscan.hpp"
 #include "eldenring_mobs.hpp"
+#include "eldenring_virtual_summon.hpp"
 #include "eldenring_creative.hpp"
 #include "eldenring_flight.hpp"
 #include "eldenring_los.hpp"
@@ -593,6 +594,7 @@ std::mutex g_summon_mutex;
 std::vector<eldenring::mobs::MobSnapshot> g_summon_list; // the team 47 summons seen by the last HideSummonModels (render thread), read by the HUD provider
 float g_mob_yaw_offset = eldenring::live::summon::kDefaultMobYawOffset; // monster/wolf orientation quaternion aligns forward; default 0 (mob_yaw_offset_deg)
 eldenring::creeper::CreeperManager g_creeper_mgr;
+eldenring::summon::VirtualSummonManager g_virtual_summons;
 
 std::set<uintptr_t> g_hidden_flag_addresses; // the disp_flags words whose drawn bit we cleared (render thread only), to put it back
 std::map<uintptr_t, uint16_t> g_suppressed_sfx_slots; // the sfx slot control words whose skip bit we set, to restore on exit
@@ -713,7 +715,52 @@ void HideSummonModels() {
             it = last_hp.erase(it);
         }
     }
-    if (!mc_on) g_hidden_flag_addresses.clear(); // the ones left belong to summons that are gone: nothing to put back
+    if (!mc_on) {
+        g_hidden_flag_addresses.clear(); // the ones left belong to summons that are gone: nothing to put back
+        g_virtual_summons.dismissAll();
+    } else {
+        const uintptr_t player = PlayerChrPtr();
+        if (player != 0) {
+            float p_pos[3], p_q[4];
+            if (detail::readPhysicsPosition(g_reader, g_img.base, player, p_pos) &&
+                detail::readPhysicsOrientation(g_reader, g_img.base, player, p_q)) {
+                eldenring::summon::PlayerPose pp;
+                pp.pos[0] = p_pos[0];
+                pp.pos[1] = p_pos[1];
+                pp.pos[2] = p_pos[2];
+                pp.yaw = eldenring::render::yawFromQuat(p_q[0], p_q[1], p_q[2], p_q[3]);
+
+                std::vector<eldenring::summon::EnemyTarget> enemy_targets;
+                for (const EnemyInfo& e : list) {
+                    if (e.team != eldenring::live::summon::kTeam && e.hp > 0 && e.chr != player) {
+                        eldenring::summon::EnemyTarget et;
+                        et.chr_ins = e.chr;
+                        et.hp = e.hp;
+                        et.max_hp = e.max_hp;
+                        et.is_hostile = true;
+                        detail::readPhysicsPosition(g_reader, g_img.base, e.chr, et.pos);
+                        enemy_targets.push_back(et);
+                    }
+                }
+
+                static uint64_t last_time_ms = 0;
+                const uint64_t now_ms = GetTickCount64();
+                float dt = last_time_ms > 0 ? static_cast<float>(now_ms - last_time_ms) / 1000.0f : 0.016f;
+                last_time_ms = now_ms;
+                if (dt <= 0.0f || dt > 0.1f) dt = 0.016f;
+
+                g_virtual_summons.update(dt, pp, enemy_targets);
+
+                auto intents = g_virtual_summons.drainDamageIntents();
+                for (const auto& in : intents) {
+                    g_queue.enqueue(in.target_chr_ins, static_cast<int>(in.damage_amount), NowTick());
+                }
+
+                const auto virt_snaps = g_virtual_summons.generateSnapshots();
+                seen.insert(seen.end(), virt_snaps.begin(), virt_snaps.end());
+            }
+        }
+    }
     std::lock_guard<std::mutex> g(g_summon_mutex);
     g_summon_list = mc_on ? seen : std::vector<eldenring::mobs::MobSnapshot>{};
 }
@@ -1657,27 +1704,39 @@ struct SummonWatch {
 };
 SummonWatch g_summon_watch;
 std::atomic<uint64_t> g_last_summon_ms{0};
-constexpr uint64_t kSummonCooldownMs = 3000; // one request at a time: the manager consumes it on the next frame and spawns for a few seconds
+constexpr uint64_t kSummonCooldownMs = 200; // Fast and responsive virtual summon (no FromSoftware engine locks)
 
-// Returns false when the feature is off (no mc_er_summon.txt) or a request is still in flight.
+// Returns false when capacity is full or player pose unreadable. Completely decoupled from CSBuddyMan.
 bool QueueSummon(const char* source) {
-    if (!FileExists(g_game_dir + "mc_er_summon.txt")) {
-        Log("%s: ignored (no mc_er_summon.txt in the game directory)", source);
-        return false;
-    }
     const uint64_t now = GetTickCount64();
     if (now - g_last_summon_ms.load(std::memory_order_relaxed) < kSummonCooldownMs) return false;
     g_last_summon_ms.store(now);
-    g_summon_watch.baseline.clear();
-    std::vector<EnemyInfo> before;
-    if (enumerateEnemies(g_reader, g_img.base, before, 4000)) {
-        for (const EnemyInfo& e : before) g_summon_watch.baseline.push_back(e.chr);
+
+    const uintptr_t player = PlayerChrPtr();
+    if (player == 0) {
+        Log("%s: refused (no player entity)", source);
+        return false;
     }
-    g_summon_watch.t0_ms = now;
-    g_summon_watch.reports_left = 2;
-    g_chrscan_count = 0;
-    g_summon_pending.store(true);
-    Log("%s: summon queued for the game thread (%zu entities in the baseline)", source, g_summon_watch.baseline.size());
+    float pos[3], q[4];
+    if (!detail::readPhysicsPosition(g_reader, g_img.base, player, pos) ||
+        !detail::readPhysicsOrientation(g_reader, g_img.base, player, q)) {
+        Log("%s: refused (player position/orientation not readable)", source);
+        return false;
+    }
+
+    eldenring::summon::PlayerPose p;
+    p.pos[0] = pos[0];
+    p.pos[1] = pos[1];
+    p.pos[2] = pos[2];
+    p.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]);
+
+    uint64_t id = g_virtual_summons.spawnMob("zombie", p, 2.5f);
+    if (id == 0) {
+        Log("%s: virtual summon capacity reached (%zu active)", source, g_virtual_summons.activeCount());
+        return false;
+    }
+    Log("%s: virtual summon created (id=%llu, active=%zu) at (%.2f, %.2f, %.2f) yaw=%.2f",
+        source, id, g_virtual_summons.activeCount(), pos[0], pos[1], pos[2], p.yaw);
     return true;
 }
 

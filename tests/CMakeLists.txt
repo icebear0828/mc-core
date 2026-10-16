@@ -80,6 +80,7 @@ add_executable(mc_tests
     test_eldenring_locomotion.cpp
     test_eldenring_world_runtime.cpp
     test_eldenring_combat_service.cpp
+    test_eldenring_virtual_summon.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/ui/inventory_controller.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/ui/hud_bridge.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/movement/player_locomotion.cpp

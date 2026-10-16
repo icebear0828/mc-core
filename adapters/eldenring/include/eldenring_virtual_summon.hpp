@@ -1,0 +1,258 @@
+#pragma once
+
+#include "eldenring_mobs.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace eldenring::summon {
+
+struct PlayerPose {
+    float pos[3]{0.0f, 0.0f, 0.0f};
+    float yaw{0.0f};
+};
+
+struct EnemyTarget {
+    uintptr_t chr_ins{0};
+    float pos[3]{0.0f, 0.0f, 0.0f};
+    int hp{100};
+    int max_hp{100};
+    bool is_hostile{true};
+};
+
+struct DamageIntent {
+    uintptr_t target_chr_ins{0};
+    float damage_amount{6.0f};
+    uint64_t source_mob_id{0};
+};
+
+struct VirtualMob {
+    uint64_t id{0};
+    std::string model_type{"zombie"};
+    float pos[3]{0.0f, 0.0f, 0.0f};
+    float yaw{0.0f};
+    int hp{20};
+    int max_hp{20};
+    bool is_dying{false};
+    float hurt_timer{0.0f};
+    float death_timer{0.0f};
+    float attack_cooldown{0.0f};
+    uintptr_t target_chr_ins{0};
+    float scale{1.0f};
+    float speed{3.8f};
+};
+
+class VirtualSummonManager {
+public:
+    static constexpr size_t kMaxVirtualSummons = 16;
+    static constexpr float kFollowRadiusMin = 2.5f;
+    static constexpr float kFollowRadiusMax = 32.0f;
+    static constexpr float kAttackRange = 1.8f;
+    static constexpr float kDetectRadius = 16.0f;
+    static constexpr float kAttackCooldownSeconds = 1.0f;
+    static constexpr float kDeathMaxSeconds = 1.0f;
+    static constexpr float kHurtMaxSeconds = 0.5f;
+
+    [[nodiscard]] size_t activeCount() const noexcept {
+        return mobs_.size();
+    }
+
+    [[nodiscard]] const VirtualMob* findMob(uint64_t id) const noexcept {
+        for (const auto& mob : mobs_) {
+            if (mob.id == id) return &mob;
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] VirtualMob* findMobMut(uint64_t id) noexcept {
+        for (auto& mob : mobs_) {
+            if (mob.id == id) return &mob;
+        }
+        return nullptr;
+    }
+
+    uint64_t spawnMob(std::string_view model_type, const PlayerPose& player, float forward_distance = 2.5f) {
+        if (mobs_.size() >= kMaxVirtualSummons) {
+            return 0;
+        }
+
+        VirtualMob mob;
+        mob.id = next_id_++;
+        mob.model_type = model_type.empty() ? "zombie" : std::string(model_type);
+        mob.hp = 20;
+        mob.max_hp = 20;
+        mob.is_dying = false;
+        mob.hurt_timer = 0.0f;
+        mob.death_timer = 0.0f;
+        mob.attack_cooldown = 0.0f;
+        mob.target_chr_ins = 0;
+        mob.scale = 1.0f;
+        mob.speed = 3.8f;
+
+        // Spawn position ahead of player matching heading
+        mob.pos[0] = player.pos[0] - std::sin(player.yaw) * forward_distance;
+        mob.pos[1] = player.pos[1];
+        mob.pos[2] = player.pos[2] - std::cos(player.yaw) * forward_distance;
+        mob.yaw = player.yaw;
+
+        mobs_.push_back(mob);
+        return mob.id;
+    }
+
+    bool applyDamage(uint64_t id, int damage) {
+        VirtualMob* mob = findMobMut(id);
+        if (!mob || mob->is_dying) return false;
+
+        mob->hp = std::max(0, mob->hp - damage);
+        mob->hurt_timer = kHurtMaxSeconds;
+
+        if (mob->hp <= 0) {
+            mob->is_dying = true;
+            mob->death_timer = 0.0f;
+            return false;
+        }
+        return true;
+    }
+
+    void update(float dt, const PlayerPose& player, const std::vector<EnemyTarget>& enemies) {
+        for (auto it = mobs_.begin(); it != mobs_.end();) {
+            VirtualMob& mob = *it;
+
+            if (mob.is_dying) {
+                mob.death_timer += dt;
+                if (mob.death_timer >= kDeathMaxSeconds) {
+                    it = mobs_.erase(it);
+                    continue;
+                }
+                ++it;
+                continue;
+            }
+
+            if (mob.hurt_timer > 0.0f) {
+                mob.hurt_timer = std::max(0.0f, mob.hurt_timer - dt);
+            }
+            if (mob.attack_cooldown > 0.0f) {
+                mob.attack_cooldown = std::max(0.0f, mob.attack_cooldown - dt);
+            }
+
+            // Find closest active hostile enemy
+            uintptr_t best_target = 0;
+            float best_dist_sq = kDetectRadius * kDetectRadius;
+            float target_pos[3]{0.0f, 0.0f, 0.0f};
+
+            for (const auto& enemy : enemies) {
+                if (!enemy.is_hostile || enemy.hp <= 0 || enemy.chr_ins == 0) continue;
+                float dx = enemy.pos[0] - mob.pos[0];
+                float dz = enemy.pos[2] - mob.pos[2];
+                float d_sq = dx * dx + dz * dz;
+                if (d_sq < best_dist_sq) {
+                    best_dist_sq = d_sq;
+                    best_target = enemy.chr_ins;
+                    target_pos[0] = enemy.pos[0];
+                    target_pos[1] = enemy.pos[1];
+                    target_pos[2] = enemy.pos[2];
+                }
+            }
+
+            mob.target_chr_ins = best_target;
+
+            if (best_target != 0) {
+                // Moving toward or attacking target
+                float dx = target_pos[0] - mob.pos[0];
+                float dz = target_pos[2] - mob.pos[2];
+                float dist = std::sqrt(dx * dx + dz * dz);
+
+                if (dist > 1e-4f) {
+                    mob.yaw = std::atan2(-dx, -dz);
+                }
+
+                if (dist <= kAttackRange) {
+                    // In attack range
+                    if (mob.attack_cooldown <= 0.0f) {
+                        DamageIntent intent;
+                        intent.target_chr_ins = best_target;
+                        intent.damage_amount = 6.0f; // Standard MC zombie damage
+                        intent.source_mob_id = mob.id;
+                        damage_intents_.push_back(intent);
+                        mob.attack_cooldown = kAttackCooldownSeconds;
+                    }
+                } else {
+                    // Approach target
+                    float step = std::min(dist, mob.speed * dt);
+                    float dir_x = dx / dist;
+                    float dir_z = dz / dist;
+                    mob.pos[0] += dir_x * step;
+                    mob.pos[2] += dir_z * step;
+                    mob.pos[1] = target_pos[1];
+                }
+            } else {
+                // Follow player
+                float dx = player.pos[0] - mob.pos[0];
+                float dz = player.pos[2] - mob.pos[2];
+                float dist = std::sqrt(dx * dx + dz * dz);
+
+                if (dist > kFollowRadiusMax) {
+                    // Teleport to player
+                    mob.pos[0] = player.pos[0] - std::sin(player.yaw) * 2.0f;
+                    mob.pos[1] = player.pos[1];
+                    mob.pos[2] = player.pos[2] - std::cos(player.yaw) * 2.0f;
+                    mob.yaw = player.yaw;
+                } else if (dist > kFollowRadiusMin) {
+                    // Walk toward player
+                    float step = std::min(dist - kFollowRadiusMin, mob.speed * dt);
+                    float dir_x = dx / dist;
+                    float dir_z = dz / dist;
+                    mob.pos[0] += dir_x * step;
+                    mob.pos[2] += dir_z * step;
+                    mob.pos[1] = player.pos[1];
+                    mob.yaw = std::atan2(-dx, -dz);
+                }
+            }
+
+            ++it;
+        }
+    }
+
+    [[nodiscard]] std::vector<DamageIntent> drainDamageIntents() {
+        std::vector<DamageIntent> out = std::move(damage_intents_);
+        damage_intents_.clear();
+        return out;
+    }
+
+    [[nodiscard]] std::vector<eldenring::mobs::MobSnapshot> generateSnapshots() const {
+        std::vector<eldenring::mobs::MobSnapshot> out;
+        out.reserve(mobs_.size());
+
+        for (const auto& mob : mobs_) {
+            eldenring::mobs::MobSnapshot s;
+            s.id = static_cast<uintptr_t>(mob.id);
+            s.feet[0] = mob.pos[0];
+            s.feet[1] = mob.pos[1];
+            s.feet[2] = mob.pos[2];
+            s.yaw = mob.yaw;
+            s.hp = mob.hp;
+            s.max_hp = mob.max_hp;
+            s.model_type = mob.model_type;
+            s.scale = mob.scale;
+            s.white_flash = 0.0f;
+            out.push_back(s);
+        }
+        return out;
+    }
+
+    void dismissAll() noexcept {
+        mobs_.clear();
+        damage_intents_.clear();
+    }
+
+private:
+    uint64_t next_id_{0x10001};
+    std::vector<VirtualMob> mobs_;
+    std::vector<DamageIntent> damage_intents_;
+};
+
+} // namespace eldenring::summon
