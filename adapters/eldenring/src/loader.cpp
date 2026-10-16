@@ -92,6 +92,7 @@ namespace flight = eldenring::flight;
 #include "eldenring_inventory_controller.hpp"
 #include "eldenring_debug_probes.hpp"
 #include "eldenring_hud_bridge.hpp"
+#include "eldenring_hotkey_dispatcher.hpp"
 
 namespace {
 
@@ -2149,366 +2150,8 @@ void McFlagsStep() {
 
 DWORD WINAPI KeyThread(LPVOID) {
     Log("key: KeyThread started (tid %lu)", GetCurrentThreadId());
-    bool prev8 = false, prev6 = false, prev7 = false;
-    bool prev_digit[MeleeController::kSlots] = {};
-    bool prev_space = false;
-    bool prev9 = false;
-    bool prev10 = false;
-    bool prev11 = false;
-    bool prev12 = false;
-    int slot_cursor = -1; // -1 = all slots, 0..26 = only that part slot
-    uint64_t last_ms = GetTickCount64();
-    for (;;) {
-        Sleep(15);
-        const bool fg = GameInForeground();
-        {
-            // Who has the keyboard: log every change of the game's foreground state with the window that took it (the game stops
-            // polling its keyboard while it is not the active window).
-            static int prev_fg = -1;
-            static uint64_t last_fail_log = 0;
-            if (static_cast<int>(fg) != prev_fg) {
-                prev_fg = static_cast<int>(fg);
-                HWND top = GetForegroundWindow();
-                char cls[80] = {}, title[120] = {};
-                DWORD pid = 0;
-                if (top != nullptr) {
-                    GetClassNameA(top, cls, sizeof(cls) - 1);
-                    GetWindowTextA(top, title, sizeof(title) - 1);
-                    GetWindowThreadProcessId(top, &pid);
-                }
-                Log("focus: the game is %s the foreground window (foreground: hwnd=%p pid=%lu class='%s' title='%s')", fg ? "now" : "no longer", reinterpret_cast<void*>(top),
-                    static_cast<unsigned long>(pid), cls, title);
-            }
-            // (the focus notice and the refocus option were removed: switching away is normal)
-            long hr = 0;
-            const unsigned failed = erin::TakeKeyboardFailures(hr);
-            const uint64_t t = GetTickCount64();
-            if (failed > 0 && t - last_fail_log >= 1000) {
-                last_fail_log = t;
-                Log("input: %u keyboard reads failed in the last second, last error 0x%08lX", failed, static_cast<unsigned long>(hr));
-            }
-        }
-        const uint64_t now_ms = GetTickCount64();
-        const float dt = static_cast<float>(now_ms - last_ms) / 1000.f;
-        last_ms = now_ms;
-        {
-            std::lock_guard<std::mutex> g(g_melee_mutex);
-            g_melee.tick(dt);
-            g_feedback.tick(dt);
-        }
-        if (fg) {
-            const bool key_w = (GetAsyncKeyState('W') & 0x8000) != 0;
-            const bool key_s = (GetAsyncKeyState('S') & 0x8000) != 0;
-            const bool key_ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-            int food_lvl = 20;
-            {
-                std::lock_guard<std::mutex> g(g_melee_mutex);
-                food_lvl = g_hunger.food();
-            }
-            const bool blocking = g_shield_blocking.load(std::memory_order_relaxed);
-            g_sprint.update(dt, key_w, key_s, key_ctrl, food_lvl, blocking);
-        } else {
-            g_sprint.reset();
-        }
-        g_sprint_active.store(g_sprint.isSprinting(), std::memory_order_relaxed);
-        g_sprint_fov.store(g_sprint.fovMultiplier(), std::memory_order_relaxed);
-        g_sprint_anim.store(g_sprint.animSpeedMultiplier(), std::memory_order_relaxed);
-
-        if (g_mc_mode.load()) LogGroundBytesOnChange();
-        if (g_mc_mode.load() && FileExists(g_game_dir + "mc_er_physlog.txt")) LogPhysicsVectors();
-        if (g_mc_mode.load() && fg) {
-            // Footsteps: Minecraft plays one every ~1.6 m walked on the ground. The ground material is not known yet: grass.
-            static float prev_pos[3] = {};
-            static bool have_prev = false;
-            static eldenring::audio::StepClock steps;
-            const uintptr_t player = PlayerChrPtr();
-            float pos[3];
-            if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, pos)) {
-                if (have_prev && dt > 0.f) {
-                    const float dx = pos[0] - prev_pos[0], dz = pos[2] - prev_pos[2];
-                    const float step_len = std::sqrt(dx * dx + dz * dz);
-                    const bool grounded = !PlayerAirborne();
-                    g_walk_speed.store(step_len < 1.5f ? step_len / dt : 0.f);
-                    g_on_ground.store(grounded);
-                    if (step_len < 1.5f && steps.update(step_len / dt, dt, grounded) && WantSuppress()) eraudio::Play("block.grass.step", 0.9f);
-                    if (step_len >= 1.5f) steps = eldenring::audio::StepClock{}; // teleport / origin shift: not walking
-                }
-                std::memcpy(prev_pos, pos, sizeof(pos));
-                have_prev = true;
-            } else {
-                have_prev = false;
-            }
-        }
-        {
-            // Regeneration, absorption and the meal being eaten. The healing itself is queued for the game thread.
-            const uintptr_t player = PlayerChrPtr();
-            Vitals v;
-            if (player != 0 && readVitals(g_reader, g_img.base, player, v) && v.max_hp > 0) {
-                int heal = 0;
-                {
-                    std::lock_guard<std::mutex> g(g_melee_mutex);
-                    if (v.hp > 0) {
-                        heal += g_survival.tick(dt, v.max_hp);
-                        // Minecraft's natural regeneration, from the food level (eating no longer heals directly)
-                        g_hunger_heal_carry += g_hunger.tick(dt, v.hp < v.max_hp) * static_cast<float>(v.max_hp) / kMcPlayerHealth;
-                        const int whole = static_cast<int>(g_hunger_heal_carry);
-                        g_hunger_heal_carry -= static_cast<float>(whole);
-                        heal += whole;
-                        if (const int starved = g_hunger.takeStarvationHits()) Log("SURVIVAL: starving (%d hit(s) not applied)", starved);
-                        if (g_walk_speed.load() > 5.f) g_hunger.addExhaustion(0.1f * g_walk_speed.load() * dt); // sprinting: 0.1 per metre
-                        if (g_eating.isEating() && g_melee.heldItem() != g_eating.getCurrentItem()) g_eating.cancel(); // switched away
-                        const mc::ItemId meal = g_eating.getCurrentItem();
-                        const mc::EatingEvent e = g_eating.update(dt);
-                        if (e.chew_sound) eraudio::Play("entity.generic.eat", 0.8f);
-                        if (e.completed) {
-                            if (e.play_burp_sound) eraudio::Play("entity.player.burp");
-                            g_survival.apply(e.effects);
-                            g_hunger.eat(meal);
-                            if (creative::consumesItems(CurrentGameMode())) g_melee.consumeAt(g_melee.selectedSlot());
-                            Log("SURVIVAL: finished eating: food %d, saturation %.1f (regen/absorption from the item)", g_hunger.food(), g_hunger.saturation());
-                        }
-                    } else {
-                        g_eating.cancel();
-                    }
-                }
-                if (heal > 0) g_heal_pending.fetch_add(heal);
-            }
-        }
-        InventoryTick(fg);
-        BlocksTick();
-        McFlagsStep();
-        {
-            int hidden[16];
-            size_t n_hidden = 0;
-            if (g_mc_jump.load() && g_mc_mode.load() && fg && !g_inv_open.load()) {
-                hidden[n_hidden++] = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(g_mc_jump_vk.load()), MAPVK_VK_TO_VSC));
-            }
-            if (g_disable_vanilla_roll.load() && g_mc_mode.load() && fg && !g_inv_open.load()) {
-                const auto roll_mask = eldenring::roll::computeRollMask(true, true, g_roll_vk.load());
-                n_hidden = eldenring::roll::mergeMaskedKeys(hidden, sizeof(hidden) / sizeof(hidden[0]), n_hidden, roll_mask.scancodes, roll_mask.count);
-            }
-            if (g_flying.load()) { // while flying the game never sees the movement keys: the position is ours
-                n_hidden = eldenring::roll::mergeMaskedKeys(hidden, sizeof(hidden) / sizeof(hidden[0]), n_hidden, flight::kHiddenKeys, sizeof(flight::kHiddenKeys) / sizeof(flight::kHiddenKeys[0]));
-            }
-            erin::SetMaskedKeys(hidden, n_hidden);
-        }
-        const bool inv_open = g_inv_open.load();
-        const bool right_edge = !inv_open && g_input_enabled.load() && erin::TakeRightClick();
-        if (right_edge && fg && WantSuppress() && !PlayerDead() && TryIgniteTnt()) {
-            // a placed TNT block was ignited
-        } else if (right_edge && fg && WantSuppress() && !PlayerDead() && TryIgniteCreeper()) {
-            // a summoned Creeper was ignited with Flint and Steel
-        } else if (right_edge && fg && WantSuppress() && !PlayerDead() && TryPlaceBlock()) {
-            // a block was placed (or the click was refused): not a meal
-        } else if (right_edge && fg && WantSuppress() && !PlayerDead() && g_mc_mode.load() && TryUseSpawnEgg()) {
-            // the zombie spawn egg: a summon request (or a refusal): not a meal
-        } else if (right_edge && fg && WantSuppress() && !PlayerDead()) {
-            std::lock_guard<std::mutex> g(g_melee_mutex);
-            const mc::ItemId item = g_melee.heldItem();
-            if (!g_eating.isEating() && g_melee.countAt(g_melee.selectedSlot()) > 0 && g_hunger.canEat(item) && g_eating.startEating(item)) {
-                Log("SURVIVAL: started eating item %d", static_cast<int>(item));
-            }
-        }
-        {   // Minecraft's bow: hold the right button to draw, release to shoot a real bolt through the saved template (mc_er_bulletfire.txt).
-            static eldenring::bow::BowController s_bow;
-            bool usable = false;
-            {
-                std::lock_guard<std::mutex> g(g_melee_mutex);
-                g_bow_offhand.store(eldenring::bow::bowInOffhand(g_melee.heldItem(), g_melee.countAt(g_melee.selectedSlot()), g_melee.offhandItem(), g_melee.offhandCount()),
-                                    std::memory_order_relaxed);
-                usable = eldenring::bow::bowHandUsable(g_melee.heldItem(), g_melee.countAt(g_melee.selectedSlot()), g_melee.offhandItem(), g_melee.offhandCount()) &&
-                         (!creative::consumesItems(CurrentGameMode()) || g_melee.has(mc::ItemId::Arrow));
-            }
-            usable = usable && g_bullet_fire_enabled.load() && g_mc_mode.load() && fg && WantSuppress() && !inv_open && g_input_enabled.load() && !PlayerDead();
-            const eldenring::bow::Update u = s_bow.update(dt, g_input_enabled.load() && erin::RightHeld(), usable);
-            g_bow_power.store(s_bow.power(), std::memory_order_relaxed);
-            g_bow_ticks.store(s_bow.ticks(), std::memory_order_relaxed);
-            if (u.started) Log("bow: draw started");
-            if (u.cancelled) Log("bow: draw cancelled (too short or the bow was lost)");
-            if (u.released) {
-                const float damage = eldenring::bow::damageForPower(u.power);
-                if (QueueBulletFire(damage)) {
-                    if (creative::consumesItems(CurrentGameMode())) {
-                        std::lock_guard<std::mutex> g(g_melee_mutex);
-                        g_melee.consumeFirst(mc::ItemId::Arrow);
-                    }
-                    eraudio::Play("entity.arrow.shoot");
-                    Log("bow: released at power %.2f -> MC damage %.1f", u.power, damage);
-                } else {
-                    Log("bow: shot refused (no template, too soon, or the feature is off)");
-                }
-            }
-        }
-        {   // Minecraft shield defense: hold right mouse button with shield in main hand or offhand.
-            static eldenring::shield::ShieldController s_shield;
-            bool has_shield = false;
-            bool shield_in_offhand = false;
-            {
-                std::lock_guard<std::mutex> g(g_melee_mutex);
-                has_shield = g_melee.holds(mc::ItemId::Shield);
-                // the main hand's shield goes first, as in Minecraft
-                shield_in_offhand = !(g_melee.heldItem() == mc::ItemId::Shield && g_melee.countAt(g_melee.selectedSlot()) > 0);
-            }
-            g_shield_offhand.store(shield_in_offhand, std::memory_order_relaxed);
-            const bool right_held = g_input_enabled.load() &&
-                                    (erin::RightHeld() || (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0) &&
-                                    fg && WantSuppress() && !inv_open && !PlayerDead() && g_mc_mode.load();
-            const bool is_drawing_bow = g_bow_ticks.load(std::memory_order_relaxed) > 0;
-            const bool is_eating = g_eating.isEating();
-            const bool shield_usable = has_shield && !is_drawing_bow && !is_eating;
-            s_shield.update(dt, right_held, shield_usable);
-            const bool prev_blocking = g_shield_blocking.load(std::memory_order_relaxed);
-            const bool now_blocking = s_shield.isBlocking();
-            if (!prev_blocking && now_blocking) {
-                Log("shield: raised (blocking active)");
-                g_sprint.cancel();
-                g_sprint_active.store(false, std::memory_order_relaxed);
-            }
-            if (prev_blocking && !now_blocking) Log("shield: lowered");
-            g_shield_blocking.store(now_blocking, std::memory_order_relaxed);
-        }
-        if (g_input_enabled.load()) {
-            const int notches = erin::TakeWheelNotches();
-            if (notches != 0 && fg && !inv_open && WantSuppress()) {
-                std::lock_guard<std::mutex> g(g_melee_mutex);
-                g_melee.scroll(-notches); // wheel away from the user = previous slot, as in Minecraft
-            }
-        }
-        if (fg && !inv_open && WantSuppress()) {
-            static bool prev_gameplay_f = false;
-            const bool f_down = (GetAsyncKeyState('F') & 0x8000) != 0;
-            if (f_down && !prev_gameplay_f) {
-                std::lock_guard<std::mutex> g(g_melee_mutex);
-                g_melee.inventory().swapMainAndOffhand(g_melee.selectedSlot());
-                Log("inventory: swapped main and offhand via F key (slot %d)", g_melee.selectedSlot());
-            }
-            prev_gameplay_f = f_down;
-            for (int i = 0; i < MeleeController::kSlots; ++i) {
-                const bool d = (GetAsyncKeyState('1' + i) & 0x8000) != 0;
-                if (d && !prev_digit[i]) {
-                    std::lock_guard<std::mutex> g(g_melee_mutex);
-                    g_melee.select(i);
-                }
-                prev_digit[i] = d;
-            }
-        }
-        if (g_input_enabled.load()) erin::SetSuppressMouseButtons(fg && WantSuppress());
-        const bool space = fg && (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0;
-        if (space && !prev_space && g_mc_mode.load()) Log("key: space down");
-        g_jump.update(dt, space && !prev_space, g_mc_mode.load() && PlayerAirborne());
-        if (space && !prev_space && g_mc_mode.load() && !PlayerAirborne()) {
-            std::lock_guard<std::mutex> g(g_melee_mutex);
-            g_hunger.addExhaustion(0.05f); // Minecraft: jumping
-        }
-        prev_space = space;
-        // A dead player cannot swing, eat or hit anything (the click edges are still taken so they do not pile up).
-        const bool alive = !PlayerDead();
-        const bool click_edge = !inv_open && g_input_enabled.load() && erin::TakeLeftClick() && alive;
-        const bool left_held = !inv_open && g_input_enabled.load() && (erin::LeftHeld() || (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) && alive;
-        const bool want_suppress = (click_edge || left_held) ? WantSuppress() : false;
-        if (click_edge && !(fg && g_click_attack.load() && want_suppress) && g_mc_mode.load()) {
-            Log("click dropped: fg=%d click_attack=%d suppress=%d", fg ? 1 : 0, g_click_attack.load() ? 1 : 0, want_suppress ? 1 : 0);
-        }
-        const bool mining_consumed = fg && g_click_attack.load() && want_suppress && StepMining(dt, left_held);
-        if (mining_consumed) {
-            // Block is actively being mined or was broken: do not swing as an air attack
-        } else if (click_edge && fg && g_click_attack.load() && want_suppress) {
-            float charged;
-            {
-                std::lock_guard<std::mutex> g(g_melee_mutex);
-                charged = g_melee.startSwing();
-                g_hunger.addExhaustion(0.1f); // Minecraft: attacking
-            }
-            Log("swing: charged=%.2f jumping=%d airborne=%d", charged, g_jump.jumping() ? 1 : 0, PlayerAirborne() ? 1 : 0);
-            if (g_damage_enabled.load()) ClickAttack(charged);
-        }
-
-        const bool d8 = fg && (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
-        const bool d6 = fg && (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
-        if (d8 && !prev8 && g_damage_enabled.load()) EnqueueNearestHostile();
-        const bool d5 = fg && (GetAsyncKeyState(VK_F5) & 0x8000) != 0;
-        static bool prev5 = false;
-        if (d5 && !prev5) {
-            g_game_mode.store(static_cast<uint8_t>(creative::toggled(CurrentGameMode())));
-            g_mode_toast_ms.store(GetTickCount64());
-            Log("F5: %s", creative::modeName(CurrentGameMode()));
-        }
-        prev5 = d5;
-        if (d6 && !prev6) {
-            g_mc_mode.store(!g_mc_mode.load());
-            Log("F6: MC mode %s", g_mc_mode.load() ? "on" : "off");
-            ResetSlotProbe(slot_cursor);
-        }
-        SummonWatch& summon_watch = g_summon_watch;
-        if (summon_watch.reports_left > 0) {
-            const uint64_t waited = GetTickCount64() - summon_watch.t0_ms;
-            if (waited >= (summon_watch.reports_left == 2 ? 1500u : 5000u)) {
-                --summon_watch.reports_left;
-                std::vector<EnemyInfo> now_list;
-                if (enumerateEnemies(g_reader, g_img.base, now_list, 4000)) {
-                    std::vector<uintptr_t> ptrs;
-                    for (const EnemyInfo& e : now_list) ptrs.push_back(e.chr);
-                    const auto fresh = eldenring::buddy::newEntities(summon_watch.baseline, ptrs);
-                    Log("summon: %.1f s after F2, %zu new entities (of %zu)", static_cast<double>(waited) / 1000.0, fresh.size(), now_list.size());
-                    for (size_t i : fresh) {
-                        const EnemyInfo& e = now_list[i];
-                        Log("summon:   new chr=%p npc=%d team=%u hp=%d/%d hostile=%d rel=(%.1f %.1f %.1f) dist=%.1f m", reinterpret_cast<void*>(e.chr),
-                            e.npc_id, static_cast<unsigned>(e.team), e.hp, e.max_hp, e.hostile ? 1 : 0, e.rel_x, e.rel_y, e.rel_z,
-                            std::sqrt(e.rel_x * e.rel_x + e.rel_y * e.rel_y + e.rel_z * e.rel_z));
-                        if (summon_watch.reports_left == 0 && FileExists(g_game_dir + "mc_er_chrscan.txt")) LogChrScan(e.chr, i);
-                    }
-                } else {
-                    Log("summon: entity enumeration failed");
-                }
-            }
-        }
-        static bool prev_f3 = false;
-        const bool d3 = fg && (GetAsyncKeyState(VK_F3) & 0x8000) != 0;
-        if (d3 && !prev_f3 && QueueBulletFire(eldenring::bullet::kCrossbowDamage)) Log("F3: spawn_bullet queued for the game thread");
-        prev_f3 = d3;
-        static bool prev_f2 = false;
-        const bool d2 = fg && (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
-        if (d2 && !prev_f2) {
-            QueueSummon("F2");
-        }
-        prev_f2 = d2;
-        const bool d9 = fg && (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
-        if (d9 && !prev9 && g_hide_native.load()) CycleHiddenSlot(slot_cursor);
-        prev9 = d9;
-        const bool d12 = fg && (GetAsyncKeyState(VK_F12) & 0x8000) != 0;
-        if (d12 && !prev12) {
-            erov::RequestFrameTrace(240);
-            Log("F12: tracing 240 frames of figure and camera positions");
-        }
-        prev12 = d12;
-        const bool d11 = fg && (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
-        if (d11 && !prev11) SnapshotNativeParts();
-        prev11 = d11;
-        const bool d10 = fg && (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
-        if (d10 && !prev10) {
-            g_first_person.store(!g_first_person.load());
-            Log("F10: first person experiment %s", g_first_person.load() ? "on" : "off");
-            ResetSlotProbe(slot_cursor);
-        }
-        prev10 = d10;
-        {
-            static bool prev4 = false;
-            const bool d4 = fg && (GetAsyncKeyState(VK_F4) & 0x8000) != 0;
-            if (d4 && !prev4) {
-                static unsigned shot_no = 0;
-                char name[64];
-                snprintf(name, sizeof(name), "mc_er_shot_%03u.png", ++shot_no);
-                erov::RequestScreenshot((g_game_dir + name).c_str());
-                Log("F4: screenshot %s", name);
-            }
-            prev4 = d4;
-        }
-        const bool d7 = fg && (GetAsyncKeyState(VK_F7) & 0x8000) != 0;
-        if (d7 && !prev7) erov::CycleDepthCandidate();
-        prev7 = d7;
-        prev8 = d8;
-        prev6 = d6;
-    }
+    eldenring::input::HotkeyDispatcher::Instance().runKeyLoop();
+    return 0;
 }
 
 bool EnsureMinHook() {
@@ -3578,6 +3221,103 @@ void SetupInput() {
         cb.set_suppress_keyboard = erin::SetSuppressKeyboard;
         cb.log = [](const char* msg) { Log("%s", msg); };
         eldenring::ui::InventoryController::Instance().setCallbacks(cb);
+    }
+    {
+        eldenring::input::HotkeyCallbacks cb;
+        cb.is_game_in_foreground = []() -> bool {
+            const bool fg = GameInForeground();
+            static int prev_fg = -1;
+            static uint64_t last_fail_log = 0;
+            if (static_cast<int>(fg) != prev_fg) {
+                prev_fg = static_cast<int>(fg);
+                HWND top = GetForegroundWindow();
+                char cls[80] = {}, title[120] = {};
+                DWORD pid = 0;
+                if (top != nullptr) {
+                    GetClassNameA(top, cls, sizeof(cls) - 1);
+                    GetWindowTextA(top, title, sizeof(title) - 1);
+                    GetWindowThreadProcessId(top, &pid);
+                }
+                Log("focus: the game is %s the foreground window (foreground: hwnd=%p pid=%lu class='%s' title='%s')",
+                    fg ? "now" : "no longer", reinterpret_cast<void*>(top),
+                    static_cast<unsigned long>(pid), cls, title);
+            }
+            long hr = 0;
+            const unsigned failed = erin::TakeKeyboardFailures(hr);
+            const uint64_t t = GetTickCount64();
+            if (failed > 0 && t - last_fail_log >= 1000) {
+                last_fail_log = t;
+                Log("input: %u keyboard reads failed in the last second, last error 0x%08lX",
+                    failed, static_cast<unsigned long>(hr));
+            }
+            return fg;
+        };
+        cb.want_suppress = WantSuppress;
+        cb.is_player_dead = PlayerDead;
+        cb.is_player_airborne = PlayerAirborne;
+        cb.get_player_chr = PlayerChrPtr;
+        cb.read_physics_pos = [](uintptr_t chr, float out_pos[3]) {
+            return detail::readPhysicsPosition(g_reader, g_img.base, chr, out_pos);
+        };
+        cb.play_sound = [](const char* s, float v) { eraudio::Play(s, v); };
+        cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
+        cb.take_left_click = erin::TakeLeftClick;
+        cb.take_right_click = erin::TakeRightClick;
+        cb.left_held = erin::LeftHeld;
+        cb.right_held = erin::RightHeld;
+        cb.take_wheel_notches = erin::TakeWheelNotches;
+        cb.set_suppress_mouse_buttons = erin::SetSuppressMouseButtons;
+        cb.set_masked_keys = erin::SetMaskedKeys;
+        cb.take_keyboard_failures = erin::TakeKeyboardFailures;
+        cb.step_mining = [](float dt, bool left_held) { return StepMining(dt, left_held); };
+        cb.try_ignite_tnt = TryIgniteTnt;
+        cb.try_ignite_creeper = TryIgniteCreeper;
+        cb.try_place_block = TryPlaceBlock;
+        cb.try_use_spawn_egg = TryUseSpawnEgg;
+        cb.click_attack = ClickAttack;
+        cb.enqueue_nearest_hostile = EnqueueNearestHostile;
+        cb.queue_bullet_fire = [](float dmg) { return QueueBulletFire(dmg); };
+        cb.queue_summon = [](const char* src) { return QueueSummon(src); };
+        cb.cycle_hidden_slot = [](int& cur) { CycleHiddenSlot(cur); };
+        cb.reset_slot_probe = [](int& cur) { ResetSlotProbe(cur); };
+        cb.snapshot_native_parts = SnapshotNativeParts;
+        cb.request_frame_trace = [](int f) { erov::RequestFrameTrace(f); };
+        cb.request_screenshot = [](const char* p) { erov::RequestScreenshot(p); };
+        cb.cycle_depth_candidate = erov::CycleDepthCandidate;
+        cb.inventory_tick = InventoryTick;
+        cb.blocks_tick = []() {
+            BlocksTick();
+            if (g_mc_mode.load()) LogGroundBytesOnChange();
+            if (g_mc_mode.load() && FileExists(g_game_dir + "mc_er_physlog.txt")) LogPhysicsVectors();
+        };
+        cb.mc_flags_step = McFlagsStep;
+        cb.check_summon_watch = [](uint64_t) {
+            SummonWatch& summon_watch = g_summon_watch;
+            if (summon_watch.reports_left > 0) {
+                const uint64_t waited = GetTickCount64() - summon_watch.t0_ms;
+                if (waited >= (summon_watch.reports_left == 2 ? 1500u : 5000u)) {
+                    --summon_watch.reports_left;
+                    std::vector<EnemyInfo> now_list;
+                    if (enumerateEnemies(g_reader, g_img.base, now_list, 4000)) {
+                        std::vector<uintptr_t> ptrs;
+                        for (const EnemyInfo& e : now_list) ptrs.push_back(e.chr);
+                        const auto fresh = eldenring::buddy::newEntities(summon_watch.baseline, ptrs);
+                        Log("summon: %.1f s after F2, %zu new entities (of %zu)", static_cast<double>(waited) / 1000.0, fresh.size(), now_list.size());
+                        for (size_t i : fresh) {
+                            const EnemyInfo& e = now_list[i];
+                            Log("summon:   new chr=%p npc=%d team=%u hp=%d/%d hostile=%d rel=(%.1f %.1f %.1f) dist=%.1f m", reinterpret_cast<void*>(e.chr),
+                                e.npc_id, static_cast<unsigned>(e.team), e.hp, e.max_hp, e.hostile ? 1 : 0, e.rel_x, e.rel_y, e.rel_z,
+                                std::sqrt(e.rel_x * e.rel_x + e.rel_y * e.rel_y + e.rel_z * e.rel_z));
+                            if (summon_watch.reports_left == 0 && FileExists(g_game_dir + "mc_er_chrscan.txt")) LogChrScan(e.chr, i);
+                        }
+                    } else {
+                        Log("summon: entity enumeration failed");
+                    }
+                }
+            }
+        };
+        eldenring::input::HotkeyDispatcher::Instance().setCallbacks(cb);
+        Log("hotkey_dispatcher: initialized and bound to native game subsystems");
     }
     if (!FileExists(g_game_dir + "mc_er_input.txt")) {
         Log("input: disabled (no mc_er_input.txt)");
