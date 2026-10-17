@@ -1988,43 +1988,11 @@ void SetupDamage() {
 // never written through a stale address.
 // Puts back every bit we cleared, wherever it was (not only in the slots selected right now).
 void RestoreNativeModel() {
-    for (const auto& [a, w] : g_hidden_flags) {
-        uint32_t flags = 0;
-        if (SafeCopy(a, &flags, sizeof(flags))) SafeWrite32(a, restoreBits(flags, w.original, w.mask));
-    }
-    g_hidden_flags.clear();
+    eldenring::ui::RestoreNativeModel(g_hidden_flags, g_native_mutex);
 }
 
 void UpdateNativeModel(uintptr_t player, bool hide) {
-    std::lock_guard<std::mutex> lock(g_native_mutex);
-    if (g_slots_changed.exchange(false)) RestoreNativeModel(); // another slot set was chosen: show the old one again
-    if (!hide) {
-        RestoreNativeModel();
-        return;
-    }
-    const std::vector<uintptr_t> addrs = collectDispFlagAddresses(g_reader, g_img.base, player, g_hide_slots.load());
-    {
-        static std::vector<uintptr_t> last_set;
-        if (addrs != last_set) {
-            size_t fresh = 0;
-            for (uintptr_t a : addrs) fresh += std::find(last_set.begin(), last_set.end(), a) == last_set.end() ? 1 : 0;
-            if (!last_set.empty()) Log("native: part set changed: %zu parts, %zu new address(es) (was %zu)", addrs.size(), fresh, last_set.size());
-            last_set = addrs;
-        }
-    }
-    const uint32_t masks[2] = {g_hide_mask1.load(), g_hide_mask2.load()};
-    for (uintptr_t base : addrs) {
-        for (unsigned w = 0; w < 2; ++w) {
-            const uintptr_t a = base + w * (layout::kDispFlags2 - layout::kDispFlags1);
-            if (masks[w] == 0) continue;
-            uint32_t flags = 0;
-            if (!SafeCopy(a, &flags, sizeof(flags))) continue;
-            if ((flags & masks[w]) != 0) {
-                if (!g_hidden_flags.emplace(a, HiddenWord{flags, masks[w]}).second) ++g_native_reshown; // we had hidden it, the game showed it again
-                SafeWrite32(a, hideBits(flags, masks[w]));
-            }
-        }
-    }
+    eldenring::ui::UpdateNativeModel(player, hide, g_reader, g_img.base, g_ctx, g_hidden_flags, g_native_mutex);
 }
 
 bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
@@ -2050,77 +2018,10 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     const bool have_state = readMenuState(g_reader, readSingleton(g_reader, g_img.base, g_rva_menu, sigs::kCSMenuMan), ms) &&
                             readLoadingState(g_reader, readSingleton(g_reader, g_img.base, g_rva_loading, sigs::kCSNowLoadingHelper), ls) &&
                             readFadeAlpha(g_reader, readSingleton(g_reader, g_img.base, g_rva_fade, sigs::kCSFade), fade);
-    out.mc_mode = g_mc_mode.load();
-    out.creative = !creative::showsVitals(CurrentGameMode());
-    {
-        const uint64_t since = GetTickCount64() - g_mode_toast_ms.load(std::memory_order_relaxed);
-        out.mode_toast = g_mode_toast_ms.load(std::memory_order_relaxed) != 0 && since < 2500 ? 1.f - static_cast<float>(since) / 2500.f : 0.f;
-    }
-    out.slot_probe = g_slot_probe.load();
-    {
-        // CSMenuMan+0x654C was a candidate for the game's HUD option, but it reads 0x3D240000 (a float-looking value) and never
-        // changes, so it is NOT a 0/1/2 setting. Only logged when it changes; never written.
-        static uint32_t last_seen = 0xFFFFFFFFu;
-        const uintptr_t menu = readSingleton(g_reader, g_img.base, g_rva_menu, sigs::kCSMenuMan);
-        uint32_t now_value = 0;
-        if (menu != 0 && SafeCopy(menu + 0x654C, &now_value, sizeof(now_value)) && now_value != last_seen) {
-            Log("menu +0x654C = 0x%08X", now_value);
-            last_seen = now_value;
-        }
-    }
-    out.hp = v.hp;
-    out.max_hp = v.max_hp;
-    const bool steve_dead_now = v.max_hp > 0 && v.hp <= 0;
+
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
-        out.selected_slot = g_melee.selectedSlot();
-        for (int i = 0; i < MeleeController::kSlots; ++i) {
-            out.hotbar[i] = static_cast<uint16_t>(g_melee.itemAt(i));
-            out.hotbar_count[i] = static_cast<uint8_t>(std::min(255u, g_melee.countAt(i)));
-        }
-        out.absorption_mc = g_survival.absorptionMc();
-        out.eating = g_eating.getProgress();
-        steve.held_item = static_cast<uint16_t>(g_melee.heldItem());
-        steve.offhand_item = static_cast<uint16_t>(g_melee.inventory().offhand().item);
-        steve.blocking = steve_dead_now ? false : g_shield_blocking.load(std::memory_order_relaxed);
-        steve.cooldown = g_melee.cooldown();
-        steve.eating = steve_dead_now ? 0.f : g_eating.getProgress();
-        steve.bow_charge = steve_dead_now ? 0.f : g_bow_power.load(std::memory_order_relaxed);
-        steve.bow_offhand = g_bow_offhand.load(std::memory_order_relaxed);
-        steve.block_offhand = g_shield_offhand.load(std::memory_order_relaxed);
-        steve.bow_ticks = steve_dead_now ? 0.f : g_bow_ticks.load(std::memory_order_relaxed);
-        steve.sneaking = steve_dead_now ? false : g_sneak_active.load(std::memory_order_relaxed);
-        steve.sprinting = (steve_dead_now || steve.sneaking || steve.blocking) ? false : g_sprint_active.load(std::memory_order_relaxed);
-        out.totem = g_feedback.totem();
-        steve.swing = steve_dead_now ? 0.f : g_melee.swingProgress();
-        out.hit = g_feedback.hit();
-        out.hit_crit = g_feedback.crit();
-        out.kill = g_feedback.kill();
-        const auto& at = g_feedback.armorToast();
-        out.armor_toast_timer = at.timer;
-        out.armor_toast_raw = at.raw;
-        out.armor_toast_final = at.final_dmg;
-        out.armor_toast_pts = at.armor_pts;
-        out.armor_toast_ratio = at.ratio;
-        const mc::Inventory& inv = g_melee.inventory();
-        for (int i = 0; i < mc::Inventory::kSlots; ++i) {
-            out.inv_item[i] = static_cast<uint16_t>(inv.slot(i).item);
-            out.inv_count[i] = static_cast<uint8_t>(std::min(255u, inv.slot(i).count));
-        }
-        out.food = g_hunger.food();
-        out.food_shaking = g_hunger.shaking();
-        out.regen = g_survival.regenerating();
-        out.xp_level = g_xp.level();
-        out.xp_progress = g_xp.progress();
-        out.cursor_item = static_cast<uint16_t>(inv.cursor().item);
-        out.cursor_count = static_cast<uint8_t>(std::min(255u, inv.cursor().count));
-        out.offhand_item = static_cast<uint16_t>(inv.offhand().item);
-        out.offhand_count = static_cast<uint8_t>(std::min(255u, inv.offhand().count));
-        for (int i = 0; i < mc::Inventory::kArmorSlots; ++i) {
-            out.armor_item[i] = static_cast<uint16_t>(inv.armor(i).item);
-            out.armor_count[i] = static_cast<uint8_t>(std::min(255u, inv.armor(i).count));
-        }
-        out.armor_points = inv.totalArmorPoints();
+        eldenring::ui::PopulateHudStateFromContext(out, g_ctx);
         static int last_logged_armor_pts = -1;
         if (out.armor_points != last_logged_armor_pts) {
             Log("ARMOR-HUD: total_armor_points=%d (reduction=%.1f%%, inv_open=%d)",
@@ -2128,9 +2029,9 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
             last_logged_armor_pts = out.armor_points;
         }
     }
-    out.inv_open = g_inv_open.load();
-    out.mouse_x = g_inv_mx.load();
-    out.mouse_y = g_inv_my.load();
+
+    out.hp = v.hp;
+    out.max_hp = v.max_hp;
     out.show = have_state && !ms.menu_focused && !ms.popup_open && !ls.screen_loading && fade < 0.02f;
 
     if (g_hide_native.load()) {
@@ -2175,22 +2076,16 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         const bool near_grace = findNearestGrace(g_reader, g_img.base, world, feet, 2.8f, &grace_dist);
         steve.sleeping = near_grace && (ms.menu_focused || fade >= 0.02f);
     }
+    const bool steve_dead_now = v.max_hp > 0 && v.hp <= 0;
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
-        steve.hurt = g_feedback.hurt();
+        eldenring::ui::PopulateSteveStateFromContext(steve, g_ctx, steve_dead_now, steve.sleeping);
     }
-    steve.dead = v.max_hp > 0 && v.hp <= 0;
     {
         static bool was_dead = false;
         if (steve.dead && !was_dead) eraudio::Play("entity.player.death");
         was_dead = steve.dead;
     }
-    steve.shadow = g_shadow_enabled.load(std::memory_order_relaxed);
-    steve.ground_valid = g_ground_valid.load(std::memory_order_relaxed);
-    steve.ground_y = g_ground_y.load(std::memory_order_relaxed);
-    steve.first_person = g_first_person.load() && g_slot_probe.load() < 0;
-    steve.speed_mps = g_walk_speed.load();
-    steve.on_ground = g_on_ground.load();
     if (steve.sleeping) {
         steve.first_person = false;
         steve.draw = true; // Always draw Steve when sleeping at a grace

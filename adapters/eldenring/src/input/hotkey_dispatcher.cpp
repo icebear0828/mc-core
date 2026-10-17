@@ -294,6 +294,7 @@ void HotkeyDispatcher::tick(float dt) {
         const bool is_eating = player.eating.isEating();
         const bool shield_usable = has_shield && !is_drawing_bow && !is_eating;
         s_shield.update(dt, right_held, shield_usable);
+        combat.shield.update(dt, right_held, shield_usable);
         const bool prev_blocking = mode.shield_blocking.load(std::memory_order_relaxed);
         const bool now_blocking = s_shield.isBlocking();
         if (!prev_blocking && now_blocking) {
