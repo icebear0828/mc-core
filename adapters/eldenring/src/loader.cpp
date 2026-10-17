@@ -2337,7 +2337,35 @@ void SetupWorldRuntime() {
         eldenring::movement::PlayerLocomotion::Instance().unlockAirMovement(chr);
     };
     cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
+    cb.on_origin_rebase = [](float rx, float ry, float rz) {
+        {
+            std::lock_guard<std::mutex> g(g_blocks_mutex);
+            g_tnt_mgr.shift(rx, ry, rz);
+        }
+        g_virtual_summons.shift(rx, ry, rz);
+        SendBlockMesh();
+    };
     eldenring::world::VoxelWorldRuntime::Instance().setCallbacks(cb);
+
+    g_virtual_summons.setGroundSampler([](float x, float y, float z) -> std::optional<float> {
+        float feet[3] = {x, y, z};
+        const auto cast = [](const float from[3], const float disp[3]) {
+            return CastStaticRay(from, disp);
+        };
+        const auto block_top = [](float bx, float by, float bz, float max_drop) -> std::optional<float> {
+            std::lock_guard<std::mutex> g(g_blocks_mutex);
+            if (g_blocks.count() == 0) return std::nullopt;
+            const int top_cell = static_cast<int>(std::floor(by + 0.06f));
+            const int low_cell = static_cast<int>(std::floor(by - max_drop));
+            for (int cy = top_cell; cy >= low_cell; --cy) {
+                if (g_blocks.get(blocks::cellOf(bx, static_cast<float>(cy), bz)) != mc::BlockId::Air) {
+                    return static_cast<float>(cy + 1);
+                }
+            }
+            return std::nullopt;
+        };
+        return eldenring::shadow::groundBelow(cast, block_top, feet);
+    });
 }
 
 void SetupCombat() {

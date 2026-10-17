@@ -94,10 +94,14 @@ struct VirtualMob {
     float attack_min_range{0.0f};
     float cooldown_duration{1.0f};
     float damage{6.0f};
+    float vel_y{0.0f};
+    bool on_ground{true};
 };
 
 class VirtualSummonManager {
 public:
+    using GroundSampler = std::function<std::optional<float>(float x, float current_y, float z)>;
+
     static constexpr size_t kMaxVirtualSummons = 16;
     static constexpr float kFollowRadiusMin = 2.5f;
     static constexpr float kAttackRange = 1.8f;
@@ -110,6 +114,11 @@ public:
 
     VirtualSummonManager() {
         initDefaultArchetypes();
+    }
+
+    void setGroundSampler(GroundSampler sampler) {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        ground_sampler_ = std::move(sampler);
     }
 
     void initDefaultArchetypes() {
@@ -406,7 +415,6 @@ public:
                         float dir_z = dz / dist;
                         mob.pos[0] += dir_x * step;
                         mob.pos[2] += dir_z * step;
-                        mob.pos[1] = target_pos[1];
                     }
                 } else if (mob.attack_style == MobAttackStyle::Ranged) {
                     // Ranged attack (e.g. skeleton bow, snow golem snowball)
@@ -416,7 +424,6 @@ public:
                         float dir_z = dz / dist;
                         mob.pos[0] += dir_x * step;
                         mob.pos[2] += dir_z * step;
-                        mob.pos[1] = target_pos[1];
                     } else if (mob.attack_min_range > 0.0f && dist < mob.attack_min_range) {
                         // Enemy rushed too close: kite backwards away from target!
                         float back_step = std::min(mob.attack_min_range - dist, mob.speed * 0.75f * dt);
@@ -424,7 +431,6 @@ public:
                         float dir_z = dz / dist;
                         mob.pos[0] -= dir_x * back_step;
                         mob.pos[2] -= dir_z * back_step;
-                        mob.pos[1] = target_pos[1];
                     }
 
                     // Fire ranged attack when within attack range and cooldown ready
@@ -469,13 +475,11 @@ public:
                         float dir_z = dz / dist;
                         mob.pos[0] += dir_x * step;
                         mob.pos[2] += dir_z * step;
-                        mob.pos[1] = target_pos[1];
                     }
                 }
             } else if (!is_creeper || !mob.manual_primed) {
                 // Follow player when idle (if not manually primed creeper)
-                // In Minecraft / natural companion behaviour: summons NEVER instantly teleport snap to player.
-                // They only smoothly walk/pursue toward the player if outside kFollowRadiusMin.
+                // In Minecraft / natural companion behaviour: summons smoothly follow player on XZ ground.
                 float dx = player.pos[0] - mob.pos[0];
                 float dz = player.pos[2] - mob.pos[2];
                 float dist = std::sqrt(dx * dx + dz * dz);
@@ -486,9 +490,58 @@ public:
                     float dir_z = dz / dist;
                     mob.pos[0] += dir_x * step;
                     mob.pos[2] += dir_z * step;
-                    mob.pos[1] = player.pos[1];
                     mob.yaw = std::atan2(-dx, -dz);
                 }
+            }
+
+            // Vertical physics & ground snapping pass
+            if (ground_sampler_) {
+                auto gy = ground_sampler_(mob.pos[0], mob.pos[1], mob.pos[2]);
+                if (gy.has_value()) {
+                    const float floor_y = *gy;
+                    if (mob.pos[1] < floor_y) {
+                        // Step up if small elevation (<= 1.1m)
+                        if (floor_y - mob.pos[1] <= 1.1f) {
+                            mob.pos[1] = floor_y;
+                            mob.vel_y = 0.0f;
+                            mob.on_ground = true;
+                        } else {
+                            mob.on_ground = true;
+                        }
+                    } else if (mob.pos[1] > floor_y) {
+                        // Fall under gravity
+                        mob.vel_y -= 18.0f * dt;
+                        if (mob.vel_y < -25.0f) mob.vel_y = -25.0f;
+                        mob.pos[1] += mob.vel_y * dt;
+                        if (mob.pos[1] <= floor_y) {
+                            mob.pos[1] = floor_y;
+                            mob.vel_y = 0.0f;
+                            mob.on_ground = true;
+                        } else {
+                            mob.on_ground = false;
+                        }
+                    } else {
+                        mob.vel_y = 0.0f;
+                        mob.on_ground = true;
+                    }
+                }
+            } else {
+                // Without ground sampler (unit tests without terrain / offline simulation):
+                // If enemy target is at a climbable step (<= 1.1m), match target Y
+                if (best_target != 0) {
+                    if (std::fabs(target_pos[1] - mob.pos[1]) <= 1.1f) {
+                        mob.pos[1] = target_pos[1];
+                    }
+                } else {
+                    float dx_idle = player.pos[0] - mob.pos[0];
+                    float dz_idle = player.pos[2] - mob.pos[2];
+                    float dist_idle = std::sqrt(dx_idle * dx_idle + dz_idle * dz_idle);
+                    if (dist_idle > kFollowRadiusMin && std::fabs(player.pos[1] - mob.pos[1]) <= 1.1f) {
+                        // Small ground slope: step to player Y
+                        mob.pos[1] = player.pos[1];
+                    }
+                }
+                // If player is flying high (|player.pos[1] - mob.pos[1]| > 1.2m), NEVER drag mob up!
             }
 
             ++it;
@@ -638,6 +691,21 @@ public:
         explosion_events_.clear();
     }
 
+    void shift(float dx, float dy, float dz) {
+        if (dx == 0.0f && dy == 0.0f && dz == 0.0f) return;
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        for (auto& mob : mobs_) {
+            mob.pos[0] += dx;
+            mob.pos[1] += dy;
+            mob.pos[2] += dz;
+        }
+        for (auto& proj : projectile_intents_) {
+            proj.origin[0] += dx;
+            proj.origin[1] += dy;
+            proj.origin[2] += dz;
+        }
+    }
+
 private:
     mutable std::recursive_mutex mutex_;
     uint64_t next_id_{0x10001};
@@ -646,6 +714,7 @@ private:
     std::vector<DamageIntent> damage_intents_;
     std::vector<ProjectileIntent> projectile_intents_;
     std::vector<CreeperExplosionEvent> explosion_events_;
+    GroundSampler ground_sampler_;
 };
 
 } // namespace eldenring::summon

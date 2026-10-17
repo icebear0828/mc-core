@@ -633,3 +633,119 @@ TEST(VirtualSummonTest, ConcurrentMultiThreadedSafety) {
     EXPECT_EQ(spawn_ticks.load(), 50);
 }
 
+TEST(VirtualSummonTest, CreeperDecoupledFromPlayerFlyHeight) {
+    VirtualSummonManager mgr;
+    const auto p_spawn = makePlayer(0.0f, 10.0f, 0.0f, 0.0f);
+    uint64_t creeper_id = mgr.spawnMob("creeper", p_spawn, 2.0f);
+    ASSERT_NE(creeper_id, 0u);
+
+    // Initial position is at spawn height (10.0m)
+    const auto* mob = mgr.findMob(creeper_id);
+    ASSERT_NE(mob, nullptr);
+    EXPECT_FLOAT_EQ(mob->pos[1], 10.0f);
+
+    // Player takes off in creative flight to 50.0m in the sky
+    const auto p_flying = makePlayer(0.0f, 50.0f, 0.0f, 0.0f);
+    std::vector<EnemyTarget> no_enemies;
+
+    // Update for 1 second (60 ticks)
+    for (int i = 0; i < 60; ++i) {
+        mgr.update(0.016f, p_flying, no_enemies);
+    }
+
+    // Creeper MUST NOT be dragged up to 50.0m! It must stay at its ground level (~10.0m).
+    mob = mgr.findMob(creeper_id);
+    ASSERT_NE(mob, nullptr);
+    EXPECT_NEAR(mob->pos[1], 10.0f, 0.5f);
+    EXPECT_LT(mob->pos[1], 15.0f);
+}
+
+TEST(VirtualSummonTest, GravityAndGroundSnapping) {
+    VirtualSummonManager mgr;
+    // Spawn mob at y = 15.0m
+    const auto p = makePlayer(0.0f, 15.0f, 0.0f, 0.0f);
+    uint64_t mob_id = mgr.spawnMob("creeper", p, 2.0f);
+    ASSERT_NE(mob_id, 0u);
+
+    // Provide ground sampler returning terrain at y = 10.0m
+    mgr.setGroundSampler([](float, float, float) -> std::optional<float> {
+        return 10.0f;
+    });
+
+    std::vector<EnemyTarget> no_enemies;
+
+    // In mid-air, falling under gravity
+    mgr.update(0.1f, p, no_enemies);
+    const auto* mob = mgr.findMob(mob_id);
+    ASSERT_NE(mob, nullptr);
+    EXPECT_LT(mob->pos[1], 15.0f); // Falling down
+    EXPECT_GT(mob->pos[1], 10.0f); // Not yet on ground
+
+    // After 1 second, must land firmly on ground at y = 10.0m
+    for (int i = 0; i < 60; ++i) {
+        mgr.update(0.016f, p, no_enemies);
+    }
+    mob = mgr.findMob(mob_id);
+    ASSERT_NE(mob, nullptr);
+    EXPECT_NEAR(mob->pos[1], 10.0f, 1e-3f);
+    EXPECT_NEAR(mob->vel_y, 0.0f, 1e-3f);
+    EXPECT_TRUE(mob->on_ground);
+}
+
+TEST(VirtualSummonTest, StepUpOneBlock) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 10.0f, 0.0f, 0.0f);
+    uint64_t mob_id = mgr.spawnMob("creeper", p, 2.0f);
+    ASSERT_NE(mob_id, 0u);
+
+    // Initial ground at 10.0m
+    float ground_level = 10.0f;
+    mgr.setGroundSampler([&](float, float, float) -> std::optional<float> {
+        return ground_level;
+    });
+
+    std::vector<EnemyTarget> no_enemies;
+    mgr.update(0.016f, p, no_enemies);
+    EXPECT_NEAR(mgr.findMob(mob_id)->pos[1], 10.0f, 1e-3f);
+
+    // Ground elevation steps up by 1 block (to 11.0m)
+    ground_level = 11.0f;
+    mgr.update(0.016f, p, no_enemies);
+
+    // Mob should step up to 11.0m
+    const auto* mob = mgr.findMob(mob_id);
+    ASSERT_NE(mob, nullptr);
+    EXPECT_NEAR(mob->pos[1], 11.0f, 1e-3f);
+    EXPECT_TRUE(mob->on_ground);
+}
+
+TEST(VirtualSummonTest, ShiftTranslatesAllMobsAndProjectiles) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 5.0f, -20.0f, 0.0f);
+    uint64_t creeper_id = mgr.spawnMob("creeper", p, 2.0f);
+    uint64_t skeleton_id = mgr.spawnMob("skeleton", p, 2.0f);
+
+    const auto* c_before = mgr.findMob(creeper_id);
+    const auto* s_before = mgr.findMob(skeleton_id);
+    ASSERT_NE(c_before, nullptr);
+    ASSERT_NE(s_before, nullptr);
+    const float c_x0 = c_before->pos[0], c_y0 = c_before->pos[1], c_z0 = c_before->pos[2];
+    const float s_x0 = s_before->pos[0], s_y0 = s_before->pos[1], s_z0 = s_before->pos[2];
+
+    // Engine origin rebase by (0, 0, +32)
+    mgr.shift(0.0f, 0.0f, 32.0f);
+
+    const auto* c_after = mgr.findMob(creeper_id);
+    const auto* s_after = mgr.findMob(skeleton_id);
+    ASSERT_NE(c_after, nullptr);
+    ASSERT_NE(s_after, nullptr);
+
+    EXPECT_FLOAT_EQ(c_after->pos[0], c_x0);
+    EXPECT_FLOAT_EQ(c_after->pos[1], c_y0);
+    EXPECT_FLOAT_EQ(c_after->pos[2], c_z0 + 32.0f);
+
+    EXPECT_FLOAT_EQ(s_after->pos[0], s_x0);
+    EXPECT_FLOAT_EQ(s_after->pos[1], s_y0);
+    EXPECT_FLOAT_EQ(s_after->pos[2], s_z0 + 32.0f);
+}
+

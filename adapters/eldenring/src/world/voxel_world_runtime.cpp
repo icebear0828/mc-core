@@ -133,6 +133,44 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
         dx = feet[0] - prev_player_feet_[0];
         dy = feet[1] - prev_player_feet_[1];
         dz = feet[2] - prev_player_feet_[2];
+
+        // Check for Dantelion / Havok Floating Origin Rebase (shifts in whole multiples of 8m)
+        float rebase_shift[3] = {0.0f, 0.0f, 0.0f};
+        bool is_rebase = false;
+        const float diffs[3] = {dx, dy, dz};
+        for (int i = 0; i < 3; ++i) {
+            if (std::fabs(diffs[i]) >= 4.0f) {
+                const float step = std::round(diffs[i] / 8.0f) * 8.0f;
+                if (std::fabs(step) >= 8.0f && std::fabs(step) <= 64.0f && std::fabs(diffs[i] - step) < 2.5f) {
+                    rebase_shift[i] = step;
+                    is_rebase = true;
+                }
+            }
+        }
+
+        if (is_rebase) {
+            log("world: floating origin rebase detected: shift=(%.2f, %.2f, %.2f)",
+                rebase_shift[0], rebase_shift[1], rebase_shift[2]);
+            prev_player_feet_[0] += rebase_shift[0];
+            prev_player_feet_[1] += rebase_shift[1];
+            prev_player_feet_[2] += rebase_shift[2];
+            if (anchored_) {
+                anchor_[0] += rebase_shift[0];
+                anchor_[1] += rebase_shift[2];
+            }
+            {
+                std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+                ctx.world().block_grid.shift(static_cast<int>(rebase_shift[0]),
+                                             static_cast<int>(rebase_shift[1]),
+                                             static_cast<int>(rebase_shift[2]));
+            }
+            if (callbacks_.on_origin_rebase) {
+                callbacks_.on_origin_rebase(rebase_shift[0], rebase_shift[1], rebase_shift[2]);
+            }
+            dx = feet[0] - prev_player_feet_[0];
+            dy = feet[1] - prev_player_feet_[1];
+            dz = feet[2] - prev_player_feet_[2];
+        }
     }
     const bool jumped = std::sqrt(dx * dx + dy * dy + dz * dz) > 20.f;
 
