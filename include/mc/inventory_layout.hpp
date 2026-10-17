@@ -18,6 +18,7 @@ inline const std::vector<ItemId>& paletteItems() {
         ItemId::FlintAndSteel, ItemId::EnderPearl,    ItemId::GoldenApple, ItemId::EnchantedGoldenApple, ItemId::Bread,
         ItemId::CookedBeef,   ItemId::TotemOfUndying, ItemId::Shield,      ItemId::Elytra,      ItemId::FireworkRocket,
         ItemId::BlockDirt,    ItemId::BlockStone,     ItemId::BlockTnt,    ItemId::ZombieSpawnEgg,
+        ItemId::CreeperSpawnEgg, ItemId::SkeletonSpawnEgg,
         ItemId::DiamondHelmet, ItemId::DiamondChestplate, ItemId::DiamondLeggings, ItemId::DiamondBoots};
     return items;
 }

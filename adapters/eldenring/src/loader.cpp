@@ -960,7 +960,7 @@ std::atomic<uint64_t> g_last_summon_ms{0};
 constexpr uint64_t kSummonCooldownMs = 200; // Fast and responsive virtual summon (no FromSoftware engine locks)
 
 // Returns false when capacity is full or player pose unreadable. Completely decoupled from CSBuddyMan.
-bool QueueSummon(const char* source) {
+bool QueueSummon(const char* source, const char* requested_mob = nullptr) {
     const uint64_t now = GetTickCount64();
     if (now - g_last_summon_ms.load(std::memory_order_relaxed) < kSummonCooldownMs) return false;
     g_last_summon_ms.store(now);
@@ -983,7 +983,7 @@ bool QueueSummon(const char* source) {
     p.pos[2] = pos[2];
     p.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]);
 
-    std::string model_type = "creeper"; // Default to creeper for active summon feature
+    std::string model_type = requested_mob ? requested_mob : "creeper"; // Default to creeper if unspecified
     std::vector<uint8_t> summon_txt;
     if (ReadFileAll(g_game_dir + "mc_er_summon.txt", summon_txt) && !summon_txt.empty()) {
         std::string content(reinterpret_cast<const char*>(summon_txt.data()), summon_txt.size());
@@ -1001,13 +1001,16 @@ bool QueueSummon(const char* source) {
     return true;
 }
 
-// Right click with the zombie spawn egg in hand: one summon; in survival the egg is used up. True when the click was the egg's.
+// Right click with any spawn egg in hand: one summon; in survival the egg is used up. True when the click was the egg's.
 bool TryUseSpawnEgg() {
+    mc::ItemId held = mc::ItemId::None;
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
-        if (g_melee.heldItem() != mc::ItemId::ZombieSpawnEgg || g_melee.countAt(g_melee.selectedSlot()) == 0) return false;
+        held = g_melee.heldItem();
+        if (!mc::isSpawnEgg(held) || g_melee.countAt(g_melee.selectedSlot()) == 0) return false;
     }
-    if (!QueueSummon("spawn egg")) return true; // refused (feature off or too soon): the click is still the egg's
+    const char* mob_type = mc::spawnEggToMobType(held);
+    if (!QueueSummon("spawn egg", mob_type)) return true; // refused (feature off or too soon): the click is still the egg's
     std::lock_guard<std::mutex> g(g_melee_mutex);
     if (creative::consumesItems(CurrentGameMode())) g_melee.consumeAt(g_melee.selectedSlot());
     g_melee.startSwing();

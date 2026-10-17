@@ -749,3 +749,49 @@ TEST(VirtualSummonTest, ShiftTranslatesAllMobsAndProjectiles) {
     EXPECT_FLOAT_EQ(s_after->pos[2], s_z0 + 32.0f);
 }
 
+TEST(VirtualSummonTest, ConcurrentMultiMobHeterogeneousSummons) {
+    VirtualSummonManager mgr;
+    const auto player = makePlayer(0.0f, 10.0f, 0.0f, 0.0f);
+
+    uint64_t c_id = mgr.spawnMob("creeper", player, 2.0f);
+    uint64_t s_id = mgr.spawnMob("skeleton", player, 2.0f);
+    uint64_t z_id = mgr.spawnMob("zombie", player, 2.0f);
+
+    ASSERT_NE(c_id, 0u);
+    ASSERT_NE(s_id, 0u);
+    ASSERT_NE(z_id, 0u);
+    EXPECT_EQ(mgr.activeCount(), 3u);
+
+    const auto* creeper = mgr.findMob(c_id);
+    const auto* skeleton = mgr.findMob(s_id);
+    const auto* zombie = mgr.findMob(z_id);
+
+    ASSERT_NE(creeper, nullptr);
+    ASSERT_NE(skeleton, nullptr);
+    ASSERT_NE(zombie, nullptr);
+
+    EXPECT_EQ(creeper->model_type, "creeper");
+    EXPECT_EQ(skeleton->model_type, "skeleton");
+    EXPECT_EQ(zombie->model_type, "zombie");
+
+    // Attack styles must be distinct
+    EXPECT_EQ(creeper->attack_style, MobAttackStyle::SuicideExplode);
+    EXPECT_EQ(skeleton->attack_style, MobAttackStyle::Ranged);
+    EXPECT_EQ(zombie->attack_style, MobAttackStyle::Melee);
+
+    // Verify snapshots distinguish them
+    auto snapshots = mgr.generateSnapshots();
+    EXPECT_EQ(snapshots.size(), 3u);
+
+    // Provide an enemy target within 3.5m ignite range and tick update
+    EnemyTarget enemy = makeEnemy(0x2000, 0.0f, 10.0f, 0.0f, 100, 100);
+    mgr.update(0.1f, player, {enemy});
+
+    // Creeper should begin hissing (close to enemy)
+    EXPECT_TRUE(creeper->is_primed);
+    // Zombie should navigate towards enemy
+    EXPECT_GT(zombie->speed, 0.0f);
+    // Skeleton should maintain standoff range
+    EXPECT_GE(skeleton->attack_range, 10.0f);
+}
+

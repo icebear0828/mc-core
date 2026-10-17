@@ -292,6 +292,17 @@ TEST_F(HotkeyDispatcherTest, RightClickPriorityTntThenCreeperThenBlock) {
     EXPECT_TRUE(block_placed_);
 }
 
+TEST_F(HotkeyDispatcherTest, RightClickFallbackToSpawnEggWhenBlockNotPlaced) {
+    ignite_tnt_success_ = false;
+    ignite_creeper_success_ = false;
+    place_block_success_ = false;
+    use_spawn_egg_success_ = true;
+    right_click_edge_ = true;
+
+    dispatcher_->tick(0.016f);
+    EXPECT_TRUE(spawn_egg_used_);
+}
+
 TEST_F(HotkeyDispatcherTest, MouseWheelScrollsHotbarSlots) {
     auto& ctx = RuntimeContext::Instance();
     auto& melee = ctx.combat().melee;

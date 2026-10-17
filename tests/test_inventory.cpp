@@ -216,6 +216,39 @@ TEST(ZombieSpawnEgg, StacksTo64AndIsOfferedByThePalette) {
     EXPECT_LE(paletteItems().size(), static_cast<size_t>(InventoryLayout::kPaletteSlots));
 }
 
+TEST(SpawnEggs, CreeperAndSkeletonEggsStackTo64AndAreOfferedByThePalette) {
+    EXPECT_EQ(maxStackSize(ItemId::CreeperSpawnEgg), 64u);
+    EXPECT_EQ(maxStackSize(ItemId::SkeletonSpawnEgg), 64u);
+
+    bool creeper_found = false;
+    bool skeleton_found = false;
+    for (ItemId id : paletteItems()) {
+        if (id == ItemId::CreeperSpawnEgg) creeper_found = true;
+        if (id == ItemId::SkeletonSpawnEgg) skeleton_found = true;
+    }
+    EXPECT_TRUE(creeper_found);
+    EXPECT_TRUE(skeleton_found);
+    EXPECT_LE(paletteItems().size(), static_cast<size_t>(InventoryLayout::kPaletteSlots));
+}
+
+TEST(SpawnEggs, HelperFunctionsIdentifyAndMapMobTypes) {
+    EXPECT_TRUE(isSpawnEgg(ItemId::ZombieSpawnEgg));
+    EXPECT_TRUE(isSpawnEgg(ItemId::CreeperSpawnEgg));
+    EXPECT_TRUE(isSpawnEgg(ItemId::SkeletonSpawnEgg));
+    EXPECT_FALSE(isSpawnEgg(ItemId::DiamondSword));
+    EXPECT_FALSE(isSpawnEgg(ItemId::None));
+
+    EXPECT_STREQ(spawnEggToMobType(ItemId::CreeperSpawnEgg), "creeper");
+    EXPECT_STREQ(spawnEggToMobType(ItemId::SkeletonSpawnEgg), "skeleton");
+    EXPECT_STREQ(spawnEggToMobType(ItemId::ZombieSpawnEgg), "zombie");
+    EXPECT_EQ(spawnEggToMobType(ItemId::DiamondSword), static_cast<const char*>(nullptr));
+
+    EXPECT_EQ(mobTypeToSpawnEgg("creeper"), ItemId::CreeperSpawnEgg);
+    EXPECT_EQ(mobTypeToSpawnEgg("skeleton"), ItemId::SkeletonSpawnEgg);
+    EXPECT_EQ(mobTypeToSpawnEgg("zombie"), ItemId::ZombieSpawnEgg);
+    EXPECT_EQ(mobTypeToSpawnEgg("unknown"), ItemId::None);
+}
+
 TEST(ShieldItem, IsOfferedByThePaletteAndStacksToOne) {
     EXPECT_EQ(maxStackSize(ItemId::Shield), 1u);
     bool found = false;

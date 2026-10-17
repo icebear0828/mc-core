@@ -360,6 +360,7 @@ _PLACEHOLDER_ITEM_COLORS = {
     "item_arrow": (200, 200, 200), "item_trident": (40, 150, 150), "item_flint_and_steel": (90, 90, 90),
     "item_ender_pearl": (20, 90, 80), "item_enchanted_golden_apple": (200, 120, 230), "item_bread": (200, 150, 70),
     "item_cooked_beef": (120, 60, 30), "item_firework_rocket": (200, 40, 40), "item_zombie_spawn_egg": (0, 175, 175),
+    "item_creeper_spawn_egg": (13, 167, 11), "item_skeleton_spawn_egg": (193, 193, 193),
     "block_dirt": (134, 96, 67), "block_stone": (125, 125, 125), "block_tnt_top": (160, 80, 70),
     "block_tnt_side": (200, 60, 50), "block_tnt_bottom": (160, 80, 70),
 }
@@ -839,6 +840,9 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("armor_full", (9, 9)),
     # 10 stages of block destruction (cracking) overlay
     *[(f"destroy_stage_{i}", (16, 16)) for i in range(10)],
+    # spawn eggs for creeper and skeleton
+    ("item_creeper_spawn_egg", (16, 16)),
+    ("item_skeleton_spawn_egg", (16, 16)),
 ]
 
 
@@ -887,6 +891,8 @@ _JAR_HUD_SPRITES = {
     "item_cooked_beef": "item/cooked_beef.png",
     "item_firework_rocket": "item/firework_rocket.png",
     "item_zombie_spawn_egg": "item/zombie_spawn_egg.png",
+    "item_creeper_spawn_egg": "item/creeper_spawn_egg.png",
+    "item_skeleton_spawn_egg": "item/skeleton_spawn_egg.png",
     "block_dirt": "block/dirt.png",
     "block_stone": "block/stone.png",
     "block_tnt_top": "block/tnt_top.png",
@@ -906,7 +912,11 @@ _JAR_HUD_SPRITES = {
 _CONTAINER_TEXTURE = "gui/container/generic_54.png"
 _CONTAINER_PARTS = {"container_top": (0, 0, 176, 71), "container_bottom": (0, 126, 176, 222)}
 # Spawn eggs are a grey egg and grey spots tinted per mob (the item model's tint): primary colour for the egg, secondary for the spots.
-_SPAWN_EGG_COLOURS = {"item_zombie_spawn_egg": ((0x00, 0xAF, 0xAF), (0x79, 0x9C, 0x65))}
+_SPAWN_EGG_COLOURS = {
+    "item_zombie_spawn_egg": ((0x00, 0xAF, 0xAF), (0x79, 0x9C, 0x65)),
+    "item_creeper_spawn_egg": ((0x0D, 0xA7, 0x0B), (0x00, 0x00, 0x00)),
+    "item_skeleton_spawn_egg": ((0xC1, 0xC1, 0xC1), (0x49, 0x49, 0x49)),
+}
 _GLINT = (130, 60, 220)  # the enchantment glint, flattened into a tint for the enchanted golden apple
 
 # Block items are drawn by Minecraft as isometric cubes: (top, left/right sides)
