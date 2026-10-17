@@ -18,9 +18,16 @@ inline constexpr const char* kAsmModelRtti = ".?AVCSChrAsmModelIns@CS@@";
 inline constexpr uintptr_t kAsmPartPointers = 0x28;
 inline constexpr unsigned kAsmPartSlots = 27;
 inline constexpr uintptr_t kPartDispEntity = 0x18;
+inline constexpr uintptr_t kRootDispEntity = 0x18;
+inline constexpr uintptr_t kAsmShadowDispEntity = 0x188;
 inline constexpr uintptr_t kDispFlags1 = 0x20;
 inline constexpr uint32_t kDispVisibleBit = 1u;
 inline constexpr uintptr_t kDispFlags2 = 0x24;
+inline constexpr uintptr_t kDispShadowFlags = 0x220;
+inline constexpr uint32_t kDispShadowBits = 0x11u; // bit 0 (mesh visible), bit 4 (shadow visible)
+inline constexpr uintptr_t kAsmFlags = 0x20;
+inline constexpr uint32_t kAsmShadowBit = 0x4u; // bit 2 (cast shadow)
+inline constexpr uintptr_t kAsmCastShadow = 0x2F0;
 } // namespace layout
 
 // Clears `mask` bits of `flags`; restoring puts back only the masked bits from `original` and keeps the rest of the
@@ -28,7 +35,7 @@ inline constexpr uintptr_t kDispFlags2 = 0x24;
 inline uint32_t hideBits(uint32_t flags, uint32_t mask) { return flags & ~mask; }
 inline uint32_t restoreBits(uint32_t flags, uint32_t original, uint32_t mask) { return (flags & ~mask) | (original & mask); }
 
-// Addresses of the disp_flags1 words of every part currently attached to the player. Empty when the model object is
+// Addresses of the disp_flags1 words of every part and model entity attached to the player. Empty when the model object is
 // missing or not a CSChrAsmModelIns.
 // `slot_mask` bit n selects part slot n (default: all of them).
 inline std::vector<uintptr_t> collectDispFlagAddresses(const IMemoryReader& reader, uintptr_t image_base, uintptr_t player_chr,
@@ -38,16 +45,30 @@ inline std::vector<uintptr_t> collectDispFlagAddresses(const IMemoryReader& read
     if (player_chr == 0 || !reader.read(player_chr + layout::kAsmModelInPlayerIns, &model, sizeof(model)) || model == 0) return out;
     const auto m = static_cast<uintptr_t>(model);
     if (!objectIsClass(reader, image_base, m, layout::kAsmModelVtableRva, layout::kAsmModelRtti)) return out;
+
+    auto tryAddDisp = [&](uintptr_t disp_addr) {
+        if (disp_addr == 0) return;
+        uint64_t disp = 0;
+        if (!reader.read(disp_addr, &disp, sizeof(disp)) || disp == 0) return;
+        const uintptr_t at = static_cast<uintptr_t>(disp) + layout::kDispFlags1;
+        uint32_t flags = 0;
+        if (!reader.read(at, &flags, sizeof(flags))) return;
+        if (std::find(out.begin(), out.end(), at) == out.end()) {
+            out.push_back(at);
+        }
+    };
+
     for (unsigned i = 0; i < layout::kAsmPartSlots; ++i) {
         if ((slot_mask & (1u << i)) == 0) continue;
-        uint64_t part = 0, disp = 0;
-        uint32_t flags = 0;
+        uint64_t part = 0;
         if (!reader.read(m + layout::kAsmPartPointers + i * sizeof(uint64_t), &part, sizeof(part)) || part == 0) continue;
-        if (!reader.read(static_cast<uintptr_t>(part) + layout::kPartDispEntity, &disp, sizeof(disp)) || disp == 0) continue;
-        const uintptr_t at = static_cast<uintptr_t>(disp) + layout::kDispFlags1;
-        if (!reader.read(at, &flags, sizeof(flags))) continue;
-        out.push_back(at);
+        tryAddDisp(static_cast<uintptr_t>(part) + layout::kPartDispEntity);
     }
+
+    // Root model and shadow disp entities attached to CSChrAsmModelIns
+    tryAddDisp(m + layout::kRootDispEntity);
+    tryAddDisp(m + layout::kAsmShadowDispEntity);
+
     return out;
 }
 
