@@ -163,6 +163,42 @@ void UpdateNativeModel(uintptr_t player, bool hide, const live::IMemoryReader& r
                 safeWrite32(a, hidden);
             }
         }
+
+        // CSModelDispEntity + 0x220 shadow flags (bit 0: mesh visible, bit 4: shadow visible)
+        const uintptr_t shadow_flags_addr = b + (live::layout::kDispShadowFlags - live::layout::kDispFlags1);
+        uint32_t sflags = 0;
+        if (safeRead32(shadow_flags_addr, &sflags)) {
+            constexpr uint32_t kShadowMask = live::layout::kDispShadowBits; // 0x11
+            if ((sflags & kShadowMask) != 0) {
+                hidden_flags.emplace(shadow_flags_addr, debug::HiddenWord{sflags, kShadowMask});
+                safeWrite32(shadow_flags_addr, live::hideBits(sflags, kShadowMask));
+            }
+        }
+    }
+
+    // CSChrAsmModelIns shadow toggles: +0x20 bit 2 and +0x2F0 cast_shadow byte
+    uint64_t asm_model = 0;
+    if (reader.read(player + live::layout::kAsmModelInPlayerIns, &asm_model, sizeof(asm_model)) && asm_model != 0) {
+        const uintptr_t asm_addr = static_cast<uintptr_t>(asm_model);
+        const uintptr_t asm_flags_addr = asm_addr + live::layout::kAsmFlags;
+        uint32_t aflags = 0;
+        if (safeRead32(asm_flags_addr, &aflags)) {
+            constexpr uint32_t kAsmShadowMask = live::layout::kAsmShadowBit; // 0x4
+            if ((aflags & kAsmShadowMask) != 0) {
+                hidden_flags.emplace(asm_flags_addr, debug::HiddenWord{aflags, kAsmShadowMask});
+                safeWrite32(asm_flags_addr, aflags & ~kAsmShadowMask);
+            }
+        }
+
+        const uintptr_t cast_shadow_addr = asm_addr + live::layout::kAsmCastShadow;
+        uint32_t cshadow_word = 0;
+        if (safeRead32(cast_shadow_addr, &cshadow_word)) {
+            constexpr uint32_t kByteMask = 0xFFu;
+            if ((cshadow_word & kByteMask) != 0) {
+                hidden_flags.emplace(cast_shadow_addr, debug::HiddenWord{cshadow_word, kByteMask});
+                safeWrite32(cast_shadow_addr, cshadow_word & ~kByteMask);
+            }
+        }
     }
 }
 #endif

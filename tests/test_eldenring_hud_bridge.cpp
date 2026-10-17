@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "eldenring_hud_bridge.hpp"
+#include "eldenring_model.hpp"
 #include "eldenring_runtime_context.hpp"
 
 using namespace eldenring;
@@ -92,16 +93,76 @@ TEST(HudBridgeTest, PopulateHudStateHotbarAndInventory) {
     EXPECT_GT(hud.armor_points, 0);
 }
 
-TEST(HudBridgeTest, NativeModelSlotHidingAndRestoration) {
+TEST(HudBridgeTest, NativeModelAndShadowDispFlagsHidingAndRestoringWithMockModel) {
     std::unordered_map<uintptr_t, debug::HiddenWord> hidden_flags;
     std::mutex native_mutex;
 
-    // Simulate memory with a display flag word that has drawn bit set
-    std::vector<uint8_t> memory_pool(0x1000, 0);
-    const uintptr_t flag_addr = reinterpret_cast<uintptr_t>(memory_pool.data()) + 0x200;
-    *reinterpret_cast<uint32_t*>(flag_addr) = 0x000100A1; // Drawn bit set
+    // Build mock memory structures:
+    // player_chr + 0x648 -> asm_model
+    // asm_model + 0x00 -> vtable (matching measured vtable 0x2B35980)
+    // asm_model + 0x18 -> root_disp_ptr (CSModelDispEntity of character model base)
+    // asm_model + 0x188 -> shadow_disp_ptr (CSModelDispEntity of character shadow/outline)
+    // asm_model + 0x28 + slot*8 -> part
+    // part + 0x18 -> disp_entity
+    // disp_entity + 0x20 -> disp_flags1 (0x000100A1)
+    // disp_entity + 0x24 -> disp_flags2 (0x00000001)
+    // disp_entity + 0x220 -> shadow_flags (0x00000011)
 
-    // Mock reader
+    struct MockDispEntity {
+        uint8_t pad_00[0x20];
+        uint32_t disp_flags1; // +0x20
+        uint32_t disp_flags2; // +0x24
+        uint8_t pad_28[0x1F8]; // 0x28..0x220
+        uint32_t shadow_flags; // +0x220
+    };
+
+    MockDispEntity disp_entity{};
+    disp_entity.disp_flags1 = 0x000100A1; // Visible bit 0 and shadow bits
+    disp_entity.disp_flags2 = 0x00000001; // Shadow bit in word 2
+    disp_entity.shadow_flags = 0x00000011; // Bits 0 (mesh visible) and 4 (shadow visible)
+
+    MockDispEntity root_disp{};
+    root_disp.disp_flags1 = 0x000100A1;
+    root_disp.disp_flags2 = 0x00000001;
+    root_disp.shadow_flags = 0x00000011;
+
+    MockDispEntity shadow_disp{};
+    shadow_disp.disp_flags1 = 0x000100A1;
+    shadow_disp.disp_flags2 = 0x00000001;
+    shadow_disp.shadow_flags = 0x00000011;
+
+    struct MockPart {
+        uint8_t pad_00[0x18];
+        uint64_t disp_ptr; // +0x18
+    } part{};
+    part.disp_ptr = reinterpret_cast<uintptr_t>(&disp_entity);
+
+    struct MockAsmModel {
+        uint64_t vtable; // +0x00
+        uint8_t pad_08[0x10]; // 0x08..0x18
+        uint64_t root_disp_ptr; // +0x18
+        uint32_t asm_flags; // +0x20 (bit 2 = shadow cast)
+        uint8_t pad_24[0x04]; // 0x24..0x28
+        uint64_t parts[27]; // +0x28
+        uint8_t pad_100[0x88]; // 0x100..0x188
+        uint64_t shadow_disp_ptr; // +0x188
+        uint8_t pad_190[0x160]; // 0x190..0x2F0
+        uint8_t cast_shadow; // +0x2F0
+    } asm_model{};
+    constexpr uintptr_t kMockImageBase = 0x140000000;
+    asm_model.vtable = kMockImageBase + live::layout::kAsmModelVtableRva;
+    asm_model.root_disp_ptr = reinterpret_cast<uintptr_t>(&root_disp);
+    asm_model.shadow_disp_ptr = reinterpret_cast<uintptr_t>(&shadow_disp);
+    asm_model.parts[0] = reinterpret_cast<uintptr_t>(&part);
+    asm_model.asm_flags = 0x00000007; // bits 0, 1, 2 set
+    asm_model.cast_shadow = 1;
+
+    struct MockPlayer {
+        uint8_t pad_00[0x648];
+        uint64_t asm_model_ptr; // +0x648
+    } player{};
+    player.asm_model_ptr = reinterpret_cast<uintptr_t>(&asm_model);
+
     class MockMemReader : public live::IMemoryReader {
     public:
         bool read(uintptr_t address, void* dst, size_t size) const override {
@@ -113,14 +174,48 @@ TEST(HudBridgeTest, NativeModelSlotHidingAndRestoration) {
     auto& ctx = RuntimeContext::Instance();
     ctx.resetForTesting();
     ctx.ui().hide_slots.store(0xFFFFFFFFu); // All slots
-    ctx.ui().hide_mask1.store(1u);          // Mask bit 0
+    ctx.ui().hide_mask1.store(0x100A1);     // Model + shadow mask 1
+    ctx.ui().hide_mask2.store(0x1);         // Shadow mask 2
 
-    // Hide native model
-    UpdateNativeModel(flag_addr, true /* hide */, mock_reader, 0x140000000, ctx, hidden_flags, native_mutex);
-    
-    // Now restore
+    const uintptr_t player_addr = reinterpret_cast<uintptr_t>(&player);
+
+    // 1. Hide native model and shadow
+    UpdateNativeModel(player_addr, true /* hide */, mock_reader, kMockImageBase, ctx, hidden_flags, native_mutex);
+
+    // Assert deep semantic verification: part disp, root model disp, and shadow disp MUST be masked!
+    EXPECT_EQ(disp_entity.disp_flags1 & 0x100A1, 0u);
+    EXPECT_EQ(disp_entity.disp_flags2 & 0x1, 0u);
+    EXPECT_EQ(root_disp.disp_flags1 & 0x100A1, 0u);
+    EXPECT_EQ(root_disp.disp_flags2 & 0x1, 0u);
+    EXPECT_EQ(shadow_disp.disp_flags1 & 0x100A1, 0u);
+    EXPECT_EQ(shadow_disp.disp_flags2 & 0x1, 0u);
+
+    // Deep semantic assertion for shadow fields:
+    // +0x220 shadow flags must have bit 0 (mesh) and bit 4 (shadow) cleared!
+    EXPECT_EQ(disp_entity.shadow_flags & 0x11, 0u);
+    EXPECT_EQ(root_disp.shadow_flags & 0x11, 0u);
+    EXPECT_EQ(shadow_disp.shadow_flags & 0x11, 0u);
+
+    // asm_model flags +0x20 must have bit 2 (shadow) cleared!
+    EXPECT_EQ(asm_model.asm_flags & 0x4, 0u);
+    // asm_model +0x2F0 cast_shadow byte must be 0!
+    EXPECT_EQ(asm_model.cast_shadow, 0u);
+
+    // 2. Restore native model and shadow
     RestoreNativeModel(hidden_flags, native_mutex);
     EXPECT_TRUE(hidden_flags.empty());
+    EXPECT_EQ(disp_entity.disp_flags1, 0x000100A1);
+    EXPECT_EQ(disp_entity.disp_flags2, 0x00000001);
+    EXPECT_EQ(root_disp.disp_flags1, 0x000100A1);
+    EXPECT_EQ(root_disp.disp_flags2, 0x00000001);
+    EXPECT_EQ(shadow_disp.disp_flags1, 0x000100A1);
+    EXPECT_EQ(shadow_disp.disp_flags2, 0x00000001);
+
+    EXPECT_EQ(disp_entity.shadow_flags, 0x00000011);
+    EXPECT_EQ(root_disp.shadow_flags, 0x00000011);
+    EXPECT_EQ(shadow_disp.shadow_flags, 0x00000011);
+    EXPECT_EQ(asm_model.asm_flags, 0x00000007);
+    EXPECT_EQ(asm_model.cast_shadow, 1u);
 }
 
 TEST(HudBridgeTest, PopulateSteveStateSynchronizesShieldBlocking) {
