@@ -79,6 +79,18 @@ public:
         }
     }
 
+    void shift(int dx, int dy, int dz) {
+        if (dx == 0 && dy == 0 && dz == 0) return;
+        if (blocks_.empty()) return;
+        std::unordered_map<Cell, mc::BlockId, CellHash> new_blocks;
+        new_blocks.reserve(blocks_.size());
+        for (const auto& [cell, id] : blocks_) {
+            new_blocks[{cell.x + dx, cell.y + dy, cell.z + dz}] = id;
+        }
+        blocks_ = std::move(new_blocks);
+        ++version_;
+    }
+
 private:
     std::unordered_map<Cell, mc::BlockId, CellHash> blocks_;
     uint32_t version_{0};

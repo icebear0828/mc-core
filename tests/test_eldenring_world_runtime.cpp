@@ -413,3 +413,71 @@ TEST(EldenRingWorldRuntime, StepBlockCollisionClampsNativeTerrainDisplacementWhe
     EXPECT_LT(written_feet[2], 0.20f);
     EXPECT_GT(written_feet[2], 0.001f);
 }
+
+TEST(EldenRingWorldRuntime, DetectsFloatingOriginRebaseAndShiftsWorld) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x5000;
+
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+    runtime.setDeltaTimeOverrideForTesting(0.016f);
+    runtime.setInputProvider([](int) { return false; });
+
+    WorldRuntimeCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.read_physics_pos = [&](uintptr_t, float out_f[3]) {
+        return mem.readBytes(kModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+    };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.is_game_in_foreground = []() { return true; };
+
+    float rebase_broadcast[3] = {0.0f, 0.0f, 0.0f};
+    int rebase_calls = 0;
+    cb.on_origin_rebase = [&](float rx, float ry, float rz) {
+        rebase_broadcast[0] = rx;
+        rebase_broadcast[1] = ry;
+        rebase_broadcast[2] = rz;
+        ++rebase_calls;
+    };
+    runtime.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+    ctx.mode().block_collision.store(true);
+
+    // Place a block at (-7, 1, -21)
+    ctx.world().block_grid.place({-7, 1, -21}, mc::BlockId::Dirt);
+    EXPECT_EQ(ctx.world().block_grid.get({-7, 1, -21}), mc::BlockId::Dirt);
+
+    // Frame 1: Player is at (-7.02, 1.17, -32.15)
+    float p1[3] = {-7.02f, 1.17f, -32.15f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, p1, sizeof(p1));
+    runtime.stepPlayerBlockCollision(ctx);
+    EXPECT_EQ(rebase_calls, 0);
+
+    // Frame 2: Engine rebases coordinates by +32.0m on Z!
+    // Player is now read at (-7.02, 1.11, -0.15) (rebase of +32.0m on Z)
+    float p2[3] = {-7.02f, 1.11f, -0.15f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, p2, sizeof(p2));
+    runtime.stepPlayerBlockCollision(ctx);
+
+    // Rebase callback must have fired with (0, 0, +32)
+    EXPECT_EQ(rebase_calls, 1);
+    EXPECT_FLOAT_EQ(rebase_broadcast[0], 0.0f);
+    EXPECT_FLOAT_EQ(rebase_broadcast[1], 0.0f);
+    EXPECT_FLOAT_EQ(rebase_broadcast[2], 32.0f);
+
+    // BlockGrid must have been shifted by (0, 0, +32)
+    // Old block at (-7, 1, -21) is gone, new block is at (-7, 1, 11)
+    EXPECT_EQ(ctx.world().block_grid.get({-7, 1, -21}), mc::BlockId::Air);
+    EXPECT_EQ(ctx.world().block_grid.get({-7, 1, 11}), mc::BlockId::Dirt);
+
+    // Relative distance on Z from player to block:
+    // Before: (-21.0f) - (-32.15f) = +11.15f
+    // After:  (11.0f)  - (-0.15f)  = +11.15f
+    // Relative distance is 100% PRESERVED!
+}

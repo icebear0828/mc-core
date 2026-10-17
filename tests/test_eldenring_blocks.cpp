@@ -425,6 +425,35 @@ TEST(Blocks, EntityStandingOnABlockIsLiftedToTop) {
     EXPECT_NEAR(r.feet[1], 1.0f, 1e-4f);
 }
 
+TEST(Blocks, ShiftTranslatesAllCellsAndIncrementsVersion) {
+    BlockGrid g;
+    g.place({10, 1, -21}, mc::BlockId::Dirt);
+    g.place({5, 2, -15}, mc::BlockId::Stone);
+    const unsigned v0 = g.version();
+
+    // Rebase shift by +32 on Z and -5 on X
+    g.shift(-5, 0, 32);
+
+    EXPECT_GT(g.version(), v0);
+    EXPECT_EQ(g.count(), 2u);
+
+    // Old coordinates must be empty
+    EXPECT_EQ(g.get({10, 1, -21}), mc::BlockId::Air);
+    EXPECT_EQ(g.get({5, 2, -15}), mc::BlockId::Air);
+
+    // New coordinates must contain the blocks
+    EXPECT_EQ(g.get({5, 1, 11}), mc::BlockId::Dirt);
+    EXPECT_EQ(g.get({0, 2, 17}), mc::BlockId::Stone);
+
+    // Raycast from shifted eye position hits shifted block at identical distance
+    const float eye[3] = {5.5f, 1.5f, 11.0f - 10.0f}; // 10m away along +Z
+    const float dir[3] = {0.0f, 0.0f, 1.0f};
+    const auto hit = raycastGrid(g, eye, dir, 20.0f);
+    ASSERT_TRUE(hit.has_value());
+    EXPECT_EQ(hit->cell, (Cell{5, 1, 11}));
+    EXPECT_NEAR(hit->distance, 10.0f, 1e-3f);
+}
+
 
 
 

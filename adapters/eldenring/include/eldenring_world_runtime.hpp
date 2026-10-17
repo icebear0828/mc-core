@@ -67,6 +67,9 @@ struct WorldRuntimeCallbacks {
 
     // Diagnostics / logging
     std::function<void(const std::string&)> log;
+
+    // Origin rebase broadcast
+    std::function<void(float rx, float ry, float rz)> on_origin_rebase;
 };
 
 class VoxelWorldRuntime {

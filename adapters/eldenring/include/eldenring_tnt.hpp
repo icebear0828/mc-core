@@ -146,6 +146,16 @@ public:
         return out;
     }
 
+    void shift(float dx, float dy, float dz) {
+        if (dx == 0.0f && dy == 0.0f && dz == 0.0f) return;
+        for (auto& t : active_tnt_) {
+            t.pos[0] += dx;
+            t.pos[1] += dy;
+            t.pos[2] += dz;
+            t.floor_y += dy;
+        }
+    }
+
     ErExplosionResult detonateAt(blocks::BlockGrid& grid, const float center[3], float power = 4.0f, float radius = 4.5f, bool add_to_active = true) {
         ErExplosionResult result;
         result.center[0] = center[0];
