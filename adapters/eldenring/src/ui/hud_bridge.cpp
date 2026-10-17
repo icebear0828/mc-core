@@ -48,7 +48,7 @@ void PopulateHudStateFromContext(erov::HudState& out, const RuntimeContext& ctx)
     out.armor_points = inv.totalArmorPoints();
 
     out.food = ctx.player().hunger.food();
-    out.food_shaking = ctx.player().hunger.shaking();
+    out.food_shaking = (ctx.player().hunger.saturation() <= 0.f) && (out.food <= 1);
     out.regen = ctx.player().survival.regenerating();
     out.xp_level = ctx.player().xp.level();
     out.xp_progress = ctx.player().xp.progress();

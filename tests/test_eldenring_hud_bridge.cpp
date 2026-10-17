@@ -153,3 +153,46 @@ TEST(HudBridgeTest, PopulateSteveStateSynchronizesShieldBlocking) {
     PopulateSteveStateFromContext(steve_dead, ctx, true /* dead */, false /* sleeping */);
     EXPECT_FALSE(steve_dead.blocking);
 }
+
+TEST(HudBridgeTest, PopulateHudStateHungerShakingOnlyAtCriticalFood) {
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+
+    // Initial state: food 20, sat 5.0 -> no shaking
+    erov::HudState hud{};
+    PopulateHudStateFromContext(hud, ctx);
+    EXPECT_EQ(hud.food, 20);
+    EXPECT_FALSE(hud.food_shaking);
+
+    // Deplete saturation (5.0 * 4 = 20 exhaustion): food remains 20, saturation 0
+    ctx.player().hunger.addExhaustion(20.0f);
+    PopulateHudStateFromContext(hud, ctx);
+    EXPECT_EQ(hud.food, 20);
+    // MUST NOT shake at full food even if saturation is 0!
+    EXPECT_FALSE(hud.food_shaking);
+
+    // Deplete food down to 10 points (5 drumsticks)
+    ctx.player().hunger.addExhaustion(40.0f); // 10 food drained
+    PopulateHudStateFromContext(hud, ctx);
+    EXPECT_EQ(hud.food, 10);
+    EXPECT_FALSE(hud.food_shaking);
+
+    // Deplete food down to 2 points (1 drumstick)
+    ctx.player().hunger.addExhaustion(32.0f); // 8 food drained -> food 2
+    PopulateHudStateFromContext(hud, ctx);
+    EXPECT_EQ(hud.food, 2);
+    EXPECT_FALSE(hud.food_shaking);
+
+    // Deplete food down to 1 point (half a drumstick / 半格以下)
+    ctx.player().hunger.addExhaustion(4.0f); // 1 food drained -> food 1
+    PopulateHudStateFromContext(hud, ctx);
+    EXPECT_EQ(hud.food, 1);
+    EXPECT_TRUE(hud.food_shaking);
+
+    // Deplete food down to 0 points (starving)
+    ctx.player().hunger.addExhaustion(4.0f); // 1 food drained -> food 0
+    PopulateHudStateFromContext(hud, ctx);
+    EXPECT_EQ(hud.food, 0);
+    EXPECT_TRUE(hud.food_shaking);
+}
