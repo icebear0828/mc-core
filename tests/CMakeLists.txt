@@ -83,6 +83,8 @@ add_executable(mc_tests
     test_eldenring_virtual_summon.cpp
     test_eldenring_hotkey_dispatcher.cpp
     test_eldenring_game_hooks.cpp
+    test_mod_plugin_framework.cpp
+    test_eldenring_mod_integration.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/ui/inventory_controller.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/ui/hud_bridge.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/movement/player_locomotion.cpp

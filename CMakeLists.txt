@@ -42,6 +42,8 @@ add_library(mc_core STATIC
     include/mc/contracts/combat_adapter.hpp
     include/mc/contracts/input_adapter.hpp
     include/mc/contracts/hud_renderer.hpp
+    include/mc/contracts/mod_interface.hpp
+    include/mc/contracts/mod_manager.hpp
     src/animator.cpp
     src/voxel_world.cpp
     src/ballistics.cpp
