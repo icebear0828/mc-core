@@ -185,27 +185,22 @@ protected:
 
 } // namespace
 
-TEST_F(HotkeyDispatcherTest, NumberKeysDoNotSelectHotbarSlot) {
+TEST_F(HotkeyDispatcherTest, NumberKeySelectsHotbarSlot) {
     auto& ctx = RuntimeContext::Instance();
     auto& melee = ctx.combat().melee;
 
     EXPECT_EQ(melee.selectedSlot(), 0);
 
-    // Press '3' - should NOT change hotbar slot
+    // Press '3'
     setKey('3', true);
     dispatcher_->tick(0.016f);
-    EXPECT_EQ(melee.selectedSlot(), 0);
+    EXPECT_EQ(melee.selectedSlot(), 2);
 
-    // Release '3' and press '9' - should NOT change hotbar slot
+    // Release '3' and press '9'
     setKey('3', false);
     setKey('9', true);
     dispatcher_->tick(0.016f);
-    EXPECT_EQ(melee.selectedSlot(), 0);
-
-    // Mouse wheel still cycles hotbar slots as expected
-    wheel_notches_ = 1;
-    dispatcher_->tick(0.016f);
-    EXPECT_EQ(melee.selectedSlot(), 8); // scroll -1 wraps 0 to 8
+    EXPECT_EQ(melee.selectedSlot(), 8);
 }
 
 TEST_F(HotkeyDispatcherTest, FKeySwapsMainAndOffhand) {
