@@ -27,6 +27,14 @@ struct RayResult {
     float normal[3]{0.f, 1.f, 0.f};
 };
 
+struct alignas(16) HkVec4 {
+    float v[4];
+};
+
+// bool wrapper(physWorld, filter, from*, disp*, outPos*, outNormal*, outFraction*): vectors must be 16-byte aligned
+using RaycastFn = bool(__fastcall*)(void* phys_world, uint32_t filter, const HkVec4* from, const HkVec4* disp,
+                                    HkVec4* out_pos, HkVec4* out_normal, float* out_fraction);
+
 // from, disp (= to - from) -> result.
 using RayCastFn = std::function<RayResult(const float from[3], const float disp[3])>;
 

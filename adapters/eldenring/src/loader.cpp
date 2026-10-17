@@ -596,55 +596,16 @@ using eldenring::debug::CamWatchThread;
 // For those it returns "nothing spawned" (0) without calling the game, when the experiment is on.
 std::atomic<unsigned> g_hitvfx_skipped{0};
 
-// ---- line of sight (the game's static-geometry ray, docs/ELDENRING_REVERSE.md 1.6) -------------------------------------
-struct alignas(16) HkVec4 {
-    float v[4];
-};
-// bool wrapper(physWorld, filter, from*, disp*, outPos*, outNormal*, outFraction*): vectors must be 16-byte aligned
-using RaycastFn = bool(__fastcall*)(void* phys_world, uint32_t filter, const HkVec4* from, const HkVec4* disp, HkVec4* out_pos,
-                                    HkVec4* out_normal, float* out_fraction);
-RaycastFn g_raycast = nullptr;
+// ---- line of sight (delegated to CombatService) -------------------------------------------------------------
 std::atomic<bool> g_los_enabled{false};
 std::atomic<unsigned> g_los_blocked{0};
 
-thread_local RayResult t_last_ray;
-
 RayResult CastStaticRay(const float from[3], const float disp[3]) {
-    t_last_ray = RayResult{};
-    RayResult r;
-    uint64_t havok = 0, world = 0;
-    if (!SafeCopy(g_img.base + los::kHavokManGlobalRva, &havok, sizeof(havok)) || havok == 0) return r;
-    uint64_t vt = 0;
-    if (!SafeCopy(static_cast<uintptr_t>(havok), &vt, sizeof(vt)) || vt != g_img.base + los::kHavokManVtableRva) return r;
-    if (!SafeCopy(static_cast<uintptr_t>(havok) + los::kPhysWorldInHavokMan, &world, sizeof(world)) || world == 0) return r;
-    alignas(16) HkVec4 f = {{from[0], from[1], from[2], 0.f}};
-    alignas(16) HkVec4 d = {{disp[0], disp[1], disp[2], 0.f}};
-    alignas(16) HkVec4 pos = {}, normal = {};
-    float fraction = 1.f;
-    __try {
-        r.hit = g_raycast(reinterpret_cast<void*>(world), los::kStaticGeometryFilter, &f, &d, &pos, &normal, &fraction);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        g_los_enabled.store(false); // never retry a ray that faulted
-        return RayResult{};
-    }
-    r.ok = std::isfinite(fraction);
-    r.fraction = fraction;
-    for (int i = 0; i < 3; ++i) {
-        r.pos[i] = pos.v[i];
-        r.normal[i] = normal.v[i];
-    }
-    t_last_ray = r;
-    return r;
+    return eldenring::combat::CombatService::Instance().castStaticRay(from, disp);
 }
 
 bool PlayerCanSee(const float player_feet[3], const float victim_feet[3]) {
-    const float from[3] = {player_feet[0], player_feet[1] + los::kEyeHeight, player_feet[2]};
-    const float to[3] = {victim_feet[0], victim_feet[1] + los::kTargetHeight, victim_feet[2]};
-    const bool visible = hasLineOfSight(CastStaticRay, from, to);
-    const float dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
-    Log("los: dist=%.2f ray ok=%d hit=%d at=%.2f m -> %s", std::sqrt(dx * dx + dy * dy + dz * dz), t_last_ray.ok ? 1 : 0, t_last_ray.hit ? 1 : 0,
-        t_last_ray.fraction * std::sqrt(dx * dx + dy * dy + dz * dz), visible ? "visible" : "BLOCKED");
-    return visible;
+    return eldenring::combat::CombatService::Instance().playerCanSee(player_feet, victim_feet);
 }
 
 const char* OutcomeName(DamageOutcome o) {
@@ -671,17 +632,6 @@ int32_t HpOf(uintptr_t chr) {
     return readVitals(g_reader, g_img.base, chr, v) ? v.hp : -1;
 }
 
-// Final-damage override. Armed by DrainOnce around our own vfunc[7] call on the game thread, so a natural hit that the
-// game processes elsewhere (or even on this thread outside that call) is never touched.
-struct ForcedDamage {
-    bool armed{false};
-    uint64_t attacker{0};
-    uint64_t victim{0};
-    int32_t value{0};
-    bool applied{false};
-    int32_t engine_value{0};
-};
-thread_local ForcedDamage t_forced;
 std::atomic<bool> g_pdc_hooked{false};
 std::atomic<bool> g_log_player_hits{false}; // mc_er_hitlog.txt: log the HitContext of every hit the player takes (read only)
 
@@ -792,324 +742,42 @@ bool PlayerHitSurvival(void* module, void* attacker, uint8_t* ctx, uint8_t block
 std::atomic<bool> g_proj_log{false};
 std::atomic<bool> g_arrow_damage{false};
 std::atomic<int> g_proj_log_left{80};
-std::atomic<uint32_t> g_last_bullet_id{0};      // request +0x1C of that call
-std::atomic<float> g_last_shot_damage{eldenring::bullet::kCrossbowDamage}; // the MC damage of that shot (9 for a crossbow bolt, 6 * power + crit for a bow arrow)
-std::atomic<float> g_pending_shot_damage{eldenring::bullet::kCrossbowDamage}; // of the shot queued for the game thread
-std::atomic<bool> g_bow_offhand{false};          // the bow that is drawn is the one in the offhand
-std::atomic<float> g_bow_power{0.f};             // 0..1 while the bow is drawn (third-person arms), written by the key thread
-std::atomic<float> g_bow_ticks{0.f};             // ticks drawn (first-person pose)
-std::atomic<int> g_bolt_attach_poly{-1};         // mc_er_steve.txt: bolt_attach_poly. Request +0x1C is the shooter's dummy poly id, not a bullet id: >= 0 makes the game take that bone's matrix instead of ours (REVERSE 35.12); -1 keeps ours; 56 is what a real shot sends
-std::atomic<uint64_t> g_last_bullet_tick_ms{0}; // the last spawn_bullet call (the player's real shot or ours): hits within 3 s after it are logged whatever they look like
-std::atomic<uint64_t> g_last_shot_ms{0};        // exact timestamp when our shot was spawned
-std::atomic<float> g_last_shot_pos[3]{};        // muzzle position of our shot
-thread_local bool t_our_bullet_fire{false};     // true while our own RunBulletFire invokes SpawnBulletSafe
+std::atomic<bool>& g_bow_offhand = g_mode.bow_offhand;
+std::atomic<float>& g_bow_power = g_mode.bow_power;
+std::atomic<float>& g_bow_ticks = g_mode.bow_ticks;
 
 void RunBulletFire(); // forward declaration for CameraStepDetour
 
 void HandleProjectileHit(void* module, void* attacker, uint8_t* ctx) {
-    // Statistics first, before anything can return: does this hook see hits on enemies at all, and of which kind?
-    static std::atomic<uint32_t> s_calls{0}, s_player_victim{0}, s_unreadable{0};
-    static std::atomic<uint32_t> s_kind[256];
-    static std::atomic<uint64_t> s_stats_ms{0};
-    static std::atomic<uint32_t> s_stats_calls_logged{0};
-    const uint32_t calls = ++s_calls;
-    uint64_t victim = 0, ctx_attacker = 0, ctx_victim = 0;
-    uint8_t kind = 0;
-    int32_t engine_damage = 0;
-    const uintptr_t base = reinterpret_cast<uintptr_t>(ctx);
-    const bool readable = SafeCopy(reinterpret_cast<uintptr_t>(module) + layout::kOwnerInDataModule, &victim, sizeof(victim)) && victim != 0 &&
-                          SafeCopy(base + 0xDA, &kind, sizeof(kind)) && SafeCopy(base + layout::kHitAttacker, &ctx_attacker, sizeof(ctx_attacker)) &&
-                          SafeCopy(base + layout::kHitVictim, &ctx_victim, sizeof(ctx_victim)) && SafeCopy(base + layout::kHitDamage, &engine_damage, sizeof(engine_damage));
-    const uintptr_t player = PlayerChrPtr();
-    if (!readable) {
-        ++s_unreadable;
-    } else if (victim == player) {
-        ++s_player_victim;
-    } else {
-        ++s_kind[kind];
-    }
-    const uint64_t now = GetTickCount64();
-    if (g_proj_log.load(std::memory_order_relaxed) && now - s_stats_ms.load() > 4000 && calls != s_stats_calls_logged.load()) {
-        s_stats_ms.store(now);
-        s_stats_calls_logged.store(calls);
-        char kinds[200] = {};
-        int n = 0;
-        for (int k = 0; k < 256 && n < 180; ++k) {
-            const uint32_t c = s_kind[k].load();
-            if (c != 0) n += snprintf(kinds + n, sizeof(kinds) - static_cast<size_t>(n), " %d:%u", k, c);
-        }
-        Log("PDC-STATS: ProcessDamageContext calls=%u player-victim=%u unreadable=%u; hits on others by u8[DA] kind:%s", calls, s_player_victim.load(), s_unreadable.load(), kinds);
-    }
-    if (!readable || victim == player) return;
-    const uint64_t since_shot = now - g_last_bullet_tick_ms.load(std::memory_order_relaxed);
-    const bool mine = eldenring::bullet::isPlayersBoltHit(kind, reinterpret_cast<uintptr_t>(attacker), player, victim, g_last_bullet_id.load(std::memory_order_relaxed), since_shot);
-    const bool after_shot = since_shot < 3000;
-    const bool interesting = kind == 6 || ctx_attacker == player || reinterpret_cast<uintptr_t>(attacker) == player || after_shot;
-    if (g_proj_log.load(std::memory_order_relaxed) && interesting && g_proj_log_left.fetch_sub(1) > 0) {
-        int32_t npc = 0;
-        uint8_t team = 0;
-        SafeCopy(static_cast<uintptr_t>(victim) + layout::kNpcIdInChrIns, &npc, sizeof(npc));
-        SafeCopy(static_cast<uintptr_t>(victim) + layout::kTeamTypeInChrIns, &team, sizeof(team));
-        int32_t victim_max = 0;
-        if (const uintptr_t vdata = DataModuleOfChr(static_cast<uintptr_t>(victim))) SafeCopy(vdata + layout::kDataMaxHp, &victim_max, sizeof(victim_max));
-        Log("PROJ-HIT: max_hp=%d kind=%u victim=%p npc=%d team=%u attacker-arg=%p ctx+1D8=%p ctx+1E0=%p player=%p shooter_is_player=%d after_shot=%d engine_dmg=%d tid=%lu", victim_max, kind,
-            reinterpret_cast<void*>(victim), npc, static_cast<unsigned>(team), attacker, reinterpret_cast<void*>(ctx_attacker), reinterpret_cast<void*>(ctx_victim),
-            reinterpret_cast<void*>(player), mine ? 1 : 0, after_shot ? 1 : 0, engine_damage, static_cast<unsigned long>(GetCurrentThreadId()));
-    }
-    if (mine) {
-        float vp[3];
-        const uint64_t shot_ms = g_last_shot_ms.load(std::memory_order_relaxed);
-        if (shot_ms != 0 && detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(victim), vp)) {
-            const float dx = vp[0] - g_last_shot_pos[0].load(std::memory_order_relaxed),
-                        dy = vp[1] + 1.0f - g_last_shot_pos[1].load(std::memory_order_relaxed),
-                        dz = vp[2] - g_last_shot_pos[2].load(std::memory_order_relaxed);
-            const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-            const float since = static_cast<float>(now - shot_ms);
-            Log("ARROW-TIMING: the hit was processed %.0f ms after the shot; target dist=%.1f m; avg speed=%.1f m/s",
-                since, dist, since > 0.f ? dist / (since / 1000.f) : 0.f);
-        }
-    }
-    if (mine && g_mc_mode.load(std::memory_order_relaxed)) {
-        // Minecraft's feedback for a shot that lands: the arrow's thud, the hit marker, the damage hearts at the victim's chest (and the critical stars for a full draw).
-        const float mc_damage_hit = g_last_shot_damage.load(std::memory_order_relaxed);
-        const bool crit = eldenring::bullet::isCriticalShot(mc_damage_hit);
-        eraudio::Play("entity.arrow.hit");
-        {
-            std::lock_guard<std::mutex> g(g_melee_mutex);
-            g_feedback.onHit(crit);
-        }
-        float vpos[3];
-        if (detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(victim), vpos)) {
-            vpos[1] += 1.0f;
-            const int hearts = eldenring::bullet::hitHearts(mc_damage_hit);
-            if (hearts > 0) erov::SpawnFx(erov::FxKind::Damage, vpos, hearts);
-            if (crit) erov::SpawnFx(erov::FxKind::Crit, vpos, 0);
-        }
-    }
-    if (!g_arrow_damage.load(std::memory_order_relaxed) || !mine) return;
-    int32_t max_hp = 0;
-    const uintptr_t data = DataModuleOfChr(static_cast<uintptr_t>(victim));
-    if (data == 0 || !SafeCopy(data + layout::kDataMaxHp, &max_hp, sizeof(max_hp))) return;
-    const float mc_damage = g_last_shot_damage.load(std::memory_order_relaxed);
-    const int32_t wanted = eldenring::bullet::boltDamageEr(max_hp, mc_damage);
-    int32_t engine = 0;
-    if (wanted > 0 && overrideFinalDamage(ctx, ctx_attacker, ctx_victim, wanted, &engine)) {
-        Log("ARROW: the player's shot hit %p: engine %d -> MC %.1f = %d (victim max hp %d)", reinterpret_cast<void*>(victim), engine, mc_damage, wanted, max_hp);
-    }
+    eldenring::combat::CombatService::Instance().handleProjectileHit(
+        module, attacker, ctx, g_feedback, eldenring::RuntimeContext::Instance());
 }
 
 std::atomic<uint64_t> g_guard_sound_ms{0};
 std::atomic<bool> g_knockdown_fix{true};
 
 void DrainOnce(uintptr_t updating_data_module) {
-    DrainContext c;
-    c.reader = &g_reader;
-    c.image_base = g_img.base;
-    c.on_game_thread = true;
-    c.tick = NowTick();
-    c.updating_data_module = updating_data_module;
-    c.require_victim_updating = g_require_victim_updating.load();
-    c.hit_template = g_template ? &*g_template : nullptr;
-    c.allow_neutral = true;
-    if (g_los_enabled.load()) c.line_of_sight = PlayerCanSee;
-    c.max_per_drain = 1;
-    c.expire_after_ticks = 60 * 5;
-    c.invoke = [](uintptr_t dmg, uintptr_t attacker, void* ctx) {
-        uint64_t owner = 0;
-        SafeCopy(dmg + layout::kOwnerInDataModule, &owner, sizeof(owner));
-        const int32_t before = HpOf(static_cast<uintptr_t>(owner));
-        int32_t wanted = 0;
-        std::memcpy(&wanted, static_cast<uint8_t*>(ctx) + layout::kHitDamage, sizeof(wanted));
-        if (g_pdc_hooked.load()) {
-            t_forced = ForcedDamage{};
-            t_forced.armed = true;
-            t_forced.attacker = attacker;
-            t_forced.victim = owner;
-            t_forced.value = wanted;
-        }
-        float kb_before = 0.f;
-        const float kb_force = g_kb_force.load();
-        if (kb_force >= 0.f) {
-            kb_before = setKnockbackStrength(static_cast<uint8_t*>(ctx), kb_force);
-            Log("KNOCKBACK: ctx+0xFC %.2f -> %.2f", kb_before, kb_force);
-        }
-        const bool ok = CallVfunc7(dmg, attacker, ctx);
-        if (kb_force >= 0.f) {
-            float kb_after = 0.f;
-            int32_t out = 0;
-            std::memcpy(&kb_after, static_cast<uint8_t*>(ctx) + layout::kHitKnockbackIn, sizeof(kb_after));
-            std::memcpy(&out, static_cast<uint8_t*>(ctx) + layout::kHitKnockbackOut, sizeof(out));
-            Log("KNOCKBACK: after the call ctx+0xFC=%.2f ctx+0x230=%d", kb_after, out);
-        }
-        const ForcedDamage forced = t_forced;
-        t_forced = ForcedDamage{};
-        const int32_t after = HpOf(static_cast<uintptr_t>(owner));
-        t_hp_after = after;
-        if (g_pdc_hooked.load()) {
-            Log("DAMAGE: wanted=%d engine=%d override=%s hp delta=%d", wanted, forced.engine_value, forced.applied ? "applied" : "NOT applied",
-                before - after);
-        }
-        uint32_t computed = 0;
-        std::memcpy(&computed, static_cast<uint8_t*>(ctx) + layout::kHitDamage, sizeof(computed));
-        if (!ok) {
-            g_damage_enabled.store(false);
-            Log("DAMAGE: vfunc[7] raised an exception on chr=%p, damage disabled", reinterpret_cast<void*>(owner));
-        } else {
-            Log("DAMAGE: vfunc[7] chr=%p hp %d -> %d (ctx+0x228 now %u) tid=%lu", reinterpret_cast<void*>(owner), before, after, computed,
-                GetCurrentThreadId());
-        }
-    };
-    t_hp_after = -1;
-    for (const DamageResult& r : g_queue.drain(c)) {
-        if (r.outcome == DamageOutcome::Applied) {
-            std::lock_guard<std::mutex> g(g_melee_mutex);
-            g_feedback.onHit((r.request.tag & 1u) != 0);
-            // Minecraft's melee sounds: crit, sweep, otherwise strong (charged) or weak. A swing that hits nothing is silent.
-            {
-                // Minecraft's hit particles at the victim's chest: damage hearts (floor(damage * 0.5)), crit stars, the sweep arc.
-                float vpos[3];
-                if (detail::readPhysicsPosition(g_reader, g_img.base, r.request.victim_chr, vpos)) {
-                    vpos[1] += 1.0f;
-                    const int hearts = static_cast<int>((r.request.tag >> 8) & 0xFFu) / 2;
-                    if (hearts > 0) erov::SpawnFx(erov::FxKind::Damage, vpos, hearts);
-                    if (r.request.tag & 1u) erov::SpawnFx(erov::FxKind::Crit, vpos, 0);
-                    if (r.request.tag & 2u) erov::SpawnFx(erov::FxKind::Sweep, vpos, 0);
-                }
-            }
-            eraudio::Play((r.request.tag & 1u) ? "entity.player.attack.crit"
-                          : (r.request.tag & 2u) ? "entity.player.attack.sweep"
-                          : (r.request.tag & 4u) ? "entity.player.attack.strong"
-                                                 : "entity.player.attack.weak");
-            if (t_hp_after == 0) { // HP is clamped to [0, max]; -1 means unreadable, not a kill
-                g_feedback.onKill();
-                Vitals victim;
-                const int xp = xpForKill(readVitals(g_reader, g_img.base, r.request.victim_chr, victim) ? victim.max_hp : 0);
-                const int ups = g_xp.add(xp);
-                eraudio::Play(ups > 0 ? "entity.player.levelup" : "entity.experience_orb.pickup", 0.7f);
-                Log("XP: +%d (level %d, %.0f%%)%s", xp, g_xp.level(), g_xp.progress() * 100.f, ups > 0 ? " LEVEL UP" : "");
-            }
-        }
-        if (r.outcome == DamageOutcome::NoLineOfSight) ++g_los_blocked;
-        if (r.outcome != DamageOutcome::Applied) {
-            Log("DAMAGE: request chr=%p -> %s", reinterpret_cast<void*>(r.request.victim_chr), OutcomeName(r.outcome));
-        }
-    }
+    eldenring::combat::CombatService::Instance().drainDamageQueue(
+        g_queue, g_template ? &*g_template : nullptr, updating_data_module, NowTick(),
+        g_melee.inventory(), g_feedback, g_xp, eldenring::RuntimeContext::Instance());
 }
-
-// Experiment (mc_er_summon.txt + F2): asks the ash manager for a Wolf Pack summon the way the item code does (tablet id and
-// request together). Runs on the game thread. Logs the manager before and after, so a failure is visible either way.
-bool ReadFileAll(const std::string& path, std::vector<uint8_t>& out); // defined below
-void LogPlayerPoseForBuddy(); // defined below
 
 void RunSummonExperiment() {
     // Deprecated: CSBuddyMan spirit ash pipeline is completely replaced by client-managed VirtualSummonManager.
     // Intentionally no-op to eliminate all native Dismiss crashing.
 }
 
-void RunBulletFire(); // defined with the spawn_bullet logger below
-bool QueueBulletFire(float mc_damage); // the same: called from the key thread
-void AimCalTick();                      // the same: reads where a shot really flies (mc_er_aimcal.txt)
-
+bool QueueBulletFire(float mc_damage);
+void AimCalTick();
 
 void EnqueueNearestHostile() {
-    const uintptr_t player = PlayerChrPtr();
-    float feet[3] = {};
-    if (player != 0) detail::readPhysicsPosition(g_reader, g_img.base, player, feet);
-    const auto res = EntityManager::instance().findNearestHostileWithFallback(25.0f, g_reader, g_img.base, NowTick(), feet);
-    if (!res.found) {
-        Log("F8: no hostile enemy within 25 m");
-        return;
-    }
-    const float best_d = std::sqrt(res.info.rel_x * res.info.rel_x + res.info.rel_y * res.info.rel_y + res.info.rel_z * res.info.rel_z);
-    const bool ok = g_queue.enqueue(res.info.chr, 50, NowTick());
-    Log("F8: queued 50 on chr=%p npc=%d team=%u hp=%d dist=%.1f m (%s)", reinterpret_cast<void*>(res.info.chr), res.info.npc_id,
-        static_cast<unsigned>(res.info.team), res.info.hp, best_d, ok ? "ok" : "queue full");
+    eldenring::combat::CombatService::Instance().enqueueNearestHostile(g_queue, NowTick());
 }
 
 // MC left click: the hostile enemy under the crosshair, in melee reach.
 void ClickAttack(float charged) {
-    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
-    if (world == 0) return;
-    CameraPose cam;
-    uint64_t player = 0;
-    float feet[3];
-    if (!readCamera(g_reader, g_img.base, world, cam) || !SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) ||
-        player == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(player), feet)) {
-        Log("click: no camera or player");
-        return;
-    }
-    const float cam_rel[3] = {cam.position[0] - feet[0], cam.position[1] - feet[1], cam.position[2] - feet[2]};
-    const auto pick_res = EntityManager::instance().pickTargetWithFallback(cam_rel, cam.forward, g_reader, g_img.base, NowTick(), feet);
-    const int idx = pick_res.index;
-    const auto& list = pick_res.list;
-    if (idx < 0) {
-        int near_count = 0;
-        char detail_buf[512];
-        int dn = snprintf(detail_buf, sizeof(detail_buf), "[");
-        for (const EnemyInfo& e : list) {
-            const float d = std::sqrt(e.rel_x * e.rel_x + e.rel_y * e.rel_y + e.rel_z * e.rel_z);
-            if (d > 8.f || near_count >= 5) continue;
-            ++near_count;
-            const float c[3] = {e.rel_x - cam_rel[0], e.rel_y + 1.f - cam_rel[1], e.rel_z - cam_rel[2]};
-            const float t = c[0] * cam.forward[0] + c[1] * cam.forward[1] + c[2] * cam.forward[2];
-            const float q[3] = {c[0] - cam.forward[0] * t, c[1] - cam.forward[1] * t, c[2] - cam.forward[2] * t};
-            dn += snprintf(detail_buf + dn, sizeof(detail_buf) - static_cast<size_t>(dn),
-                           " (%s npc=%d team=%u dist=%.1f t=%.1f off-ray=%.1f)",
-                           e.hostile ? "H" : "N", e.npc_id, static_cast<unsigned>(e.team), d, t,
-                           std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]));
-        }
-        snprintf(detail_buf + dn, sizeof(detail_buf) - static_cast<size_t>(dn), " ]");
-        Log("click: no target (cam_rel %.1f %.1f %.1f, fwd %.2f %.2f %.2f, entities<=8m: %s)", cam_rel[0], cam_rel[1], cam_rel[2],
-            cam.forward[0], cam.forward[1], cam.forward[2], detail_buf);
-        return;
-    }
-    const EnemyInfo& e = list[static_cast<size_t>(idx)];
-    const bool falling = g_jump.jumping();
-    mc::ItemId held;
-    mc::HitIntent intent;
-    {
-        std::lock_guard<std::mutex> g(g_melee_mutex);
-        held = g_melee.heldItem();
-        intent = g_melee.makeIntent(g_combat_engine, mc::EntityId::LocalPlayer, mc::EntityId::None, charged, falling, !falling,
-                                    {}, {cam.forward[0], cam.forward[1], cam.forward[2]});
-    }
-    const float dmg_scale = g_damage_scale.load();
-    const float hp_pct = g_damage_hp_percent.load();
-    const int dmg = erDamage(intent, e.max_hp, dmg_scale, hp_pct);
-    const bool ok = dmg > 0 && g_queue.enqueue(e.chr, dmg, NowTick(), (intent.is_critical ? 1u : 0u) | (intent.is_sweeping ? 2u : 0u) | (charged > 0.848f ? 4u : 0u) |
-                                                          (static_cast<uint32_t>(std::min(255.f, std::floor(intent.damage))) << 8));
-    Log("click: item=%d charged=%.2f falling=%d crit=%d sweep=%d mc_dmg=%.2f -> %d on chr=%p npc=%d team=%u (%s) hp=%d/%d (%s)", static_cast<int>(held),
-        charged, falling ? 1 : 0, intent.is_critical ? 1 : 0, intent.is_sweeping ? 1 : 0, intent.damage, dmg,
-        reinterpret_cast<void*>(e.chr), e.npc_id, static_cast<unsigned>(e.team), e.hostile ? "hostile" : "neutral", e.hp, e.max_hp, ok ? "ok" : "not queued");
-
-    if (intent.is_sweeping) {
-        int sweep_count = 0;
-        const float r_max = g_sweep_radius.load();
-        const float r2_max = r_max * r_max;
-        for (size_t i = 0; i < list.size(); ++i) {
-            if (i == static_cast<size_t>(idx)) continue;
-            const EnemyInfo& sec = list[i];
-            if (!sec.hostile || sec.chr == 0 || sec.hp <= 0) continue;
-            const float dx = sec.rel_x - e.rel_x;
-            const float dy = sec.rel_y - e.rel_y;
-            const float dz = sec.rel_z - e.rel_z;
-            if (dx * dx + dy * dy + dz * dz <= r2_max) {
-                mc::HitIntent sweep_intent = intent;
-                sweep_intent.damage = std::max(1.0f, intent.damage * 0.4f);
-                sweep_intent.is_sweeping = true;
-                const int sec_dmg = erDamage(sweep_intent, sec.max_hp, dmg_scale, hp_pct);
-                if (sec_dmg > 0) {
-                    const uint32_t sec_tag = 2u | (static_cast<uint32_t>(std::min(255.f, std::floor(sweep_intent.damage))) << 8);
-                    if (g_queue.enqueue(sec.chr, sec_dmg, NowTick(), sec_tag)) {
-                        ++sweep_count;
-                    }
-                }
-            }
-        }
-        if (sweep_count > 0) {
-            Log("click: sweep splash hit %d secondary targets within %.1fm", sweep_count, r_max);
-        }
-    }
+    eldenring::combat::CombatService::Instance().clickAttack(
+        charged, g_melee, g_combat_engine, g_queue, eldenring::RuntimeContext::Instance());
 }
 
 // Should the native character ignore the mouse buttons right now? Only while the MC HUD is on and the game shows no UI.
@@ -1132,6 +800,7 @@ bool PlayerAirborne() {
 }
 
 bool FileExists(const std::string& path); // defined below
+bool ReadFileAll(const std::string& path, std::vector<uint8_t>& out);
 
 // Diagnostic: +0x70 (position), +0x80 and +0x120 of the player's physics module, twice a second while moving. Answers whether
 // +0x80 is the previous position (fromsoftware-rs: last_update_position) or a velocity (reverser 2026-10-09).
@@ -1878,178 +1547,35 @@ bool SpawnBulletSafe(void* manager, uint32_t* out_handle, void* request, void* c
     return eldenring::hooks::GameHooks::Instance().callSpawnBullet(manager, out_handle, request, ctx) != nullptr;
 }
 
-// ---- aim calibration (read-only, switch file mc_er_aimcal.txt) ---------------------------------------------------------------------------------------------
-// Where does a shot really fly? 500 and 1000 ms after a shot the bullet's CSBulletIns (the object [manager+0x0] follows: position at +0x10, quaternion at +0x20,
-// REVERSE 35.8) is read and the flight direction is compared with the aim we gave, the camera and the player's body (AIMCAL, AIMCAL-YAWS). Only an isolated
-// shot (no other shot in the 4 s before) can be trusted: with several bullets in the air the object follows another one. Game thread only.
-struct AimCal {
-    bool active{false};
-    uintptr_t manager{0};
-    uint32_t handle{0};
-    float aim[3]{};
-    uint64_t t0_ms{0};
-    int samples{0};
-    bool isolated{true};
-    bool have_cam{false};
-    bool have_body{false};
-    float body_yaw_raw_deg{0.f}, body_yaw_deg{0.f}; // the player's facing at the shot: from the physics orientation, raw and with the figure's offset
-    float cam_forward[3]{};                         // the camera's forward at the shot
-    bool have2{false};
-    float pos2[3]{}, q2[4]{};                       // the bullet object at 500 ms
-};
-AimCal g_aimcal;
-
 void AimCalStart(uint64_t manager, uint32_t handle, const float dir[3]) {
-    if (!FileExists(g_game_dir + "mc_er_aimcal.txt")) return;
-    g_aimcal = AimCal{};
-    g_aimcal.manager = static_cast<uintptr_t>(manager);
-    g_aimcal.handle = handle;
-    std::memcpy(g_aimcal.aim, dir, sizeof(g_aimcal.aim));
-    g_aimcal.t0_ms = GetTickCount64();
-    static uint64_t s_prev_start_ms = 0;
-    g_aimcal.isolated = g_aimcal.t0_ms - s_prev_start_ms > 4000;
-    s_prev_start_ms = g_aimcal.t0_ms;
-    g_aimcal.active = true;
-    {
-        CameraPose cam;
-        const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
-        if (world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
-            std::memcpy(g_aimcal.cam_forward, cam.forward, sizeof(g_aimcal.cam_forward));
-            g_aimcal.have_cam = true;
-        }
-    }
-    {
-        float q[4];
-        const uintptr_t player = PlayerChrPtr();
-        if (player != 0 && detail::readPhysicsOrientation(g_reader, g_img.base, player, q)) {
-            const float raw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]);
-            g_aimcal.body_yaw_raw_deg = raw * 180.f / 3.14159265f;
-            g_aimcal.body_yaw_deg = (raw + g_steve_yaw_offset) * 180.f / 3.14159265f;
-            g_aimcal.have_body = true;
-        }
-    }
+    eldenring::combat::CombatService::Instance().aimCalStart(manager, handle, dir);
 }
 
 void AimCalTick() {
-    if (!g_aimcal.active || GetCurrentThreadId() != g_game_tid.load(std::memory_order_relaxed)) return;
-    const uint64_t since = GetTickCount64() - g_aimcal.t0_ms;
-    if (since < 250u * static_cast<uint64_t>(g_aimcal.samples + 1)) return;
-    ++g_aimcal.samples;
-    auto read_bullet = [&](float pos[3], float q[4]) {
-        uint64_t obj = 0;
-        return SafeCopy(g_aimcal.manager, &obj, sizeof(obj)) && obj != 0 && SafeCopy(static_cast<uintptr_t>(obj) + 0x10, pos, 12) &&
-               SafeCopy(static_cast<uintptr_t>(obj) + 0x20, q, 16);
-    };
-    if (g_aimcal.samples == 2) g_aimcal.have2 = read_bullet(g_aimcal.pos2, g_aimcal.q2);
-    if (g_aimcal.samples < 4) return;
-    g_aimcal.active = false;
-    float pos4[3], q4[4];
-    if (!g_aimcal.have2 || !read_bullet(pos4, q4)) return;
-    const float flight[3] = {pos4[0] - g_aimcal.pos2[0], pos4[1] - g_aimcal.pos2[1], pos4[2] - g_aimcal.pos2[2]};
-    const float moved = std::sqrt(flight[0] * flight[0] + flight[1] * flight[1] + flight[2] * flight[2]);
-    float qf[3];
-    eldenring::bow::quatForward(q4, qf);
-    const eldenring::bow::AimError by_motion = eldenring::bow::aimError(g_aimcal.aim, flight);
-    const eldenring::bow::AimError by_quat = eldenring::bow::aimError(g_aimcal.aim, qf);
-    if (g_aimcal.have_cam) {
-        const eldenring::bow::AimError req_vs_cam = eldenring::bow::aimError(g_aimcal.cam_forward, g_aimcal.aim);
-        Log("AIMCAL: the aim is yaw %+.1f pitch %+.1f deg from the camera's forward at the shot (for a real shot: what the game's own request does)", req_vs_cam.yaw_deg, req_vs_cam.pitch_deg);
-    }
-    const float fy_abs = std::atan2(qf[0], qf[2]) * 180.f / 3.14159265f;
-    const float cam_yaw = g_aimcal.have_cam ? std::atan2(g_aimcal.cam_forward[0], g_aimcal.cam_forward[2]) * 180.f / 3.14159265f : 0.f;
-    const float aim_yaw = std::atan2(g_aimcal.aim[0], g_aimcal.aim[2]) * 180.f / 3.14159265f;
-    const float body = g_aimcal.have_body ? g_aimcal.body_yaw_deg : 0.f, body_raw = g_aimcal.have_body ? g_aimcal.body_yaw_raw_deg : 0.f;
-    Log("AIMCAL: %s aim=(%.3f %.3f %.3f); moved %.1f m in 0.5 s; flight by motion: yaw %+.1f pitch %+.1f deg off the aim; by quaternion: yaw %+.1f pitch %+.1f",
-        g_aimcal.isolated ? "ISOLATED" : "overlapping (do not trust)", g_aimcal.aim[0], g_aimcal.aim[1], g_aimcal.aim[2], moved, by_motion.yaw_deg, by_motion.pitch_deg, by_quat.yaw_deg,
-        by_quat.pitch_deg);
-    Log("AIMCAL-YAWS: flight %+.1f | the aim given %+.1f | camera %+.1f | player body %+.1f (raw %+.1f) | flight minus body %+.1f, minus raw body %+.1f, minus camera %+.1f", fy_abs, aim_yaw,
-        cam_yaw, body, body_raw, fy_abs - body, fy_abs - body_raw, fy_abs - cam_yaw);
+    eldenring::combat::CombatService::Instance().aimCalTick();
 }
 
-
-// One shot of our own on the game thread: the player's real request (this session's or the file's) with the aim and the origin replaced. r9 is only
-// the pointer the game writes a status code to (REVERSE 35.3), so a zeroed buffer is enough.
 void RunBulletFire() {
-    alignas(16) uint8_t real[eldenring::bullet::kFullRequestBytes];
-    auto& combat_svc = eldenring::combat::CombatService::Instance();
-    if (!combat_svc.hasValidBulletTemplate()) {
-        Log("bullet fire: no template yet, fire one real crossbow bolt first");
-        return;
-    }
-    combat_svc.getBulletTemplate(real);
-    uint64_t manager = 0;
-    const uintptr_t player = PlayerChrPtr();
-    uint64_t handle = 0;
-    CameraPose cam;
-    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
-    if (!SafeCopy(g_img.base + 0x3D667A8, &manager, sizeof(manager)) || manager == 0 || player == 0 || !SafeCopy(player + 8, &handle, sizeof(handle)) ||
-        world == 0 || !readCamera(g_reader, g_img.base, world, cam)) {
-        Log("bullet fire: the manager, the player or the camera cannot be read");
-        return;
-    }
-    eldenring::bullet::FireParams fp;
-    fp.owner = handle;
-    std::memcpy(&fp.row_id, real + 8, sizeof(fp.row_id));
-    std::memcpy(&fp.flags, real + 0x44, sizeof(fp.flags)); // a real shot has 0x09: bit 0 is kept (the replay with 0x08 flew along the body, not the matrix)
-    fp.flags |= 0x08u;     // bit 3 must be set or spawn_bullet returns early
-    fp.flags &= ~0x02u;    // bit 1 must be clear (the game would overwrite our matrix with a skeleton one)
-    // The matrix is built from the camera's forward alone, the way a real request's matrix is (right = up x forward, up = forward x right, right x up = forward).
-    // NOTE: the game does not fly the replayed bolt along this matrix but along the shooter's body yaw + 30 degrees (REVERSE 35.11); the aim is still sent in full.
-    float basis_right[3], basis_up[3];
-    eldenring::bow::buildBasis(cam.forward, basis_right, basis_up);
-    std::memcpy(fp.right, basis_right, sizeof(fp.right));
-    std::memcpy(fp.up, basis_up, sizeof(fp.up));
-    std::memcpy(fp.forward, cam.forward, sizeof(fp.forward));
-    eldenring::bullet::muzzle(cam.position, cam.forward, 0.8f, fp.position);
-    fp.attach_poly = g_bolt_attach_poly.load();
-    const std::vector<uint8_t> built = eldenring::bullet::buildFireRequest(real, sizeof(real), fp);
-    if (built.size() != eldenring::bullet::kFullRequestBytes) {
-        Log("bullet fire: the template is unusable");
-        return;
-    }
-    alignas(16) uint8_t req[eldenring::bullet::kFullRequestBytes];
-    alignas(16) uint8_t status[64] = {};
-    std::memcpy(req, built.data(), sizeof(req));
-    uint32_t out = 0xFFFFFFFFu;
-    const float shot_damage = g_pending_shot_damage.load();
-    g_last_shot_damage.store(shot_damage, std::memory_order_relaxed);
-    g_last_bullet_id.store(eldenring::bullet::kBoltBulletId, std::memory_order_relaxed); // our crossbow bolt: the marker for the hit handler, whatever +0x1C holds
-    const uint64_t shot_now = GetTickCount64();
-    g_last_bullet_tick_ms.store(shot_now, std::memory_order_relaxed);
-    g_last_shot_ms.store(shot_now, std::memory_order_relaxed);
-    for (int i = 0; i < 3; ++i) g_last_shot_pos[i].store(fp.position[i], std::memory_order_relaxed);
-    t_our_bullet_fire = true;
-    const bool ok = SpawnBulletSafe(reinterpret_cast<void*>(manager), &out, req, status);
-    t_our_bullet_fire = false;
-    uint32_t code = 0;
-    std::memcpy(&code, status, sizeof(code));
-    Log("bullet fire: MC damage %.1f param row 0x%08X +0x1C(dummy poly)=%d flags=0x%X from (%.2f %.2f %.2f) along (%.3f %.3f %.3f) tid=%lu -> %s handle 0x%08X status %u -> %s", shot_damage, *reinterpret_cast<uint32_t*>(req + 8),
-        *reinterpret_cast<int32_t*>(req + 0x1C), fp.flags, fp.position[0], fp.position[1], fp.position[2], fp.forward[0], fp.forward[1], fp.forward[2],
-        static_cast<unsigned long>(GetCurrentThreadId()), ok ? "returned" : "FAULTED", out, code, !ok ? "FAULT" : (eldenring::bullet::spawnFailed(out) ? "REFUSED" : "spawned"));
-    if (ok && !eldenring::bullet::spawnFailed(out)) AimCalStart(manager, out, cam.forward); // the intended aim: AIMCAL shows how far the flight is from it
+    eldenring::combat::CombatService::Instance().runBulletFire(g_ctx);
 }
 
 bool QueueBulletFire(float mc_damage) {
-    if (!g_bullet_fire_enabled.load()) return false;
-    if (!eldenring::combat::CombatService::Instance().hasValidBulletTemplate()) {
-        Log("bullet fire: no template yet (mc_er_bullet.bin), fire one real crossbow bolt first");
-        return false;
-    }
-    const uint64_t now = GetTickCount64();
-    if (now - g_last_bullet_fire_ms.load(std::memory_order_relaxed) < 400) return false;
-    g_last_bullet_fire_ms.store(now);
-    g_pending_shot_damage.store(mc_damage);
-    g_bullet_fire_pending.store(true);
-    return true;
+    return eldenring::combat::CombatService::Instance().queueBulletFire(mc_damage, g_ctx);
 }
 
 void SetupBulletLog() {
-    g_proj_log.store(FileExists(g_game_dir + "mc_er_bulletlog.txt"));
-    g_arrow_damage.store(FileExists(g_game_dir + "mc_er_arrowdmg.txt"));
-    if (g_arrow_damage.load()) Log("bullet: mc_er_arrowdmg.txt: the player's bolts do MC bolt damage (9, balanced like the diamond sword)");
-    g_bullet_fire_enabled.store(FileExists(g_game_dir + "mc_er_bulletfire.txt"));
-    if (g_bullet_fire_enabled.load()) LoadBulletTemplate();
-    if (!g_bullet_fire_enabled.load() && !FileExists(g_game_dir + "mc_er_bulletlog.txt")) return;
+    const bool proj_log = FileExists(g_game_dir + "mc_er_bulletlog.txt");
+    const bool arrow_dmg = FileExists(g_game_dir + "mc_er_arrowdmg.txt");
+    const bool fire_enabled = FileExists(g_game_dir + "mc_er_bulletfire.txt");
+    g_proj_log.store(proj_log);
+    g_arrow_damage.store(arrow_dmg);
+    g_bullet_fire_enabled.store(fire_enabled);
+    eldenring::combat::CombatService::Instance().setAimCalEnabled(FileExists(g_game_dir + "mc_er_aimcal.txt"));
+    eldenring::combat::CombatService::Instance().setArrowDamage(arrow_dmg);
+    eldenring::combat::CombatService::Instance().setBulletFireEnabled(fire_enabled);
+    if (arrow_dmg) Log("bullet: mc_er_arrowdmg.txt: the player's bolts do MC bolt damage (9, balanced like the diamond sword)");
+    if (fire_enabled) LoadBulletTemplate();
+    if (!fire_enabled && !proj_log) return;
     uintptr_t target = 0;
     if (!EnsureMinHook()) {
         Log("bullet: MH_Initialize failed, the request logger is not installed");
@@ -2060,7 +1586,7 @@ void SetupBulletLog() {
     } else {
         Log("bullet: spawn_bullet request logger at %p (RVA 0x%llX): the first 40 requests are written here%s", reinterpret_cast<void*>(target),
             static_cast<unsigned long long>(target - g_img.base),
-            g_bullet_fire_enabled.load() ? "; mc_er_bulletfire.txt: F3 shoots one bolt of ours from the saved template (a real crossbow shot creates or updates it)" : " (read-only)");
+            fire_enabled ? "; mc_er_bulletfire.txt: F3 shoots one bolt of ours from the saved template (a real crossbow shot creates or updates it)" : " (read-only)");
     }
 }
 
@@ -2123,18 +1649,18 @@ void SetupGameHooksCallbacks() {
     };
 
     cb.player_hit_survival = [](void* mod, void* atk, uint8_t* ctx, uint8_t a5, uint32_t& heal_to) -> bool {
-        if (t_forced.armed) return false;
+        if (eldenring::combat::CombatService::Instance().isForcedDamageArmed()) return false;
         return PlayerHitSurvival(mod, atk, ctx, a5, heal_to);
     };
 
     cb.log_player_hit = [](void* mod, void* atk, uint8_t* ctx, uint8_t a5) {
-        if (!t_forced.armed && g_log_player_hits.load(std::memory_order_relaxed)) {
+        if (!eldenring::combat::CombatService::Instance().isForcedDamageArmed() && g_log_player_hits.load(std::memory_order_relaxed)) {
             LogPlayerHit(mod, atk, ctx, a5);
         }
     };
 
     cb.handle_projectile_hit = [](void* mod, void* atk, uint8_t* ctx) {
-        if (!t_forced.armed && (g_proj_log.load(std::memory_order_relaxed) ||
+        if (!eldenring::combat::CombatService::Instance().isForcedDamageArmed() && (g_proj_log.load(std::memory_order_relaxed) ||
                                 g_arrow_damage.load(std::memory_order_relaxed) ||
                                 g_bullet_fire_enabled.load(std::memory_order_relaxed))) {
             HandleProjectileHit(mod, atk, ctx);
@@ -2142,9 +1668,7 @@ void SetupGameHooksCallbacks() {
     };
 
     cb.handle_forced_damage = [](uint8_t* ctx) {
-        if (t_forced.armed && !t_forced.applied) {
-            t_forced.applied = overrideFinalDamage(ctx, t_forced.attacker, t_forced.victim, t_forced.value, &t_forced.engine_value);
-        }
+        eldenring::combat::CombatService::Instance().handleForcedDamage(ctx);
     };
 
     cb.override_final_damage = [](uint8_t* ctx, uintptr_t atk, uintptr_t vic, int val, int* eng_val) -> bool {
@@ -2251,27 +1775,14 @@ void SetupGameHooksCallbacks() {
     };
 
     cb.on_spawn_bullet = [](const void* request) {
-        if (!t_our_bullet_fire) {
-            uint32_t id = 0;
-            if (request != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(request) + 0x1C, &id, sizeof(id));
-            g_last_bullet_id.store(id, std::memory_order_relaxed);
-            g_last_shot_damage.store(eldenring::bullet::kCrossbowDamage, std::memory_order_relaxed);
-            const uint64_t shot_now = GetTickCount64();
-            g_last_bullet_tick_ms.store(shot_now, std::memory_order_relaxed);
-            g_last_shot_ms.store(shot_now, std::memory_order_relaxed);
-            float pos[3];
-            if (request != nullptr && SafeCopy(reinterpret_cast<uintptr_t>(request) + 0x80, pos, sizeof(pos))) {
-                for (int i = 0; i < 3; ++i) g_last_shot_pos[i].store(pos[i], std::memory_order_relaxed);
-            }
-        }
-        if (g_bullet_fire_enabled.load(std::memory_order_relaxed)) RecordBulletTemplate(request);
+        eldenring::combat::CombatService::Instance().onSpawnBullet(request);
     };
 
     cb.on_spawn_bullet_post = [](void* manager, void* request, void* r9, uint32_t* out_handle) {
         uint32_t handle = 0xFFFFFFFFu;
         if (out_handle != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(out_handle), &handle, sizeof(handle));
         LogBulletRequest(manager, request, r9, nullptr, handle);
-        if (!eldenring::bullet::spawnFailed(handle) && !g_aimcal.active) {
+        if (!eldenring::bullet::spawnFailed(handle) && !eldenring::combat::CombatService::Instance().aimCalState().active) {
             uint8_t req[eldenring::bullet::kRequestBytes] = {};
             if (SafeCopy(reinterpret_cast<uintptr_t>(request), req, sizeof(req))) {
                 const eldenring::bullet::Fields f = eldenring::bullet::decode(req, sizeof(req));
@@ -2454,7 +1965,7 @@ void SetupDamage() {
         if (!LocateByPrefix(g_img, sigs::kRaycastWrapper, ray)) {
             Log("los: raycast wrapper signature not unique, walls do not block hits");
         } else {
-            g_raycast = reinterpret_cast<RaycastFn>(ray);
+            eldenring::combat::CombatService::Instance().setRaycastFn(reinterpret_cast<RaycastFn>(ray));
             g_los_enabled.store(true);
             Log("los: raycast wrapper at %p (RVA 0x%llX), filter 0x%X, walls block hits", reinterpret_cast<void*>(ray),
                 static_cast<unsigned long long>(ray - g_img.base), los::kStaticGeometryFilter);
@@ -2739,7 +2250,7 @@ void SetupOverlay() {
                 else if (key == "no_player_hit_vfx") g_no_player_hit_vfx.store(value != 0.f);
                 else if (key == "first_person") g_first_person.store(value != 0.f);
                 else if (key == "shadow") g_shadow_enabled.store(value != 0.f);
-                else if (key == "bolt_attach_poly") g_bolt_attach_poly.store(static_cast<int>(value));
+                else if (key == "bolt_attach_poly") eldenring::combat::CombatService::Instance().setBoltAttachPoly(static_cast<int>(value));
                 else if (key == "eye_height") g_eye_height.store(value);
                 else if (key == "fall_reset") g_fall_reset.store(value != 0.f);
                 else if (key == "fall_hold") g_fall_hold.store(std::clamp(value, 0.f, 2.8f));
@@ -2954,6 +2465,17 @@ void SetupCombat() {
     cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
     cb.reader = &g_reader;
     cb.image_base = g_img.base;
+    cb.get_game_tid = []() -> uint32_t { return g_game_tid.load(std::memory_order_relaxed); };
+    cb.spawn_bullet = [](void* manager, uint32_t* out_handle, const void* req, void* status) -> bool {
+        return SpawnBulletSafe(manager, out_handle, const_cast<void*>(req), status);
+    };
+    cb.override_final_damage = [](uint8_t* ctx, uintptr_t atk, uintptr_t vic, int val, int* eng_val) -> bool {
+        return overrideFinalDamage(ctx, atk, vic, val, eng_val);
+    };
+    cb.is_falling = PlayerAirborne;
+    cb.file_exists = [](const std::string& path) -> bool {
+        return FileExists(g_game_dir + path);
+    };
     eldenring::combat::CombatService::Instance().setCallbacks(cb);
 }
 
