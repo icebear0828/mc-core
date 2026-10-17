@@ -29,6 +29,9 @@
 #ifndef VK_RBUTTON
 #define VK_RBUTTON 0x02
 #endif
+#ifndef VK_F1
+#define VK_F1 0x70
+#endif
 #ifndef VK_F2
 #define VK_F2 0x71
 #endif
@@ -90,6 +93,7 @@ void HotkeyDispatcher::resetKeyStates() {
     prev4_ = false;
     prev_f3_ = false;
     prev_f2_ = false;
+    prev_f1_ = false;
     prev_gameplay_f_ = false;
 }
 
@@ -313,21 +317,51 @@ void HotkeyDispatcher::tick(float dt) {
         }
     }
 
-    // F key (swap offhand) & Digits 1-9 (slot select)
+    // CS Knife animation timer advance
+    if (mode.cs_mode.load()) {
+        const uint8_t state = mode.cs_knife_state.load();
+        const float t = mode.cs_knife_anim_time.load() + dt;
+        float max_t = 0.5f;
+        if (state == 1) max_t = 3.0f;       // Inspect
+        else if (state == 2) max_t = 0.5f;  // Slash
+        else if (state == 3) max_t = 0.6f;  // Backstab
+        else if (state == 4) max_t = 0.8f;  // Deploy
+        if (state != 0 && t >= max_t) {
+            mode.cs_knife_state.store(0); // Return to Idle
+            mode.cs_knife_anim_time.store(0.f);
+        } else {
+            mode.cs_knife_anim_time.store(t);
+        }
+    }
+
+    // F key (inspect in CS mode / swap offhand in MC) & Digits 1-9 (slot select / deploy)
     if (fg && !inv_open && want_suppress) {
         const bool f_down = queryKey('F');
         if (f_down && !prev_gameplay_f_) {
-            std::lock_guard<std::mutex> g(combat.melee_mutex);
-            combat.melee.inventory().swapMainAndOffhand(combat.melee.selectedSlot());
-            if (cb_.log) cb_.log("inventory: swapped main and offhand via F key");
+            if (mode.cs_mode.load()) {
+                mode.cs_knife_state.store(1); // Inspect!
+                mode.cs_knife_anim_time.store(0.f);
+                if (cb_.play_sound) cb_.play_sound("cs.knife.inspect", 1.0f);
+                if (cb_.log) cb_.log("CS: Butterfly Knife Inspect (Flower Spin)");
+            } else {
+                std::lock_guard<std::mutex> g(combat.melee_mutex);
+                combat.melee.inventory().swapMainAndOffhand(combat.melee.selectedSlot());
+                if (cb_.log) cb_.log("inventory: swapped main and offhand via F key");
+            }
         }
         prev_gameplay_f_ = f_down;
 
         for (int i = 0; i < 9; ++i) {
             const bool d = queryKey('1' + i);
             if (d && !prev_digit_[i]) {
-                std::lock_guard<std::mutex> g(combat.melee_mutex);
-                combat.melee.select(i);
+                if (mode.cs_mode.load() && i < 3) {
+                    mode.cs_knife_state.store(4); // Deploy!
+                    mode.cs_knife_anim_time.store(0.f);
+                    if (cb_.play_sound) cb_.play_sound("cs.knife.deploy", 1.0f);
+                } else {
+                    std::lock_guard<std::mutex> g(combat.melee_mutex);
+                    combat.melee.select(i);
+                }
             }
             prev_digit_[i] = d;
         }
@@ -353,6 +387,19 @@ void HotkeyDispatcher::tick(float dt) {
     const bool left_held = !inv_open && input_enabled && ((cb_.left_held && cb_.left_held()) || queryKey(VK_LBUTTON)) && alive;
     const bool want_suppress_click = (click_edge || left_held) ? want_suppress : false;
 
+    // CS mode knife attack triggers
+    if (mode.cs_mode.load() && fg && alive) {
+        if (click_edge) {
+            mode.cs_knife_state.store(2); // Slash
+            mode.cs_knife_anim_time.store(0.f);
+            if (cb_.play_sound) cb_.play_sound("cs.knife.slash", 1.0f);
+        } else if (right_edge) {
+            mode.cs_knife_state.store(3); // Backstab
+            mode.cs_knife_anim_time.store(0.f);
+            if (cb_.play_sound) cb_.play_sound("cs.knife.hit", 1.0f);
+        }
+    }
+
     const bool mining_consumed = fg && mode.click_attack.load() && want_suppress_click && cb_.step_mining && cb_.step_mining(dt, left_held);
     if (!mining_consumed && click_edge && fg && mode.click_attack.load() && want_suppress_click) {
         float charged = 1.0f;
@@ -367,6 +414,22 @@ void HotkeyDispatcher::tick(float dt) {
     }
 
     // Function keys
+    const bool d1 = fg && queryKey(VK_F1);
+    if (d1 && !prev_f1_) {
+        const bool new_cs = !mode.cs_mode.load();
+        mode.cs_mode.store(new_cs);
+        if (new_cs) {
+            mode.first_person.store(true);
+            mode.cs_knife_state.store(4); // Deploy
+            mode.cs_knife_anim_time.store(0.f);
+            if (cb_.play_sound) cb_.play_sound("cs.knife.deploy", 1.0f);
+            if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: ACTIVE (Butterfly Knife)");
+        } else {
+            if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: OFF");
+        }
+    }
+    prev_f1_ = d1;
+
     const bool d8 = fg && queryKey(VK_F8);
     if (d8 && !prev8_ && mode.damage_enabled.load() && cb_.enqueue_nearest_hostile) {
         cb_.enqueue_nearest_hostile();

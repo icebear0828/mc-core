@@ -55,6 +55,7 @@ if(WIN32)
         src/loader.cpp
         src/overlay_d3d12.cpp
         src/steve_renderer_d3d12.cpp
+        src/cs_renderer_d3d12.cpp
         src/input_hook.cpp
         src/png_wic.cpp
         src/audio_xaudio2.cpp

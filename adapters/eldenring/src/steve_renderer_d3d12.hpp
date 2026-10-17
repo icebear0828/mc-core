@@ -59,6 +59,9 @@ public:
 
     // (Re)creates the depth SRV at `slot`; a null resource writes a null descriptor (occlusion must then be off).
     void setDepthView(ID3D12Device* device, ID3D12Resource* depth, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle() const {
+        return dsv_heap_ ? dsv_heap_->GetCPUDescriptorHandleForHeapStart() : D3D12_CPU_DESCRIPTOR_HANDLE{};
+    }
 
     // Calibration (mode 3): histogram of K = depth * view z over the figure's pixels, 64 bins, bin = 8 * log2(K / 0.0005).
     bool readStats(uint32_t out[64]);
