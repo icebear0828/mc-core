@@ -13,8 +13,6 @@
 #include <tlhelp32.h>
 #include <unknwn.h>
 
-#include <MinHook.h>
-
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -93,6 +91,7 @@ namespace flight = eldenring::flight;
 #include "eldenring_debug_probes.hpp"
 #include "eldenring_hud_bridge.hpp"
 #include "eldenring_hotkey_dispatcher.hpp"
+#include "eldenring_game_hooks.hpp"
 
 namespace {
 
@@ -104,6 +103,7 @@ const auto& g_game_dir = eldenring::diagnostics::GetGameDir();
 
 using eldenring::memory::SehGuard;
 using eldenring::memory::SafeCopy;
+using eldenring::memory::SafeWrite;
 using eldenring::memory::SafeWrite8;
 using eldenring::memory::SafeWrite32;
 using eldenring::memory::SelfReader;
@@ -227,8 +227,6 @@ ApplyHpFn g_apply_hp = nullptr;
 HitFeedback& g_feedback = g_combat.feedback;
 thread_local int32_t t_hp_after = -1; // victim hp right after our vfunc[7] call (game thread)
 std::optional<HitTemplate>& g_template = g_combat.hit_template;
-using ClampFn = void*(__fastcall*)(void*, int32_t);
-ClampFn g_clamp_orig = nullptr;
 using DamageFn = uint64_t(__fastcall*)(void*, void*, void*);
 
 uint64_t NowTick() { return GetTickCount64() * 60ull / 1000ull; } // 1/60 s units
@@ -244,92 +242,13 @@ bool CallVfunc7(uintptr_t damage_module, uintptr_t attacker, void* ctx) {
     }
 }
 
-// ---- first person experiment ----------------------------------------------------------------------------------------
-// Detour of the function at 0x1404A7190 that copies ChrCam's vectors into another camera context. Before the copy the
-// position in ChrCam is replaced by the player's eye position, after it the engine's own value is put back, so the
-// camera controller and every other reader of ChrCam are untouched. Whether the renderer takes its view from that
-// context is exactly what this experiment finds out.
-using RenderCamCopyFn = void(__fastcall*)(void* self);
-RenderCamCopyFn g_rcc_orig = nullptr;
-
 void UpdateNativeModel(uintptr_t player, bool hide); // defined with the overlay code below
 void HideSummonModels();                             // defined after WriteBytesSafe
 
-// (a function of its own: the one with __try cannot also hold an object with a destructor)
 void ReadHurt(float& hurt, float& side) {
     std::lock_guard<std::mutex> g(g_melee_mutex);
     hurt = g_feedback.hurt();
     side = g_feedback.hurtSide();
-}
-
-void __fastcall RenderCamCopyDetour(void* self) {
-    // Hide the native model right before the frame is drawn: the game may turn parts back on during a hit reaction, and the
-    // Present-time write alone would let that frame show them.
-    HideSummonModels();
-    if (g_native_hide_wanted.load(std::memory_order_relaxed)) {
-        const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
-        uint64_t player = 0;
-        if (world != 0 && SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) && player != 0) {
-            UpdateNativeModel(static_cast<uintptr_t>(player), true);
-        }
-    }
-    uintptr_t pos_addr = 0;
-    uintptr_t axes_addr = 0;
-    float saved[3] = {};
-    float saved_axes[8] = {};
-    if (g_first_person.load(std::memory_order_relaxed)) {
-        const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
-        uint64_t cam = 0, player = 0;
-        float feet[3];
-        if (world != 0 && SafeCopy(world + layout::kChrCamInWorldChrMan, &cam, sizeof(cam)) && cam != 0 &&
-            SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) && player != 0 &&
-            detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(player), feet) &&
-            SafeCopy(static_cast<uintptr_t>(cam) + layout::kCamMatrix + 0x30, saved, sizeof(saved))) {
-            float eye[3];
-            firstPersonEye(feet, g_eye_height.load(), eye);
-            pos_addr = static_cast<uintptr_t>(cam) + layout::kCamMatrix + 0x30;
-            __try {
-                std::memcpy(reinterpret_cast<void*>(pos_addr), eye, sizeof(eye));
-            } __except (EXCEPTION_EXECUTE_HANDLER) {
-                pos_addr = 0;
-            }
-            // Minecraft's hurt camera tilt: roll the view about the line of sight for a moment after a hit (right and up
-            // turn about forward; both are put back after the copy).
-            float hurt = 0.f, side = 1.f;
-            ReadHurt(hurt, side);
-            if (pos_addr != 0 && hurt > 0.f) {
-                const uintptr_t axes = static_cast<uintptr_t>(cam) + layout::kCamMatrix; // right at +0x10, up at +0x20
-                if (SafeCopy(axes, saved_axes, sizeof(saved_axes))) {
-                    const float a = eldenring::fx::hurtTiltRadians(hurt, side), c = std::cos(a), s = std::sin(a);
-                    float rolled[8];
-                    for (int i = 0; i < 3; ++i) {
-                        rolled[i] = saved_axes[i] * c + saved_axes[4 + i] * s;     // right
-                        rolled[4 + i] = saved_axes[4 + i] * c - saved_axes[i] * s; // up
-                    }
-                    rolled[3] = saved_axes[3];
-                    rolled[7] = saved_axes[7];
-                    __try {
-                        std::memcpy(reinterpret_cast<void*>(axes), rolled, sizeof(rolled));
-                        axes_addr = axes;
-                    } __except (EXCEPTION_EXECUTE_HANDLER) {
-                    }
-                }
-            }
-        }
-    }
-    g_rcc_orig(self);
-    if (pos_addr != 0) {
-        __try {
-            std::memcpy(reinterpret_cast<void*>(pos_addr), saved, sizeof(saved));
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-        }
-    }
-    if (axes_addr != 0) {
-        __try {
-            std::memcpy(reinterpret_cast<void*>(axes_addr), saved_axes, sizeof(saved_axes));
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-        }
-    }
 }
 
 // ---- no stagger (experiment, config no_stagger=1) -------------------------------------------------------------------------
@@ -337,10 +256,6 @@ void __fastcall RenderCamCopyDetour(void* self) {
 // player (the output byte is cleared), so the hit still costs hit points but plays no reaction animation. Game thread only.
 uintptr_t PlayerChrPtr(); // defined below
 
-using HitReactFn = void(__fastcall*)(void*, void*, void*, void*, uint64_t);
-using HitReactHeavyFn = void(__fastcall*)(void*, void*, void*, void*, uint64_t, uint64_t);
-HitReactFn g_hitreact_orig = nullptr;
-HitReactHeavyFn g_hitreact_heavy_orig = nullptr;
 std::atomic<bool> g_no_stagger{false};
 std::atomic<unsigned> g_stagger_skipped{0};
 
@@ -355,30 +270,10 @@ bool IsPlayerActionModule(void* self) {
     return static_cast<uintptr_t>(action) == reinterpret_cast<uintptr_t>(self);
 }
 
-void __fastcall HitReactDetour(void* self, void* a, void* b, void* out, uint64_t five) {
-    if (g_no_stagger.load(std::memory_order_relaxed) && g_mc_mode.load(std::memory_order_relaxed) && IsPlayerActionModule(self)) {
-        if (out != nullptr) *static_cast<uint8_t*>(out) = 0;
-        if (++g_stagger_skipped <= 10) Log("no_stagger: skipped the default hit reaction picker for the player");
-        return;
-    }
-    g_hitreact_orig(self, a, b, out, five);
-}
-
-void __fastcall HitReactHeavyDetour(void* self, void* a, void* b, void* out, uint64_t five, uint64_t six) {
-    if (g_no_stagger.load(std::memory_order_relaxed) && g_mc_mode.load(std::memory_order_relaxed) && IsPlayerActionModule(self)) {
-        if (out != nullptr) *static_cast<uint8_t*>(out) = 0;
-        if (++g_stagger_skipped <= 10) Log("no_stagger: skipped the heavy hit reaction picker for the player");
-        return;
-    }
-    g_hitreact_heavy_orig(self, a, b, out, five, six);
-}
-
 // ---- fall protection (fall_protect=1) ---------------------------------------------------------------------------------------
 // Standing on a placed block or in our own jump tells the game the player landed from a height it measures against the real ground,
 // which can be several metres below: the game then kills the player through its "kill character" function (hit points set to 0, no hit
 // context, so the damage pipeline never sees it). While blocks exist or a jump of ours is recent, that kill is skipped for the player.
-using KillChrFn = void(__fastcall*)(void* chr);
-KillChrFn g_kill_orig = nullptr;
 std::atomic<bool> g_fall_protect{true};
 std::atomic<uint64_t> g_movement_layer_ms{0}; // last time one of our movement features moved the player (tick count)
 std::atomic<unsigned> g_kills_skipped{0};
@@ -386,40 +281,11 @@ uintptr_t PlayerChrPtr(); // defined below
 bool BlocksPresent();     // defined with the placed blocks
 bool PlayerDead();        // defined below
 
-void __fastcall KillChrDetour(void* chr) {
-    if (reinterpret_cast<uintptr_t>(chr) == PlayerChrPtr() && PlayerChrPtr() != 0) {
-        const bool recent = GetTickCount64() - g_movement_layer_ms.load(std::memory_order_relaxed) < 3000;
-        // hp 0 already means the damage path killed the player: skipping KillChr then leaves a player at 0 hp who never dies or respawns.
-        const bool protect = creative::shouldSkipPlayerKill(g_fall_protect.load(std::memory_order_relaxed), g_mc_mode.load(std::memory_order_relaxed),
-                                                            BlocksPresent() || recent, PlayerDead() ? 0 : 1);
-        const unsigned n = ++g_kills_skipped;
-        if (n <= 20) Log("kill: the game kills the player (caller %p, RVA 0x%llX): %s", _ReturnAddress(), static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base), protect ? "SKIPPED (fall protection)" : "allowed");
-        if (protect) return;
-    }
-    g_kill_orig(chr);
-}
-
 // ---- creative-mode hooks: the fall-height hook is always installed (it only acts in creative mode, F5); the other three are log-only probes (mc_er_creativelog.txt) -------------------------------------
-// Which path kills the player after a fall? Every probe calls the original unchanged and only writes a line to mc_er.log.
-using KillWrapperFn = void(__fastcall*)(void* chr);
-using HardLandingFn = void(__fastcall*)(void* fall_module);
-using FallHeightFn = float(__fastcall*)(void* fall_module);
-using HasSpEffectFn = bool(__fastcall*)(void* container, int sp_effect);
-KillWrapperFn g_cr_kill_orig = nullptr;
-HardLandingFn g_cr_land_orig = nullptr;
-FallHeightFn g_cr_fall_orig = nullptr;
-HasSpEffectFn g_cr_sp_orig = nullptr;
-using FallTimeExceededFn = bool(__fastcall*)(void* fall_module, float threshold);
-FallTimeExceededFn g_cr_exceeded_orig = nullptr;
-using ChrEventFn = uint64_t(__fastcall*)(void* self, void* event);
-ChrEventFn g_cr_event_orig = nullptr;
 std::mutex g_cr_mutex;
 creative::FallLogState g_cr_fall_state;
-
 std::atomic<bool> g_cr_log{false}; // mc_er_creativelog.txt: log-only probes
-
-uintptr_t PlayerChrPtr(); // defined below
-float FallTimer(uintptr_t chr); // defined with the block collision below
+float FallTimer(uintptr_t chr);    // defined with the block collision below
 
 uintptr_t ModuleOwner(void* fall_module) {
     uint64_t owner = 0;
@@ -431,101 +297,7 @@ bool CreativeShouldLogFall(float metres, uintptr_t caller_rva) {
     return creative::shouldLogFall(g_cr_fall_state, metres, caller_rva, GetTickCount64());
 }
 
-void __fastcall CreativeKillDetour(void* chr) {
-    const uintptr_t player = PlayerChrPtr();
-    if (creative::isPlayer(reinterpret_cast<uintptr_t>(chr), player)) {
-        const bool block = creative::shouldBlockPlayerKill(CurrentGameMode(), g_mc_mode.load(std::memory_order_relaxed), PlayerDead() ? 0 : 1);
-        static std::atomic<unsigned> logged{0};
-        if (block || g_cr_log.load(std::memory_order_relaxed)) {
-            if (++logged <= 30) {
-                Log("%s%s", creative::formatKill(reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base, true).c_str(),
-                    block ? ": SKIPPED (creative mode, the player still has hit points)" : "");
-            }
-        }
-        if (block) return;
-    }
-    g_cr_kill_orig(chr);
-}
-
-void __fastcall CreativeLandingDetour(void* fall_module) {
-    if (creative::isPlayer(ModuleOwner(fall_module), PlayerChrPtr())) Log("%s", creative::formatLanding(true).c_str());
-    g_cr_land_orig(fall_module);
-}
-
-
-float __fastcall CreativeFallDetour(void* fall_module) {
-    const float metres = g_cr_fall_orig(fall_module);
-    const bool interesting = !std::isfinite(metres) || metres >= creative::kFallLogMinMetres;
-    if (!interesting) return metres;
-    const bool zero_wanted = creative::zeroesFall(CurrentGameMode()) && g_mc_mode.load(std::memory_order_relaxed);
-    if (!zero_wanted && !g_cr_log.load(std::memory_order_relaxed)) return metres;
-    if (!creative::isPlayer(ModuleOwner(fall_module), PlayerChrPtr())) return metres;
-    const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base;
-    const bool zero = creative::shouldZeroFall(creative::zeroesFall(CurrentGameMode()), g_mc_mode.load(std::memory_order_relaxed), true);
-    if (CreativeShouldLogFall(metres, caller)) {
-        Log("%s", (zero ? creative::formatFallZeroed(caller, metres) : creative::formatFall(caller, metres)).c_str());
-    }
-    return zero ? 0.f : metres;
-}
-
-// 0x14044E3A0: "was the player in the air longer than the threshold" (FallModule+0x18). The game asks it inside the fall damage evaluator and a
-// yes starts the fall death after ~12 s in the air; flying keeps the player in the air state, so in creative mode the answer for the player is no.
-bool __fastcall CreativeFallTimeExceededDetour(void* fall_module, float threshold) {
-    const bool real = g_cr_exceeded_orig(fall_module, threshold);
-    if (!real) return false;
-    const bool held_up = g_fall_protect.load(std::memory_order_relaxed) &&
-                         (BlocksPresent() || GetTickCount64() - g_movement_layer_ms.load(std::memory_order_relaxed) < 3000);
-    if (!creative::shouldDenyLongFall(CurrentGameMode(), g_mc_mode.load(std::memory_order_relaxed), creative::isPlayer(ModuleOwner(fall_module), PlayerChrPtr()), held_up)) return real;
-    static std::atomic<unsigned> logged{0};
-    if (++logged <= 10) Log("creative: the fall lasted %.2f s (threshold %.2f s): answered no for the player", FallTimer(PlayerChrPtr()), static_cast<double>(threshold));
-    return false;
-}
-
-// 0x140428DE0 (log only): the character event dispatcher. self+0x18 is the character, event+8 the payload (type at +0, required SpEffect word at +0xE),
-// event+0x18 a flag byte. Logged for the player and the death-related types only.
-uint64_t __fastcall CreativeEventDetour(void* self, void* event) {
-    uint64_t chr = 0, payload = 0;
-    uint32_t type = 0;
-    if (SafeCopy(reinterpret_cast<uintptr_t>(self) + 0x18, &chr, sizeof(chr)) && SafeCopy(reinterpret_cast<uintptr_t>(event) + 8, &payload, sizeof(payload)) &&
-        payload != 0 && SafeCopy(static_cast<uintptr_t>(payload), &type, sizeof(type)) && creative::isDeathEventType(type) &&
-        creative::isPlayer(static_cast<uintptr_t>(chr), PlayerChrPtr()) && !PlayerDead()) { // a real death repeats every frame: only the events that arrive with hit points left
-        static std::atomic<unsigned> logged{0};
-        if (++logged <= 40) {
-            unsigned char raw[16] = {};
-            uint16_t cond = 0;
-            uint8_t flag = 0;
-            SafeCopy(static_cast<uintptr_t>(payload), raw, sizeof(raw));
-            SafeCopy(static_cast<uintptr_t>(payload) + 0xE, &cond, sizeof(cond));
-            SafeCopy(reinterpret_cast<uintptr_t>(event) + 0x18, &flag, sizeof(flag));
-            Log("%s", creative::formatChrEvent(type, cond, flag != 0, raw, reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base).c_str());
-            Log("creative:   fall timer (FallModule+0x18, read only) = %.2f s", FallTimer(PlayerChrPtr()));
-            void* frames[10] = {};
-            const USHORT got = RtlCaptureStackBackTrace(1, 10, frames, nullptr);
-            uintptr_t addrs[10] = {};
-            for (USHORT i = 0; i < got; ++i) addrs[i] = reinterpret_cast<uintptr_t>(frames[i]);
-            Log("%s", creative::formatStack(addrs, got, g_img.base, g_img.image_size).c_str());
-        }
-    }
-    return g_cr_event_orig(self, event);
-}
-
 std::atomic<bool> g_summon_hide{false};
-
-bool __fastcall CreativeSpEffectDetour(void* container, int sp_effect) {
-    const bool answer = g_cr_sp_orig(container, sp_effect);
-    if (sp_effect == creative::kLandingSkipSpEffect) {
-        const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_img.base;
-        if (caller == creative::kLandingSpEffectReturnRva) {
-            // The container is [[FallModule+8]+0x178], i.e. [chr+0x178] (0x14043D260): compare it with the player's.
-            const uintptr_t player = PlayerChrPtr();
-            uint64_t player_container = 0;
-            const bool is_player = player != 0 && SafeCopy(player + 0x178, &player_container, sizeof(player_container)) &&
-                                   creative::isPlayer(reinterpret_cast<uintptr_t>(container), static_cast<uintptr_t>(player_container));
-            if (creative::shouldLogSpEffect(sp_effect, caller, is_player)) Log("%s", creative::formatSpEffect(answer).c_str());
-        }
-    }
-    return answer;
-}
 
 // ---- inventory screen ----------------------------------------------------------------------------------------------------
 // While the inventory is open the game must not walk, roll, attack or turn the camera: the input master gate (0x14067B020) and the
@@ -536,20 +308,8 @@ std::atomic<float>& g_inv_mx = g_ui.inv_mx;
 std::atomic<float>& g_inv_my = g_ui.inv_my;
 std::atomic<int>& g_inv_vk = g_ui.inv_vk;
 std::atomic<float>& g_inv_sens = g_ui.inv_sens;
-using IsInputBlockedFn = uint64_t(__fastcall*)();
-using MenuFreezeFn = uint8_t(__fastcall*)(void*);
-IsInputBlockedFn g_isblocked_orig = nullptr;
-MenuFreezeFn g_menufreeze_orig = nullptr;
 std::atomic<unsigned>& g_isblocked_forced = g_ui.isblocked_forced;
 std::atomic<unsigned>& g_menufreeze_forced = g_ui.menufreeze_forced;
-
-uint64_t __fastcall IsInputBlockedDetour() {
-    return eldenring::ui::InventoryController::IsInputBlockedDetour();
-}
-
-uint8_t __fastcall MenuFreezeDetour(void* self) {
-    return eldenring::ui::InventoryController::MenuFreezeDetour(self);
-}
 
 // ---- persistent eye camera ----------------------------------------------------------------------------------------------
 // ChrCam is read by more than the render copy: the effects and sound systems read its position through other functions, so a
@@ -557,10 +317,6 @@ uint8_t __fastcall MenuFreezeDetour(void* self) {
 // right after the camera task has computed the frame's camera and stays there until the next camera task starts; the engine's
 // own value is put back first so its camera logic never sees ours. Game thread only (the camera task runs there).
 uintptr_t PlayerChrPtr(); // defined below
-
-// (ChrCam* this, float dt in xmm1, ChrIns*, bool): the float is why the arguments must keep this exact shape.
-using CameraStepFn = uint64_t(__fastcall*)(uint64_t, float, uint64_t, uint64_t);
-CameraStepFn g_camstep_orig = nullptr;
 struct CamKeep {
     uintptr_t pos_addr{0};
     float third_person[3]{};
@@ -832,64 +588,13 @@ void AfterCameraStep(bool have_before, uintptr_t addr, const float before[3]) {
 
 void RunBulletFire();
 
-uint64_t __fastcall CameraStepDetour(uint64_t self, float dt, uint64_t chr, uint64_t flag) {
-    if (g_bullet_fire_pending.load(std::memory_order_relaxed) && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
-        g_bullet_fire_pending.exchange(false)) {
-        RunBulletFire();
-    }
-    FlightStep();
-    BlocksCollisionStep();
-    McJumpStep();
-    GroundSprintStep(dt);
-    ShadowGroundStep();
-    RestoreCamKeep();
-    {
-        const uintptr_t p = PlayerChrPtr();
-        float p_feet[3] = {};
-        if (p != 0 && detail::readPhysicsPosition(g_reader, g_img.base, p, p_feet)) {
-            EnemiesBlockCollisionStep(p_feet);
-        }
-    }
-    VirtualSummonsStep(dt);
-    uintptr_t addr = 0;
-    float before[3] = {};
-    // Only the player's ChrCam is touched; the function runs for any camera object.
-    const bool have = ChrCamPosAddress(addr) && addr == static_cast<uintptr_t>(self) + layout::kCamMatrix + 0x30 && SafeCopy(addr, before, sizeof(before));
-    const uint64_t r = g_camstep_orig(self, dt, chr, flag);
-    AfterCameraStep(have, addr, before);
-    return r;
-}
-
-
 // ---- camera write watch (diagnostic, opt-in: mc_er_camwatch.txt) ----------------------------------------------------------
 using eldenring::debug::CamWatchThread;
 
 // ---- player hit effect (blood) -----------------------------------------------------------------------------------------
 // 0x140450120 spawns the hit particles; its first gate is IsMainPlayer(victim), so it only runs for hits the player takes.
 // For those it returns "nothing spawned" (0) without calling the game, when the experiment is on.
-using HitVfxFn = uint8_t(__fastcall*)(void* damage_module, void* attacker, uint8_t* ctx, void* flags);
-HitVfxFn g_hitvfx_orig = nullptr;
 std::atomic<unsigned> g_hitvfx_skipped{0};
-
-uint8_t __fastcall HitVfxDetour(void* a1, void* a2, uint8_t* ctx, void* flags) {
-    // a1 is the ATTACKER's module (0x140448870 hands the attacker's slot-18 module down), so the victim is read from the
-    // HitContext (+0x1E0), the same field our own hits fill in.
-    uint64_t victim = 0, player = 0;
-    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
-    const bool known = world != 0 && SafeCopy(reinterpret_cast<uintptr_t>(ctx) + layout::kHitVictim, &victim, sizeof(victim)) &&
-                       SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) && player != 0;
-    static std::atomic<unsigned> logged{0};
-    if (known && logged.load() < 12 && (victim == player || logged.load() < 4)) {
-        ++logged;
-        Log("hit vfx: call a1=%p a2=%p ctx victim=%p player=%p -> %s", a1, a2, reinterpret_cast<void*>(victim), reinterpret_cast<void*>(player),
-            victim == player ? "PLAYER IS THE VICTIM" : "other victim");
-    }
-    if (known && victim == player && (g_no_player_hit_vfx.load(std::memory_order_relaxed) || g_first_person.load(std::memory_order_relaxed))) {
-        ++g_hitvfx_skipped;
-        return 0;
-    }
-    return g_hitvfx_orig(a1, a2, ctx, flags);
-}
 
 // ---- line of sight (the game's static-geometry ray, docs/ELDENRING_REVERSE.md 1.6) -------------------------------------
 struct alignas(16) HkVec4 {
@@ -977,8 +682,6 @@ struct ForcedDamage {
     int32_t engine_value{0};
 };
 thread_local ForcedDamage t_forced;
-using ProcessDamageFn = uint64_t (*)(void* module, void* attacker, uint8_t* ctx, uint32_t a4, uint8_t a5);
-ProcessDamageFn g_pdc_orig = nullptr;
 std::atomic<bool> g_pdc_hooked{false};
 std::atomic<bool> g_log_player_hits{false}; // mc_er_hitlog.txt: log the HitContext of every hit the player takes (read only)
 
@@ -1195,69 +898,8 @@ void HandleProjectileHit(void* module, void* attacker, uint8_t* ctx) {
     }
 }
 
-uint64_t ProcessDamageDetour(void* module, void* attacker, uint8_t* ctx, uint32_t a4, uint8_t a5) {
-    uint32_t heal_to = 0;
-    bool popped = false;
-    if (!t_forced.armed) popped = PlayerHitSurvival(module, attacker, ctx, a5, heal_to);
-    if (!t_forced.armed && g_log_player_hits.load(std::memory_order_relaxed)) LogPlayerHit(module, attacker, ctx, a5);
-    if (!t_forced.armed && (g_proj_log.load(std::memory_order_relaxed) || g_arrow_damage.load(std::memory_order_relaxed) || g_bullet_fire_enabled.load(std::memory_order_relaxed))) HandleProjectileHit(module, attacker, ctx);
-    if (t_forced.armed && !t_forced.applied) {
-        t_forced.applied = overrideFinalDamage(ctx, t_forced.attacker, t_forced.victim, t_forced.value, &t_forced.engine_value);
-    }
-    const uint64_t r = g_pdc_orig(module, attacker, ctx, a4, a5);
-    if (popped) {
-        // Left on 1 HP by the clamp; the totem restores one heart. Still on the game thread, right after the engine finished the hit.
-        const uintptr_t data = DataModuleOfChr(PlayerChrPtr());
-        int32_t hp = 0;
-        if (data != 0 && SafeCopy(data + layout::kDataHp, &hp, sizeof(hp)) && static_cast<int32_t>(heal_to) > hp) {
-            GiveHp(data, static_cast<int>(heal_to) - hp);
-        }
-    }
-    return r;
-}
-
-// The engine's own block (REVERSE 38, bytes checked): DamageDriver 0x140449D30 asks GuardCheck 0x140480EF0 whether the hit is guarded; `true` sets
-// ctx+0x267 |= 0x10 and jumps over 0x140447810 and ProcessDamageContext: no damage, no flinch, and no stamina (that is deducted inside the real
-// GuardCheck, which we do not run). The first argument is the attacker's action module, whose +8 is the attacker's ChrIns; the second is the victim.
-using GuardCheckFn = bool (*)(void* attacker_module, void* victim_chr, uint32_t atk_attr, uint8_t def_type, uint8_t break_flag);
-GuardCheckFn g_guardcheck_orig = nullptr;
 std::atomic<uint64_t> g_guard_sound_ms{0};
-
-bool GuardCheckDetour(void* attacker_module, void* victim_chr, uint32_t atk_attr, uint8_t def_type, uint8_t break_flag) {
-    auto& r_ctx = eldenring::RuntimeContext::Instance();
-    r_ctx.mode().shield_blocking.store(g_shield_blocking.load(std::memory_order_relaxed), std::memory_order_relaxed);
-    if (eldenring::combat::CombatService::Instance().handleGuardCheck(attacker_module, victim_chr, r_ctx)) {
-        return true;
-    }
-    return g_guardcheck_orig(attacker_module, victim_chr, atk_attr, def_type, break_flag);
-}
-
-// The damage module's vfunc[7] dispatches the knockback from ctx+0xFC (0x140444BEA, call 0x140480630) before DamageDriver runs, so a blocked hit has
-// already pushed the player by the time any later hook sees it. The same shield verdict zeroes the impulse here first.
-using DamageVfunc7Fn = void (*)(void* damage_module, void* attacker, uint8_t* ctx, uint8_t a4);
-DamageVfunc7Fn g_vfunc7_orig = nullptr;
-
-void DamageVfunc7Detour(void* damage_module, void* attacker, uint8_t* ctx, uint8_t a4) {
-    auto& r_ctx = eldenring::RuntimeContext::Instance();
-    r_ctx.mode().shield_blocking.store(g_shield_blocking.load(std::memory_order_relaxed), std::memory_order_relaxed);
-    eldenring::combat::CombatService::Instance().handleDamageVfunc7(damage_module, attacker, ctx, r_ctx);
-    g_vfunc7_orig(damage_module, attacker, ctx, a4);
-}
-
-// The break test (0x140449520, REVERSE 41): F7 (0x140447810) writes ctx+0x258 = 1, the heavy reaction (knocked down, blown away), when it answers "yes". For
-// the player in MC mode it answers "no" and the push it wrote into the damage module's hit buffer is cleared, so a hit only flinches. Runs the original first
-// so the engine's own state stays consistent. mc_er_noknockdownfix.txt switches it off.
-using BreakTestFn = bool (*)(void* damage_module, uint8_t* ctx);
-BreakTestFn g_breaktest_orig = nullptr;
 std::atomic<bool> g_knockdown_fix{true};
-
-bool BreakTestDetour(void* damage_module, uint8_t* ctx) {
-    const bool broke = g_breaktest_orig(damage_module, ctx);
-    auto& r_ctx = eldenring::RuntimeContext::Instance();
-    r_ctx.mode().mc_mode.store(g_mc_mode.load(std::memory_order_relaxed), std::memory_order_relaxed);
-    r_ctx.mode().knockdown_fix.store(g_knockdown_fix.load(std::memory_order_relaxed), std::memory_order_relaxed);
-    return eldenring::combat::CombatService::Instance().handleBreakTest(damage_module, ctx, broke, r_ctx);
-}
 
 void DrainOnce(uintptr_t updating_data_module) {
     DrainContext c;
@@ -1367,32 +1009,6 @@ void RunSummonExperiment() {
 void RunBulletFire(); // defined with the spawn_bullet logger below
 bool QueueBulletFire(float mc_damage); // the same: called from the key thread
 void AimCalTick();                      // the same: reads where a shot really flies (mc_er_aimcal.txt)
-
-void* __fastcall ClampDetour(void* module, int32_t value) {
-    void* r = g_clamp_orig(module, value);
-    if (g_damage_enabled.load(std::memory_order_relaxed) && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
-        g_queue.pending() > 0) {
-        DrainOnce(reinterpret_cast<uintptr_t>(module));
-    }
-    if (g_summon_pending.load(std::memory_order_relaxed) && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
-        g_summon_pending.exchange(false)) {
-        RunSummonExperiment();
-    }
-    if (g_bullet_fire_pending.load(std::memory_order_relaxed) && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
-        g_bullet_fire_pending.exchange(false)) {
-        RunBulletFire();
-    }
-    AimCalTick();
-    if (g_heal_pending.load(std::memory_order_relaxed) > 0 && GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed)) {
-        uint64_t owner = 0;
-        if (SafeCopy(reinterpret_cast<uintptr_t>(module) + layout::kOwnerInDataModule, &owner, sizeof(owner)) && owner != 0 &&
-            owner == PlayerChrPtr()) {
-            const int h = g_heal_pending.exchange(0);
-            if (h > 0) GiveHp(reinterpret_cast<uintptr_t>(module), h);
-        }
-    }
-    return r;
-}
 
 
 void EnqueueNearestHostile() {
@@ -2155,15 +1771,7 @@ DWORD WINAPI KeyThread(LPVOID) {
 }
 
 bool EnsureMinHook() {
-    static std::mutex m;
-    static bool done = false, ok = false;
-    std::lock_guard<std::mutex> g(m);
-    if (!done) {
-        const MH_STATUS st = MH_Initialize();
-        ok = st == MH_OK || st == MH_ERROR_ALREADY_INITIALIZED;
-        done = true;
-    }
-    return ok;
+    return eldenring::hooks::GameHooks::Instance().initMinHook();
 }
 
 bool FileExists(const std::string& path) {
@@ -2185,46 +1793,21 @@ bool ReadFileAll(const std::string& path, std::vector<uint8_t>& out) {
 
 void SetupCreativeProbes() {
     g_cr_log.store(FileExists(g_game_dir + "mc_er_creativelog.txt"));
-    struct Probe {
-        const char* name;
-        const char* sig;
-        void* detour;
-        void** orig;
-    };
-    const Probe probes[] = {
-        {"kill wrapper", sigs::kKillWrapper, reinterpret_cast<void*>(&CreativeKillDetour), reinterpret_cast<void**>(&g_cr_kill_orig)},
-        {"hard landing", sigs::kHardLanding, reinterpret_cast<void*>(&CreativeLandingDetour), reinterpret_cast<void**>(&g_cr_land_orig)},
-        {"fall height", sigs::kFallHeight, reinterpret_cast<void*>(&CreativeFallDetour), reinterpret_cast<void**>(&g_cr_fall_orig)},
-        {"sp effect query", sigs::kHasSpEffect, reinterpret_cast<void*>(&CreativeSpEffectDetour), reinterpret_cast<void**>(&g_cr_sp_orig)},
-        {"fall time exceeded", sigs::kFallTimeExceeded, reinterpret_cast<void*>(&CreativeFallTimeExceededDetour), reinterpret_cast<void**>(&g_cr_exceeded_orig)},
-        {"chr event dispatch", sigs::kChrEventDispatch, reinterpret_cast<void*>(&CreativeEventDetour), reinterpret_cast<void**>(&g_cr_event_orig)},
-    };
-    if (!EnsureMinHook()) {
-        Log("creative: MH_Initialize failed, probes not installed");
-        return;
-    }
-    for (const Probe& p : probes) {
-        const bool acts = eldenring::live::isProbeActiveWithoutLog(p.name);
-        if (!g_cr_log.load() && !acts) continue; // without mc_er_creativelog.txt only active hooks are installed
-        uintptr_t target = 0;
-        if (!LocateByPrefix(g_img, p.sig, target)) {
-            Log("creative: %s signature not unique, probe not installed", p.name);
-        } else if (MH_CreateHook(reinterpret_cast<void*>(target), p.detour, p.orig) != MH_OK || MH_EnableHook(reinterpret_cast<void*>(target)) != MH_OK) {
-            Log("creative: hooking %s at %p failed", p.name, reinterpret_cast<void*>(target));
-        } else {
-            Log("creative: %s probe at %p (RVA 0x%llX)%s", p.name, reinterpret_cast<void*>(target), static_cast<unsigned long long>(target - g_img.base),
-                p.orig == reinterpret_cast<void**>(&g_cr_fall_orig) ? ", fall height is 0 for the player in creative mode (F5)"
-                : p.orig == reinterpret_cast<void**>(&g_cr_kill_orig) ? ", the player cannot be killed in creative mode while it has hit points (F5)"
-                : p.orig == reinterpret_cast<void**>(&g_cr_exceeded_orig) ? ", the player never 'fell too long' in creative mode (F5)" : ", log-only");
-        }
-    }
+    uintptr_t kw = 0, hl = 0, fh = 0, sp = 0, fe = 0, ev = 0;
+    LocateByPrefix(g_img, sigs::kKillWrapper, kw);
+    LocateByPrefix(g_img, sigs::kHardLanding, hl);
+    LocateByPrefix(g_img, sigs::kFallHeight, fh);
+    LocateByPrefix(g_img, sigs::kHasSpEffect, sp);
+    LocateByPrefix(g_img, sigs::kFallTimeExceeded, fe);
+    LocateByPrefix(g_img, sigs::kChrEventDispatch, ev);
+    eldenring::hooks::GameHooks::Instance().setupCreativeProbes(
+        g_img.base, kw, hl, fh, sp, fe, ev);
+    Log("creative: probes configured (log=%d)", g_cr_log.load() ? 1 : 0);
 }
 
 // ---- spawn_bullet request logger (read-only, switch file mc_er_bulletlog.txt) -----------------------------------------------------------
 // The game builds a request for every arrow/bolt/spell bullet it fires, the player's own included. Fire one bow/crossbow shot with the switch
 // file present and the first requests are written to mc_er.log, so the real BulletParam id and field layout are read, not guessed.
-using SpawnBulletFn = uint32_t*(__fastcall*)(void* manager, uint32_t* out_handle, void* request, void* r9);
-SpawnBulletFn g_spawn_bullet_orig = nullptr;
 eldenring::bullet::LogBudget g_bullet_budget(40);
 std::atomic<unsigned> g_bullet_seen{0};
 
@@ -2291,14 +1874,8 @@ void RecordBulletTemplate(const void* request) {
     eldenring::combat::CombatService::Instance().recordBulletTemplate(request);
 }
 
-// The call itself, in its own function so that the __try has no C++ objects with destructors around it.
 bool SpawnBulletSafe(void* manager, uint32_t* out_handle, void* request, void* ctx) {
-    __try {
-        g_spawn_bullet_orig(manager, out_handle, request, ctx);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
+    return eldenring::hooks::GameHooks::Instance().callSpawnBullet(manager, out_handle, request, ctx) != nullptr;
 }
 
 // ---- aim calibration (read-only, switch file mc_er_aimcal.txt) ---------------------------------------------------------------------------------------------
@@ -2466,35 +2043,6 @@ bool QueueBulletFire(float mc_damage) {
     return true;
 }
 
-uint32_t* __fastcall SpawnBulletDetour(void* manager, uint32_t* out_handle, void* request, void* r9) {
-    if (!t_our_bullet_fire) {
-        uint32_t id = 0;
-        if (request != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(request) + 0x1C, &id, sizeof(id));
-        g_last_bullet_id.store(id, std::memory_order_relaxed);
-        g_last_shot_damage.store(eldenring::bullet::kCrossbowDamage, std::memory_order_relaxed);
-        const uint64_t shot_now = GetTickCount64();
-        g_last_bullet_tick_ms.store(shot_now, std::memory_order_relaxed);
-        g_last_shot_ms.store(shot_now, std::memory_order_relaxed);
-        float pos[3];
-        if (request != nullptr && SafeCopy(reinterpret_cast<uintptr_t>(request) + 0x80, pos, sizeof(pos))) {
-            for (int i = 0; i < 3; ++i) g_last_shot_pos[i].store(pos[i], std::memory_order_relaxed);
-        }
-    }
-    if (g_bullet_fire_enabled.load(std::memory_order_relaxed)) RecordBulletTemplate(request);
-    uint32_t* r = g_spawn_bullet_orig(manager, out_handle, request, r9);
-    uint32_t handle = 0xFFFFFFFFu;
-    if (out_handle != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(out_handle), &handle, sizeof(handle));
-    LogBulletRequest(manager, request, r9, _ReturnAddress(), handle);
-    if (!eldenring::bullet::spawnFailed(handle) && !g_aimcal.active) { // the player's real shots are measured too: where does the bullet really fly?
-        uint8_t req[eldenring::bullet::kRequestBytes] = {};
-        if (SafeCopy(reinterpret_cast<uintptr_t>(request), req, sizeof(req))) {
-            const eldenring::bullet::Fields f = eldenring::bullet::decode(req, sizeof(req));
-            if (f.valid) AimCalStart(reinterpret_cast<uint64_t>(manager), handle, f.forward);
-        }
-    }
-    return r;
-}
-
 void SetupBulletLog() {
     g_proj_log.store(FileExists(g_game_dir + "mc_er_bulletlog.txt"));
     g_arrow_damage.store(FileExists(g_game_dir + "mc_er_arrowdmg.txt"));
@@ -2507,14 +2055,267 @@ void SetupBulletLog() {
         Log("bullet: MH_Initialize failed, the request logger is not installed");
     } else if (!LocateByPrefix(g_img, sigs::kSpawnBullet, target)) {
         Log("bullet: spawn_bullet signature not unique, the request logger is not installed");
-    } else if (MH_CreateHook(reinterpret_cast<void*>(target), reinterpret_cast<void*>(&SpawnBulletDetour), reinterpret_cast<void**>(&g_spawn_bullet_orig)) != MH_OK ||
-               MH_EnableHook(reinterpret_cast<void*>(target)) != MH_OK) {
+    } else if (!eldenring::hooks::GameHooks::Instance().setupBulletLog(g_img.base, target)) {
         Log("bullet: hooking spawn_bullet at %p failed", reinterpret_cast<void*>(target));
     } else {
         Log("bullet: spawn_bullet request logger at %p (RVA 0x%llX): the first 40 requests are written here%s", reinterpret_cast<void*>(target),
             static_cast<unsigned long long>(target - g_img.base),
             g_bullet_fire_enabled.load() ? "; mc_er_bulletfire.txt: F3 shoots one bolt of ours from the saved template (a real crossbow shot creates or updates it)" : " (read-only)");
     }
+}
+
+void SetupGameHooksCallbacks() {
+    eldenring::hooks::GameHooksCallbacks cb;
+    cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
+    cb.get_game_tid = []() -> uint32_t { return g_game_tid.load(std::memory_order_relaxed); };
+    cb.get_player_chr = PlayerChrPtr;
+    cb.safe_copy = [](uintptr_t a, void* d, size_t s) { return SafeCopy(a, d, s); };
+
+    cb.on_camera_step_pre = [](float dt) {
+        if (g_bullet_fire_pending.load(std::memory_order_relaxed) &&
+            GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
+            g_bullet_fire_pending.exchange(false)) {
+            RunBulletFire();
+        }
+        FlightStep();
+        BlocksCollisionStep();
+        McJumpStep();
+        GroundSprintStep(dt);
+        ShadowGroundStep();
+        RestoreCamKeep();
+        {
+            const uintptr_t p = PlayerChrPtr();
+            float p_feet[3] = {};
+            if (p != 0 && detail::readPhysicsPosition(g_reader, g_img.base, p, p_feet)) {
+                EnemiesBlockCollisionStep(p_feet);
+            }
+        }
+        VirtualSummonsStep(dt);
+    };
+
+    cb.check_chr_cam = [](uint64_t self, uintptr_t& addr, float before[3]) -> bool {
+        return ChrCamPosAddress(addr) && addr == static_cast<uintptr_t>(self) + layout::kCamMatrix + 0x30 &&
+               SafeCopy(addr, before, sizeof(float) * 3);
+    };
+
+    cb.on_camera_step_post = [](bool have, uintptr_t addr, const float before[3]) {
+        AfterCameraStep(have, addr, before);
+    };
+
+    cb.on_clamp_tick = [](uintptr_t module) {
+        if (g_damage_enabled.load(std::memory_order_relaxed) && g_queue.pending() > 0) {
+            DrainOnce(module);
+        }
+        if (g_summon_pending.load(std::memory_order_relaxed) && g_summon_pending.exchange(false)) {
+            RunSummonExperiment();
+        }
+        if (g_bullet_fire_pending.load(std::memory_order_relaxed) && g_bullet_fire_pending.exchange(false)) {
+            RunBulletFire();
+        }
+        AimCalTick();
+        if (g_heal_pending.load(std::memory_order_relaxed) > 0) {
+            uint64_t owner = 0;
+            if (SafeCopy(module + layout::kOwnerInDataModule, &owner, sizeof(owner)) && owner != 0 && owner == PlayerChrPtr()) {
+                const int h = g_heal_pending.exchange(0);
+                if (h > 0) GiveHp(module, h);
+            }
+        }
+    };
+
+    cb.player_hit_survival = [](void* mod, void* atk, uint8_t* ctx, uint8_t a5, uint32_t& heal_to) -> bool {
+        if (t_forced.armed) return false;
+        return PlayerHitSurvival(mod, atk, ctx, a5, heal_to);
+    };
+
+    cb.log_player_hit = [](void* mod, void* atk, uint8_t* ctx, uint8_t a5) {
+        if (!t_forced.armed && g_log_player_hits.load(std::memory_order_relaxed)) {
+            LogPlayerHit(mod, atk, ctx, a5);
+        }
+    };
+
+    cb.handle_projectile_hit = [](void* mod, void* atk, uint8_t* ctx) {
+        if (!t_forced.armed && (g_proj_log.load(std::memory_order_relaxed) ||
+                                g_arrow_damage.load(std::memory_order_relaxed) ||
+                                g_bullet_fire_enabled.load(std::memory_order_relaxed))) {
+            HandleProjectileHit(mod, atk, ctx);
+        }
+    };
+
+    cb.handle_forced_damage = [](uint8_t* ctx) {
+        if (t_forced.armed && !t_forced.applied) {
+            t_forced.applied = overrideFinalDamage(ctx, t_forced.attacker, t_forced.victim, t_forced.value, &t_forced.engine_value);
+        }
+    };
+
+    cb.override_final_damage = [](uint8_t* ctx, uintptr_t atk, uintptr_t vic, int val, int* eng_val) -> bool {
+        return overrideFinalDamage(ctx, atk, vic, val, eng_val);
+    };
+
+    cb.on_totem_popped_heal = [](uint32_t heal_to) {
+        const uintptr_t data = DataModuleOfChr(PlayerChrPtr());
+        int32_t hp = 0;
+        if (data != 0 && SafeCopy(data + layout::kDataHp, &hp, sizeof(hp)) && static_cast<int32_t>(heal_to) > hp) {
+            GiveHp(data, static_cast<int>(heal_to) - hp);
+        }
+    };
+
+    cb.should_skip_kill_chr = [](void* chr) -> bool {
+        if (reinterpret_cast<uintptr_t>(chr) == PlayerChrPtr() && PlayerChrPtr() != 0) {
+            const bool recent = GetTickCount64() - g_movement_layer_ms.load(std::memory_order_relaxed) < 3000;
+            const bool protect = creative::shouldSkipPlayerKill(g_fall_protect.load(std::memory_order_relaxed),
+                                                                g_mc_mode.load(std::memory_order_relaxed),
+                                                                BlocksPresent() || recent, PlayerDead() ? 0 : 1);
+            const unsigned n = ++g_kills_skipped;
+            if (n <= 20) Log("kill: the game kills the player: %s", protect ? "SKIPPED (fall protection)" : "allowed");
+            return protect;
+        }
+        return false;
+    };
+
+    cb.should_skip_hit_vfx = [](void* a1, void* a2, uint8_t* ctx, void*) -> bool {
+        uint64_t victim = 0, player = 0;
+        const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+        const bool known = world != 0 && SafeCopy(reinterpret_cast<uintptr_t>(ctx) + layout::kHitVictim, &victim, sizeof(victim)) &&
+                           SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) && player != 0;
+        static std::atomic<unsigned> logged{0};
+        if (known && logged.load() < 12 && (victim == player || logged.load() < 4)) {
+            ++logged;
+            Log("hit vfx: call a1=%p a2=%p ctx victim=%p player=%p -> %s", a1, a2, reinterpret_cast<void*>(victim), reinterpret_cast<void*>(player),
+                victim == player ? "PLAYER IS THE VICTIM" : "other victim");
+        }
+        if (known && victim == player && (g_no_player_hit_vfx.load(std::memory_order_relaxed) || g_first_person.load(std::memory_order_relaxed))) {
+            ++g_hitvfx_skipped;
+            return true;
+        }
+        return false;
+    };
+
+    cb.should_skip_hit_react = [](void* self, void* out) -> bool {
+        if (g_no_stagger.load(std::memory_order_relaxed) && g_mc_mode.load(std::memory_order_relaxed) && IsPlayerActionModule(self)) {
+            if (out != nullptr) *static_cast<uint8_t*>(out) = 0;
+            if (++g_stagger_skipped <= 10) Log("no_stagger: skipped hit reaction picker for the player");
+            return true;
+        }
+        return false;
+    };
+
+    cb.on_render_cam_copy = [](void*, const std::function<void()>& orig) {
+        HideSummonModels();
+        if (g_native_hide_wanted.load(std::memory_order_relaxed)) {
+            const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+            uint64_t player = 0;
+            if (world != 0 && SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) && player != 0) {
+                UpdateNativeModel(static_cast<uintptr_t>(player), true);
+            }
+        }
+        uintptr_t pos_addr = 0;
+        uintptr_t axes_addr = 0;
+        float saved[3] = {};
+        float saved_axes[8] = {};
+        if (g_first_person.load(std::memory_order_relaxed)) {
+            const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+            uint64_t cam = 0, player = 0;
+            float feet[3];
+            if (world != 0 && SafeCopy(world + layout::kChrCamInWorldChrMan, &cam, sizeof(cam)) && cam != 0 &&
+                SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) && player != 0 &&
+                detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(player), feet) &&
+                SafeCopy(static_cast<uintptr_t>(cam) + layout::kCamMatrix + 0x30, saved, sizeof(saved))) {
+                float eye[3];
+                firstPersonEye(feet, g_eye_height.load(), eye);
+                pos_addr = static_cast<uintptr_t>(cam) + layout::kCamMatrix + 0x30;
+                SafeWrite(pos_addr, eye, sizeof(eye));
+
+                float hurt = 0.f, side = 1.f;
+                ReadHurt(hurt, side);
+                if (pos_addr != 0 && hurt > 0.f) {
+                    const uintptr_t axes = static_cast<uintptr_t>(cam) + layout::kCamMatrix;
+                    if (SafeCopy(axes, saved_axes, sizeof(saved_axes))) {
+                        const float a = eldenring::fx::hurtTiltRadians(hurt, side), c = std::cos(a), s = std::sin(a);
+                        float rolled[8];
+                        for (int i = 0; i < 3; ++i) {
+                            rolled[i] = saved_axes[i] * c + saved_axes[4 + i] * s;
+                            rolled[4 + i] = saved_axes[4 + i] * c - saved_axes[i] * s;
+                        }
+                        rolled[3] = saved_axes[3];
+                        rolled[7] = saved_axes[7];
+                        if (SafeWrite(axes, rolled, sizeof(rolled))) {
+                            axes_addr = axes;
+                        }
+                    }
+                }
+            }
+        }
+        orig();
+        if (pos_addr != 0) SafeWrite(pos_addr, saved, sizeof(saved));
+        if (axes_addr != 0) SafeWrite(axes_addr, saved_axes, sizeof(saved_axes));
+    };
+
+    cb.on_spawn_bullet = [](const void* request) {
+        if (!t_our_bullet_fire) {
+            uint32_t id = 0;
+            if (request != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(request) + 0x1C, &id, sizeof(id));
+            g_last_bullet_id.store(id, std::memory_order_relaxed);
+            g_last_shot_damage.store(eldenring::bullet::kCrossbowDamage, std::memory_order_relaxed);
+            const uint64_t shot_now = GetTickCount64();
+            g_last_bullet_tick_ms.store(shot_now, std::memory_order_relaxed);
+            g_last_shot_ms.store(shot_now, std::memory_order_relaxed);
+            float pos[3];
+            if (request != nullptr && SafeCopy(reinterpret_cast<uintptr_t>(request) + 0x80, pos, sizeof(pos))) {
+                for (int i = 0; i < 3; ++i) g_last_shot_pos[i].store(pos[i], std::memory_order_relaxed);
+            }
+        }
+        if (g_bullet_fire_enabled.load(std::memory_order_relaxed)) RecordBulletTemplate(request);
+    };
+
+    cb.on_spawn_bullet_post = [](void* manager, void* request, void* r9, uint32_t* out_handle) {
+        uint32_t handle = 0xFFFFFFFFu;
+        if (out_handle != nullptr) SafeCopy(reinterpret_cast<uintptr_t>(out_handle), &handle, sizeof(handle));
+        LogBulletRequest(manager, request, r9, nullptr, handle);
+        if (!eldenring::bullet::spawnFailed(handle) && !g_aimcal.active) {
+            uint8_t req[eldenring::bullet::kRequestBytes] = {};
+            if (SafeCopy(reinterpret_cast<uintptr_t>(request), req, sizeof(req))) {
+                const eldenring::bullet::Fields f = eldenring::bullet::decode(req, sizeof(req));
+                if (f.valid) AimCalStart(reinterpret_cast<uint64_t>(manager), handle, f.forward);
+            }
+        }
+    };
+
+    cb.is_fall_damage_disabled = []() -> bool {
+        return creative::zeroesFall(CurrentGameMode()) && g_mc_mode.load(std::memory_order_relaxed);
+    };
+
+    cb.should_block_creative_kill = [](void* chr) -> bool {
+        const uintptr_t player = PlayerChrPtr();
+        if (creative::isPlayer(reinterpret_cast<uintptr_t>(chr), player)) {
+            const bool block = creative::shouldBlockPlayerKill(CurrentGameMode(), g_mc_mode.load(std::memory_order_relaxed), PlayerDead() ? 0 : 1);
+            static std::atomic<unsigned> logged{0};
+            if (block || g_cr_log.load(std::memory_order_relaxed)) {
+                if (++logged <= 30) {
+                    Log("%s%s", creative::formatKill(0, true).c_str(),
+                        block ? ": SKIPPED (creative mode, the player still has hit points)" : "");
+                }
+            }
+            return block;
+        }
+        return false;
+    };
+
+    cb.should_deny_fall_time_exceeded = [](void* fall_module, float threshold) -> bool {
+        const bool held_up = g_fall_protect.load(std::memory_order_relaxed) &&
+                             (BlocksPresent() || GetTickCount64() - g_movement_layer_ms.load(std::memory_order_relaxed) < 3000);
+        if (!creative::shouldDenyLongFall(CurrentGameMode(), g_mc_mode.load(std::memory_order_relaxed), creative::isPlayer(ModuleOwner(fall_module), PlayerChrPtr()), held_up)) return false;
+        static std::atomic<unsigned> logged{0};
+        if (++logged <= 10) Log("creative: the fall lasted %.2f s (threshold %.2f s): answered no for the player", FallTimer(PlayerChrPtr()), static_cast<double>(threshold));
+        return true;
+    };
+
+    cb.on_creative_probe = [](const char* name, void* obj) {
+        if (g_cr_log.load(std::memory_order_relaxed)) {
+            Log("creative: %s probe invoked on %p", name, obj);
+        }
+    };
+
+    eldenring::hooks::GameHooks::Instance().setCallbacks(cb);
 }
 
 void SetupDamage() {
@@ -2541,166 +2342,110 @@ void SetupDamage() {
         Log("damage: MH_Initialize failed");
         return;
     }
-    if (MH_CreateHook(reinterpret_cast<void*>(clamp), reinterpret_cast<void*>(&ClampDetour), reinterpret_cast<void**>(&g_clamp_orig)) !=
-            MH_OK ||
-        MH_EnableHook(reinterpret_cast<void*>(clamp)) != MH_OK) {
-        Log("damage: hooking ClampHP at %p failed", reinterpret_cast<void*>(clamp));
-        return;
-    }
+
+    SetupGameHooksCallbacks();
+
     uintptr_t pdc = 0;
     if (!LocateByPrefix(g_img, sigs::kProcessDamageContext, pdc)) {
         Log("damage: ProcessDamageContext signature not unique, final damage stays engine-computed");
-    } else if (MH_CreateHook(reinterpret_cast<void*>(pdc), reinterpret_cast<void*>(&ProcessDamageDetour), reinterpret_cast<void**>(&g_pdc_orig)) !=
-                   MH_OK ||
-               MH_EnableHook(reinterpret_cast<void*>(pdc)) != MH_OK) {
-        Log("damage: hooking ProcessDamageContext at %p failed, final damage stays engine-computed", reinterpret_cast<void*>(pdc));
     } else {
         g_pdc_hooked.store(true);
         Log("damage: ProcessDamageContext hooked at %p (RVA 0x%llX): final damage is replaced for our own hits", reinterpret_cast<void*>(pdc),
             static_cast<unsigned long long>(pdc - g_img.base));
     }
+    uintptr_t brk = 0;
     if (FileExists(g_game_dir + "mc_er_noknockdownfix.txt")) {
         g_knockdown_fix.store(false);
         Log("knockdown: mc_er_noknockdownfix.txt present, the player keeps the game's heavy reactions");
     } else {
-        uintptr_t brk = 0;
         if (!LocateByPrefix(g_img, sigs::kBreakTest, brk)) {
             Log("knockdown: break test signature not unique, the player keeps the game's heavy reactions");
-        } else if (MH_CreateHook(reinterpret_cast<void*>(brk), reinterpret_cast<void*>(&BreakTestDetour), reinterpret_cast<void**>(&g_breaktest_orig)) != MH_OK ||
-                   MH_EnableHook(reinterpret_cast<void*>(brk)) != MH_OK) {
-            Log("knockdown: hooking the break test at %p failed", reinterpret_cast<void*>(brk));
         } else {
             Log("knockdown: break test hooked at %p (RVA 0x%llX): in MC mode a hit on the player only flinches", reinterpret_cast<void*>(brk),
                 static_cast<unsigned long long>(brk - g_img.base));
         }
     }
+    uintptr_t guard = 0, vf7 = 0;
     if (FileExists(g_game_dir + "mc_er_noguardhook.txt")) {
         Log("shield: mc_er_noguardhook.txt present, the engine block path and the knockback fix are off (the damage hook still zeroes blocked hits)");
     } else {
-        uintptr_t guard = 0, vf7 = 0;
         if (!LocateByPrefix(g_img, sigs::kGuardCheck, guard)) {
             Log("shield: GuardCheck signature not unique, blocked hits are only zeroed in the damage hook");
-        } else if (MH_CreateHook(reinterpret_cast<void*>(guard), reinterpret_cast<void*>(&GuardCheckDetour), reinterpret_cast<void**>(&g_guardcheck_orig)) != MH_OK ||
-                   MH_EnableHook(reinterpret_cast<void*>(guard)) != MH_OK) {
-            Log("shield: hooking GuardCheck at %p failed", reinterpret_cast<void*>(guard));
         } else {
             Log("shield: GuardCheck hooked at %p (RVA 0x%llX): a blocked hit takes the engine's own guard path", reinterpret_cast<void*>(guard),
                 static_cast<unsigned long long>(guard - g_img.base));
         }
         if (!LocateByPrefix(g_img, sigs::kDamageVfunc7, vf7)) {
             Log("shield: damage vfunc[7] signature not unique, a blocked hit still pushes the player");
-        } else if (MH_CreateHook(reinterpret_cast<void*>(vf7), reinterpret_cast<void*>(&DamageVfunc7Detour), reinterpret_cast<void**>(&g_vfunc7_orig)) != MH_OK ||
-                   MH_EnableHook(reinterpret_cast<void*>(vf7)) != MH_OK) {
-            Log("shield: hooking the damage vfunc[7] at %p failed", reinterpret_cast<void*>(vf7));
         } else {
             Log("shield: damage vfunc[7] hooked at %p (RVA 0x%llX): a blocked hit does not push the player", reinterpret_cast<void*>(vf7),
                 static_cast<unsigned long long>(vf7 - g_img.base));
         }
     }
-    {
-        uintptr_t rcc = 0;
-        if (!LocateByPrefix(g_img, sigs::kRenderCameraCopy, rcc)) {
-            Log("first person: render camera copy signature not unique, experiment unavailable");
-        } else if (MH_CreateHook(reinterpret_cast<void*>(rcc), reinterpret_cast<void*>(&RenderCamCopyDetour), reinterpret_cast<void**>(&g_rcc_orig)) !=
-                       MH_OK ||
-                   MH_EnableHook(reinterpret_cast<void*>(rcc)) != MH_OK) {
-            Log("first person: hooking %p failed", reinterpret_cast<void*>(rcc));
-        } else {
-            Log("first person: render camera copy hooked at %p (RVA 0x%llX); first_person=1 or F10 turns the experiment on", reinterpret_cast<void*>(rcc),
-                static_cast<unsigned long long>(rcc - g_img.base));
-            g_summon_hide.store(!FileExists(g_game_dir + "mc_er_nosummonhide.txt"));
-            if (g_summon_hide.load()) Log("summon hide: on: team 47 models, shadows, and spirit particles are cleared before each frame");
-        }
+    uintptr_t rcc = 0;
+    if (!LocateByPrefix(g_img, sigs::kRenderCameraCopy, rcc)) {
+        Log("first person: render camera copy signature not unique, experiment unavailable");
+    } else {
+        Log("first person: render camera copy hooked at %p (RVA 0x%llX); first_person=1 or F10 turns the experiment on", reinterpret_cast<void*>(rcc),
+            static_cast<unsigned long long>(rcc - g_img.base));
+        g_summon_hide.store(!FileExists(g_game_dir + "mc_er_nosummonhide.txt"));
+        if (g_summon_hide.load()) Log("summon hide: on: team 47 models, shadows, and spirit particles are cleared before each frame");
     }
-    {
-        uintptr_t hp_fn = 0;
-        if (LocateByPrefix(g_img, sigs::kApplyHpChange, hp_fn)) {
-            g_apply_hp = reinterpret_cast<ApplyHpFn>(hp_fn);
-            Log("survival: ApplyHPChange at %p (RVA 0x%llX): food, regeneration and the totem heal through it", reinterpret_cast<void*>(hp_fn),
-                static_cast<unsigned long long>(hp_fn - g_img.base));
-        } else {
-            Log("survival: ApplyHPChange signature not unique, no healing (the totem still clamps lethal damage)");
-        }
+    uintptr_t hp_fn = 0;
+    if (LocateByPrefix(g_img, sigs::kApplyHpChange, hp_fn)) {
+        g_apply_hp = reinterpret_cast<ApplyHpFn>(hp_fn);
+        Log("survival: ApplyHPChange at %p (RVA 0x%llX): food, regeneration and the totem heal through it", reinterpret_cast<void*>(hp_fn),
+            static_cast<unsigned long long>(hp_fn - g_img.base));
+    } else {
+        Log("survival: ApplyHPChange signature not unique, no healing (the totem still clamps lethal damage)");
     }
     g_log_player_hits.store(FileExists(g_game_dir + "mc_er_hitlog.txt"));
     if (g_log_player_hits.load()) Log("hitlog: logging the HitContext of every hit the player takes");
-    {
-        uintptr_t vfx = 0;
-        if (!FileExists(g_game_dir + "mc_er_hitvfx.txt")) {
-            // The game's own option (Settings: blood effects) already removes the blood, so this hook is opt-in.
-        } else if (!LocateByPrefix(g_img, sigs::kHitVfxSpawn, vfx)) {
+    uintptr_t vfx = 0;
+    if (FileExists(g_game_dir + "mc_er_hitvfx.txt")) {
+        if (!LocateByPrefix(g_img, sigs::kHitVfxSpawn, vfx)) {
             Log("hit vfx: spawner signature not unique, the player's blood effect cannot be removed");
-        } else if (MH_CreateHook(reinterpret_cast<void*>(vfx), reinterpret_cast<void*>(&HitVfxDetour), reinterpret_cast<void**>(&g_hitvfx_orig)) != MH_OK ||
-                   MH_EnableHook(reinterpret_cast<void*>(vfx)) != MH_OK) {
-            Log("hit vfx: hooking %p failed", reinterpret_cast<void*>(vfx));
         } else {
             Log("hit vfx: spawner hooked at %p (RVA 0x%llX); no_player_hit_vfx=1 or first person removes the player's hit effect",
                 reinterpret_cast<void*>(vfx), static_cast<unsigned long long>(vfx - g_img.base));
         }
     }
-    {
-        uintptr_t step = 0;
-        if (FileExists(g_game_dir + "mc_er_camwatch.txt")) {
-            Log("camwatch: diagnostic on (mc_er_camwatch.txt): the camera update hook is not installed, writers of ChrCam position are logged");
-            CreateThread(nullptr, 0, CamWatchThread, nullptr, 0, nullptr);
-        } else if (!LocateByPrefix(g_img, sigs::kCameraStepExecute, step)) {
-            Log("camstep: camera update signature not unique, hit effects stay at the third-person position in first person");
-        } else if (MH_CreateHook(reinterpret_cast<void*>(step), reinterpret_cast<void*>(&CameraStepDetour), reinterpret_cast<void**>(&g_camstep_orig)) !=
-                       MH_OK ||
-                   MH_EnableHook(reinterpret_cast<void*>(step)) != MH_OK) {
-            Log("camstep: hooking %p failed", reinterpret_cast<void*>(step));
-        } else {
-            g_camstep_installed.store(true);
-            Log("camstep: camera update hooked at %p (RVA 0x%llX): first person keeps the eye position for the whole frame (fp_persist=0 turns it off)",
-                reinterpret_cast<void*>(step), static_cast<unsigned long long>(step - g_img.base));
-        }
+    uintptr_t step = 0;
+    if (FileExists(g_game_dir + "mc_er_camwatch.txt")) {
+        Log("camwatch: diagnostic on (mc_er_camwatch.txt): the camera update hook is not installed, writers of ChrCam position are logged");
+        CreateThread(nullptr, 0, CamWatchThread, nullptr, 0, nullptr);
+    } else if (!LocateByPrefix(g_img, sigs::kCameraStepExecute, step)) {
+        Log("camstep: camera update signature not unique, hit effects stay at the third-person position in first person");
+    } else {
+        g_camstep_installed.store(true);
+        Log("camstep: camera update hooked at %p (RVA 0x%llX): first person keeps the eye position for the whole frame (fp_persist=0 turns it off)",
+            reinterpret_cast<void*>(step), static_cast<unsigned long long>(step - g_img.base));
     }
-    {
-        uintptr_t gate = 0, freeze = 0;
-        if (!LocateByPrefix(g_img, sigs::kIsInputBlocked, gate)) {
-            Log("inventory: input gate signature not unique, the character keeps moving while the inventory is open");
-        } else if (MH_CreateHook(reinterpret_cast<void*>(gate), reinterpret_cast<void*>(&IsInputBlockedDetour), reinterpret_cast<void**>(&g_isblocked_orig)) != MH_OK ||
-                   MH_EnableHook(reinterpret_cast<void*>(gate)) != MH_OK) {
-            Log("inventory: hooking the input gate %p failed", reinterpret_cast<void*>(gate));
-        } else {
-            Log("inventory: input gate hooked at %p (RVA 0x%llX)", reinterpret_cast<void*>(gate), static_cast<unsigned long long>(gate - g_img.base));
-        }
-        if (!LocateByPrefix(g_img, sigs::kMenuFreezesCamera, freeze)) {
-            Log("inventory: camera freeze signature not unique, the camera keeps turning while the inventory is open");
-        } else if (MH_CreateHook(reinterpret_cast<void*>(freeze), reinterpret_cast<void*>(&MenuFreezeDetour), reinterpret_cast<void**>(&g_menufreeze_orig)) != MH_OK ||
-                   MH_EnableHook(reinterpret_cast<void*>(freeze)) != MH_OK) {
-            Log("inventory: hooking the camera freeze %p failed", reinterpret_cast<void*>(freeze));
-        } else {
-            Log("inventory: camera freeze hooked at %p (RVA 0x%llX)", reinterpret_cast<void*>(freeze), static_cast<unsigned long long>(freeze - g_img.base));
-        }
-        eldenring::ui::InventoryController::setOriginalHooks(g_isblocked_orig, g_menufreeze_orig);
+    uintptr_t gate = 0, freeze = 0;
+    if (!LocateByPrefix(g_img, sigs::kIsInputBlocked, gate)) {
+        Log("inventory: input gate signature not unique, the character keeps moving while the inventory is open");
+    } else {
+        Log("inventory: input gate hooked at %p (RVA 0x%llX)", reinterpret_cast<void*>(gate), static_cast<unsigned long long>(gate - g_img.base));
     }
-    {
-        uintptr_t react = 0, heavy = 0;
-        if (!LocateByPrefix(g_img, sigs::kHitReactDefault, react) || !LocateByPrefix(g_img, sigs::kHitReactHeavy, heavy)) {
-            Log("no_stagger: hit reaction signatures not unique, the experiment is unavailable");
-        } else if (MH_CreateHook(reinterpret_cast<void*>(react), reinterpret_cast<void*>(&HitReactDetour), reinterpret_cast<void**>(&g_hitreact_orig)) != MH_OK ||
-                   MH_EnableHook(reinterpret_cast<void*>(react)) != MH_OK ||
-                   MH_CreateHook(reinterpret_cast<void*>(heavy), reinterpret_cast<void*>(&HitReactHeavyDetour), reinterpret_cast<void**>(&g_hitreact_heavy_orig)) != MH_OK ||
-                   MH_EnableHook(reinterpret_cast<void*>(heavy)) != MH_OK) {
-            Log("no_stagger: hooking the hit reaction pickers failed");
-        } else {
-            Log("no_stagger: reaction pickers hooked at %p / %p (RVA 0x%llX / 0x%llX); no_stagger=1 in mc_er_steve.txt turns the experiment on",
-                reinterpret_cast<void*>(react), reinterpret_cast<void*>(heavy), static_cast<unsigned long long>(react - g_img.base),
-                static_cast<unsigned long long>(heavy - g_img.base));
-        }
+    if (!LocateByPrefix(g_img, sigs::kMenuFreezesCamera, freeze)) {
+        Log("inventory: camera freeze signature not unique, the camera keeps turning while the inventory is open");
+    } else {
+        Log("inventory: camera freeze hooked at %p (RVA 0x%llX)", reinterpret_cast<void*>(freeze), static_cast<unsigned long long>(freeze - g_img.base));
     }
-    {
-        uintptr_t kill = 0;
-        if (!LocateByPrefix(g_img, sigs::kKillChr, kill)) {
-            Log("kill: signature not unique, fall protection is unavailable");
-        } else if (MH_CreateHook(reinterpret_cast<void*>(kill), reinterpret_cast<void*>(&KillChrDetour), reinterpret_cast<void**>(&g_kill_orig)) != MH_OK ||
-                   MH_EnableHook(reinterpret_cast<void*>(kill)) != MH_OK) {
-            Log("kill: hooking %p failed", reinterpret_cast<void*>(kill));
-        } else {
-            Log("kill: the kill-character function is hooked at %p (RVA 0x%llX); while blocks exist or our jump is recent the player's kill is skipped", reinterpret_cast<void*>(kill),
-                static_cast<unsigned long long>(kill - g_img.base));
-        }
+    uintptr_t react = 0, heavy = 0;
+    if (!LocateByPrefix(g_img, sigs::kHitReactDefault, react) || !LocateByPrefix(g_img, sigs::kHitReactHeavy, heavy)) {
+        Log("no_stagger: hit reaction signatures not unique, the experiment is unavailable");
+    } else {
+        Log("no_stagger: reaction pickers hooked at %p / %p (RVA 0x%llX / 0x%llX); no_stagger=1 in mc_er_steve.txt turns the experiment on",
+            reinterpret_cast<void*>(react), reinterpret_cast<void*>(heavy), static_cast<unsigned long long>(react - g_img.base),
+            static_cast<unsigned long long>(heavy - g_img.base));
+    }
+    uintptr_t kill = 0;
+    if (!LocateByPrefix(g_img, sigs::kKillChr, kill)) {
+        Log("kill: signature not unique, fall protection is unavailable");
+    } else {
+        Log("kill: the kill-character function is hooked at %p (RVA 0x%llX); while blocks exist or our jump is recent the player's kill is skipped", reinterpret_cast<void*>(kill),
+            static_cast<unsigned long long>(kill - g_img.base));
     }
     if (FileExists(g_game_dir + "mc_er_nolos.txt")) {
         Log("los: disabled by mc_er_nolos.txt");
@@ -2715,12 +2460,13 @@ void SetupDamage() {
                 static_cast<unsigned long long>(ray - g_img.base), los::kStaticGeometryFilter);
         }
     }
-    // mc_er_require_victim.txt: wait for the victim to be the entity being updated (higher latency, zero race risk).
-    // By default false: immediately drain on the game thread without waiting for victim-specific update tick.
     g_require_victim_updating.store(FileExists(g_game_dir + "mc_er_require_victim.txt"));
     g_damage_enabled.store(true);
     Log("damage: enabled; ClampHP hooked at %p (RVA 0x%llX); press F8 to hit the nearest hostile enemy (require_victim_updating=%d)", reinterpret_cast<void*>(clamp),
         static_cast<unsigned long long>(clamp - g_img.base), g_require_victim_updating.load() ? 1 : 0);
+
+    eldenring::hooks::GameHooks::Instance().setupDamageHooks(
+        g_img.base, clamp, pdc, brk, guard, vf7, rcc, vfx, step, gate, freeze, react, heavy, kill);
 }
 
 // ---- overlay -------------------------------------------------------------------------------------------------

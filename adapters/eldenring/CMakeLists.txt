@@ -67,6 +67,7 @@ if(WIN32)
         src/world/voxel_world_runtime.cpp
         src/combat/combat_service.cpp
         src/input/hotkey_dispatcher.cpp
+        src/hooks/game_hooks.cpp
         eldenring_dinput8.def)
     set_target_properties(eldenring_adapter PROPERTIES
         OUTPUT_NAME dinput8

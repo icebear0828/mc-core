@@ -18,6 +18,22 @@ bool SafeCopy(uintptr_t address, void* out, size_t size) {
 #endif
 }
 
+bool SafeWrite(uintptr_t address, const void* in, size_t size) {
+    if (size == 0) return true;
+    if (address < 0x10000) return false;
+#ifdef _WIN32
+    __try {
+        std::memcpy(reinterpret_cast<void*>(address), in, size);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+#else
+    std::memcpy(reinterpret_cast<void*>(address), in, size);
+    return true;
+#endif
+}
+
 bool SafeWrite8(uintptr_t address, uint8_t value) {
     if (address < 0x10000) return false;
 #ifdef _WIN32
