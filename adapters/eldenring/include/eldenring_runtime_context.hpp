@@ -139,6 +139,12 @@ struct ModeConfig {
     std::atomic<bool> shield_offhand{false};
     std::atomic<bool> knockdown_fix{true};
     std::atomic<bool> los_enabled{false};
+    std::atomic<bool> mc_jump{false};
+    std::atomic<int> mc_jump_vk{0x20}; // VK_SPACE
+    std::atomic<bool> flying{false};
+    std::atomic<bool> bow_offhand{false};
+    std::atomic<float> bow_power{0.f};
+    std::atomic<float> bow_ticks{0.f};
 };
 
 struct PlayerSystems {
@@ -276,6 +282,12 @@ public:
         mode_.shield_offhand.store(false);
         mode_.knockdown_fix.store(true);
         mode_.los_enabled.store(false);
+        mode_.mc_jump.store(false);
+        mode_.mc_jump_vk.store(0x20);
+        mode_.flying.store(false);
+        mode_.bow_offhand.store(false);
+        mode_.bow_power.store(0.f);
+        mode_.bow_ticks.store(0.f);
 
         // Reset Player
         player_.survival = live::SurvivalState{};

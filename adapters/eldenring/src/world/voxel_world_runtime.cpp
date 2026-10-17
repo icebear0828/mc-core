@@ -53,6 +53,16 @@ void VoxelWorldRuntime::resetForTesting() {
     last_block_qpc_.QuadPart = 0;
 #endif
 
+    callbacks_ = WorldRuntimeCallbacks{};
+    is_key_down_ = [](int vk) -> bool {
+#ifdef _WIN32
+        return (GetAsyncKeyState(vk) & 0x8000) != 0;
+#else
+        (void)vk;
+        return false;
+#endif
+    };
+
     std::lock_guard<std::mutex> g(tnt_intent_mutex_);
     (void)tnt_damage_intents_.drain();
 }

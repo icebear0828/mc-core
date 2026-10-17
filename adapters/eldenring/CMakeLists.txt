@@ -66,11 +66,14 @@ if(WIN32)
         src/movement/player_locomotion.cpp
         src/world/voxel_world_runtime.cpp
         src/combat/combat_service.cpp
+        src/input/hotkey_dispatcher.cpp
         eldenring_dinput8.def)
     set_target_properties(eldenring_adapter PROPERTIES
         OUTPUT_NAME dinput8
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/eldenring"
         RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/eldenring"
         RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/eldenring"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/bin/eldenring"
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON)
     target_include_directories(eldenring_adapter PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include")
