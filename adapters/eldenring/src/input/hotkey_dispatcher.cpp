@@ -122,6 +122,9 @@ void HotkeyDispatcher::tick(float dt) {
     const bool inv_open = ui.inv_open.load(std::memory_order_relaxed);
     const bool mc_on = mode.mc_mode.load(std::memory_order_relaxed);
 
+    // Tick all pluggable mods
+    ctx.mods().tick(dt);
+
     // Melee & Feedback tick
     {
         std::lock_guard<std::mutex> g(combat.melee_mutex);
@@ -317,9 +320,12 @@ void HotkeyDispatcher::tick(float dt) {
     if (fg && !inv_open && want_suppress) {
         const bool f_down = queryKey('F');
         if (f_down && !prev_gameplay_f_) {
-            std::lock_guard<std::mutex> g(combat.melee_mutex);
-            combat.melee.inventory().swapMainAndOffhand(combat.melee.selectedSlot());
-            if (cb_.log) cb_.log("inventory: swapped main and offhand via F key");
+            mc::contracts::ModInputEvent f_ev{'F', true};
+            if (!ctx.mods().dispatchInput(f_ev)) {
+                std::lock_guard<std::mutex> g(combat.melee_mutex);
+                combat.melee.inventory().swapMainAndOffhand(combat.melee.selectedSlot());
+                if (cb_.log) cb_.log("inventory: swapped main and offhand via F key");
+            }
         }
         prev_gameplay_f_ = f_down;
 

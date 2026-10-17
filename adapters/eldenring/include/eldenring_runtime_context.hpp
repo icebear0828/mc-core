@@ -20,6 +20,7 @@
 #include "eldenring_tnt.hpp"
 #include "eldenring_xp.hpp"
 #include "mc/consumables.hpp"
+#include "mc/contracts/mod_manager.hpp"
 
 namespace eldenring {
 
@@ -224,6 +225,9 @@ public:
     UiSystems& ui() { return ui_; }
     const UiSystems& ui() const { return ui_; }
 
+    mc::contracts::ModManager& mods() { return mods_; }
+    const mc::contracts::ModManager& mods() const { return mods_; }
+
     creative::GameMode currentGameMode() const {
         return static_cast<creative::GameMode>(mode_.game_mode.load(std::memory_order_relaxed));
     }
@@ -346,6 +350,9 @@ public:
 
         // Clear Command Queue
         command_queue_.clear();
+
+        // Reset and clear mods
+        mods_.clear();
     }
 
 private:
@@ -355,6 +362,7 @@ private:
     WorldSystems world_;
     CombatSystems combat_;
     UiSystems ui_;
+    mc::contracts::ModManager mods_;
     ThreadSafeCommandQueue<InputCommand, 256> command_queue_;
 };
 
