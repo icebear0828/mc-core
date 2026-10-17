@@ -8,6 +8,7 @@
 #include "eldenring_runtime_context.hpp"
 #include "mc/inventory.hpp"
 #include "mc/consumables.hpp"
+#include "mc/contracts/combat_adapter.hpp"
 
 using namespace eldenring::combat;
 using namespace eldenring::live;
@@ -371,3 +372,278 @@ TEST(EldenRingCombatService, ShieldBlocksExplosionDamageWhenFacingDetonation) {
     int unblocked_dmg = svc.evaluateExplosionShieldBlock(kP, exp_behind, raw_dmg, ctx);
     EXPECT_EQ(unblocked_dmg, raw_dmg);
 }
+
+class TestCombatPort : public mc::ICombatAdapter {
+public:
+    bool processHit(const mc::HitIntent&) override { return true; }
+    float getMaxHealth(mc::EntityId) override { return 100.f; }
+    void triggerStaggerOrRagdoll(mc::EntityId, const mc::Vec3&, float) override {}
+};
+
+TEST(EldenRingCombatService, ClickAttackTargetsCrosshairEnemyAndCalculatesSweep) {
+    auto& svc = CombatService::Instance();
+    svc.resetForTesting();
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+    ctx.mode().damage_scale.store(20.0f);
+    ctx.mode().damage_hp_percent.store(0.02f);
+    ctx.mode().sweep_radius.store(3.0f);
+
+    TestCombatMem mem = makeTestWorld();
+    const uintptr_t kP = kPlayer;
+    float p_feet[3] = {0.f, 0.f, 0.f};
+
+    CombatCallbacks cb{};
+    cb.get_player_chr = [&]() { return kP; };
+    cb.read_physics_pos = [&](uintptr_t chr, float out_pos[3]) {
+        if (chr == kP) { std::memcpy(out_pos, p_feet, sizeof(p_feet)); return true; }
+        return false;
+    };
+    cb.read_camera = [](CameraPose& cam) {
+        // Looking directly forward down +Z
+        cam.forward[0] = 0.f; cam.forward[1] = 0.f; cam.forward[2] = 1.f;
+        cam.position[0] = 0.f; cam.position[1] = 1.6f; cam.position[2] = 0.f;
+        return true;
+    };
+    cb.reader = &mem;
+    cb.image_base = kBase;
+    svc.setCallbacks(cb);
+
+    // Populate EntityManager cache with 3 enemies:
+    // 1: Primary target directly in front at (0, 0, 2)
+    // 2: Secondary target near primary at (1, 0, 2) (distance = 1.0m <= 3.0m sweep radius)
+    // 3: Far target at (10, 0, 10) (outside sweep radius)
+    EnemyInfo e1{};
+    e1.chr = 0x7001; e1.hp = 100; e1.max_hp = 100; e1.hostile = true;
+    e1.rel_x = 0.f; e1.rel_y = 0.f; e1.rel_z = 2.f;
+
+    EnemyInfo e2{};
+    e2.chr = 0x7002; e2.hp = 100; e2.max_hp = 100; e2.hostile = true;
+    e2.rel_x = 1.f; e2.rel_y = 0.f; e2.rel_z = 2.f;
+
+    EnemyInfo e3{};
+    e3.chr = 0x7003; e3.hp = 100; e3.max_hp = 100; e3.hostile = true;
+    e3.rel_x = 10.f; e3.rel_y = 0.f; e3.rel_z = 10.f;
+
+    EntityManager::instance().updateCacheFromGameThread({e1, e2, e3});
+
+    mc::MeleeController melee;
+    melee.inventory().setSlot(0, {mc::ItemId::DiamondSword, 1}); // Sword enables sweeping edge
+    TestCombatPort port;
+    mc::CombatEngine engine(port);
+    DamageQueue queue;
+
+    // Full charged attack on the ground -> sweep attack triggers
+    svc.clickAttack(1.0f, melee, engine, queue, ctx);
+
+    // Queue should have primary target + secondary sweep target
+    EXPECT_EQ(queue.pending(), 2u);
+
+    // Drain and verify
+    DrainContext dc;
+    dc.reader = &mem;
+    dc.image_base = kBase;
+    dc.on_game_thread = true;
+    dc.max_per_drain = 10;
+    std::vector<uintptr_t> victims;
+    dc.invoke = [&](uintptr_t, uintptr_t, void*) {};
+    for (const auto& r : queue.drain(dc)) {
+        victims.push_back(r.request.victim_chr);
+        if (r.request.victim_chr == e1.chr) {
+            // Primary hit has sweep tag bit 1
+            EXPECT_TRUE(r.request.tag & 2u);
+        } else if (r.request.victim_chr == e2.chr) {
+            // Secondary sweep hit has sweep tag bit 1
+            EXPECT_TRUE(r.request.tag & 2u);
+        }
+    }
+    EXPECT_EQ(victims.size(), 2u);
+    EXPECT_NE(std::find(victims.begin(), victims.end(), e1.chr), victims.end());
+    EXPECT_NE(std::find(victims.begin(), victims.end(), e2.chr), victims.end());
+}
+
+TEST(EldenRingCombatService, EnqueueNearestHostilePicksClosestTarget) {
+    auto& svc = CombatService::Instance();
+    svc.resetForTesting();
+
+    TestCombatMem mem = makeTestWorld();
+    const uintptr_t kP = kPlayer;
+    float p_feet[3] = {0.f, 0.f, 0.f};
+
+    CombatCallbacks cb{};
+    cb.get_player_chr = [&]() { return kP; };
+    cb.read_physics_pos = [&](uintptr_t chr, float out_pos[3]) {
+        if (chr == kP) { std::memcpy(out_pos, p_feet, sizeof(p_feet)); return true; }
+        return false;
+    };
+    cb.reader = &mem;
+    cb.image_base = kBase;
+    svc.setCallbacks(cb);
+
+    EnemyInfo near_e{};
+    near_e.chr = 0x8001; near_e.hp = 100; near_e.max_hp = 100; near_e.hostile = true;
+    near_e.rel_x = 0.f; near_e.rel_y = 0.f; near_e.rel_z = 5.f;
+
+    EnemyInfo far_e{};
+    far_e.chr = 0x8002; far_e.hp = 100; far_e.max_hp = 100; far_e.hostile = true;
+    far_e.rel_x = 0.f; far_e.rel_y = 0.f; far_e.rel_z = 15.f;
+
+    EntityManager::instance().updateCacheFromGameThread({far_e, near_e});
+
+    DamageQueue queue;
+    svc.enqueueNearestHostile(queue, 100, 25.0f);
+
+    EXPECT_EQ(queue.pending(), 1u);
+    DrainContext dc;
+    dc.reader = &mem;
+    dc.image_base = kBase;
+    dc.on_game_thread = true;
+    dc.max_per_drain = 10;
+    dc.invoke = [](uintptr_t, uintptr_t, void*) {};
+    auto drained = queue.drain(dc);
+    ASSERT_EQ(drained.size(), 1u);
+    EXPECT_EQ(drained[0].request.victim_chr, near_e.chr);
+    EXPECT_EQ(drained[0].request.base_damage, 50);
+}
+
+TEST(EldenRingCombatService, HandleProjectileHitDetectsPlayerShotAndOverridesDamage) {
+    auto& svc = CombatService::Instance();
+    svc.resetForTesting();
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+    svc.setArrowDamage(true);
+
+    TestCombatMem mem;
+    const uintptr_t kP = 0x1000;
+    const uintptr_t kVictim = 0x9000;
+    const uintptr_t kVictimData = 0x9500;
+    const uintptr_t kModule = 0x9800;
+    const uintptr_t kHitCtx = 0xA000;
+
+    mem.region(kVictim, 0x100);
+    mem.region(kVictimData, 0x100);
+    mem.region(kModule, 0x100);
+    mem.region(kHitCtx, 0x300);
+
+    // Module points to victim
+    mem.put<uint64_t>(kModule + layout::kOwnerInDataModule, kVictim);
+
+    // Hit context fields
+    uint8_t kind = 2; // Crossbow bolt hit (kind 2 in ProcessDamageContext)
+    int32_t engine_damage = 35;
+    uint64_t attacker_id = kP;
+    uint64_t victim_id = kVictim;
+    mem.put<uint8_t>(kHitCtx + 0xDA, kind);
+    mem.put<uint64_t>(kHitCtx + layout::kHitAttacker, attacker_id);
+    mem.put<uint64_t>(kHitCtx + layout::kHitVictim, victim_id);
+    mem.put<int32_t>(kHitCtx + layout::kHitDamage, engine_damage);
+
+    std::string played_sound;
+    bool override_called = false;
+    int override_val = 0;
+
+    CombatCallbacks cb{};
+    cb.get_player_chr = [&]() { return kP; };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.read(a, d, s); };
+    cb.read_vitals = [&](uintptr_t chr, Vitals& v) {
+        if (chr == kVictim) { v.hp = 100; v.max_hp = 100; return true; }
+        return false;
+    };
+    cb.play_sound = [&](const char* snd, float) { played_sound = snd; };
+    cb.override_final_damage = [&](uint8_t*, uintptr_t, uintptr_t, int val, int* eng_val) {
+        override_called = true;
+        override_val = val;
+        *eng_val = engine_damage;
+        return true;
+    };
+    svc.setCallbacks(cb);
+
+    // Record dummy spawn bullet in mem so last_bullet_id is captured
+    const uintptr_t kSpawnReq = 0xB000;
+    mem.region(kSpawnReq, 0x100);
+    uint32_t bolt_id = eldenring::bullet::kBoltBulletId;
+    mem.put<uint32_t>(kSpawnReq + 0x1C, bolt_id);
+    svc.onSpawnBullet(reinterpret_cast<const void*>(kSpawnReq));
+
+    HitFeedback feedback;
+    svc.handleProjectileHit(reinterpret_cast<void*>(kModule), reinterpret_cast<void*>(kP),
+                            reinterpret_cast<uint8_t*>(kHitCtx), feedback, ctx);
+
+    EXPECT_EQ(played_sound, "entity.arrow.hit");
+    EXPECT_TRUE(override_called);
+    EXPECT_GT(override_val, 0);
+}
+
+TEST(EldenRingCombatService, QueueBulletFireThrottlesAndSignalsPending) {
+    auto& svc = CombatService::Instance();
+    svc.resetForTesting();
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+
+    // Enable bullet fire
+    svc.setBulletFireEnabled(true);
+
+    // Without template -> cannot fire
+    EXPECT_FALSE(svc.queueBulletFire(9.0f, ctx));
+
+    // Load default template
+    svc.loadBulletTemplate("");
+    EXPECT_TRUE(svc.hasValidBulletTemplate());
+
+    // First queue -> success
+    EXPECT_TRUE(svc.queueBulletFire(9.0f, ctx));
+    EXPECT_TRUE(ctx.mode().bullet_fire_pending.load());
+
+    // Immediate second queue -> throttled
+    EXPECT_FALSE(svc.queueBulletFire(9.0f, ctx));
+}
+
+TEST(EldenRingCombatService, RaycastAndLineOfSightDelegation) {
+    auto& svc = CombatService::Instance();
+    svc.resetForTesting();
+
+    TestCombatMem mem;
+    const uintptr_t kHavok = 0x30000;
+    const uintptr_t kPhysWorld = 0x40000;
+
+    mem.region(kBase + los::kHavokManGlobalRva, 8);
+    mem.region(kHavok, 0x100);
+    mem.put<uint64_t>(kBase + los::kHavokManGlobalRva, kHavok);
+    mem.put<uint64_t>(kHavok, kBase + los::kHavokManVtableRva);
+    mem.put<uint64_t>(kHavok + los::kPhysWorldInHavokMan, kPhysWorld);
+
+    CombatCallbacks cb{};
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.read(a, d, s); };
+    cb.image_base = kBase;
+    svc.setCallbacks(cb);
+
+    static bool s_ray_called = false;
+    svc.setRaycastFn([](void* world, uint32_t filter, const HkVec4* from, const HkVec4* disp,
+                        HkVec4* out_pos, HkVec4* out_normal, float* out_fraction) -> bool {
+        s_ray_called = true;
+        (void)world; (void)filter; (void)from; (void)disp; (void)out_pos; (void)out_normal;
+        *out_fraction = 0.5f;
+        return true;
+    });
+
+    float from[3] = {0.f, 0.f, 0.f};
+    float disp[3] = {0.f, 0.f, 10.f};
+
+    RayResult r = svc.castStaticRay(from, disp);
+    EXPECT_TRUE(s_ray_called);
+    EXPECT_TRUE(r.ok);
+    EXPECT_TRUE(r.hit);
+    EXPECT_FLOAT_EQ(r.fraction, 0.5f);
+
+    float p_feet[3] = {0.f, 0.f, 0.f};
+    float v_feet[3] = {0.f, 0.f, 10.f};
+    bool can_see = svc.playerCanSee(p_feet, v_feet);
+    // Hit at fraction 0.5 * 10m = 5m. Not near start (<0.3) and not near end (>10 - 0.35) -> BLOCKED
+    EXPECT_FALSE(can_see);
+}
+
