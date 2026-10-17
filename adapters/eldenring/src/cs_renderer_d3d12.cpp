@@ -366,8 +366,12 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
     list->RSSetViewports(1, &vp);
     list->RSSetScissorRects(1, &sc);
 
-    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-    list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    if (dsv.ptr != 0) {
+        list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+        list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    } else {
+        list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    }
 
     list->SetPipelineState(pso_);
     list->SetGraphicsRootSignature(root_);

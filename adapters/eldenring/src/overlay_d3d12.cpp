@@ -1352,8 +1352,22 @@ void RenderFrame(IDXGISwapChain* sc) {
     } else {
         g_mob_registry.clear();
     }
-    if (steve.first_person && !steve.dead && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
-        g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
+    auto& r_mode = eldenring::RuntimeContext::Instance().mode();
+    const bool cs_active = r_mode.cs_mode.load() && g_cs.ready();
+    const bool mc_fp_active = !cs_active && steve.first_person && !steve.dead && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() && g_steve.ensureDepth(g_s.device, g_s.width, g_s.height);
+
+    if (cs_active && !steve.dead) {
+        namespace fp = eldenring::fp;
+        const mc::rig::Mat4 proj = mc::rig::perspectiveLH(70.f * fp::kDeg, static_cast<float>(g_s.width) / static_cast<float>(g_s.height), 0.05f, 20.f);
+        D3D12_GPU_DESCRIPTOR_HANDLE skin_table = g_depth_gpu;
+        if (g_steve.ready()) {
+            g_steve.ensureDepth(g_s.device, g_s.width, g_s.height);
+        }
+        const D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_steve.ready() ? g_steve.dsvHandle() : D3D12_CPU_DESCRIPTOR_HANDLE{};
+        g_cs.tick(dt, r_mode.cs_knife_state.load(), r_mode.cs_knife_anim_time.load());
+        g_cs.draw(g_s.list, g_s.srv_heap, skin_table, g_s.width, g_s.height, proj, f.rtv, dsv);
+        g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
+    } else if (mc_fp_active) {
         namespace fp = eldenring::fp;
         // The hand: lowered/raised by the hotbar and the attack cooldown, swaying behind the view, bobbing with the steps.
         const mc::ItemId wanted = static_cast<mc::ItemId>(steve.held_item);
@@ -1380,28 +1394,22 @@ void RenderFrame(IDXGISwapChain* sc) {
         const mc::ItemId shown = eldenring::bow::shownBow(g_hand.shownItem(), drawing_bow ? steve.bow_charge : 0.f); // the bow with the arrow nocked while it is drawn
         const mc::rig::Mat4 proj = mc::rig::perspectiveLH(70.f * fp::kDeg, static_cast<float>(g_s.width) / static_cast<float>(g_s.height), 0.05f, 20.f);
         D3D12_GPU_DESCRIPTOR_HANDLE skin_table = g_depth_gpu; // slots 1 and 2: depth, skin
-        auto& r_mode = eldenring::RuntimeContext::Instance().mode();
-        if (r_mode.cs_mode.load() && g_cs.ready()) {
-            g_cs.tick(dt, r_mode.cs_knife_state.load(), r_mode.cs_knife_anim_time.load());
-            const D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_steve.ready() ? g_steve.dsvHandle() : D3D12_CPU_DESCRIPTOR_HANDLE{};
-            g_cs.draw(g_s.list, g_s.srv_heap, skin_table, g_s.width, g_s.height, proj, f.rtv, dsv);
-        } else {
-            g_steve.drawFirstPerson(g_s.list, g_s.srv_heap, skin_table, g_item_table_gpu, g_s.width, g_s.height, proj, fp::toHost(arm_world),
-                                    fp::toHost(item_world), static_cast<uint16_t>(shown), f.rtv);
-            // Offhand item in first person (e.g. shield in offhand, torch, etc.)
-            if (steve.offhand_item != 0) {
-                const bool off_is_shield = static_cast<mc::ItemId>(steve.offhand_item) == mc::ItemId::Shield;
-                const bool off_block = eldenring::blocks::blockForItem(static_cast<mc::ItemId>(steve.offhand_item)) != mc::BlockId::Air;
-                const fp::M4 off_pose = fp::offhandItemPose(0.f); // the offhand only follows the arm transform: raised or not is the display transform
-                const fp::M4 off_disp = off_is_shield ? fp::shieldFpDisplay(true, steve.blocking && steve.block_offhand)
-                                                      : (off_block ? fp::blockDisplay() : fp::itemDisplay());
-                const fp::M4 off_world = fp::mul(fp::mul(base, off_pose), off_disp);
-                const uint16_t off_shown = steve.bow_offhand && steve.bow_ticks > 0.f
-                                               ? static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.offhand_item), steve.bow_charge))
-                                               : steve.offhand_item;
-                g_steve.drawFirstPersonItem(g_s.list, g_s.srv_heap, g_item_table_gpu, g_s.width, g_s.height, proj, fp::toHost(off_world),
-                                            off_shown, f.rtv);
-            }
+
+        g_steve.drawFirstPerson(g_s.list, g_s.srv_heap, skin_table, g_item_table_gpu, g_s.width, g_s.height, proj, fp::toHost(arm_world),
+                                fp::toHost(item_world), static_cast<uint16_t>(shown), f.rtv);
+        // Offhand item in first person (e.g. shield in offhand, torch, etc.)
+        if (steve.offhand_item != 0) {
+            const bool off_is_shield = static_cast<mc::ItemId>(steve.offhand_item) == mc::ItemId::Shield;
+            const bool off_block = eldenring::blocks::blockForItem(static_cast<mc::ItemId>(steve.offhand_item)) != mc::BlockId::Air;
+            const fp::M4 off_pose = fp::offhandItemPose(0.f); // the offhand only follows the arm transform: raised or not is the display transform
+            const fp::M4 off_disp = off_is_shield ? fp::shieldFpDisplay(true, steve.blocking && steve.block_offhand)
+                                                  : (off_block ? fp::blockDisplay() : fp::itemDisplay());
+            const fp::M4 off_world = fp::mul(fp::mul(base, off_pose), off_disp);
+            const uint16_t off_shown = steve.bow_offhand && steve.bow_ticks > 0.f
+                                           ? static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.offhand_item), steve.bow_charge))
+                                           : steve.offhand_item;
+            g_steve.drawFirstPersonItem(g_s.list, g_s.srv_heap, g_item_table_gpu, g_s.width, g_s.height, proj, fp::toHost(off_world),
+                                        off_shown, f.rtv);
         }
         g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr); // ImGui draws without a depth view
     }
