@@ -369,5 +369,45 @@ TEST(EldenRingMobs, SwellScalesBonesOutwardFromFeet) {
     EXPECT_FLOAT_EQ(draws[1].parts[head].m[10], 1.35f);
 }
 
+TEST(EldenRingMobs, NamedModelDispatchDoesNotFallbackToCreeperForHumanoidMobs) {
+    MobRegistry r;
+    mc::model::EntityModel creeper_model;
+    creeper_model.identifier = "geometry.creeper";
+    creeper_model.bones.resize(6);
+    creeper_model.bones[0].name = "body";
+    creeper_model.bones[1].name = "head";
+    creeper_model.bones[2].name = "leg0";
+    creeper_model.bones[3].name = "leg1";
+    creeper_model.bones[4].name = "leg2";
+    creeper_model.bones[5].name = "leg3";
+
+    r.registerModel("creeper", &creeper_model);
+
+    MobSnapshot creeper_snap = at(1, 0.f, 0.f);
+    creeper_snap.model_type = "creeper";
+
+    MobSnapshot zombie_snap = at(2, 5.f, 5.f);
+    zombie_snap.model_type = "zombie";
+
+    MobSnapshot skeleton_snap = at(3, 10.f, 10.f);
+    skeleton_snap.model_type = "skeleton";
+
+    auto draws = r.update(1.f / 60.f, {creeper_snap, zombie_snap, skeleton_snap});
+    ASSERT_EQ(draws.size(), 3u);
+
+    // Creeper must use generic bones from creeper_model
+    EXPECT_TRUE(draws[0].generic);
+    EXPECT_EQ(draws[0].bones.size(), 6u);
+    EXPECT_EQ(draws[0].model_type, "creeper");
+
+    // Zombie must use humanoid parts (not creeper legs!)
+    EXPECT_FALSE(draws[1].generic);
+    EXPECT_EQ(draws[1].model_type, "zombie");
+
+    // Skeleton must use humanoid parts (not creeper legs!)
+    EXPECT_FALSE(draws[2].generic);
+    EXPECT_EQ(draws[2].model_type, "skeleton");
+}
+
 
 

@@ -171,6 +171,23 @@ def test_export_mob_skin_writes_the_zombie_skin_unchanged(tmp_path):
     assert written.getpixel((0, 0)) == (40, 120, 60, 255)
 
 
+def test_export_mob_skin_writes_the_skeleton_skin(tmp_path):
+    import zipfile
+    from extract_mc_assets import export_mob_skin
+
+    jar_path = tmp_path / "client.jar"
+    skin = _solid((64, 64), (180, 180, 180, 255))
+    skin.putpixel((5, 5), (50, 50, 50, 255))
+    with zipfile.ZipFile(jar_path, "w") as z:
+        z.writestr("assets/minecraft/textures/entity/skeleton/skeleton.png", _png(skin))
+
+    out = export_mob_skin(jar_path, tmp_path / "out", "skeleton")
+    assert out == tmp_path / "out" / "skeleton.png"
+    written = Image.open(out).convert("RGBA")
+    assert written.size == (64, 64)
+    assert written.getpixel((5, 5)) == (50, 50, 50, 255)
+
+
 def test_export_mob_skin_rejects_unknown_mobs_missing_entries_and_wrong_sizes(tmp_path):
     import zipfile
     from extract_mc_assets import export_mob_skin

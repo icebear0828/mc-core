@@ -69,6 +69,7 @@ public:
         if (!name.empty()) {
             auto it = models_.find(std::string(name));
             if (it != models_.end()) return it->second;
+            return nullptr;
         }
         return model_;
     }

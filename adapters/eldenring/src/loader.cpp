@@ -983,16 +983,21 @@ bool QueueSummon(const char* source, const char* requested_mob = nullptr) {
     p.pos[2] = pos[2];
     p.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]);
 
-    std::string model_type = requested_mob ? requested_mob : "creeper"; // Default to creeper if unspecified
-    std::vector<uint8_t> summon_txt;
-    if (ReadFileAll(g_game_dir + "mc_er_summon.txt", summon_txt) && !summon_txt.empty()) {
-        std::string content(reinterpret_cast<const char*>(summon_txt.data()), summon_txt.size());
-        for (char& c : content) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        if (content.find("creeper") != std::string::npos) model_type = "creeper";
-        else if (content.find("skeleton") != std::string::npos) model_type = "skeleton";
-        else if (content.find("iron_golem") != std::string::npos || content.find("golem") != std::string::npos) model_type = "iron_golem";
-        else if (content.find("wolf") != std::string::npos) model_type = "wolf";
-        else if (content.find("zombie") != std::string::npos) model_type = "zombie";
+    std::string model_type;
+    if (requested_mob && requested_mob[0] != '\0') {
+        model_type = requested_mob;
+    } else {
+        model_type = "creeper"; // Default for generic hotkey F2
+        std::vector<uint8_t> summon_txt;
+        if (ReadFileAll(g_game_dir + "mc_er_summon.txt", summon_txt) && !summon_txt.empty()) {
+            std::string content(reinterpret_cast<const char*>(summon_txt.data()), summon_txt.size());
+            for (char& c : content) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (content.find("creeper") != std::string::npos) model_type = "creeper";
+            else if (content.find("skeleton") != std::string::npos) model_type = "skeleton";
+            else if (content.find("iron_golem") != std::string::npos || content.find("golem") != std::string::npos) model_type = "iron_golem";
+            else if (content.find("wolf") != std::string::npos) model_type = "wolf";
+            else if (content.find("zombie") != std::string::npos) model_type = "zombie";
+        }
     }
 
     uint64_t id = g_virtual_summons.spawnMob(model_type, p, 2.5f);
@@ -2217,33 +2222,33 @@ void SetupOverlay() {
                 Log("skin: %s missing or not 64x64, the figure stays flat grey-brown (extract it with tools/extract_mc_assets.py --export-steve-skin)", skin_path.c_str());
             }
         }
-        {   // the mobs' model: check creeper.geo.json first, then fallback to zombie.geo.json
+        {   // the mobs' models: register creeper model
+            const std::string creeper_model_path = g_game_dir + "mods\\mc_adapter\\models\\creeper.geo.json";
             std::vector<uint8_t> json;
-            std::string model_path = g_game_dir + "mods\\mc_adapter\\models\\creeper.geo.json";
-            if (!FileExists(model_path)) {
-                model_path = g_game_dir + "mods\\mc_adapter\\models\\zombie.geo.json";
-            }
-            std::optional<mc::model::EntityModel> model;
-            if (ReadFileAll(model_path, json)) model = mc::model::EntityModel::fromJson(std::string_view(reinterpret_cast<const char*>(json.data()), json.size()));
-            if (model && !model->bones.empty()) {
-                erov::SetMobModel(*model);
-                Log("mobs: model %s: %s, %zu bones", model_path.c_str(), model->identifier.c_str(), model->bones.size());
+            if (ReadFileAll(creeper_model_path, json)) {
+                auto model = mc::model::EntityModel::fromJson(std::string_view(reinterpret_cast<const char*>(json.data()), json.size()));
+                if (model && !model->bones.empty()) {
+                    erov::SetMobModelNamed("creeper", *model);
+                    erov::SetMobModel(*model); // default fallback
+                    Log("mobs: model creeper %s: %s, %zu bones", creeper_model_path.c_str(), model->identifier.c_str(), model->bones.size());
+                }
             } else {
-                Log("mobs: no model at %s, the mobs use the Steve rig", model_path.c_str());
+                Log("mobs: no creeper model at %s", creeper_model_path.c_str());
             }
         }
         {
-            std::vector<uint8_t> mob_skin;
-            unsigned zw = 0, zh = 0;
-            std::string skin_path = g_game_dir + "mods\\mc_adapter\\creeper.png";
-            if (!FileExists(skin_path)) {
-                skin_path = g_game_dir + "mods\\mc_adapter\\zombie.png";
-            }
-            if (erov::DecodePngFile(skin_path, mob_skin, zw, zh) && zw == 64 && (zh == 64 || zh == 32)) {
-                erov::SetMobSkin(mob_skin.data(), zw, zh);
-                Log("skin: external file %s (%ux%u)", skin_path.c_str(), zw, zh);
-            } else {
-                Log("skin: %s missing or not 64x64/64x32", skin_path.c_str());
+            // Load skins for all supported mobs: creeper, zombie, skeleton
+            const std::vector<std::string> mob_names = {"creeper", "zombie", "skeleton"};
+            for (const auto& name : mob_names) {
+                std::vector<uint8_t> mob_skin;
+                unsigned mw = 0, mh = 0;
+                const std::string skin_path = g_game_dir + "mods\\mc_adapter\\" + name + ".png";
+                if (erov::DecodePngFile(skin_path, mob_skin, mw, mh) && mw == 64 && (mh == 64 || mh == 32)) {
+                    erov::SetMobSkinNamed(name.c_str(), mob_skin.data(), mw, mh);
+                    Log("skin: loaded %s (%ux%u) from %s", name.c_str(), mw, mh, skin_path.c_str());
+                } else {
+                    Log("skin: %s (%s) missing or not 64x64/64x32", name.c_str(), skin_path.c_str());
+                }
             }
         }
         g_steve_enabled.store(true);

@@ -94,6 +94,15 @@ def main():
         shutil.copy2(src_creeper, target_creeper)
         print(f"[CREEPER DEPLOY] Copied authentic creeper skin to: {target_creeper}")
 
+    # Deploy skeleton texture
+    src_skeleton = root / "build" / "authentic_atlas" / "skeleton.png"
+    if not src_skeleton.is_file():
+        src_skeleton = root / "assets" / "source" / "textures" / "skeleton.png"
+    if src_skeleton.is_file():
+        target_skeleton = game_dir / "mods" / "mc_adapter" / "skeleton.png"
+        shutil.copy2(src_skeleton, target_skeleton)
+        print(f"[SKELETON DEPLOY] Copied skeleton skin to: {target_skeleton}")
+
     # Deploy golden crossbow bolt template (mc_er_bullet.bin)
     src_bullet = root / "tools" / "reverse" / "eldenring" / "templates" / "mc_er_bullet.bin"
     if src_bullet.is_file():
@@ -112,7 +121,27 @@ def main():
                 print(f"[ERROR] Bullet template SHA256 mismatch for {target_bullet}!")
                 sys.exit(1)
 
-    print("[SUCCESS] Physical deployment verified! SHA256 matched 100%.")
+    # Verify deployed atlas egg pixels
+    deployed_atlas = game_dir / "mods" / "mc_adapter" / "mc_hud_atlas.png"
+    if deployed_atlas.is_file():
+        from PIL import Image
+        img = Image.open(deployed_atlas).convert("RGBA")
+        w, h = img.size
+        regions = {
+            "zombie_spawn_egg": (0.716797, 0.320312, 0.748047, 0.351562),
+            "creeper_spawn_egg": (0.785156, 0.369141, 0.816406, 0.400391),
+            "skeleton_spawn_egg": (0.818359, 0.369141, 0.849609, 0.400391),
+        }
+        for name, (u0, v0, u1, v1) in regions.items():
+            box = (int(round(u0 * w)), int(round(v0 * h)), int(round(u1 * w)), int(round(v1 * h)))
+            cropped = img.crop(box)
+            solid_count = sum(1 for y in range(cropped.height) for x in range(cropped.width) if cropped.getpixel((x, y))[3] > 0)
+            print(f"[ATLAS VERIFY] {name}: {solid_count}/256 solid pixels")
+            if solid_count < 100:
+                print(f"[ERROR] {name} has only {solid_count}/256 solid pixels (expected >= 100)!")
+                sys.exit(1)
+
+    print("[SUCCESS] Physical deployment verified! SHA256 and pixel validation matched 100%.")
 
 
 if __name__ == "__main__":

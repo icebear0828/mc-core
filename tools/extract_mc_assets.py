@@ -1192,7 +1192,10 @@ def export_steve_skin(client_jar: Path, out_dir: Path) -> Path:
 
 
 # Humanoid mobs whose 64x64 skin has the player's UV layout, so the Steve rig can wear it. (name -> path inside the jar's textures/)
-_MOB_SKINS = {"zombie": "entity/zombie/zombie.png"}
+_MOB_SKINS = {
+    "zombie": "entity/zombie/zombie.png",
+    "skeleton": "entity/skeleton/skeleton.png",
+}
 
 
 def _limb_rects(u0: int, v0: int, d: int = 4, w: int = 4, h: int = 12) -> dict[str, tuple[int, int, int, int]]:
@@ -1239,7 +1242,11 @@ def export_mob_skin(client_jar: Path, out_dir: Path, mob: str) -> Path:
         if entry not in jar.namelist():
             raise FileNotFoundError(f"{entry} not found in {client_jar}")
         skin = Image.open(io.BytesIO(jar.read(entry))).convert("RGBA")
-    if skin.size != (64, 64):
+    if mob == "skeleton" and skin.size == (64, 32):
+        canvas = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        canvas.paste(skin, (0, 0))
+        skin = canvas
+    elif skin.size != (64, 64):
         raise ValueError(f"expected a 64x64 skin, got {skin.size}")
     skin = mirror_empty_left_limbs(skin)
     out_dir.mkdir(parents=True, exist_ok=True)
