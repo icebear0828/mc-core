@@ -82,12 +82,14 @@ add_executable(mc_tests
     test_eldenring_combat_service.cpp
     test_eldenring_virtual_summon.cpp
     test_eldenring_hotkey_dispatcher.cpp
+    test_eldenring_game_hooks.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/ui/inventory_controller.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/ui/hud_bridge.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/movement/player_locomotion.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/world/voxel_world_runtime.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/combat/combat_service.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/input/hotkey_dispatcher.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/hooks/game_hooks.cpp
 )
 
 
@@ -102,6 +104,10 @@ target_link_libraries(mc_tests
         eldenring_live
         GTest::gtest_main
 )
+
+if(WIN32 AND TARGET minhook)
+    target_link_libraries(mc_tests PRIVATE minhook)
+endif()
 
 include(GoogleTest)
 gtest_discover_tests(mc_tests)

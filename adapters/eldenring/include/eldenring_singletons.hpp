@@ -62,6 +62,7 @@ inline std::optional<uint32_t> locateGlobalRva(const uint8_t* image, size_t size
 // The singleton instance behind the global at `rva`, only when it carries the expected RTTI type. 0 otherwise
 // (not created yet, unreadable, or the signature found some other global).
 inline uintptr_t readSingleton(const IMemoryReader& reader, uintptr_t image_base, uint32_t global_rva, const SingletonSig& sig) {
+    if (global_rva == 0) return 0;
     uint64_t instance = 0;
     if (!reader.read(image_base + global_rva, &instance, sizeof(instance)) || instance == 0) return 0;
     const auto object = static_cast<uintptr_t>(instance);

@@ -36,6 +36,7 @@ bool SehGuard(F& f) {
 }
 
 bool SafeCopy(uintptr_t address, void* out, size_t size);
+bool SafeWrite(uintptr_t address, const void* in, size_t size);
 bool SafeWrite8(uintptr_t address, uint8_t value);
 bool SafeWrite32(uintptr_t address, uint32_t value);
 
