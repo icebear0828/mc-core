@@ -94,7 +94,6 @@ private:
     bool prev8_{false};
     bool prev6_{false};
     bool prev7_{false};
-    bool prev_digit_[9]{};
     bool prev_space_{false};
     bool prev9_{false};
     bool prev10_{false};

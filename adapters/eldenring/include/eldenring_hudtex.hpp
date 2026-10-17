@@ -108,7 +108,9 @@ inline const mc::hud::HudUV* uvForItem(mc::ItemId item) {
         case ItemId::Bread: return &mc::hud::kUV_ITEM_BREAD;
         case ItemId::CookedBeef: return &mc::hud::kUV_ITEM_COOKED_BEEF;
         case ItemId::FireworkRocket: return &mc::hud::kUV_ITEM_FIREWORK_ROCKET;
-        case ItemId::ZombieSpawnEgg: return &mc::hud::kUV_ITEM_ZOMBIE_SPAWN_EGG;
+        case ItemId::ZombieSpawnEgg:
+        case ItemId::CreeperSpawnEgg:
+        case ItemId::SkeletonSpawnEgg: return &mc::hud::kUV_ITEM_ZOMBIE_SPAWN_EGG;
         case ItemId::BowPulling0: return &mc::hud::kUV_ITEM_BOW_PULLING_0;
         case ItemId::BowPulling1: return &mc::hud::kUV_ITEM_BOW_PULLING_1;
         case ItemId::BowPulling2: return &mc::hud::kUV_ITEM_BOW_PULLING_2;

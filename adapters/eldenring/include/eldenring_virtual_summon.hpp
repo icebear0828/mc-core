@@ -268,10 +268,10 @@ public:
         mob.cooldown_duration = arch ? arch->attack_cooldown : 1.0f;
         mob.damage = arch ? arch->damage : 6.0f;
 
-        // Spawn position ahead of player matching heading
-        mob.pos[0] = player.pos[0] - std::sin(player.yaw) * forward_distance;
+        // Spawn position ahead of player matching heading (+sin(yaw), +cos(yaw))
+        mob.pos[0] = player.pos[0] + std::sin(player.yaw) * forward_distance;
         mob.pos[1] = player.pos[1];
-        mob.pos[2] = player.pos[2] - std::cos(player.yaw) * forward_distance;
+        mob.pos[2] = player.pos[2] + std::cos(player.yaw) * forward_distance;
         mob.yaw = player.yaw;
 
         mobs_.push_back(mob);
@@ -369,7 +369,7 @@ public:
                 float dist = std::sqrt(dx * dx + dz * dz);
 
                 if (dist > 1e-4f) {
-                    mob.yaw = std::atan2(-dx, -dz);
+                    mob.yaw = std::atan2(dx, dz);
                 }
 
                 if (is_creeper) {
@@ -490,7 +490,7 @@ public:
                     float dir_z = dz / dist;
                     mob.pos[0] += dir_x * step;
                     mob.pos[2] += dir_z * step;
-                    mob.yaw = std::atan2(-dx, -dz);
+                    mob.yaw = std::atan2(dx, dz);
                 }
             }
 

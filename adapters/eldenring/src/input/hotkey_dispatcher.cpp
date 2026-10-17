@@ -80,7 +80,6 @@ void HotkeyDispatcher::resetKeyStates() {
     prev8_ = false;
     prev6_ = false;
     prev7_ = false;
-    for (int i = 0; i < 9; ++i) prev_digit_[i] = false;
     prev_space_ = false;
     prev9_ = false;
     prev10_ = false;
@@ -316,7 +315,7 @@ void HotkeyDispatcher::tick(float dt) {
         }
     }
 
-    // F key (swap offhand) & Digits 1-9 (slot select)
+    // F key (swap offhand)
     if (fg && !inv_open && want_suppress) {
         const bool f_down = queryKey('F');
         if (f_down && !prev_gameplay_f_) {
@@ -328,15 +327,6 @@ void HotkeyDispatcher::tick(float dt) {
             }
         }
         prev_gameplay_f_ = f_down;
-
-        for (int i = 0; i < 9; ++i) {
-            const bool d = queryKey('1' + i);
-            if (d && !prev_digit_[i]) {
-                std::lock_guard<std::mutex> g(combat.melee_mutex);
-                combat.melee.select(i);
-            }
-            prev_digit_[i] = d;
-        }
     }
 
     if (input_enabled && cb_.set_suppress_mouse_buttons) {

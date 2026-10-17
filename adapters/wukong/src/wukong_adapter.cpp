@@ -35,6 +35,8 @@ const char* itemIdToModelName(ItemId id) {
         case ItemId::BlockStone: return "stone";
         case ItemId::BlockTnt: return "tnt";
         case ItemId::ZombieSpawnEgg: return "zombie_spawn_egg";
+        case ItemId::CreeperSpawnEgg: return "creeper_spawn_egg";
+        case ItemId::SkeletonSpawnEgg: return "skeleton_spawn_egg";
         case ItemId::None:
         default: return "empty";
     }

@@ -87,12 +87,22 @@ def main():
                 print(f"[ERROR] Atlas SHA256 mismatch for {target_atlas}!")
                 sys.exit(1)
 
-    # Deploy authentic creeper texture
-    src_creeper = root / "assets" / "source" / "models" / "entities" / "creeper.authentic.png"
-    if src_creeper.is_file():
-        target_creeper = game_dir / "mods" / "mc_adapter" / "creeper.png"
-        shutil.copy2(src_creeper, target_creeper)
-        print(f"[CREEPER DEPLOY] Copied authentic creeper skin to: {target_creeper}")
+    # Deploy mob models and textures
+    models_dir = game_dir / "mods" / "mc_adapter" / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    src_entities = root / "assets" / "source" / "models" / "entities"
+    for mob in ["creeper", "skeleton", "zombie"]:
+        src_geo = src_entities / f"{mob}.geo.json"
+        if src_geo.is_file():
+            shutil.copy2(src_geo, models_dir / f"{mob}.geo.json")
+            print(f"[MODEL DEPLOY] Copied {mob}.geo.json to: {models_dir / f'{mob}.geo.json'}")
+
+    src_textures = root / "assets" / "source" / "textures"
+    for tex in ["creeper.png", "zombie.png"]:
+        src_tex = src_textures / tex
+        if src_tex.is_file():
+            shutil.copy2(src_tex, game_dir / "mods" / "mc_adapter" / tex)
+            print(f"[TEXTURE DEPLOY] Copied {tex} to: {game_dir / 'mods' / 'mc_adapter' / tex}")
 
     # Deploy golden crossbow bolt template (mc_er_bullet.bin)
     src_bullet = root / "tools" / "reverse" / "eldenring" / "templates" / "mc_er_bullet.bin"

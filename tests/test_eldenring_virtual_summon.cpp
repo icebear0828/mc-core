@@ -359,12 +359,12 @@ TEST(VirtualSummonTest, AntiClippingPushoutSeparatesSummonsFromOverlapping) {
 TEST(VirtualSummonTest, AntiClippingStopsMobFromPenetratingTargetAabb) {
     VirtualSummonManager mgr;
     const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
-    // Mob spawned at (0, 0, -2.0)
+    // Mob spawned at (0, 0, 2.0)
     uint64_t id = mgr.spawnMob("creeper", p, 2.0f);
 
-    // Enemy placed at (0, 0, -1.5), distance is 0.5m (less than collision separation radius 0.65m)
+    // Enemy placed at (0, 0, 2.5), distance is 0.5m (less than collision separation radius 0.65m)
     std::vector<EnemyTarget> enemies = {
-        makeEnemy(0xEE11, 0.0f, 0.0f, -1.5f, 100, 100)
+        makeEnemy(0xEE11, 0.0f, 0.0f, 2.5f, 100, 100)
     };
 
     // Update for 0.5 second of pursuit
@@ -374,7 +374,7 @@ TEST(VirtualSummonTest, AntiClippingStopsMobFromPenetratingTargetAabb) {
     ASSERT_NE(mob, nullptr);
 
     float dx = mob->pos[0] - 0.0f;
-    float dz = mob->pos[2] - (-1.5f);
+    float dz = mob->pos[2] - 2.5f;
     float dist = std::sqrt(dx * dx + dz * dz);
 
     // Sum of radiuses: creeper ~0.3m + target ~0.35m = ~0.65m.
@@ -436,10 +436,10 @@ TEST(VirtualSummonTest, SkeletonRangedCombatMaintainsStandoffAndFires) {
     uint64_t skel_id = mgr.spawnMob("skeleton", p, 2.0f);
     ASSERT_NE(skel_id, 0u);
 
-    // Enemy placed at (0, 0, 8.0) -> distance is 10.0m
+    // Enemy placed at (0, 0, 12.0) -> distance is 10.0m
     // (within attack_range 14.0m and > attack_min_range 4.0m)
     std::vector<EnemyTarget> enemies = {
-        makeEnemy(0xAAAA, 0.0f, 0.0f, 8.0f, 200, 200)
+        makeEnemy(0xAAAA, 0.0f, 0.0f, 12.0f, 200, 200)
     };
 
     // Step 0.1s
@@ -448,11 +448,11 @@ TEST(VirtualSummonTest, SkeletonRangedCombatMaintainsStandoffAndFires) {
     const auto* skel = mgr.findMob(skel_id);
     ASSERT_NE(skel, nullptr);
 
-    // Skeleton should face the enemy (+Z direction has yaw = +-pi)
-    EXPECT_NEAR(std::abs(skel->yaw), 3.1415926f, 0.1f);
+    // Skeleton should face the enemy (+Z direction has yaw = 0.0 in Elden Ring basis)
+    EXPECT_NEAR(skel->yaw, 0.0f, 0.1f);
 
     // Skeleton should NOT charge blindly into melee range; it maintains standoff
-    EXPECT_NEAR(skel->pos[2], -2.0f, 0.5f);
+    EXPECT_NEAR(skel->pos[2], 2.0f, 0.5f);
 
     // Fired projectile and damage intent
     auto dmg_intents = mgr.drainDamageIntents();
@@ -481,19 +481,19 @@ TEST(VirtualSummonTest, SkeletonRangedCombatMaintainsStandoffAndFires) {
 TEST(VirtualSummonTest, SkeletonKitingWhenEnemyRushesClose) {
     VirtualSummonManager mgr;
     const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
-    // Skeleton spawned at (0, 0, -2.0)
+    // Skeleton spawned at (0, 0, 2.0) ahead of player
     uint64_t skel_id = mgr.spawnMob("skeleton", p, 2.0f);
     ASSERT_NE(skel_id, 0u);
 
-    // Enemy placed at (0, 0, 0.0) -> distance is 2.0m, which is LESS than attack_min_range (4.0m)
+    // Enemy placed at (0, 0, 3.0) -> distance is 1.0m, which is LESS than attack_min_range (4.0m)
     std::vector<EnemyTarget> enemies = {
-        makeEnemy(0xBBBB, 0.0f, 0.0f, 0.0f, 200, 200)
+        makeEnemy(0xBBBB, 0.0f, 0.0f, 3.0f, 200, 200)
     };
 
-    float initial_z = mgr.findMob(skel_id)->pos[2]; // -2.0f
+    float initial_z = mgr.findMob(skel_id)->pos[2]; // 2.0f
 
-    // Step 0.5s: skeleton should back up (kite) away from enemy at (0, 0, 0)
-    // Moving backwards means Z decreases further (e.g. from -2.0 to -2.5)
+    // Step 0.5s: skeleton should back up (kite) away from enemy at (0, 0, 3.0)
+    // Moving backwards away from enemy means Z decreases (e.g. from 2.0 to 1.5)
     mgr.update(0.5f, p, enemies);
 
     const auto* skel = mgr.findMob(skel_id);
