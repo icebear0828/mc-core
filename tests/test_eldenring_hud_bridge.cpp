@@ -122,3 +122,34 @@ TEST(HudBridgeTest, NativeModelSlotHidingAndRestoration) {
     RestoreNativeModel(hidden_flags, native_mutex);
     EXPECT_TRUE(hidden_flags.empty());
 }
+
+TEST(HudBridgeTest, PopulateSteveStateSynchronizesShieldBlocking) {
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().steve_enabled.store(true);
+    ctx.player().sprint_active.store(true);
+
+    // Case 1: Offhand shield blocking via mode().shield_blocking
+    ctx.mode().shield_blocking.store(true);
+    ctx.mode().shield_offhand.store(true);
+
+    erov::SteveState steve{};
+    PopulateSteveStateFromContext(steve, ctx, false /* dead */, false /* sleeping */);
+
+    EXPECT_TRUE(steve.blocking);
+    EXPECT_TRUE(steve.block_offhand);
+    EXPECT_FALSE(steve.sprinting);
+
+    // Case 2: Main hand shield blocking
+    ctx.mode().shield_offhand.store(false);
+    erov::SteveState steve_main{};
+    PopulateSteveStateFromContext(steve_main, ctx, false /* dead */, false /* sleeping */);
+
+    EXPECT_TRUE(steve_main.blocking);
+    EXPECT_FALSE(steve_main.block_offhand);
+
+    // Case 3: Dead player clears blocking
+    erov::SteveState steve_dead{};
+    PopulateSteveStateFromContext(steve_dead, ctx, true /* dead */, false /* sleeping */);
+    EXPECT_FALSE(steve_dead.blocking);
+}

@@ -77,7 +77,7 @@ void PopulateSteveStateFromContext(erov::SteveState& steve, const RuntimeContext
     steve.speed_mps = ctx.mode().walk_speed.load(std::memory_order_relaxed);
     steve.on_ground = ctx.mode().on_ground.load(std::memory_order_relaxed);
     const bool sneaking = !dead && ctx.mode().sneak_active.load(std::memory_order_relaxed);
-    const bool blocking = !dead && ctx.combat().shield.isBlocking();
+    const bool blocking = !dead && (ctx.mode().shield_blocking.load(std::memory_order_relaxed) || ctx.combat().shield.isBlocking());
     steve.sneaking = sneaking;
     steve.blocking = blocking;
     steve.sprinting = (!dead && !sneaking && !blocking) ? ctx.player().sprint_active.load(std::memory_order_relaxed) : false;
