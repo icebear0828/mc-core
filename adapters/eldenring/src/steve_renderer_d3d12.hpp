@@ -127,6 +127,13 @@ public:
                      const mc::rig::Mat4& view_proj, const std::vector<eldenring::shadow::Shadow>& shadows, const SteveParams& params,
                      D3D12_CPU_DESCRIPTOR_HANDLE rtv);
 
+    // Draws flying Minecraft arrows in 3D world space using the held item atlas
+    void drawArrows(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
+                    D3D12_GPU_DESCRIPTOR_HANDLE atlas_table, unsigned width, unsigned height,
+                    const mc::rig::Mat4& view_proj,
+                    const std::vector<mc::rig::Mat4>& arrow_matrices,
+                    const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv);
+
 private:
     static constexpr int kShadowSegments = 24;
     ID3D12PipelineState* pso_shadow_{nullptr};
@@ -145,6 +152,8 @@ private:
         D3D12_VERTEX_BUFFER_VIEW vbv{};
         D3D12_INDEX_BUFFER_VIEW ibv{};
         std::vector<BoneRange> ranges;
+        int right_arm_ix{-1};
+        int left_arm_ix{-1};
     };
     ID3D12Resource* mob_vertices_{nullptr};
     ID3D12Resource* mob_indices_{nullptr};
@@ -179,6 +188,11 @@ private:
     D3D12_VERTEX_BUFFER_VIEW offhand_vbv_{};
     D3D12_INDEX_BUFFER_VIEW offhand_ibv_{};
     std::map<uint16_t, FpDraw> offhand_items_;
+    ID3D12Resource* arrow_vertices_{nullptr};
+    ID3D12Resource* arrow_indices_{nullptr};
+    D3D12_VERTEX_BUFFER_VIEW arrow_vbv_{};
+    D3D12_INDEX_BUFFER_VIEW arrow_ibv_{};
+    unsigned arrow_index_count_{0};
     struct BlockSlot {
         ID3D12Resource* vb{nullptr};
         ID3D12Resource* ib{nullptr};

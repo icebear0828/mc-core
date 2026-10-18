@@ -454,26 +454,33 @@ TEST(VirtualSummonTest, SkeletonRangedCombatMaintainsStandoffAndFires) {
     // Skeleton should NOT charge blindly into melee range; it maintains standoff
     EXPECT_NEAR(skel->pos[2], 2.0f, 0.5f);
 
-    // Fired projectile and damage intent
-    auto dmg_intents = mgr.drainDamageIntents();
-    ASSERT_EQ(dmg_intents.size(), 1u);
-    EXPECT_EQ(dmg_intents[0].target_chr_ins, 0xAAAAu);
-    EXPECT_FLOAT_EQ(dmg_intents[0].damage_amount, 7.0f);
-    EXPECT_EQ(dmg_intents[0].source_mob_id, skel_id);
-
+    // Fired projectile intent
     auto proj_intents = mgr.drainProjectileIntents();
     ASSERT_EQ(proj_intents.size(), 1u);
     EXPECT_EQ(proj_intents[0].target_chr_ins, 0xAAAAu);
     EXPECT_FLOAT_EQ(proj_intents[0].damage, 7.0f);
     EXPECT_FLOAT_EQ(proj_intents[0].speed, 22.0f);
 
+    // Arrow in flight: step 0.5s to reach target at 10m (10m / 22m/s ~ 0.45s)
+    mgr.update(0.5f, p, enemies);
+    auto dmg_intents = mgr.drainDamageIntents();
+    ASSERT_EQ(dmg_intents.size(), 1u);
+    EXPECT_EQ(dmg_intents[0].target_chr_ins, 0xAAAAu);
+    EXPECT_FLOAT_EQ(dmg_intents[0].damage_amount, 7.0f);
+    EXPECT_EQ(dmg_intents[0].source_mob_id, skel_id);
+
     // Cooldown in effect: step another 0.5s (0.5s < 1.5s cooldown) -> no new intents
     mgr.update(0.5f, p, enemies);
     EXPECT_TRUE(mgr.drainDamageIntents().empty());
     EXPECT_TRUE(mgr.drainProjectileIntents().empty());
 
-    // Step 2.0s more (total > 1.5s cooldown + 0.8s draw) -> fires second arrow!
+    // Step 2.0s: cooldown expires and second arrow is fired
     mgr.update(2.0f, p, enemies);
+    auto second_proj = mgr.drainProjectileIntents();
+    EXPECT_EQ(second_proj.size(), 1u);
+
+    // Step 0.5s: second arrow flies and hits target
+    mgr.update(0.5f, p, enemies);
     auto second_shots = mgr.drainDamageIntents();
     EXPECT_EQ(second_shots.size(), 1u);
 }
@@ -807,4 +814,70 @@ TEST(VirtualSummonTest, ZombieAdvancesSwingProgressDuringMeleeAttack) {
     mgr.update(0.4f, p, enemies);
     EXPECT_FLOAT_EQ(z->swing_progress, 0.0f);
 }
+
+TEST(VirtualSummonTest, SkeletonArrowBallisticTrajectoryAndInFlightSnapshots) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    // Skeleton spawned at (0, 0, 0)
+    uint64_t skel_id = mgr.spawnMob("skeleton", p, 0.0f);
+    ASSERT_NE(skel_id, 0u);
+
+    // Enemy placed at (0, 0, 10.0) -> distance is 10.0m
+    std::vector<EnemyTarget> enemies = {
+        makeEnemy(0xEE01, 0.0f, 0.0f, 10.0f, 200, 200)
+    };
+
+    // Step 0.8s: bow fully drawn and arrow launched!
+    mgr.update(0.8f, p, enemies);
+
+    auto arrows = mgr.getActiveArrows();
+    ASSERT_EQ(arrows.size(), 1u);
+    EXPECT_NEAR(arrows[0].pos[0], 0.0f, 0.5f);
+    EXPECT_NEAR(arrows[0].pos[1], 1.4f, 0.5f);
+    EXPECT_NEAR(arrows[0].pos[2], 0.0f, 0.5f);
+    EXPECT_GT(arrows[0].dir[2], 0.5f); // Pointing forward along +Z
+
+    // Step 0.1s: arrow travels along trajectory
+    float z_prev = arrows[0].pos[2];
+    mgr.update(0.1f, p, enemies);
+
+    auto arrows_step = mgr.getActiveArrows();
+    ASSERT_EQ(arrows_step.size(), 1u);
+    EXPECT_GT(arrows_step[0].pos[2], z_prev + 1.0f); // Fast flight forward
+
+    // Step remaining flight time (0.5s): arrow hits target at 10m
+    mgr.update(0.5f, p, enemies);
+    EXPECT_TRUE(mgr.getActiveArrows().empty()); // Arrow consumed on hit
+
+    auto dmg = mgr.drainDamageIntents();
+    ASSERT_FALSE(dmg.empty());
+    EXPECT_EQ(dmg[0].target_chr_ins, 0xEE01u);
+}
+
+TEST(VirtualSummonTest, ArrowWorldMatrixAlignsWithTrajectoryDirection) {
+    eldenring::summon::ArrowDraw arrow;
+    arrow.pos[0] = 12.0f;
+    arrow.pos[1] = 5.0f;
+    arrow.pos[2] = -20.0f;
+    // 45 degrees up and forward
+    arrow.dir[0] = 0.0f;
+    arrow.dir[1] = 0.7071f;
+    arrow.dir[2] = 0.7071f;
+
+    const mc::rig::Mat4 m = eldenring::summon::arrowWorldMatrix(arrow);
+
+    // Origin maps to arrow.pos
+    const mc::Vec3 origin = mc::rig::transformPoint(m, {0.0f, 0.0f, 0.0f});
+    EXPECT_NEAR(origin.x, 12.0f, 1e-3f);
+    EXPECT_NEAR(origin.y, 5.0f, 1e-3f);
+    EXPECT_NEAR(origin.z, -20.0f, 1e-3f);
+
+    // Tip at +Z (0, 0, 1) in local arrow frame should point along dir (y > 0, z > 0)
+    const mc::Vec3 tip = mc::rig::transformPoint(m, {0.0f, 0.0f, 1.0f});
+    const mc::Vec3 flight_vec = (tip - origin).normalized();
+    EXPECT_NEAR(flight_vec.x, 0.0f, 1e-3f);
+    EXPECT_NEAR(flight_vec.y, 0.7071f, 1e-3f);
+    EXPECT_NEAR(flight_vec.z, 0.7071f, 1e-3f);
+}
+
 

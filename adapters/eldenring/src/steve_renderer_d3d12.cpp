@@ -460,6 +460,9 @@ void SteveRenderer::release() {
     Rel(offhand_vertices_);
     Rel(offhand_indices_);
     offhand_items_.clear();
+    Rel(arrow_vertices_);
+    Rel(arrow_indices_);
+    arrow_index_count_ = 0;
 }
 
 bool SteveRenderer::readStats(uint32_t out[64]) {
@@ -558,6 +561,34 @@ bool SteveRenderer::initHeldItems(ID3D12Device* device, const uint8_t* atlas_rgb
         vertices.insert(vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
         indices.insert(indices.end(), mesh.indices.begin(), mesh.indices.end());
         held_items_[cell.item] = d;
+        if (item == mc::ItemId::Arrow) {
+            const mc::rig::ItemSprite arrow_sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
+            mc::rig::RigMesh arrow_mesh = mc::rig::buildFlatItemMesh(arrow_sprite);
+            constexpr float inv_sqrt2 = 0.70710678f;
+            constexpr float scale = 0.5f;
+            for (auto& v : arrow_mesh.vertices) {
+                // 1. Rotate -45 deg around Z so diagonal arrow aligns with X
+                const float x1 = (v.x + v.y) * inv_sqrt2;
+                const float y1 = (-v.x + v.y) * inv_sqrt2;
+                const float z1 = v.z;
+                // 2. Rotate +90 deg around Y so +X points along +Z (Elden Ring forward)
+                v.x = z1 * scale;
+                v.y = y1 * scale;
+                v.z = x1 * scale;
+            }
+            Rel(arrow_vertices_);
+            Rel(arrow_indices_);
+            arrow_index_count_ = 0;
+            if (!arrow_mesh.vertices.empty()) {
+                arrow_vertices_ = UploadBuffer(device, arrow_mesh.vertices.data(), arrow_mesh.vertices.size() * sizeof(mc::rig::RigVertex));
+                arrow_indices_ = UploadBuffer(device, arrow_mesh.indices.data(), arrow_mesh.indices.size() * sizeof(uint16_t));
+                if (arrow_vertices_ && arrow_indices_) {
+                    arrow_index_count_ = static_cast<unsigned>(arrow_mesh.indices.size());
+                    arrow_vbv_ = {arrow_vertices_->GetGPUVirtualAddress(), static_cast<UINT>(arrow_mesh.vertices.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
+                    arrow_ibv_ = {arrow_indices_->GetGPUVirtualAddress(), static_cast<UINT>(arrow_mesh.indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
+                }
+            }
+        }
         if (item == mc::ItemId::Shield) { // the raised shield has its own display transform
             const mc::rig::RigMesh up = mc::rig::buildShieldMesh(ShieldSheet(), eldenring::render::kBasis, mc::rig::Hand::Right, true);
             FpDraw u;
@@ -888,6 +919,10 @@ bool SteveRenderer::setMobModel(ID3D12Device* device, std::string_view name, con
     gpu.ranges = std::move(ranges);
     gpu.vbv = {vb->GetGPUVirtualAddress(), static_cast<UINT>(vertices.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
     gpu.ibv = {ib->GetGPUVirtualAddress(), static_cast<UINT>(indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
+    for (size_t i = 0; i < model.bones.size(); ++i) {
+        if (model.bones[i].name == "right_arm") gpu.right_arm_ix = static_cast<int>(i);
+        else if (model.bones[i].name == "left_arm") gpu.left_arm_ix = static_cast<int>(i);
+    }
 
     if (name.empty()) {
         Rel(mob_vertices_);
@@ -958,6 +993,19 @@ void SteveRenderer::drawMobModel(ID3D12GraphicsCommandList* list, ID3D12Descript
         list->SetGraphicsRoot32BitConstants(0, 16, bones[i].m.data(), 16);
         list->DrawIndexedInstanced(ranges[i].index_count, 1, ranges[i].first_index, ranges[i].base_vertex, 0);
     }
+    if (params.held_item != 0 && held_vertices_ && params.held_table.ptr != 0) {
+        int arm_ix = mesh ? mesh->right_arm_ix : -1;
+        if (arm_ix >= 0 && static_cast<size_t>(arm_ix) < bones.size()) {
+            const auto it = held_items_.find(params.held_item);
+            if (it != held_items_.end()) {
+                list->SetGraphicsRootDescriptorTable(1, params.held_table);
+                list->IASetVertexBuffers(0, 1, &held_vbv_);
+                list->IASetIndexBuffer(&held_ibv_);
+                list->SetGraphicsRoot32BitConstants(0, 16, bones[arm_ix].m.data(), 16);
+                list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
+            }
+        }
+    }
 }
 
 void SteveRenderer::drawShadows(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table, unsigned width,
@@ -989,6 +1037,52 @@ void SteveRenderer::drawShadows(ID3D12GraphicsCommandList* list, ID3D12Descripto
         list->SetGraphicsRoot32BitConstants(0, 16, world.m.data(), 16);
         list->SetGraphicsRoot32BitConstants(0, 4, tint, 40);
         list->DrawIndexedInstanced(shadow_index_count_, 1, 0, 0, 0);
+    }
+}
+
+void SteveRenderer::drawArrows(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
+                               D3D12_GPU_DESCRIPTOR_HANDLE atlas_table, unsigned width, unsigned height,
+                               const mc::rig::Mat4& view_proj,
+                               const std::vector<mc::rig::Mat4>& arrow_matrices,
+                               const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
+    if (!ready() || !own_depth_ || !dsv_heap_ || arrow_matrices.empty() || atlas_table.ptr == 0) return;
+    const bool have_custom_arrow = (arrow_vertices_ != nullptr && arrow_indices_ != nullptr && arrow_index_count_ > 0);
+    const auto it = held_items_.find(static_cast<uint16_t>(mc::ItemId::Arrow));
+    if (!have_custom_arrow && it == held_items_.end()) return;
+
+    D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
+    D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+    list->RSSetViewports(1, &vp);
+    list->RSSetScissorRects(1, &sc);
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
+    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+    if (!params.keep_depth) list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    list->SetPipelineState(pso_);
+    list->SetGraphicsRootSignature(root_);
+    ID3D12DescriptorHeap* heaps[] = {srv_heap};
+    list->SetDescriptorHeaps(1, heaps);
+    list->SetGraphicsRootDescriptorTable(1, atlas_table);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    if (have_custom_arrow) {
+        list->IASetVertexBuffers(0, 1, &arrow_vbv_);
+        list->IASetIndexBuffer(&arrow_ibv_);
+    } else {
+        list->IASetVertexBuffers(0, 1, &held_vbv_);
+        list->IASetIndexBuffer(&held_ibv_);
+    }
+    list->SetGraphicsRoot32BitConstants(0, 16, view_proj.m.data(), 0);
+    const float extra[8] = {params.depth_const, params.rel_bias, params.abs_bias, params.mode, params.depth_w, params.depth_h, static_cast<float>(width), static_cast<float>(height)};
+    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
+    const float no_tint[4] = {0.f, 0.f, 0.f, 0.f};
+    list->SetGraphicsRoot32BitConstants(0, 4, no_tint, 40);
+
+    for (const auto& mat : arrow_matrices) {
+        list->SetGraphicsRoot32BitConstants(0, 16, mat.m.data(), 16);
+        if (have_custom_arrow) {
+            list->DrawIndexedInstanced(arrow_index_count_, 1, 0, 0, 0);
+        } else {
+            list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
+        }
     }
 }
 

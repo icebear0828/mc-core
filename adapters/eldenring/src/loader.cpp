@@ -350,6 +350,7 @@ bool WriteBytesSafe(uintptr_t address, const void* src, size_t n) {
 // cached pointers: a summon that disappears meanwhile is simply not enumerated any more).
 std::mutex g_summon_mutex;
 std::vector<eldenring::mobs::MobSnapshot> g_summon_list; // the team 47 summons seen by the last HideSummonModels (render thread), read by the HUD provider
+std::vector<eldenring::summon::ArrowDraw> g_summon_arrows; // active in-flight arrows from virtual summons
 float g_mob_yaw_offset = eldenring::live::summon::kDefaultMobYawOffset; // monster/wolf orientation quaternion aligns forward; default 0 (mob_yaw_offset_deg)
 eldenring::summon::VirtualSummonManager g_virtual_summons;
 
@@ -472,14 +473,17 @@ void HideSummonModels() {
             it = last_hp.erase(it);
         }
     }
+    std::vector<eldenring::summon::ArrowDraw> virt_arrows;
     if (!mc_on || PlayerDead()) {
         g_hidden_flag_addresses.clear(); // the ones left belong to summons that are gone: nothing to put back
     } else {
         const auto virt_snaps = g_virtual_summons.generateSnapshots();
         seen.insert(seen.end(), virt_snaps.begin(), virt_snaps.end());
+        virt_arrows = g_virtual_summons.getActiveArrows();
     }
     std::lock_guard<std::mutex> g(g_summon_mutex);
     g_summon_list = mc_on ? seen : std::vector<eldenring::mobs::MobSnapshot>{};
+    g_summon_arrows = mc_on ? virt_arrows : std::vector<eldenring::summon::ArrowDraw>{};
 }
 
 void VirtualSummonsStep(float dt) {
@@ -542,6 +546,12 @@ void VirtualSummonsStep(float dt) {
         eraudio::Play("entity.generic.explode", 1.0f);
         Log("virtual creeper: DETONATION at (%.2f %.2f %.2f)!", ev.pos[0], ev.pos[1], ev.pos[2]);
         eldenring::world::VoxelWorldRuntime::Instance().enqueueTntIntent(ev.pos, ev.radius, ev.damage);
+    }
+
+    const auto active_arrows = g_virtual_summons.getActiveArrows();
+    {
+        std::lock_guard<std::mutex> g(g_summon_mutex);
+        g_summon_arrows = active_arrows;
     }
 }
 
@@ -2002,11 +2012,14 @@ void UpdateNativeModel(uintptr_t player, bool hide) {
 bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     {   // the mobs over the summons (mc_er_summonhide.txt): only while MC mode is on, otherwise the wolves are not drawn at all and nothing replaces them
         std::vector<eldenring::mobs::MobSnapshot> mobs;
+        std::vector<eldenring::summon::ArrowDraw> arrows;
         if (g_summon_hide.load(std::memory_order_relaxed) && g_mc_mode.load(std::memory_order_relaxed)) {
             std::lock_guard<std::mutex> g(g_summon_mutex);
             mobs = g_summon_list;
+            arrows = g_summon_arrows;
         }
         erov::SetMobs(mobs);
+        erov::SetArrows(arrows);
     }
     const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
     if (world == 0) return false;

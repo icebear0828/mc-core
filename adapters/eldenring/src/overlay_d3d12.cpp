@@ -109,6 +109,8 @@ eldenring::render::SteveMotion g_motion;
 eldenring::render::HeadTracker g_head;
 std::mutex g_mob_mutex;
 std::vector<eldenring::mobs::MobSnapshot> g_mob_snapshot; // the list the loader gave last
+std::mutex g_arrow_mutex;
+std::vector<eldenring::summon::ArrowDraw> g_arrow_snapshot;
 eldenring::mobs::MobRegistry g_mob_registry;              // render thread only
 mc::PlayerDeathTracker g_death_tracker;
 mc::PlayerSleepTracker g_sleep_tracker;
@@ -1297,50 +1299,75 @@ void RenderFrame(IDXGISwapChain* sc) {
             std::lock_guard<std::mutex> g(g_mob_mutex);
             snapshot = g_mob_snapshot;
         }
+        std::vector<eldenring::summon::ArrowDraw> arrow_snapshot;
+        {
+            std::lock_guard<std::mutex> g(g_arrow_mutex);
+            arrow_snapshot = g_arrow_snapshot;
+        }
         const auto draws = g_mob_registry.update(dt, snapshot);
-        if (!draws.empty()) {
+        if (!draws.empty() || !arrow_snapshot.empty()) {
             const float scene_h = g_steve_cfg.scene_height > 0.f ? g_steve_cfg.scene_height : static_cast<float>(g_s.height);
             const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
             bool keep = blocks_drawn || should_draw_steve; // the blocks and Steve left their depth in the figure's buffer
-            if (steve.shadow && g_steve.shadowReady()) {
-                std::vector<eldenring::shadow::Shadow> shadows;
-                for (const auto& d : draws) shadows.push_back(eldenring::shadow::shadowAt(d.feet[0], d.feet[1], d.feet[2], d.feet[1])); // a mob stands on the ground
-                SteveParams shp;
-                shp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.occlusion ? 1.25f : 0.f);
-                shp.depth_const = g_steve_cfg.depth_const;
-                shp.rel_bias = g_steve_cfg.rel_bias;
-                shp.abs_bias = g_steve_cfg.abs_bias;
-                shp.depth_w = static_cast<float>(g_depth_w);
-                shp.depth_h = static_cast<float>(g_depth_h);
-                shp.keep_depth = keep;
-                g_steve.drawShadows(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, shadows, shp, f.rtv);
-            }
-            for (const auto& d : draws) {
-                SteveParams mp;
-                mp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.occlusion ? 1.f : 0.f);
-                mp.depth_const = g_steve_cfg.depth_const;
-                mp.rel_bias = g_steve_cfg.rel_bias;
-                mp.abs_bias = g_steve_cfg.abs_bias;
-                mp.depth_w = static_cast<float>(g_depth_w);
-                mp.depth_h = static_cast<float>(g_depth_h);
-                mp.keep_depth = keep;
-                mp.tint[0] = 1.f; // the same red flash as Steve's hurt: 10 ticks, strongest at the start; a dying mob stays red
-                mp.tint[1] = mp.tint[2] = 0.f;
-                mp.tint[3] = 0.4f * std::min(1.f, d.hurt * 4.f);
-                if (d.white_flash > 0.f) {
-                    mp.tint[0] = mp.tint[1] = mp.tint[2] = 1.f;
-                    mp.tint[3] = 0.7f * d.white_flash;
+            if (!draws.empty()) {
+                if (steve.shadow && g_steve.shadowReady()) {
+                    std::vector<eldenring::shadow::Shadow> shadows;
+                    for (const auto& d : draws) shadows.push_back(eldenring::shadow::shadowAt(d.feet[0], d.feet[1], d.feet[2], d.feet[1])); // a mob stands on the ground
+                    SteveParams shp;
+                    shp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.occlusion ? 1.25f : 0.f);
+                    shp.depth_const = g_steve_cfg.depth_const;
+                    shp.rel_bias = g_steve_cfg.rel_bias;
+                    shp.abs_bias = g_steve_cfg.abs_bias;
+                    shp.depth_w = static_cast<float>(g_depth_w);
+                    shp.depth_h = static_cast<float>(g_depth_h);
+                    shp.keep_depth = keep;
+                    g_steve.drawShadows(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, shadows, shp, f.rtv);
                 }
-                D3D12_GPU_DESCRIPTOR_HANDLE table = g_mob_table_gpu.ptr != 0 ? g_mob_table_gpu : g_depth_gpu;
-                if (!d.model_type.empty()) {
-                    auto it = g_mob_tables_gpu.find(d.model_type);
-                    if (it != g_mob_tables_gpu.end() && it->second.ptr != 0) {
-                        table = it->second;
+                for (const auto& d : draws) {
+                    SteveParams mp;
+                    mp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.occlusion ? 1.f : 0.f);
+                    mp.depth_const = g_steve_cfg.depth_const;
+                    mp.rel_bias = g_steve_cfg.rel_bias;
+                    mp.abs_bias = g_steve_cfg.abs_bias;
+                    mp.depth_w = static_cast<float>(g_depth_w);
+                    mp.depth_h = static_cast<float>(g_depth_h);
+                    mp.keep_depth = keep;
+                    mp.held_item = static_cast<uint16_t>(d.held_item);
+                    mp.held_table = g_held_table_gpu;
+                    mp.tint[0] = 1.f; // the same red flash as Steve's hurt: 10 ticks, strongest at the start; a dying mob stays red
+                    mp.tint[1] = mp.tint[2] = 0.f;
+                    mp.tint[3] = 0.4f * std::min(1.f, d.hurt * 4.f);
+                    if (d.white_flash > 0.f) {
+                        mp.tint[0] = mp.tint[1] = mp.tint[2] = 1.f;
+                        mp.tint[3] = 0.7f * d.white_flash;
                     }
+                    D3D12_GPU_DESCRIPTOR_HANDLE table = g_mob_table_gpu.ptr != 0 ? g_mob_table_gpu : g_depth_gpu;
+                    if (!d.model_type.empty()) {
+                        auto it = g_mob_tables_gpu.find(d.model_type);
+                        if (it != g_mob_tables_gpu.end() && it->second.ptr != 0) {
+                            table = it->second;
+                        }
+                    }
+                    if (d.generic) g_steve.drawMobModel(g_s.list, g_s.srv_heap, table, g_s.width, g_s.height, vp, d.bones, mp, f.rtv, d.model_type);
+                    else g_steve.draw(g_s.list, g_s.srv_heap, table, g_s.width, g_s.height, vp, d.parts, mp, f.rtv);
+                    keep = true; // the next one sorts against this one
                 }
-                if (d.generic) g_steve.drawMobModel(g_s.list, g_s.srv_heap, table, g_s.width, g_s.height, vp, d.bones, mp, f.rtv, d.model_type);
-                else g_steve.draw(g_s.list, g_s.srv_heap, table, g_s.width, g_s.height, vp, d.parts, mp, f.rtv);
-                keep = true; // the next one sorts against this one
+            }
+            if (!arrow_snapshot.empty() && g_held_table_gpu.ptr != 0) {
+                std::vector<mc::rig::Mat4> arrow_matrices;
+                arrow_matrices.reserve(arrow_snapshot.size());
+                for (const auto& a : arrow_snapshot) {
+                    arrow_matrices.push_back(eldenring::summon::arrowWorldMatrix(a));
+                }
+                SteveParams arrow_p;
+                arrow_p.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.occlusion ? 1.f : 0.f);
+                arrow_p.depth_const = g_steve_cfg.depth_const;
+                arrow_p.rel_bias = g_steve_cfg.rel_bias;
+                arrow_p.abs_bias = g_steve_cfg.abs_bias;
+                arrow_p.depth_w = static_cast<float>(g_depth_w);
+                arrow_p.depth_h = static_cast<float>(g_depth_h);
+                arrow_p.keep_depth = keep;
+                g_steve.drawArrows(g_s.list, g_s.srv_heap, g_held_table_gpu, g_s.width, g_s.height, vp, arrow_matrices, arrow_p, f.rtv);
             }
             g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
         }
@@ -1664,6 +1691,11 @@ void SetMobSkin(std::string_view name, const uint8_t* rgba, unsigned width, unsi
 void SetMobs(const std::vector<eldenring::mobs::MobSnapshot>& mobs) {
     std::lock_guard<std::mutex> g(g_mob_mutex);
     g_mob_snapshot = mobs;
+}
+
+void SetArrows(const std::vector<eldenring::summon::ArrowDraw>& arrows) {
+    std::lock_guard<std::mutex> g(g_arrow_mutex);
+    g_arrow_snapshot = arrows;
 }
 
 void SpawnFx(FxKind kind, const float world_pos[3], int count) {
