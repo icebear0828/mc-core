@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
+#include <utility>
 #include <vector>
 
 #include "cs_viewmodel.hpp"
@@ -267,6 +269,149 @@ TEST(CSViewModelTest, MemorySerializationRoundtripV2WithClips) {
     EXPECT_FLOAT_EQ(clip.fps, 30.0f);
     EXPECT_FLOAT_EQ(clip.blade_frames[0].m[0], 1.0f);
     EXPECT_FLOAT_EQ(clip.blade_frames[1].m[0], 2.0f);
+}
+
+TEST(CSViewModelTest, MemorySerializationRoundtripV3WithNamedTracks) {
+    CSViewModel model;
+    std::vector<uint8_t> buffer;
+
+    CSVMHeader hdr{};
+    std::memcpy(hdr.magic, "CSVM", 4);
+    hdr.version = 3;
+    hdr.num_submeshes = 1;
+    hdr.total_vertices = 1;
+    hdr.total_indices = 1;
+
+    buffer.resize(sizeof(CSVMHeader));
+    std::memcpy(buffer.data(), &hdr, sizeof(CSVMHeader));
+
+    const std::string sname = "weapon_offset";
+    const uint32_t slen = static_cast<uint32_t>(sname.size());
+    size_t off = buffer.size();
+    buffer.resize(off + 4 + slen + 16);
+    std::memcpy(buffer.data() + off, &slen, 4); off += 4;
+    std::memcpy(buffer.data() + off, sname.data(), slen); off += slen;
+    uint32_t zero = 0, one = 1;
+    std::memcpy(buffer.data() + off, &zero, 4); off += 4; // bone_idx
+    std::memcpy(buffer.data() + off, &zero, 4); off += 4; // first_idx
+    std::memcpy(buffer.data() + off, &zero, 4); off += 4; // base_v
+    std::memcpy(buffer.data() + off, &one, 4);            // count
+
+    CSVMVertex v{{0.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {0.5f, 0.5f}};
+    off = buffer.size();
+    buffer.resize(off + sizeof(v));
+    std::memcpy(buffer.data() + off, &v, sizeof(v));
+
+    off = buffer.size();
+    buffer.resize(off + 4);
+    std::memcpy(buffer.data() + off, &zero, 4);
+
+    // v3 anim chunk: 1 clip, 2 frames, 2 named tracks.
+    const uint32_t num_clips = 1;
+    off = buffer.size();
+    buffer.resize(off + 4);
+    std::memcpy(buffer.data() + off, &num_clips, 4); off += 4;
+
+    const std::string cname = "fire";
+    const uint32_t clen = static_cast<uint32_t>(cname.size());
+    const float fps = 30.0f;
+    const uint32_t frame_count = 2;
+    const uint32_t num_tracks = 2;
+    off = buffer.size();
+    buffer.resize(off + 4 + clen + 12);
+    std::memcpy(buffer.data() + off, &clen, 4); off += 4;
+    std::memcpy(buffer.data() + off, cname.data(), clen); off += clen;
+    std::memcpy(buffer.data() + off, &fps, 4); off += 4;
+    std::memcpy(buffer.data() + off, &frame_count, 4); off += 4;
+    std::memcpy(buffer.data() + off, &num_tracks, 4); off += 4;
+
+    eldenring::fp::M4 id{};
+    eldenring::fp::M4 scale2 = eldenring::fp::scale(2.0f);
+    const std::vector<std::pair<std::string, eldenring::fp::M4>> tracks = {
+        {"weapon_offset", id}, {"clip", scale2}};
+    for (const auto& track : tracks) {
+        const uint32_t tlen = static_cast<uint32_t>(track.first.size());
+        off = buffer.size();
+        buffer.resize(off + 4 + tlen);
+        std::memcpy(buffer.data() + off, &tlen, 4); off += 4;
+        std::memcpy(buffer.data() + off, track.first.data(), tlen); off += tlen;
+        for (uint32_t f = 0; f < frame_count; ++f) {
+            const eldenring::fp::M4& m = (f == 0) ? id : track.second;
+            off = buffer.size();
+            buffer.resize(off + sizeof(eldenring::fp::M4));
+            std::memcpy(buffer.data() + off, &m, sizeof(eldenring::fp::M4));
+        }
+    }
+
+    EXPECT_TRUE(model.loadFromMemory(buffer.data(), buffer.size()));
+    EXPECT_EQ(model.header().version, 3u);
+    ASSERT_EQ(model.anim_clips.size(), 1u);
+    const auto& clip = model.anim_clips.at("fire");
+    EXPECT_EQ(clip.frame_count, 2u);
+    ASSERT_EQ(clip.tracks.size(), 2u);
+    ASSERT_TRUE(clip.tracks.count("weapon_offset") > 0);
+    ASSERT_TRUE(clip.tracks.count("clip") > 0);
+    EXPECT_EQ(clip.tracks.at("weapon_offset").size(), 2u);
+    EXPECT_FLOAT_EQ(clip.tracks.at("weapon_offset")[0].m[0], 1.0f);
+    EXPECT_FLOAT_EQ(clip.tracks.at("clip")[1].m[0], 2.0f);
+}
+
+TEST(CSViewModelTest, Ak47CsvmV3NamedTracksAndParts) {
+    const std::vector<std::string> candidate_paths = {
+        "build/cs2assets/cs_ak47_viewmodel.bin",
+        "../../build/cs2assets/cs_ak47_viewmodel.bin",
+        "../build/cs2assets/cs_ak47_viewmodel.bin"
+    };
+
+    std::string model_path;
+    for (const auto& p : candidate_paths) {
+        if (std::filesystem::exists(p)) {
+            model_path = p;
+            break;
+        }
+    }
+    if (model_path.empty()) {
+        GTEST_SKIP() << "cs_ak47_viewmodel.bin not found in workspace candidate paths";
+    }
+
+    CSViewModel vm;
+    ASSERT_TRUE(vm.loadFromFile(model_path));
+    EXPECT_EQ(vm.header().version, 3u);
+
+    std::vector<std::string> parts;
+    for (const auto& sub : vm.submeshes) parts.push_back(sub.bone_name);
+    EXPECT_NE(std::find(parts.begin(), parts.end(), "weapon_offset"), parts.end());
+    EXPECT_NE(std::find(parts.begin(), parts.end(), "clip"), parts.end());
+    EXPECT_NE(std::find(parts.begin(), parts.end(), "bolt"), parts.end());
+    EXPECT_NE(std::find(parts.begin(), parts.end(), "trigger"), parts.end());
+    EXPECT_NE(std::find(parts.begin(), parts.end(), "arms_L"), parts.end());
+    EXPECT_NE(std::find(parts.begin(), parts.end(), "arms_R"), parts.end());
+
+    for (const char* clip : {"idle", "draw", "fire", "reload", "inspect"}) {
+        ASSERT_TRUE(vm.anim_clips.count(clip) > 0) << "missing clip " << clip;
+        const auto& c = vm.anim_clips.at(clip);
+        EXPECT_TRUE(c.tracks.count("weapon_offset") > 0) << clip;
+        EXPECT_TRUE(c.tracks.count("hand_L") > 0) << clip;
+        EXPECT_TRUE(c.tracks.count("hand_R") > 0) << clip;
+    }
+    EXPECT_EQ(vm.anim_clips.at("draw").frame_count, 31u);
+    EXPECT_EQ(vm.anim_clips.at("fire").frame_count, 24u);
+    EXPECT_EQ(vm.anim_clips.at("reload").frame_count, 74u);
+    EXPECT_EQ(vm.anim_clips.at("inspect").frame_count, 138u);
+
+    CSViewModelAnimator anim;
+    anim.setModel(&vm);
+
+    // Gun states resolve to their authored clips, not the knife fallbacks.
+    anim.tick(0.016f, 2 /* Fire */, 0.2f);
+    ASSERT_NE(anim.currentPose().findTrack("weapon_offset"), nullptr);
+    ASSERT_NE(anim.currentPose().findTrack("hand_L"), nullptr);
+    EXPECT_EQ(anim.currentState(), 2);
+
+    anim.tick(0.016f, 5 /* Reload */, 1.0f);
+    ASSERT_NE(anim.currentPose().findTrack("clip"), nullptr);
+    ASSERT_NE(anim.currentPose().findTrack("hand_R"), nullptr);
+    EXPECT_EQ(anim.currentState(), 5);
 }
 
 TEST(CSViewModelTest, AuthenticCS2AnimationTracksFidelity) {

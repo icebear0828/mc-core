@@ -118,7 +118,7 @@ CSWeaponDefinition CSWeaponRegistry::createAK47Definition() {
     w.display_name = "AK-47";
     w.type = WeaponType::RifleAK47;
     w.slot = WeaponSlot::Primary;
-    w.model_csvm_path = "mods/mc_adapter/weapons/ak47/ak47_viewmodel.bin";
+    w.model_csvm_path = "mods/mc_adapter/cs_ak47_viewmodel.bin";
     w.albedo_tex_path = "mods/mc_adapter/textures/ak47/ak47_color.png";
     w.normal_tex_path = "mods/mc_adapter/textures/ak47/ak47_normal.png";
     w.pbr_tex_path = "mods/mc_adapter/textures/ak47/ak47_pbr.png";
@@ -154,7 +154,7 @@ CSWeaponDefinition CSWeaponRegistry::createAWPDefinition() {
     w.display_name = "AWP";
     w.type = WeaponType::SniperAWP;
     w.slot = WeaponSlot::Primary;
-    w.model_csvm_path = "mods/mc_adapter/weapons/awp/awp_viewmodel.bin";
+    w.model_csvm_path = "mods/mc_adapter/cs_awp_viewmodel.bin";
     w.albedo_tex_path = "mods/mc_adapter/textures/awp/awp_color.png";
     w.normal_tex_path = "mods/mc_adapter/textures/awp/awp_normal.png";
     w.pbr_tex_path = "mods/mc_adapter/textures/awp/awp_pbr.png";
@@ -189,7 +189,7 @@ CSWeaponDefinition CSWeaponRegistry::createM4A1SDefinition() {
     w.display_name = "M4A1-S";
     w.type = WeaponType::RifleM4A1S;
     w.slot = WeaponSlot::Primary;
-    w.model_csvm_path = "mods/mc_adapter/weapons/m4a1_s/m4a1_s_viewmodel.bin";
+    w.model_csvm_path = "mods/mc_adapter/cs_m4a1_s_viewmodel.bin";
     w.albedo_tex_path = "mods/mc_adapter/textures/m4a1_s/m4a1_s_color.png";
     w.normal_tex_path = "mods/mc_adapter/textures/m4a1_s/m4a1_s_normal.png";
     w.pbr_tex_path = "mods/mc_adapter/textures/m4a1_s/m4a1_s_pbr.png";

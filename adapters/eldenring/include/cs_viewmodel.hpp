@@ -52,6 +52,14 @@ struct CSVMAnimClip {
     std::string name;
     float fps{30.0f};
     uint32_t frame_count{0};
+
+    // CSVM v3: named animation tracks. A weapon stores one track per animated
+    // part ("weapon_offset", "clip", "bolt", "trigger", "hand_L", "hand_R"...)
+    // so adding a gun needs no C++ change. CSVM v2 knife clips also populate
+    // this map with their five legacy part names.
+    std::map<std::string, std::vector<eldenring::fp::M4>> tracks;
+
+    // Legacy v2 knife slots, kept for backward compatibility and existing tests.
     std::vector<eldenring::fp::M4> blade_frames;
     std::vector<eldenring::fp::M4> front_frames;
     std::vector<eldenring::fp::M4> rear_frames;
@@ -73,7 +81,8 @@ public:
         if (!data || size < sizeof(CSVMHeader)) return false;
 
         std::memcpy(&header_, data, sizeof(CSVMHeader));
-        if (std::memcmp(header_.magic, "CSVM", 4) != 0 || (header_.version != 1 && header_.version != 2)) {
+        if (std::memcmp(header_.magic, "CSVM", 4) != 0 ||
+            (header_.version != 1 && header_.version != 2 && header_.version != 3)) {
             return false;
         }
 
@@ -137,21 +146,54 @@ public:
                 std::memcpy(&clip.frame_count, data + offset, sizeof(uint32_t)); offset += sizeof(uint32_t);
 
                 const size_t m4_size = sizeof(eldenring::fp::M4);
-                const size_t frame_bytes = 5 * m4_size;
-                if (offset + clip.frame_count * frame_bytes > size) return false;
 
-                clip.blade_frames.resize(clip.frame_count);
-                clip.front_frames.resize(clip.frame_count);
-                clip.rear_frames.resize(clip.frame_count);
-                clip.lock_frames.resize(clip.frame_count);
-                clip.arms_frames.resize(clip.frame_count);
+                if (header_.version >= 3) {
+                    // CSVM v3: variable named tracks.
+                    uint32_t num_tracks = 0;
+                    if (offset + sizeof(uint32_t) > size) return false;
+                    std::memcpy(&num_tracks, data + offset, sizeof(uint32_t)); offset += sizeof(uint32_t);
 
-                for (uint32_t f = 0; f < clip.frame_count; ++f) {
-                    std::memcpy(&clip.blade_frames[f], data + offset, m4_size); offset += m4_size;
-                    std::memcpy(&clip.front_frames[f], data + offset, m4_size); offset += m4_size;
-                    std::memcpy(&clip.rear_frames[f], data + offset, m4_size); offset += m4_size;
-                    std::memcpy(&clip.lock_frames[f], data + offset, m4_size); offset += m4_size;
-                    std::memcpy(&clip.arms_frames[f], data + offset, m4_size); offset += m4_size;
+                    for (uint32_t t = 0; t < num_tracks; ++t) {
+                        if (offset + sizeof(uint32_t) > size) return false;
+                        uint32_t t_name_len = 0;
+                        std::memcpy(&t_name_len, data + offset, sizeof(uint32_t)); offset += sizeof(uint32_t);
+                        if (offset + t_name_len > size) return false;
+                        std::string track_name(reinterpret_cast<const char*>(data + offset), t_name_len);
+                        offset += t_name_len;
+
+                        const size_t track_bytes = static_cast<size_t>(clip.frame_count) * m4_size;
+                        if (offset + track_bytes > size) return false;
+                        std::vector<eldenring::fp::M4> frames(clip.frame_count);
+                        if (track_bytes > 0) {
+                            std::memcpy(frames.data(), data + offset, track_bytes);
+                            offset += track_bytes;
+                        }
+                        clip.tracks[track_name] = std::move(frames);
+                    }
+                } else {
+                    // CSVM v2: fixed five knife part tracks.
+                    const size_t frame_bytes = 5 * m4_size;
+                    if (offset + clip.frame_count * frame_bytes > size) return false;
+
+                    clip.blade_frames.resize(clip.frame_count);
+                    clip.front_frames.resize(clip.frame_count);
+                    clip.rear_frames.resize(clip.frame_count);
+                    clip.lock_frames.resize(clip.frame_count);
+                    clip.arms_frames.resize(clip.frame_count);
+
+                    for (uint32_t f = 0; f < clip.frame_count; ++f) {
+                        std::memcpy(&clip.blade_frames[f], data + offset, m4_size); offset += m4_size;
+                        std::memcpy(&clip.front_frames[f], data + offset, m4_size); offset += m4_size;
+                        std::memcpy(&clip.rear_frames[f], data + offset, m4_size); offset += m4_size;
+                        std::memcpy(&clip.lock_frames[f], data + offset, m4_size); offset += m4_size;
+                        std::memcpy(&clip.arms_frames[f], data + offset, m4_size); offset += m4_size;
+                    }
+
+                    clip.tracks["blade"] = clip.blade_frames;
+                    clip.tracks["front"] = clip.front_frames;
+                    clip.tracks["rear"] = clip.rear_frames;
+                    clip.tracks["lock"] = clip.lock_frames;
+                    clip.tracks["arms"] = clip.arms_frames;
                 }
                 anim_clips[clip_name] = std::move(clip);
             }
@@ -417,6 +459,15 @@ struct CSViewModelPose {
     eldenring::fp::M4 lock_pose{eldenring::fp::scale(1.0f)};
     eldenring::fp::M4 arms_pose{eldenring::fp::scale(1.0f)};
     eldenring::fp::M4 base_pose{eldenring::fp::scale(1.0f)};
+
+    // CSVM v3: sampled poses keyed by part/track name. A submesh looks up its
+    // own bone name here, so gun parts need no hard-coded pose slot.
+    std::map<std::string, eldenring::fp::M4> tracks;
+
+    [[nodiscard]] const eldenring::fp::M4* findTrack(const std::string& name) const {
+        const auto it = tracks.find(name);
+        return (it != tracks.end()) ? &it->second : nullptr;
+    }
 };
 
 class CSViewModelAnimator {
@@ -431,73 +482,62 @@ public:
         anim_time_ = anim_time;
 
         const float bob = std::sin(anim_time * 2.5f) * 0.003f;
-        eldenring::fp::M4 base = eldenring::fp::translate(0.f, bob, 0.f);
+        const eldenring::fp::M4 base = eldenring::fp::translate(0.f, bob, 0.f);
 
-        const auto* inspect_clip = (model_ && model_->anim_clips.count("inspect")) ? &model_->anim_clips.at("inspect") : nullptr;
-        const auto* deploy_clip = (model_ && model_->anim_clips.count("deploy")) ? &model_->anim_clips.at("deploy") : nullptr;
-        const auto* backstab_clip = (model_ && model_->anim_clips.count("backstab")) ? &model_->anim_clips.at("backstab") : nullptr;
+        // Reset legacy slots so a gun clip never inherits stale knife poses.
+        pose_.blade_pose = base;
+        pose_.handle_front_pose = base;
+        pose_.handle_rear_pose = base;
+        pose_.lock_pose = base;
+        pose_.arms_pose = base;
+        pose_.base_pose = base;
+        pose_.tracks.clear();
 
-        if (state == 1) { // Authentic CS2 Butterfly Inspect Tricks
-            if (inspect_clip && inspect_clip->frame_count > 0) {
-                erov::cs_anims::SampleDynamicTrack(inspect_clip->blade_frames, inspect_clip->fps, anim_time, pose_.blade_pose);
-                erov::cs_anims::SampleDynamicTrack(inspect_clip->front_frames, inspect_clip->fps, anim_time, pose_.handle_front_pose);
-                erov::cs_anims::SampleDynamicTrack(inspect_clip->rear_frames, inspect_clip->fps, anim_time, pose_.handle_rear_pose);
-                erov::cs_anims::SampleDynamicTrack(inspect_clip->lock_frames, inspect_clip->fps, anim_time, pose_.lock_pose);
-                erov::cs_anims::SampleDynamicTrack(inspect_clip->arms_frames, inspect_clip->fps, anim_time, pose_.arms_pose);
-            } else {
-                pose_.blade_pose = eldenring::fp::M4{};
-                pose_.handle_front_pose = eldenring::fp::M4{};
-                pose_.handle_rear_pose = eldenring::fp::M4{};
-                pose_.lock_pose = eldenring::fp::M4{};
-                pose_.arms_pose = eldenring::fp::M4{};
+        auto findClip = [this](const char* name) -> const CSVMAnimClip* {
+            if (!model_) return nullptr;
+            const auto it = model_->anim_clips.find(name);
+            return (it != model_->anim_clips.end()) ? &it->second : nullptr;
+        };
+
+        // Weapon-agnostic state -> clip mapping. A gun asset supplies
+        // idle/draw/fire/reload/inspect; the knife supplies inspect/deploy/backstab.
+        const CSVMAnimClip* clip = nullptr;
+        switch (state) {
+            case 1: clip = findClip("inspect"); break;
+            case 2: clip = findClip("fire"); break; // knife falls through to the procedural slash below
+            case 3: clip = findClip("backstab"); break;
+            case 4: clip = findClip("draw"); if (!clip) clip = findClip("deploy"); break;
+            case 5: clip = findClip("reload"); break;
+            case 0:
+            default: clip = findClip("idle"); break;
+        }
+
+        if (clip && !clip->tracks.empty()) {
+            for (const auto& entry : clip->tracks) {
+                if (entry.second.empty()) continue;
+                eldenring::fp::M4 sampled = eldenring::fp::M4{};
+                erov::cs_anims::SampleDynamicTrack(entry.second, clip->fps, anim_time, sampled);
+                pose_.tracks[entry.first] = eldenring::fp::mul(base, sampled);
             }
-            pose_.blade_pose = eldenring::fp::mul(base, pose_.blade_pose);
-            pose_.handle_front_pose = eldenring::fp::mul(base, pose_.handle_front_pose);
-            pose_.handle_rear_pose = eldenring::fp::mul(base, pose_.handle_rear_pose);
-            pose_.lock_pose = eldenring::fp::mul(base, pose_.lock_pose);
-            pose_.arms_pose = eldenring::fp::mul(base, pose_.arms_pose);
-            pose_.base_pose = pose_.arms_pose;
-        } else if (state == 4) { // Authentic CS2 Butterfly Deploy Flip
-            if (deploy_clip && deploy_clip->frame_count > 0) {
-                erov::cs_anims::SampleDynamicTrack(deploy_clip->blade_frames, deploy_clip->fps, anim_time, pose_.blade_pose);
-                erov::cs_anims::SampleDynamicTrack(deploy_clip->front_frames, deploy_clip->fps, anim_time, pose_.handle_front_pose);
-                erov::cs_anims::SampleDynamicTrack(deploy_clip->rear_frames, deploy_clip->fps, anim_time, pose_.handle_rear_pose);
-                erov::cs_anims::SampleDynamicTrack(deploy_clip->lock_frames, deploy_clip->fps, anim_time, pose_.lock_pose);
-                erov::cs_anims::SampleDynamicTrack(deploy_clip->arms_frames, deploy_clip->fps, anim_time, pose_.arms_pose);
-            } else {
-                pose_.blade_pose = eldenring::fp::M4{};
-                pose_.handle_front_pose = eldenring::fp::M4{};
-                pose_.handle_rear_pose = eldenring::fp::M4{};
-                pose_.lock_pose = eldenring::fp::M4{};
-                pose_.arms_pose = eldenring::fp::M4{};
-            }
-            pose_.blade_pose = eldenring::fp::mul(base, pose_.blade_pose);
-            pose_.handle_front_pose = eldenring::fp::mul(base, pose_.handle_front_pose);
-            pose_.handle_rear_pose = eldenring::fp::mul(base, pose_.handle_rear_pose);
-            pose_.lock_pose = eldenring::fp::mul(base, pose_.lock_pose);
-            pose_.arms_pose = eldenring::fp::mul(base, pose_.arms_pose);
-            pose_.base_pose = pose_.arms_pose;
-        } else if (state == 3) { // Authentic CS2 Backstab / Heavy Attack
-            if (backstab_clip && backstab_clip->frame_count > 0) {
-                erov::cs_anims::SampleDynamicTrack(backstab_clip->blade_frames, backstab_clip->fps, anim_time, pose_.blade_pose);
-                erov::cs_anims::SampleDynamicTrack(backstab_clip->front_frames, backstab_clip->fps, anim_time, pose_.handle_front_pose);
-                erov::cs_anims::SampleDynamicTrack(backstab_clip->rear_frames, backstab_clip->fps, anim_time, pose_.handle_rear_pose);
-                erov::cs_anims::SampleDynamicTrack(backstab_clip->lock_frames, backstab_clip->fps, anim_time, pose_.lock_pose);
-                erov::cs_anims::SampleDynamicTrack(backstab_clip->arms_frames, backstab_clip->fps, anim_time, pose_.arms_pose);
-            } else {
-                pose_.blade_pose = eldenring::fp::M4{};
-                pose_.handle_front_pose = eldenring::fp::M4{};
-                pose_.handle_rear_pose = eldenring::fp::M4{};
-                pose_.lock_pose = eldenring::fp::M4{};
-                pose_.arms_pose = eldenring::fp::M4{};
-            }
-            pose_.blade_pose = eldenring::fp::mul(base, pose_.blade_pose);
-            pose_.handle_front_pose = eldenring::fp::mul(base, pose_.handle_front_pose);
-            pose_.handle_rear_pose = eldenring::fp::mul(base, pose_.handle_rear_pose);
-            pose_.lock_pose = eldenring::fp::mul(base, pose_.lock_pose);
-            pose_.arms_pose = eldenring::fp::mul(base, pose_.arms_pose);
-            pose_.base_pose = pose_.arms_pose;
-        } else if (state == 2) { // Slash (Light Attack)
+
+            // Mirror generic tracks onto the legacy knife accessors.
+            auto mirror = [this](const char* track, eldenring::fp::M4& dst) {
+                const auto it = pose_.tracks.find(track);
+                if (it != pose_.tracks.end()) dst = it->second;
+            };
+            mirror("blade", pose_.blade_pose);
+            mirror("front", pose_.handle_front_pose);
+            mirror("rear", pose_.handle_rear_pose);
+            mirror("lock", pose_.lock_pose);
+            mirror("arms", pose_.arms_pose);
+            mirror("hand_R", pose_.arms_pose);
+
+            const auto body = pose_.tracks.find("weapon_offset");
+            pose_.base_pose = (body != pose_.tracks.end()) ? body->second : pose_.arms_pose;
+            return;
+        }
+
+        if (state == 2) { // Knife light attack: procedural forward slash
             const float p = std::clamp(anim_time / 0.35f, 0.f, 1.f);
             const float slash_rot = -30.f + p * 60.f;
             const float forward = -std::sin(p * 3.14159f) * 0.08f;
@@ -509,14 +549,8 @@ public:
             pose_.lock_pose = slash_base;
             pose_.base_pose = slash_base;
             pose_.arms_pose = slash_base;
-        } else { // Idle
-            pose_.blade_pose = base;
-            pose_.handle_front_pose = base;
-            pose_.handle_rear_pose = base;
-            pose_.lock_pose = base;
-            pose_.base_pose = base;
-            pose_.arms_pose = base;
         }
+        // Idle / any state without an authored clip keeps the resting stance.
     }
 
     [[nodiscard]] const CSViewModelPose& currentPose() const { return pose_; }

@@ -67,6 +67,12 @@ public:
 
     // Weapon registry pipeline
     bool loadWeapon(ID3D12Device* device, const eldenring::cs::CSWeaponDefinition& def);
+
+    // Swap the gun albedo/normal/ORM maps into the weapon texture slots
+    // (t0/t2/t4). The glove slots are left untouched.
+    bool loadWeaponTextures(ID3D12Device* device,
+                            const eldenring::cs::CSWeaponDefinition& def,
+                            D3D12_CPU_DESCRIPTOR_HANDLE weapon_slot);
     [[nodiscard]] const eldenring::cs::CSWeaponDefinition* activeWeapon() const {
         return has_active_weapon_ ? &active_weapon_def_ : nullptr;
     }

@@ -292,6 +292,7 @@ TEST(HudBridgeTest, PopulateHudStateHungerShakingOnlyAtCriticalFood) {
     EXPECT_TRUE(hud.food_shaking);
 }
 
+#if ENABLE_CS2_VIEWMODEL
 TEST(HudBridgeTest, PopulateHudStateSynchronizesCsMode) {
     auto& ctx = RuntimeContext::Instance();
     ctx.resetForTesting();
@@ -302,3 +303,16 @@ TEST(HudBridgeTest, PopulateHudStateSynchronizesCsMode) {
 
     EXPECT_TRUE(hud.cs_mode);
 }
+#else
+TEST(HudBridgeTest, PopulateHudStatePureMcDisablesCsMode) {
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().cs_mode.store(true);
+
+    erov::HudState hud{};
+    PopulateHudStateFromContext(hud, ctx);
+
+    EXPECT_FALSE(hud.cs_mode);
+}
+#endif
+

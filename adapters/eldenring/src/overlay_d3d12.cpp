@@ -112,6 +112,14 @@ unsigned g_skin_w = 0, g_skin_h = 0;
 SteveRenderer g_steve;
 #if ENABLE_CS2_VIEWMODEL
 CsRenderer g_cs;
+// CS arsenal runtime state: texture slots and the weapon currently loaded.
+D3D12_CPU_DESCRIPTOR_HANDLE g_cs_weapon_tex_cpu{};
+D3D12_CPU_DESCRIPTOR_HANDLE g_cs_glove_tex_cpu{};
+std::string g_cs_game_dir;
+std::string g_cs_knife_model_path;
+std::string g_cs_knife_png;
+std::string g_cs_glove_png;
+uint8_t g_cs_active_slot = 0;
 #endif
 mc::SteveAnimator g_anim;
 eldenring::render::SteveMotion g_motion;
@@ -200,6 +208,57 @@ void Logf(const char* fmt, Args... args) {
 void Logf(const char* msg) {
     if (g_log) g_log("%s", msg);
 }
+
+#if ENABLE_CS2_VIEWMODEL
+std::string ResolveCsAssetPath(const std::string& path) {
+    if (path.empty()) return path;
+    const std::filesystem::path p(path);
+    if (p.is_absolute() || g_cs_game_dir.empty()) return path;
+    return (std::filesystem::path(g_cs_game_dir) / p).string();
+}
+
+// Loads the weapon requested by the hotkey dispatcher. The knife is the
+// fallback: if a gun asset is missing we keep rendering the current weapon.
+void UpdateCsWeaponSlot(uint8_t want_slot) {
+    if (want_slot == g_cs_active_slot) return;
+
+    bool loaded = false;
+    if (want_slot == 0) {
+        if (!g_cs_knife_model_path.empty() && std::filesystem::exists(g_cs_knife_model_path) &&
+            g_cs.loadModel(g_s.device, g_cs_knife_model_path)) {
+            g_cs.loadTexturesFromFiles(g_s.device, g_cs_knife_png, g_cs_glove_png,
+                                       g_cs_weapon_tex_cpu, g_cs_glove_tex_cpu);
+            loaded = true;
+        }
+    } else {
+        const char* id = (want_slot == 1) ? "weapon_ak47"
+                       : (want_slot == 2) ? "weapon_awp"
+                       : "weapon_m4a1_s";
+        if (const auto* found = eldenring::cs::CSWeaponRegistry::instance().findWeapon(id)) {
+            auto def = *found;
+            def.model_csvm_path = ResolveCsAssetPath(def.model_csvm_path);
+            def.albedo_tex_path = ResolveCsAssetPath(def.albedo_tex_path);
+            def.normal_tex_path = ResolveCsAssetPath(def.normal_tex_path);
+            def.pbr_tex_path = ResolveCsAssetPath(def.pbr_tex_path);
+            if (std::filesystem::exists(def.model_csvm_path) && g_cs.loadWeapon(g_s.device, def)) {
+                g_cs.loadWeaponTextures(g_s.device, def, g_cs_weapon_tex_cpu);
+                loaded = true;
+            }
+        }
+    }
+
+    if (loaded) {
+        g_cs_active_slot = want_slot;
+        Logf("overlay: CS weapon slot -> %u", static_cast<unsigned>(want_slot));
+    } else {
+        // Keep the current weapon and undo the request so we do not retry
+        // a missing asset every frame.
+        eldenring::RuntimeContext::Instance().mode().cs_weapon_slot.store(g_cs_active_slot);
+        Logf("overlay: CS weapon slot %u unavailable, keeping %u",
+             static_cast<unsigned>(want_slot), static_cast<unsigned>(g_cs_active_slot));
+    }
+}
+#endif
 
 void WaitForGpu() {
     if (!g_s.queue || !g_s.fence || !g_s.fence_event) return;
@@ -440,8 +499,11 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             cs_table_cpu.ptr += static_cast<SIZE_T>(srv_inc) * 16;
             D3D12_CPU_DESCRIPTOR_HANDLE glove_cpu = cs_table_cpu;
             glove_cpu.ptr += srv_inc;
+            g_cs_weapon_tex_cpu = cs_table_cpu;
+            g_cs_glove_tex_cpu = glove_cpu;
 
             const std::string& game_dir = eldenring::diagnostics::GetGameDir();
+            g_cs_game_dir = game_dir;
 
             std::vector<std::string> model_candidates;
             if (!game_dir.empty()) {
@@ -456,6 +518,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                     char cs_msg[256];
                     snprintf(cs_msg, sizeof(cs_msg), "overlay: CS viewmodel model loaded successfully from %s", p.c_str());
                     Logf(cs_msg);
+                    g_cs_knife_model_path = p;
                     eldenring::RuntimeContext::Instance().mode().cs_mode.store(true);
                     eldenring::RuntimeContext::Instance().mode().first_person.store(true);
                     break;
@@ -490,6 +553,8 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             for (const auto& p : glove_tex_candidates) {
                 if (std::filesystem::exists(p)) { glove_png = p; break; }
             }
+            g_cs_knife_png = knife_png;
+            g_cs_glove_png = glove_png;
             g_cs.loadTexturesFromFiles(g_s.device, knife_png, glove_png, cs_table_cpu, glove_cpu);
         }
 #endif
@@ -915,6 +980,7 @@ void DrawInventory(const HudState& hud, float w, float h) {
 eldenring::live::HeartAnimator g_hearts;
 
 void DrawHud(const HudState& hud, float w, float h) {
+#if ENABLE_CS2_VIEWMODEL
     if (hud.cs_mode) {
         ImDrawList* dl = ImGui::GetBackgroundDrawList();
         const float cx = w * 0.5f, cy = h * 0.5f;
@@ -943,16 +1009,34 @@ void DrawHud(const HudState& hud, float w, float h) {
 
         auto& r_mode = eldenring::RuntimeContext::Instance().mode();
         const uint8_t state = r_mode.cs_knife_state.load();
-        const char* status_str = (state == 1) ? "[SPINNING FLOWER...]" :
-                                 (state == 2) ? "[SLASH ATTACK]" :
-                                 (state == 3) ? "[BACKSTAB CRIT]" :
-                                 (state == 4) ? "[DEPLOYING...]" : "[READY]";
-        dl->AddText(ImGui::GetFont(), 19.f, {x + 14.f, y + 10.f}, IM_COL32(0, 255, 150, 255), "BUTTERFLY KNIFE (CS2)");
+        const uint8_t slot = r_mode.cs_weapon_slot.load();
+        const bool is_gun = slot != 0;
+        const char* weapon_name = (slot == 1) ? "AK-47 (CS2)"
+                                : (slot == 2) ? "AWP (CS2)"
+                                : (slot == 3) ? "M4A1-S (CS2)"
+                                : "BUTTERFLY KNIFE (CS2)";
+        const char* status_str = (state == 1) ? "[INSPECTING...]" :
+                                 (state == 2) ? (is_gun ? "[FIRING...]" : "[SLASH ATTACK]") :
+                                 (state == 3) ? (is_gun ? "[AIMING...]" : "[BACKSTAB CRIT]") :
+                                 (state == 4) ? "[DEPLOYING...]" :
+                                 (state == 5) ? "[RELOADING...]" : "[READY]";
+        dl->AddText(ImGui::GetFont(), 19.f, {x + 14.f, y + 10.f}, IM_COL32(0, 255, 150, 255), weapon_name);
         dl->AddText(ImGui::GetFont(), 15.f, {x + 14.f, y + 36.f}, IM_COL32(255, 215, 0, 255), status_str);
-        dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 60.f}, IM_COL32(200, 210, 225, 230), "[F] Spin Inspect  |  [LMB] Slash");
-        dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[RMB] Backstab    |  [F1] Mode Toggle");
+        if (is_gun) {
+            char ammo_str[64];
+            snprintf(ammo_str, sizeof(ammo_str), "%u / %u",
+                     static_cast<unsigned>(r_mode.cs_ammo.load()),
+                     static_cast<unsigned>(r_mode.cs_reserve.load()));
+            dl->AddText(ImGui::GetFont(), 22.f, {x + card_w - 96.f, y + 10.f}, IM_COL32(255, 255, 255, 245), ammo_str);
+            dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 60.f}, IM_COL32(200, 210, 225, 230), "[F] Inspect | [LMB] Fire | [R] Reload");
+            dl->AddText(ImGui::GetFont(), 12.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[1] AK-47  [2] AWP  [3] Knife | [F1] Toggle");
+        } else {
+            dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 60.f}, IM_COL32(200, 210, 225, 230), "[F] Spin Inspect  |  [LMB] Slash");
+            dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[RMB] Backstab    |  [F1] Mode Toggle");
+        }
         return;
     }
+#endif
     if (hud.inv_open) {
         DrawInventory(hud, w, h);
         return;
@@ -1206,7 +1290,11 @@ void DrawHud(const HudState& hud, float w, float h) {
 void RenderFrame(IDXGISwapChain* sc) {
     HudState hud;
     SteveState steve;
+#if ENABLE_CS2_VIEWMODEL
     if (!g_provider || !g_provider(hud, steve) || !hud.show || (!hud.mc_mode && !hud.cs_mode)) return;
+#else
+    if (!g_provider || !g_provider(hud, steve) || !hud.show || !hud.mc_mode) return;
+#endif
 
     if (g_depth_dirty.exchange(false)) {
         std::lock_guard<std::mutex> g(g_depth_mutex);
@@ -1487,6 +1575,9 @@ void RenderFrame(IDXGISwapChain* sc) {
     }
 #if ENABLE_CS2_VIEWMODEL
     auto& r_mode = eldenring::RuntimeContext::Instance().mode();
+    if (r_mode.cs_mode.load() && g_cs.ready()) {
+        UpdateCsWeaponSlot(r_mode.cs_weapon_slot.load());
+    }
     const bool cs_active = r_mode.cs_mode.load() && g_cs.ready();
 #else
     const bool cs_active = false;

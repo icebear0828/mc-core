@@ -11,6 +11,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 option(ENABLE_CS2_VIEWMODEL "Enable Counter-Strike 2 viewmodel and knife inspection subsystem" ON)
 if(ENABLE_CS2_VIEWMODEL)
     add_compile_definitions(ENABLE_CS2_VIEWMODEL=1)
+else()
+    add_compile_definitions(ENABLE_CS2_VIEWMODEL=0)
 endif()
 
 # Compiler Warnings

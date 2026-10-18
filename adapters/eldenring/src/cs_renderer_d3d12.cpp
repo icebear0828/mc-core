@@ -726,6 +726,37 @@ bool CsRenderer::loadWeapon(ID3D12Device* device, const eldenring::cs::CSWeaponD
     return true;
 }
 
+bool CsRenderer::loadWeaponTextures(ID3D12Device* device,
+                                    const eldenring::cs::CSWeaponDefinition& def,
+                                    D3D12_CPU_DESCRIPTOR_HANDLE weapon_slot) {
+    if (!device || weapon_slot.ptr == 0) return false;
+
+    const UINT srv_inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_CPU_DESCRIPTOR_HANDLE normal_slot{weapon_slot.ptr + 2 * srv_inc};
+    D3D12_CPU_DESCRIPTOR_HANDLE pbr_slot{weapon_slot.ptr + 4 * srv_inc};
+
+    bool any_loaded = false;
+    std::vector<uint8_t> rgba;
+    unsigned width = 0, height = 0;
+
+    if (!def.albedo_tex_path.empty() && DecodePngFile(def.albedo_tex_path, rgba, width, height)) {
+        setKnifeTexture(device, rgba.data(), width, height, weapon_slot);
+        any_loaded = true;
+        if (log_) log_("cs_render: weapon albedo %s (%ux%u)", def.albedo_tex_path.c_str(), width, height);
+    }
+    if (!def.normal_tex_path.empty() && DecodePngFile(def.normal_tex_path, rgba, width, height)) {
+        setKnifeNormalTexture(device, rgba.data(), width, height, normal_slot);
+        any_loaded = true;
+        if (log_) log_("cs_render: weapon normal %s (%ux%u)", def.normal_tex_path.c_str(), width, height);
+    }
+    if (!def.pbr_tex_path.empty() && DecodePngFile(def.pbr_tex_path, rgba, width, height)) {
+        setKnifePbrTexture(device, rgba.data(), width, height, pbr_slot);
+        any_loaded = true;
+        if (log_) log_("cs_render: weapon ORM %s (%ux%u)", def.pbr_tex_path.c_str(), width, height);
+    }
+    return any_loaded;
+}
+
 void CsRenderer::tick(float dt, uint8_t state, float anim_time) {
     animator_.tick(dt, state, anim_time);
 }
@@ -783,26 +814,38 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
         float tint[4] = {0.25f, 0.25f, 0.28f, 1.0f};
         const float is_arm = (type == SubmeshType::Arms) ? 1.0f : 0.0f;
 
-        switch (type) {
-            case SubmeshType::Blade:
-                pose = animator_.bladePose();
-                break;
-            case SubmeshType::HandleFront:
-                pose = animator_.handleFrontPose();
-                break;
-            case SubmeshType::HandleRear:
-                pose = animator_.handleRearPose();
-                break;
-            case SubmeshType::Lock:
-                pose = animator_.lockPose();
-                break;
-            case SubmeshType::Arms:
-                pose = animator_.armsPose();
-                break;
-            case SubmeshType::Base:
-            default:
-                pose = animator_.basePose();
-                break;
+        // CSVM v3: a submesh follows the animation track named after its bone.
+        // Knife arms_glove maps to the legacy "arms" track; gun arms_L/arms_R
+        // map to their own hand tracks so each hand follows its clip bone.
+        std::string track_name = sub.bone_name;
+        if (track_name == "arms_glove") track_name = "arms";
+        else if (track_name == "arms_L") track_name = "hand_L";
+        else if (track_name == "arms_R") track_name = "hand_R";
+
+        if (const fp::M4* tracked = animator_.currentPose().findTrack(track_name)) {
+            pose = *tracked;
+        } else {
+            switch (type) {
+                case SubmeshType::Blade:
+                    pose = animator_.bladePose();
+                    break;
+                case SubmeshType::HandleFront:
+                    pose = animator_.handleFrontPose();
+                    break;
+                case SubmeshType::HandleRear:
+                    pose = animator_.handleRearPose();
+                    break;
+                case SubmeshType::Lock:
+                    pose = animator_.lockPose();
+                    break;
+                case SubmeshType::Arms:
+                    pose = animator_.armsPose();
+                    break;
+                case SubmeshType::Base:
+                default:
+                    pose = animator_.basePose();
+                    break;
+            }
         }
 
         const bool has_tex = (type == SubmeshType::Arms) ? (glove_tex_.tex != nullptr) : (knife_tex_.tex != nullptr);

@@ -819,7 +819,11 @@ void ClickAttack(float charged) {
 
 // Should the native character ignore the mouse buttons right now? Only while the MC HUD is on and the game shows no UI.
 bool WantSuppress() {
+#if ENABLE_CS2_VIEWMODEL
     if (!g_mc_mode.load() && !eldenring::RuntimeContext::Instance().mode().cs_mode.load()) return false;
+#else
+    if (!g_mc_mode.load()) return false;
+#endif
     MenuState ms;
     LoadingState ls;
     if (!readMenuState(g_reader, readSingleton(g_reader, g_img.base, g_rva_menu, sigs::kCSMenuMan), ms) ||
@@ -2071,7 +2075,11 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     out.show = have_state && !ms.menu_focused && !ms.popup_open && !ls.screen_loading && fade < 0.02f;
 
     if (g_hide_native.load()) {
+#if ENABLE_CS2_VIEWMODEL
         const bool want_hidden = (out.mc_mode || out.cs_mode) && have_state && !ls.screen_loading;
+#else
+        const bool want_hidden = out.mc_mode && have_state && !ls.screen_loading;
+#endif
         g_native_hide_wanted.store(want_hidden);
         UpdateNativeModel(static_cast<uintptr_t>(player), want_hidden);
         static uint64_t last_report_ms = 0;
