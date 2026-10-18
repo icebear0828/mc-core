@@ -44,11 +44,10 @@ struct GameHooksCallbacks {
     std::function<void(const void* request)> on_spawn_bullet;
     std::function<void(void* manager, void* request, void* r9, uint32_t* out_handle)> on_spawn_bullet_post;
 
-    // Creative mode event probes
+    // Creative mode hooks
     std::function<bool()> is_fall_damage_disabled;
     std::function<bool(void* chr)> should_block_creative_kill;
     std::function<bool(void* fall_module, float threshold)> should_deny_fall_time_exceeded;
-    std::function<void(const char* probe_name, void* obj)> on_creative_probe;
 };
 
 class GameHooks {
@@ -75,13 +74,10 @@ public:
                           uintptr_t heavy_react_addr,
                           uintptr_t kill_addr);
 
-    bool setupCreativeProbes(uintptr_t base,
-                             uintptr_t kill_wrapper_addr,
-                             uintptr_t hard_landing_addr,
-                             uintptr_t fall_height_addr,
-                             uintptr_t sp_effect_addr,
-                             uintptr_t fall_exceeded_addr,
-                             uintptr_t event_dispatch_addr);
+    bool setupCreativeHooks(uintptr_t base,
+                            uintptr_t kill_wrapper_addr,
+                            uintptr_t fall_height_addr,
+                            uintptr_t fall_exceeded_addr);
 
     bool setupBulletLog(uintptr_t base, uintptr_t spawn_bullet_addr);
 
@@ -99,6 +95,9 @@ public:
     static uint8_t InvokeHitVfxDetour(void* a1, void* a2, uint8_t* ctx, void* flags);
     static void InvokeRenderCamCopyDetour(void* self);
     static uint32_t* InvokeSpawnBulletDetour(void* manager, uint32_t* out_handle, void* request, void* r9);
+    static void InvokeCreativeKillDetour(void* chr);
+    static float InvokeCreativeFallDetour(void* fall_module);
+    static bool InvokeCreativeFallExceededDetour(void* fall_module, float threshold);
 
     // Trampoline setter helpers for testing
     void setClampOrigForTesting(void* (*fn)(void*, int32_t));
@@ -110,6 +109,9 @@ public:
     void setKillChrOrigForTesting(void (*fn)(void*));
     void setHitVfxOrigForTesting(uint8_t (*fn)(void*, void*, uint8_t*, void*));
     void setSpawnBulletOrigForTesting(uint32_t* (*fn)(void*, uint32_t*, void*, void*));
+    void setCreativeKillOrigForTesting(void (*fn)(void*));
+    void setCreativeFallOrigForTesting(float (*fn)(void*));
+    void setCreativeFallExceededOrigForTesting(bool (*fn)(void*, float));
 
     void resetForTesting();
 

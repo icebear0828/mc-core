@@ -1476,16 +1476,14 @@ bool ReadFileAll(const std::string& path, std::vector<uint8_t>& out) {
 
 void SetupCreativeProbes() {
     g_cr_log.store(FileExists(g_game_dir + "mc_er_creativelog.txt"));
-    uintptr_t kw = 0, hl = 0, fh = 0, sp = 0, fe = 0, ev = 0;
+    uintptr_t kw = 0, fh = 0, fe = 0;
     LocateByPrefix(g_img, sigs::kKillWrapper, kw);
-    LocateByPrefix(g_img, sigs::kHardLanding, hl);
     LocateByPrefix(g_img, sigs::kFallHeight, fh);
-    LocateByPrefix(g_img, sigs::kHasSpEffect, sp);
     LocateByPrefix(g_img, sigs::kFallTimeExceeded, fe);
-    LocateByPrefix(g_img, sigs::kChrEventDispatch, ev);
-    eldenring::hooks::GameHooks::Instance().setupCreativeProbes(
-        g_img.base, kw, hl, fh, sp, fe, ev);
-    Log("creative: probes configured (log=%d)", g_cr_log.load() ? 1 : 0);
+    eldenring::hooks::GameHooks::Instance().setupCreativeHooks(
+        g_img.base, kw, fh, fe);
+    Log("creative: hooks configured (kill_wrapper=%p fall_height=%p fall_time_exceeded=%p)",
+        reinterpret_cast<void*>(kw), reinterpret_cast<void*>(fh), reinterpret_cast<void*>(fe));
 }
 
 // ---- spawn_bullet request logger (read-only, switch file mc_er_bulletlog.txt) -----------------------------------------------------------
@@ -1832,12 +1830,6 @@ void SetupGameHooksCallbacks() {
         static std::atomic<unsigned> logged{0};
         if (++logged <= 10) Log("creative: the fall lasted %.2f s (threshold %.2f s): answered no for the player", FallTimer(PlayerChrPtr()), static_cast<double>(threshold));
         return true;
-    };
-
-    cb.on_creative_probe = [](const char* name, void* obj) {
-        if (g_cr_log.load(std::memory_order_relaxed)) {
-            Log("creative: %s probe invoked on %p", name, obj);
-        }
     };
 
     eldenring::hooks::GameHooks::Instance().setCallbacks(cb);
