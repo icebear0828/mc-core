@@ -9,6 +9,11 @@ namespace eldenring::ui {
 
 void PopulateHudStateFromContext(erov::HudState& out, const RuntimeContext& ctx) {
     out.mc_mode = ctx.mode().mc_mode.load(std::memory_order_relaxed);
+#if ENABLE_CS2_VIEWMODEL
+    out.cs_mode = ctx.mode().cs_mode.load(std::memory_order_relaxed);
+#else
+    out.cs_mode = false;
+#endif
     out.creative = !creative::showsVitals(ctx.currentGameMode());
     const uint64_t toast_ms = ctx.mode().mode_toast_ms.load(std::memory_order_relaxed);
 #if defined(WIN32)

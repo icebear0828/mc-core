@@ -97,6 +97,15 @@ private:
 
 struct ModeConfig {
     std::atomic<bool> mc_mode{true};
+    std::atomic<bool> cs_mode{false};
+    std::atomic<uint8_t> cs_knife_state{0}; // 0: Idle, 1: Inspect, 2: Slash/Fire, 3: Backstab, 4: Deploy, 5: Reload
+    std::atomic<float> cs_knife_anim_time{0.f};
+    std::atomic<bool> cs_knife_inspect{false};
+    // CS arsenal slot: 0 butterfly knife, 1 AK-47, 2 AWP, 3 M4A1-S
+    std::atomic<uint8_t> cs_weapon_slot{0};
+    std::atomic<uint32_t> cs_ammo{30};
+    std::atomic<uint32_t> cs_reserve{90};
+    std::atomic<uint32_t> cs_mag_capacity{30};
     std::atomic<uint8_t> game_mode{static_cast<uint8_t>(creative::GameMode::Survival)};
     std::atomic<uint64_t> mode_toast_ms{0};
     std::atomic<bool> damage_enabled{false};
@@ -147,6 +156,7 @@ struct ModeConfig {
     std::atomic<float> bow_power{0.f};
     std::atomic<float> bow_ticks{0.f};
 };
+using ModeFlags = ModeConfig;
 
 struct PlayerSystems {
     live::SurvivalState survival;
@@ -243,6 +253,14 @@ public:
     void resetForTesting() {
         // Reset ModeConfig
         mode_.mc_mode.store(true);
+        mode_.cs_mode.store(false);
+        mode_.cs_knife_state.store(0);
+        mode_.cs_knife_anim_time.store(0.f);
+        mode_.cs_knife_inspect.store(false);
+        mode_.cs_weapon_slot.store(0);
+        mode_.cs_ammo.store(30);
+        mode_.cs_reserve.store(90);
+        mode_.cs_mag_capacity.store(30);
         mode_.game_mode.store(static_cast<uint8_t>(creative::GameMode::Survival));
         mode_.mode_toast_ms.store(0);
         mode_.damage_enabled.store(false);

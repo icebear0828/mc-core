@@ -51,7 +51,7 @@ if(WIN32)
         target_compile_options(imgui_dx12 PRIVATE /W3 /WX-)
     endif()
 
-    add_library(eldenring_adapter SHARED
+    set(ELDENRING_ADAPTER_SRCS
         src/loader.cpp
         src/overlay_d3d12.cpp
         src/steve_renderer_d3d12.cpp
@@ -69,6 +69,14 @@ if(WIN32)
         src/input/hotkey_dispatcher.cpp
         src/hooks/game_hooks.cpp
         eldenring_dinput8.def)
+
+    if(ENABLE_CS2_VIEWMODEL)
+        list(APPEND ELDENRING_ADAPTER_SRCS
+            src/cs_renderer_d3d12.cpp
+            src/cs_weapon_registry.cpp)
+    endif()
+
+    add_library(eldenring_adapter SHARED ${ELDENRING_ADAPTER_SRCS})
     set_target_properties(eldenring_adapter PROPERTIES
         OUTPUT_NAME dinput8
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/eldenring"

@@ -139,7 +139,7 @@ mc-core/
 
 ### 1. 编译 C++ 核心库与运行测试
 ```bash
-# 配置 CMake (Release 模式)
+# 配置 CMake (Release 模式，默认启用 CS2 扩展)
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
 # 编译静态库与测试目标
@@ -149,7 +149,37 @@ cmake --build build --config Release
 ctest --test-dir build --output-on-failure
 ```
 
-### 2. 运行 Python 资产工具测试
+### 2. 纯净 MC 独立构建与 CS 物理隔离指南 (Isolation & Packaging)
+为了确保在修改 Minecraft 核心或开发 CS 武器模组时**互不干扰、绝不改崩对方**，项目通过 CMake 开关和独立构建目录实现了彻底的物理隔离：
+
+* **构建 100% 纯净 Minecraft 模组 (零 CS 代码与资源)**：
+  ```bash
+  # 1. 独立配置与构建（编译输出位于 build_pure_mc）
+  cmake -B build_pure_mc -S . -DENABLE_CS2_VIEWMODEL=OFF
+  cmake --build build_pure_mc --config Release --target eldenring_adapter mc_tests
+
+  # 2. 运行纯净测试套件 (1105 项测试全部通过)
+  build_pure_mc/bin/Release/mc_tests.exe
+
+  # 3. 一键打包并部署到艾尔登法环游戏目录 (根目录下运行)
+  python tools/package_mod.py --target mc --deploy
+  ```
+  > **注意**：`ENABLE_CS2_VIEWMODEL=OFF` 时，所有 CS 第一人称 hand 蒙皮、蝴蝶刀检视动画与 PBR 渲染管线均被彻底剔除，生成的 `dinput8.dll` 为原生纯净 MC 模组。
+
+* **构建包含 Counter-Strike 2 武器与第一人称手模的扩展模组**：
+  ```bash
+  # 1. 配置与构建（编译输出位于 build）
+  cmake -B build -S . -DENABLE_CS2_VIEWMODEL=ON
+  cmake --build build --config Release --target eldenring_adapter mc_tests
+
+  # 2. 运行全量测试套件 (1123 项测试全部通过)
+  build/bin/Release/mc_tests.exe
+
+  # 3. 一键打包并部署到艾尔登法环游戏目录
+  python tools/package_mod.py --target cs2 --deploy
+  ```
+
+### 3. 运行 Python 资产工具测试
 ```bash
 uv run --with pytest --with pillow pytest tests/test_extract_assets.py
 ```

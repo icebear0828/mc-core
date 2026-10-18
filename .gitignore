@@ -1,5 +1,6 @@
 # Build directories
 build/
+build_pure_mc/
 build-*/
 bin/
 lib/
@@ -41,5 +42,6 @@ Testing/
 # Authentic extracted game assets (never commit official Minecraft assets)
 *.authentic.png
 assets/exported/
+*.bin
 
 

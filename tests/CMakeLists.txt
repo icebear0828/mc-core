@@ -94,6 +94,13 @@ add_executable(mc_tests
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/hooks/game_hooks.cpp
 )
 
+if(ENABLE_CS2_VIEWMODEL)
+    target_sources(mc_tests PRIVATE
+        test_cs_viewmodel.cpp
+        ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/cs_weapon_registry.cpp
+    )
+endif()
+
 
 
 target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source" MC_CORE_TESTS)

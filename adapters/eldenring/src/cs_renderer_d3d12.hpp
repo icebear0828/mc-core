@@ -1,0 +1,144 @@
+#pragma once
+
+#include <d3d12.h>
+#include <cstdint>
+#include <string>
+#include <vector>
+#include "cs_viewmodel.hpp"
+#include "cs_weapon_registry.hpp"
+#include "eldenring_fp.hpp"
+#include "mc/rig.hpp"
+
+namespace erov {
+
+namespace fp = eldenring::fp;
+
+using ViewmodelProjectionConfig = eldenring::cs::ViewmodelProjectionConfig;
+using eldenring::cs::computeViewmodelProjection;
+
+class CsRenderer {
+public:
+    using LogFn = void (*)(const char* fmt, ...);
+
+    bool init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log);
+    void release();
+    [[nodiscard]] bool ready() const { return pso_ != nullptr && vb_ != nullptr; }
+
+    bool loadModel(ID3D12Device* device, const std::string& path);
+
+    // Textures:
+    // t0: knife_albedo
+    // t1: glove_albedo
+    // t2: knife_normal (DirectX format: G inverted)
+    // t3: glove_normal
+    // t4: knife_pbr (ORM: R=AO, G=Roughness, B=Metallic)
+    // t5: glove_pbr
+    bool setKnifeTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    bool setGloveTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    bool setKnifeNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    bool setGloveNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    bool setKnifePbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    bool setGlovePbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+
+    bool loadTexturesFromFiles(ID3D12Device* device,
+                               const std::string& knife_png,
+                               const std::string& glove_png,
+                               D3D12_CPU_DESCRIPTOR_HANDLE knife_slot,
+                               D3D12_CPU_DESCRIPTOR_HANDLE glove_slot,
+                               const std::string& knife_norm_png = "",
+                               const std::string& glove_norm_png = "",
+                               const std::string& knife_pbr_png = "",
+                               const std::string& glove_pbr_png = "");
+
+    // Viewmodel projection & stance management
+    void setViewmodelConfig(const ViewmodelProjectionConfig& cfg) { vm_config_ = cfg; }
+    [[nodiscard]] const ViewmodelProjectionConfig& getViewmodelConfig() const { return vm_config_; }
+    [[nodiscard]] mc::rig::Mat4 computeViewmodelProjection(unsigned width, unsigned height) const {
+        return eldenring::cs::computeViewmodelProjection(width, height, vm_config_);
+    }
+
+    // Pose getters for verification and rendering
+    [[nodiscard]] const fp::M4& bladePose() const { return animator_.bladePose(); }
+    [[nodiscard]] const fp::M4& handleFrontPose() const { return animator_.handleFrontPose(); }
+    [[nodiscard]] const fp::M4& handleRearPose() const { return animator_.handleRearPose(); }
+    [[nodiscard]] const fp::M4& lockPose() const { return animator_.lockPose(); }
+    [[nodiscard]] const fp::M4& armsPose() const { return animator_.armsPose(); }
+    [[nodiscard]] const fp::M4& basePose() const { return animator_.basePose(); }
+
+    // Weapon registry pipeline
+    bool loadWeapon(ID3D12Device* device, const eldenring::cs::CSWeaponDefinition& def);
+
+    // Swap the gun albedo/normal/ORM maps into the weapon texture slots
+    // (t0/t2/t4). The glove slots are left untouched.
+    bool loadWeaponTextures(ID3D12Device* device,
+                            const eldenring::cs::CSWeaponDefinition& def,
+                            D3D12_CPU_DESCRIPTOR_HANDLE weapon_slot);
+    [[nodiscard]] const eldenring::cs::CSWeaponDefinition* activeWeapon() const {
+        return has_active_weapon_ ? &active_weapon_def_ : nullptr;
+    }
+
+    // Cook-Torrance PBR & normal map math verification (accessible for unit test suites)
+    static float computeGgxD(float NdotH, float roughness) {
+        return eldenring::cs::computeGgxD(NdotH, roughness);
+    }
+    static float computeSmithG(float NdotV, float NdotL, float roughness) {
+        return eldenring::cs::computeSmithG(NdotV, NdotL, roughness);
+    }
+    static void computeFresnelSchlick(float cos_theta, const float f0[3], float out_f[3]) {
+        eldenring::cs::computeFresnelSchlick(cos_theta, f0, out_f);
+    }
+    static void unpackDirectXNormal(uint8_t r, uint8_t g, uint8_t b, float out_n[3]) {
+        eldenring::cs::unpackDirectXNormal(r, g, b, out_n);
+    }
+
+    void tick(float dt, uint8_t state, float anim_time);
+
+    void draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
+              D3D12_GPU_DESCRIPTOR_HANDLE tex_table, unsigned width, unsigned height,
+              const mc::rig::Mat4& projection, D3D12_CPU_DESCRIPTOR_HANDLE rtv,
+              D3D12_CPU_DESCRIPTOR_HANDLE dsv);
+
+private:
+    struct TextureGpu {
+        ID3D12Resource* tex{nullptr};
+        ID3D12Resource* upload{nullptr};
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+        bool pending{false};
+
+        void release() {
+            if (tex) { tex->Release(); tex = nullptr; }
+            if (upload) { upload->Release(); upload = nullptr; }
+            pending = false;
+        }
+
+        bool create(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+        void recordUpload(ID3D12GraphicsCommandList* list);
+    };
+
+    ID3D12RootSignature* root_{nullptr};
+    ID3D12PipelineState* pso_{nullptr};
+    ID3D12Resource* vb_{nullptr};
+    ID3D12Resource* ib_{nullptr};
+    D3D12_VERTEX_BUFFER_VIEW vbv_{};
+    D3D12_INDEX_BUFFER_VIEW ibv_{};
+
+    TextureGpu knife_tex_;
+    TextureGpu glove_tex_;
+    TextureGpu knife_normal_tex_;
+    TextureGpu glove_normal_tex_;
+    TextureGpu knife_pbr_tex_;
+    TextureGpu glove_pbr_tex_;
+
+    ViewmodelProjectionConfig vm_config_{};
+    eldenring::cs::CSWeaponDefinition active_weapon_def_{};
+    bool has_active_weapon_{false};
+
+    eldenring::cs::CSViewModel model_;
+    eldenring::cs::CSViewModelAnimator animator_;
+    LogFn log_{nullptr};
+
+    using SubmeshType = eldenring::cs::SubmeshType;
+    std::vector<SubmeshType> submesh_types_;
+};
+
+} // namespace erov

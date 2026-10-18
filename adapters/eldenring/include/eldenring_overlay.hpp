@@ -18,6 +18,7 @@ namespace erov {
 struct HudState {
     bool show{false};     // false: draw nothing this frame (title, menus, loading, fades...)
     bool mc_mode{false};  // F6 toggle: show the Minecraft HUD
+    bool cs_mode{false};  // F1 toggle: show CS2 viewmodel and crosshair
     int hp{0};
     int max_hp{0};
     int selected_slot{0}; // 0..8

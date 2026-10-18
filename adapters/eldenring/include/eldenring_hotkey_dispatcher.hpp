@@ -104,7 +104,10 @@ private:
     bool prev4_{false};
     bool prev_f3_{false};
     bool prev_f2_{false};
+    bool prev_f1_{false};
     bool prev_gameplay_f_{false};
+    bool prev_reload_r_{false};
+    float cs_fire_cooldown_{0.f};
 };
 
 } // namespace eldenring::input

@@ -9,6 +9,9 @@
 #ifndef VK_SPACE
 #define VK_SPACE 0x20
 #endif
+#ifndef VK_F1
+#define VK_F1 0x70
+#endif
 #ifndef VK_F2
 #define VK_F2 0x71
 #endif
@@ -329,3 +332,149 @@ TEST_F(HotkeyDispatcherTest, InputDisabledShortCircuitsClickAttackAndInteraction
     dispatcher_->tick(0.016f);
     EXPECT_TRUE(attack_called_);
 }
+
+#if ENABLE_CS2_VIEWMODEL
+TEST_F(HotkeyDispatcherTest, CsModeToggleAndKnifeInspectLifecycle) {
+    auto& ctx = RuntimeContext::Instance();
+    EXPECT_FALSE(ctx.mode().cs_mode.load());
+
+    // Press F1 to toggle CS mode ON
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+
+    EXPECT_TRUE(ctx.mode().cs_mode.load());
+    EXPECT_TRUE(ctx.mode().first_person.load());
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 4); // Deploy triggered
+
+    // Press F to trigger butterfly inspect
+    setKey('F', true);
+    dispatcher_->tick(0.016f);
+    setKey('F', false);
+    dispatcher_->tick(0.016f);
+
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 1); // Inspect triggered
+    EXPECT_TRUE(ctx.mode().cs_knife_inspect.load());
+    EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "cs.knife.inspect") != played_sounds_.end());
+
+    // Left click to trigger knife slash
+    left_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 2); // Slash triggered
+    EXPECT_FALSE(ctx.mode().cs_knife_inspect.load());
+    EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "cs.knife.slash") != played_sounds_.end());
+
+    // Right click to trigger backstab
+    right_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 3); // Backstab triggered
+    EXPECT_FALSE(ctx.mode().cs_knife_inspect.load());
+    EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "cs.knife.hit") != played_sounds_.end());
+
+    // Advance time past backstab duration (0.6s) -> knife returns to idle (0)
+    dispatcher_->tick(0.7f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 0);
+    EXPECT_FALSE(ctx.mode().cs_knife_inspect.load());
+    EXPECT_FLOAT_EQ(ctx.mode().cs_knife_anim_time.load(), 0.f);
+
+    // Press F1 again to toggle CS mode OFF
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    EXPECT_FALSE(ctx.mode().cs_mode.load());
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 0);
+    EXPECT_FALSE(ctx.mode().cs_knife_inspect.load());
+
+    // Toggle CS mode back ON via F1, then verify F6 toggles CS mode OFF
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    EXPECT_TRUE(ctx.mode().cs_mode.load());
+
+    setKey(VK_F6, true);
+    dispatcher_->tick(0.016f);
+    EXPECT_FALSE(ctx.mode().cs_mode.load());
+}
+
+TEST_F(HotkeyDispatcherTest, CsModeDigitKeysSelectWeaponSlotsAndRReloads) {
+    auto& ctx = RuntimeContext::Instance();
+
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+    EXPECT_EQ(ctx.mode().cs_weapon_slot.load(), 0);
+
+    // 1 = AK-47 primary, deploy animation.
+    setKey('1', true);
+    dispatcher_->tick(0.016f);
+    setKey('1', false);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_weapon_slot.load(), 1);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 4);
+    EXPECT_EQ(ctx.mode().cs_ammo.load(), 30u);
+    EXPECT_EQ(ctx.mode().cs_reserve.load(), 90u);
+    EXPECT_EQ(ctx.mode().cs_mag_capacity.load(), 30u);
+
+    // Automatic fire consumes one round.
+    left_held_ = true;
+    dispatcher_->tick(0.016f);
+    left_held_ = false;
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 2);
+    EXPECT_EQ(ctx.mode().cs_ammo.load(), 29u);
+
+    // R = reload while a gun is active.
+    setKey('R', true);
+    dispatcher_->tick(0.016f);
+    setKey('R', false);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 5);
+
+    // Reload completes after 2.5 s and moves one round from reserve to magazine.
+    dispatcher_->tick(2.6f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 0);
+    EXPECT_EQ(ctx.mode().cs_ammo.load(), 30u);
+    EXPECT_EQ(ctx.mode().cs_reserve.load(), 89u);
+
+    // 3 = butterfly knife.
+    setKey('3', true);
+    dispatcher_->tick(0.016f);
+    setKey('3', false);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_weapon_slot.load(), 0);
+    EXPECT_EQ(ctx.mode().cs_ammo.load(), 0u);
+}
+#else
+TEST_F(HotkeyDispatcherTest, PureMcBuildDisablesCsHotkeysAndInteractions) {
+    auto& ctx = RuntimeContext::Instance();
+    EXPECT_FALSE(ctx.mode().cs_mode.load());
+
+    // Press F1 -> In pure MC build, F1 MUST NOT enable CS mode
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    EXPECT_FALSE(ctx.mode().cs_mode.load());
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 0);
+
+    // Press 'F' -> In pure MC build, it must not trigger knife inspect sound
+    setKey('F', true);
+    dispatcher_->tick(0.016f);
+    setKey('F', false);
+    dispatcher_->tick(0.016f);
+    EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "cs.knife.inspect") == played_sounds_.end());
+
+    // Press digit 1 -> Must select MC melee weapon slot, NOT trigger CS knife deploy
+    setKey('1', true);
+    dispatcher_->tick(0.016f);
+    setKey('1', false);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 0);
+    EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "cs.knife.deploy") == played_sounds_.end());
+}
+#endif
+
