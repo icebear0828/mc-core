@@ -7,6 +7,8 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include "cs_animation_tracks.hpp"
+#include "eldenring_fp.hpp"
 #include "mc/rig.hpp"
 
 namespace eldenring::cs {
@@ -130,18 +132,24 @@ inline mc::rig::Mat4 computeViewmodelProjection(unsigned width, unsigned height,
 // -----------------------------------------------------------------------------
 inline float computeGgxD(float NdotH, float roughness) {
     constexpr float kPi = 3.14159265358979323846f;
-    const float alpha = roughness * roughness;
+    const float cl_ndoth = std::clamp(NdotH, 0.0f, 1.0f);
+    const float cl_rough = std::clamp(roughness, 0.05f, 0.98f);
+    const float alpha = cl_rough * cl_rough;
     const float alpha2 = alpha * alpha;
-    const float NdotH2 = NdotH * NdotH;
+    const float NdotH2 = cl_ndoth * cl_ndoth;
     const float denom = NdotH2 * (alpha2 - 1.0f) + 1.0f;
     return alpha2 / (kPi * denom * denom + 1e-7f);
 }
 
 inline float computeSmithG(float NdotV, float NdotL, float roughness) {
-    const float r = roughness + 1.0f;
+    const float cl_ndotv = std::clamp(NdotV, 0.0f, 1.0f);
+    const float cl_ndotl = std::clamp(NdotL, 0.0f, 1.0f);
+    if (cl_ndotv <= 1e-5f || cl_ndotl <= 1e-5f) return 0.0f;
+    const float cl_rough = std::clamp(roughness, 0.05f, 0.98f);
+    const float r = cl_rough + 1.0f;
     const float k = (r * r) / 8.0f;
-    const float g1_v = NdotV / (NdotV * (1.0f - k) + k);
-    const float g1_l = NdotL / (NdotL * (1.0f - k) + k);
+    const float g1_v = cl_ndotv / (cl_ndotv * (1.0f - k) + k);
+    const float g1_l = cl_ndotl / (cl_ndotl * (1.0f - k) + k);
     return g1_v * g1_l;
 }
 
@@ -169,5 +177,187 @@ inline void unpackDirectXNormal(uint8_t r, uint8_t g, uint8_t b, float out_n[3])
     }
 }
 
+inline void computeCookTorranceBrdf(float NdotV, float NdotL, float NdotH, float VdotH,
+                                    float roughness, float metallic,
+                                    const float albedo[3], float out_radiance[3]) {
+    constexpr float kPi = 3.14159265358979323846f;
+    const float cl_NdotV = std::clamp(NdotV, 0.0f, 1.0f);
+    const float cl_NdotL = std::clamp(NdotL, 0.0f, 1.0f);
+    const float cl_NdotH = std::clamp(NdotH, 0.0f, 1.0f);
+    const float cl_VdotH = std::clamp(VdotH, 0.0f, 1.0f);
+    const float cl_rough = std::clamp(roughness, 0.05f, 0.98f);
+    const float cl_metal = std::clamp(metallic, 0.0f, 1.0f);
+
+    if (cl_NdotV <= 1e-5f || cl_NdotL <= 1e-5f) {
+        out_radiance[0] = out_radiance[1] = out_radiance[2] = 0.0f;
+        return;
+    }
+
+    const float D = computeGgxD(cl_NdotH, cl_rough);
+    const float G = computeSmithG(cl_NdotV, cl_NdotL, cl_rough);
+
+    float f0[3] = {0.04f, 0.04f, 0.04f};
+    for (int i = 0; i < 3; ++i) {
+        f0[i] = f0[i] + (albedo[i] - f0[i]) * cl_metal;
+    }
+
+    float F[3]{};
+    computeFresnelSchlick(cl_VdotH, f0, F);
+
+    const float denom = 4.0f * cl_NdotV * cl_NdotL + 1e-4f;
+    for (int i = 0; i < 3; ++i) {
+        const float spec = (D * G * F[i]) / denom;
+        const float kD = (1.0f - F[i]) * (1.0f - cl_metal);
+        const float diff = (kD * albedo[i]) / kPi;
+        out_radiance[i] = (diff + spec) * cl_NdotL;
+    }
+}
+
+inline bool packOrmTexture(const uint8_t* ao_rgba, unsigned ao_w, unsigned ao_h,
+                           const uint8_t* rough_rgba, unsigned rough_w, unsigned rough_h,
+                           uint8_t default_metal,
+                           std::vector<uint8_t>& out_orm, unsigned& out_w, unsigned& out_h) {
+    out_w = std::max(ao_w, rough_w);
+    out_h = std::max(ao_h, rough_h);
+    if (out_w == 0 || out_h == 0) {
+        out_w = 16;
+        out_h = 16;
+        out_orm.assign(out_w * out_h * 4, 0);
+        for (size_t p = 0; p < out_orm.size(); p += 4) {
+            out_orm[p] = 255;            // AO
+            out_orm[p + 1] = 128;        // Roughness
+            out_orm[p + 2] = default_metal;
+            out_orm[p + 3] = 255;
+        }
+        return true;
+    }
+
+    out_orm.resize(static_cast<size_t>(out_w) * out_h * 4);
+    for (unsigned y = 0; y < out_h; ++y) {
+        for (unsigned x = 0; x < out_w; ++x) {
+            const size_t dst_idx = (static_cast<size_t>(y) * out_w + x) * 4;
+
+            // Sample AO
+            uint8_t ao_val = 255;
+            if (ao_rgba && ao_w > 0 && ao_h > 0) {
+                const unsigned sx = (x * ao_w) / out_w;
+                const unsigned sy = (y * ao_h) / out_h;
+                ao_val = ao_rgba[(sy * ao_w + sx) * 4];
+            }
+
+            // Sample Roughness
+            uint8_t rough_val = 128;
+            if (rough_rgba && rough_w > 0 && rough_h > 0) {
+                const unsigned sx = (x * rough_w) / out_w;
+                const unsigned sy = (y * rough_h) / out_h;
+                rough_val = rough_rgba[(sy * rough_w + sx) * 4];
+            }
+
+            out_orm[dst_idx + 0] = ao_val;
+            out_orm[dst_idx + 1] = rough_val;
+            out_orm[dst_idx + 2] = default_metal;
+            out_orm[dst_idx + 3] = 255;
+        }
+    }
+    return true;
+}
+
+// -----------------------------------------------------------------------------
+// CS2 Viewmodel State Machine & Animation Evaluation
+// -----------------------------------------------------------------------------
+struct CSViewModelPose {
+    eldenring::fp::M4 blade_pose{eldenring::fp::scale(1.0f)};
+    eldenring::fp::M4 handle_front_pose{eldenring::fp::scale(1.0f)};
+    eldenring::fp::M4 handle_rear_pose{eldenring::fp::scale(1.0f)};
+    eldenring::fp::M4 lock_pose{eldenring::fp::scale(1.0f)};
+    eldenring::fp::M4 arms_pose{eldenring::fp::scale(1.0f)};
+    eldenring::fp::M4 base_pose{eldenring::fp::scale(1.0f)};
+};
+
+class CSViewModelAnimator {
+public:
+    void tick(float dt, uint8_t state, float anim_time) {
+        (void)dt;
+        current_state_ = state;
+        anim_time_ = anim_time;
+
+        const float bob = std::sin(anim_time * 2.5f) * 0.003f;
+        eldenring::fp::M4 base = eldenring::fp::translate(0.f, bob, 0.f);
+
+        if (state == 1) { // Authentic CS2 Butterfly Inspect Tricks
+            erov::cs_anims::SampleTrack(erov::cs_anims::kInspectBlade, erov::cs_anims::kInspectFrameCount, erov::cs_anims::kInspectFps, anim_time, pose_.blade_pose);
+            erov::cs_anims::SampleTrack(erov::cs_anims::kInspectFront, erov::cs_anims::kInspectFrameCount, erov::cs_anims::kInspectFps, anim_time, pose_.handle_front_pose);
+            erov::cs_anims::SampleTrack(erov::cs_anims::kInspectRear, erov::cs_anims::kInspectFrameCount, erov::cs_anims::kInspectFps, anim_time, pose_.handle_rear_pose);
+            erov::cs_anims::SampleTrack(erov::cs_anims::kInspectLock, erov::cs_anims::kInspectFrameCount, erov::cs_anims::kInspectFps, anim_time, pose_.lock_pose);
+            erov::cs_anims::SampleTrack(erov::cs_anims::kInspectArms, erov::cs_anims::kInspectFrameCount, erov::cs_anims::kInspectFps, anim_time, pose_.arms_pose);
+            pose_.blade_pose = eldenring::fp::mul(base, pose_.blade_pose);
+            pose_.handle_front_pose = eldenring::fp::mul(base, pose_.handle_front_pose);
+            pose_.handle_rear_pose = eldenring::fp::mul(base, pose_.handle_rear_pose);
+            pose_.lock_pose = eldenring::fp::mul(base, pose_.lock_pose);
+            pose_.arms_pose = eldenring::fp::mul(base, pose_.arms_pose);
+            pose_.base_pose = pose_.arms_pose;
+        } else if (state == 4) { // Authentic CS2 Butterfly Deploy Flip
+            erov::cs_anims::SampleTrack(erov::cs_anims::kDeployBlade, erov::cs_anims::kDeployFrameCount, erov::cs_anims::kDeployFps, anim_time, pose_.blade_pose);
+            erov::cs_anims::SampleTrack(erov::cs_anims::kDeployFront, erov::cs_anims::kDeployFrameCount, erov::cs_anims::kDeployFps, anim_time, pose_.handle_front_pose);
+            erov::cs_anims::SampleTrack(erov::cs_anims::kDeployRear, erov::cs_anims::kDeployFrameCount, erov::cs_anims::kDeployFps, anim_time, pose_.handle_rear_pose);
+            erov::cs_anims::SampleTrack(erov::cs_anims::kDeployLock, erov::cs_anims::kDeployFrameCount, erov::cs_anims::kDeployFps, anim_time, pose_.lock_pose);
+            erov::cs_anims::SampleTrack(erov::cs_anims::kDeployArms, erov::cs_anims::kDeployFrameCount, erov::cs_anims::kDeployFps, anim_time, pose_.arms_pose);
+            pose_.blade_pose = eldenring::fp::mul(base, pose_.blade_pose);
+            pose_.handle_front_pose = eldenring::fp::mul(base, pose_.handle_front_pose);
+            pose_.handle_rear_pose = eldenring::fp::mul(base, pose_.handle_rear_pose);
+            pose_.lock_pose = eldenring::fp::mul(base, pose_.lock_pose);
+            pose_.arms_pose = eldenring::fp::mul(base, pose_.arms_pose);
+            pose_.base_pose = pose_.arms_pose;
+        } else if (state == 3) { // Authentic CS2 Backstab / Heavy Attack
+            erov::cs_anims::SampleTrack(erov::cs_anims::kBackstabBlade, erov::cs_anims::kBackstabFrameCount, erov::cs_anims::kBackstabFps, anim_time, pose_.blade_pose);
+            erov::cs_anims::SampleTrack(erov::cs_anims::kBackstabFront, erov::cs_anims::kBackstabFrameCount, erov::cs_anims::kBackstabFps, anim_time, pose_.handle_front_pose);
+            erov::cs_anims::SampleTrack(erov::cs_anims::kBackstabRear, erov::cs_anims::kBackstabFrameCount, erov::cs_anims::kBackstabFps, anim_time, pose_.handle_rear_pose);
+            erov::cs_anims::SampleTrack(erov::cs_anims::kBackstabLock, erov::cs_anims::kBackstabFrameCount, erov::cs_anims::kBackstabFps, anim_time, pose_.lock_pose);
+            erov::cs_anims::SampleTrack(erov::cs_anims::kBackstabArms, erov::cs_anims::kBackstabFrameCount, erov::cs_anims::kBackstabFps, anim_time, pose_.arms_pose);
+            pose_.blade_pose = eldenring::fp::mul(base, pose_.blade_pose);
+            pose_.handle_front_pose = eldenring::fp::mul(base, pose_.handle_front_pose);
+            pose_.handle_rear_pose = eldenring::fp::mul(base, pose_.handle_rear_pose);
+            pose_.lock_pose = eldenring::fp::mul(base, pose_.lock_pose);
+            pose_.arms_pose = eldenring::fp::mul(base, pose_.arms_pose);
+            pose_.base_pose = pose_.arms_pose;
+        } else if (state == 2) { // Slash (Light Attack)
+            const float p = std::clamp(anim_time / 0.35f, 0.f, 1.f);
+            const float slash_rot = -30.f + p * 60.f;
+            const float forward = -std::sin(p * 3.14159f) * 0.08f;
+            eldenring::fp::M4 slash_base = eldenring::fp::mul(base, eldenring::fp::translate(0.f, 0.f, forward));
+            slash_base = eldenring::fp::mul(slash_base, eldenring::fp::rotZ(slash_rot));
+            pose_.blade_pose = slash_base;
+            pose_.handle_front_pose = slash_base;
+            pose_.handle_rear_pose = slash_base;
+            pose_.lock_pose = slash_base;
+            pose_.base_pose = slash_base;
+            pose_.arms_pose = slash_base;
+        } else { // Idle
+            pose_.blade_pose = base;
+            pose_.handle_front_pose = base;
+            pose_.handle_rear_pose = base;
+            pose_.lock_pose = base;
+            pose_.base_pose = base;
+            pose_.arms_pose = base;
+        }
+    }
+
+    [[nodiscard]] const CSViewModelPose& currentPose() const { return pose_; }
+    [[nodiscard]] const eldenring::fp::M4& bladePose() const { return pose_.blade_pose; }
+    [[nodiscard]] const eldenring::fp::M4& handleFrontPose() const { return pose_.handle_front_pose; }
+    [[nodiscard]] const eldenring::fp::M4& handleRearPose() const { return pose_.handle_rear_pose; }
+    [[nodiscard]] const eldenring::fp::M4& lockPose() const { return pose_.lock_pose; }
+    [[nodiscard]] const eldenring::fp::M4& armsPose() const { return pose_.arms_pose; }
+    [[nodiscard]] const eldenring::fp::M4& basePose() const { return pose_.base_pose; }
+    [[nodiscard]] uint8_t currentState() const { return current_state_; }
+    [[nodiscard]] float currentAnimTime() const { return anim_time_; }
+
+private:
+    CSViewModelPose pose_{};
+    uint8_t current_state_{0};
+    float anim_time_{0.0f};
+};
+
 } // namespace eldenring::cs
+
 

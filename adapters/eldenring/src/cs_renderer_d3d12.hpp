@@ -44,7 +44,11 @@ public:
                                const std::string& knife_png,
                                const std::string& glove_png,
                                D3D12_CPU_DESCRIPTOR_HANDLE knife_slot,
-                               D3D12_CPU_DESCRIPTOR_HANDLE glove_slot);
+                               D3D12_CPU_DESCRIPTOR_HANDLE glove_slot,
+                               const std::string& knife_norm_png = "",
+                               const std::string& glove_norm_png = "",
+                               const std::string& knife_pbr_png = "",
+                               const std::string& glove_pbr_png = "");
 
     // Viewmodel projection & stance management
     void setViewmodelConfig(const ViewmodelProjectionConfig& cfg) { vm_config_ = cfg; }
@@ -53,9 +57,19 @@ public:
         return eldenring::cs::computeViewmodelProjection(width, height, vm_config_);
     }
 
+    // Pose getters for verification and rendering
+    [[nodiscard]] const fp::M4& bladePose() const { return animator_.bladePose(); }
+    [[nodiscard]] const fp::M4& handleFrontPose() const { return animator_.handleFrontPose(); }
+    [[nodiscard]] const fp::M4& handleRearPose() const { return animator_.handleRearPose(); }
+    [[nodiscard]] const fp::M4& lockPose() const { return animator_.lockPose(); }
+    [[nodiscard]] const fp::M4& armsPose() const { return animator_.armsPose(); }
+    [[nodiscard]] const fp::M4& basePose() const { return animator_.basePose(); }
+
     // Weapon registry pipeline
     bool loadWeapon(ID3D12Device* device, const eldenring::cs::CSWeaponDefinition& def);
-    [[nodiscard]] const eldenring::cs::CSWeaponDefinition* activeWeapon() const { return active_weapon_; }
+    [[nodiscard]] const eldenring::cs::CSWeaponDefinition* activeWeapon() const {
+        return has_active_weapon_ ? &active_weapon_def_ : nullptr;
+    }
 
     // Cook-Torrance PBR & normal map math verification (accessible for unit test suites)
     static float computeGgxD(float NdotH, float roughness) {
@@ -110,9 +124,11 @@ private:
     TextureGpu glove_pbr_tex_;
 
     ViewmodelProjectionConfig vm_config_{};
-    const eldenring::cs::CSWeaponDefinition* active_weapon_{nullptr};
+    eldenring::cs::CSWeaponDefinition active_weapon_def_{};
+    bool has_active_weapon_{false};
 
     eldenring::cs::CSViewModel model_;
+    eldenring::cs::CSViewModelAnimator animator_;
     LogFn log_{nullptr};
 
     enum class SubmeshType {
@@ -124,14 +140,6 @@ private:
         Base
     };
     std::vector<SubmeshType> submesh_types_;
-
-    // Animation pose matrices (Minecraft camera space)
-    fp::M4 blade_pose_{};
-    fp::M4 handle_front_pose_{};
-    fp::M4 handle_rear_pose_{};
-    fp::M4 lock_pose_{};
-    fp::M4 arms_pose_{};
-    fp::M4 base_pose_{};
 };
 
 } // namespace erov

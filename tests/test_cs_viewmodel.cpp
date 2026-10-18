@@ -126,14 +126,12 @@ TEST(CSViewModelTest, ViewmodelScaleAndVisibilityAssertion) {
     const mc::Vec3 arm_left{-0.154f, -0.083f, 0.0f};
     const mc::Vec3 arm_right{0.154f, 0.070f, 0.0f};
 
-    // Calculate projected bounds with true 1.0f scale
+    // Calculate projected bounds with true 1.0f scale, decoupled 68 deg FOV and natural origin (zero Euler hacks)
     fp::M4 base_correct = fp::translate(0.18f, -0.16f, -0.38f);
     base_correct = fp::mul(base_correct, fp::scale(1.0f));
-    base_correct = fp::mul(base_correct, fp::rotX(-10.f));
-    base_correct = fp::mul(base_correct, fp::rotY(-15.f));
 
     const mc::rig::Mat4 world_correct = fp::toHost(base_correct);
-    const mc::rig::Mat4 proj = mc::rig::perspectiveLH(70.f * fp::kDeg, 1920.f / 1080.f, 0.05f, 20.f);
+    const mc::rig::Mat4 proj = computeViewmodelProjection(1920, 1080);
 
     auto project = [&](const mc::rig::Mat4& world, const mc::Vec3& p) -> mc::Vec3 {
         // Row vector mul: p_w = (p, 1) * world
@@ -456,6 +454,123 @@ TEST(CSViewModelTest, WeaponRegistryMultiWeaponCatalogAndSockets) {
     EXPECT_EQ(reg.getActiveWeapon()->id, "weapon_knife_butterfly");
 }
 
+TEST(CSViewModelTest, TddWeaponRegistryResetToDefaultsAndDynamicSwitching) {
+    auto& reg = CSWeaponRegistry::instance();
+    reg.clear();
+    EXPECT_EQ(reg.getWeaponCount(), 0u);
+    EXPECT_EQ(reg.getActiveWeapon(), nullptr);
+    EXPECT_FALSE(reg.setActiveWeapon("weapon_ak47"));
+
+    // Reset to defaults must restore the complete built-in CS arsenal
+    reg.resetToDefaults();
+    EXPECT_GE(reg.getWeaponCount(), 4u);
+    EXPECT_NE(reg.findWeapon("weapon_knife_butterfly"), nullptr);
+    EXPECT_NE(reg.findWeapon("weapon_ak47"), nullptr);
+    EXPECT_NE(reg.findWeapon("weapon_awp"), nullptr);
+    EXPECT_NE(reg.findWeapon("weapon_m4a1_silencer"), nullptr);
+    EXPECT_EQ(reg.getActiveWeapon()->id, "weapon_knife_butterfly");
+
+    // Switching to unregistered weapon must fail safely without altering active weapon
+    EXPECT_FALSE(reg.setActiveWeapon("weapon_nonexistent_deagle"));
+    EXPECT_EQ(reg.getActiveWeapon()->id, "weapon_knife_butterfly");
+
+    // Unregister active weapon falls back smoothly
+    EXPECT_TRUE(reg.unregisterWeapon("weapon_knife_butterfly"));
+    EXPECT_FALSE(reg.getActiveWeapon()->id.empty());
+    EXPECT_NE(reg.getActiveWeapon()->id, "weapon_knife_butterfly");
+
+    // Restore clean state for other test suites
+    reg.resetToDefaults();
+}
+
+TEST(CSViewModelTest, TddCsRendererNaturalPoseAndStateTransitions) {
+    CSViewModelAnimator anim;
+    EXPECT_EQ(anim.currentState(), 0);
+
+    // State 0: Idle stance. Camera origin must be strictly at (0, 0, 0)
+    // No artificial Euler twist (-10° rotX or -15° rotY) in base matrix
+    anim.tick(0.016f, 0, 0.0f);
+    const auto& idle_arms = anim.armsPose();
+    EXPECT_NEAR(idle_arms.m[0], 1.0f, 0.001f);
+    EXPECT_NEAR(idle_arms.m[5], 1.0f, 0.001f);
+    EXPECT_NEAR(idle_arms.m[10], 1.0f, 0.001f);
+    EXPECT_NEAR(idle_arms.m[15], 1.0f, 0.001f);
+    // Translation X and Z are strictly 0 in base camera origin (Y is subtle idle breathing bob)
+    EXPECT_NEAR(idle_arms.m[3], 0.0f, 0.001f);
+    EXPECT_NEAR(idle_arms.m[11], 0.0f, 0.001f);
+
+    // State 1: Inspect Tricks (must deviate from rest pose with genuine CS2 rotation flourish)
+    anim.tick(0.016f, 1, 2.0f); // Frame 60 equivalent in 30fps
+    const auto& inspect_blade = anim.bladePose();
+    const float inspect_trace = inspect_blade.m[0] + inspect_blade.m[5] + inspect_blade.m[10] + inspect_blade.m[15];
+    EXPECT_LT(inspect_trace, 2.5f); // Substantial dynamic rotation
+
+    // State 2: Slash (Light Attack) - forward thrust and rotation
+    anim.tick(0.016f, 2, 0.175f); // Peak thrust
+    const auto& slash_blade = anim.bladePose();
+    EXPECT_LT(slash_blade.m[11], -0.05f); // Forward thrust along -Z
+
+    // State 3: Backstab (Heavy Attack)
+    anim.tick(0.016f, 3, 0.5f);
+    EXPECT_EQ(anim.currentState(), 3);
+
+    // State 4: Deploy Flip
+    anim.tick(0.016f, 4, 0.0f);
+    EXPECT_EQ(anim.currentState(), 4);
+    // End of deploy (at 1.0s) returns to resting stance
+    anim.tick(0.016f, 4, 1.05f);
+    const auto& deploy_blade_end = anim.bladePose();
+    EXPECT_NEAR(deploy_blade_end.m[0], 1.0f, 0.05f);
+    EXPECT_NEAR(deploy_blade_end.m[5], 1.0f, 0.05f);
+}
+
+TEST(CSViewModelTest, TddCookTorrancePbrEnergyConservationAndOrmPacking) {
+    // 1. ORM Texture Packing validation
+    // Simulate 2x2 AO and Roughness inputs
+    const uint8_t mock_ao[2 * 2 * 4] = {
+        200, 200, 200, 255,   220, 220, 220, 255,
+        180, 180, 180, 255,   255, 255, 255, 255
+    };
+    const uint8_t mock_rough[2 * 2 * 4] = {
+        40, 40, 40, 255,      60, 60, 60, 255,
+        80, 80, 80, 255,      120, 120, 120, 255
+    };
+    std::vector<uint8_t> orm;
+    unsigned out_w = 0, out_h = 0;
+    EXPECT_TRUE(packOrmTexture(mock_ao, 2, 2, mock_rough, 2, 2, 216 /* metallic=0.85 */, orm, out_w, out_h));
+    ASSERT_EQ(out_w, 2u);
+    ASSERT_EQ(out_h, 2u);
+    ASSERT_EQ(orm.size(), 16u);
+
+    // Pixel 0: R=AO (200), G=Roughness (40), B=Metallic (216), A=255
+    EXPECT_EQ(orm[0], 200);
+    EXPECT_EQ(orm[1], 40);
+    EXPECT_EQ(orm[2], 216);
+    EXPECT_EQ(orm[3], 255);
+
+    // 2. Cook-Torrance BRDF Energy Conservation:
+    // Radiance out must never exceed radiance in (energy conservation: kD + kS <= 1.0)
+    const float albedo[3] = {0.9f, 0.9f, 0.9f};
+    for (float r = 0.05f; r <= 0.95f; r += 0.15f) {
+        for (float m = 0.0f; m <= 1.0f; m += 0.25f) {
+            float out_rad[3]{};
+            computeCookTorranceBrdf(0.8f, 0.7f, 0.9f, 0.85f, r, m, albedo, out_rad);
+            EXPECT_LE(out_rad[0], 1.25f);
+            EXPECT_GE(out_rad[0], 0.0f);
+            EXPECT_FALSE(std::isnan(out_rad[0]));
+            EXPECT_FALSE(std::isinf(out_rad[0]));
+        }
+    }
+
+    // Edge case: Grazing angle NdotV = 0.0f, NdotL = 0.0f must not produce NaN or division by zero
+    float grazing_rad[3]{};
+    computeCookTorranceBrdf(0.0f, 0.0f, 0.0f, 1.0f, 0.2f, 0.8f, albedo, grazing_rad);
+    EXPECT_FLOAT_EQ(grazing_rad[0], 0.0f);
+    EXPECT_FLOAT_EQ(grazing_rad[1], 0.0f);
+    EXPECT_FLOAT_EQ(grazing_rad[2], 0.0f);
+}
+
 } // namespace
+
 
 

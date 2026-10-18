@@ -84,6 +84,7 @@ public:
     [[nodiscard]] size_t getWeaponCount() const;
     [[nodiscard]] std::vector<std::string> getRegisteredWeaponIds() const;
     void clear();
+    void resetToDefaults();
 
     // Standard weapon definition factories
     static CSWeaponDefinition createButterflyKnifeDefinition();

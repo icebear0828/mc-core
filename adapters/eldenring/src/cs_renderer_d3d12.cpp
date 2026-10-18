@@ -448,7 +448,11 @@ bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
                                       const std::string& knife_png,
                                       const std::string& glove_png,
                                       D3D12_CPU_DESCRIPTOR_HANDLE knife_slot,
-                                      D3D12_CPU_DESCRIPTOR_HANDLE glove_slot) {
+                                      D3D12_CPU_DESCRIPTOR_HANDLE glove_slot,
+                                      const std::string& knife_norm_png,
+                                      const std::string& glove_norm_png,
+                                      const std::string& knife_pbr_png,
+                                      const std::string& glove_pbr_png) {
     if (!device) return false;
 
     const UINT srv_inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -485,10 +489,13 @@ bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
         if (log_) log_("cs_render: glove texture not found at %s, using fallback", glove_png.c_str());
     }
 
-    // 3. Knife Normal Map (look in textures directory or fallback flat normal [128, 128, 255, 255])
-    bool knife_norm_loaded = false;
     std::filesystem::path kp(knife_png);
-    std::filesystem::path kn_path = kp.parent_path() / "textures" / "knife_butterfly" / "default_normal_tga_4fc2d3dd.png";
+    std::filesystem::path gp(glove_png);
+
+    // 3. Knife Normal Map
+    bool knife_norm_loaded = false;
+    std::filesystem::path kn_path = !knife_norm_png.empty() ? std::filesystem::path(knife_norm_png) :
+        (kp.parent_path() / "textures" / "knife_butterfly" / "default_normal_tga_4fc2d3dd.png");
     if (std::filesystem::exists(kn_path)) {
         std::vector<uint8_t> kn_rgba;
         unsigned kn_w = 0, kn_h = 0;
@@ -509,10 +516,10 @@ bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
         setKnifeNormalTexture(device, flat_norm.data(), 16, 16, slot2);
     }
 
-    // 4. Glove Normal Map (look in textures directory or fallback)
+    // 4. Glove Normal Map
     bool glove_norm_loaded = false;
-    std::filesystem::path gp(glove_png);
-    std::filesystem::path gn_path = gp.parent_path() / "textures" / "glove_hardknuckle" / "glove_hardknuckle_normal_tga_a8df881b.png";
+    std::filesystem::path gn_path = !glove_norm_png.empty() ? std::filesystem::path(glove_norm_png) :
+        (gp.parent_path() / "textures" / "glove_hardknuckle" / "glove_hardknuckle_normal_tga_a8df881b.png");
     if (std::filesystem::exists(gn_path)) {
         std::vector<uint8_t> gn_rgba;
         unsigned gn_w = 0, gn_h = 0;
@@ -534,29 +541,88 @@ bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
     }
 
     // 5. Knife PBR Map (ORM: R=AO, G=Roughness, B=Metallic)
-    // Polished blade: AO=255, Roughness=38 (0.15), Metallic=216 (0.85)
-    std::vector<uint8_t> knife_pbr(16 * 16 * 4);
-    for (size_t p = 0; p < knife_pbr.size(); p += 4) {
-        knife_pbr[p] = 255;     // AO = 1.0
-        knife_pbr[p + 1] = 38;  // Roughness = 0.15 (polished steel)
-        knife_pbr[p + 2] = 216; // Metallic = 0.85
-        knife_pbr[p + 3] = 255;
+    bool knife_pbr_loaded = false;
+    if (!knife_pbr_png.empty() && std::filesystem::exists(knife_pbr_png)) {
+        std::vector<uint8_t> pbr_rgba;
+        unsigned pw = 0, ph = 0;
+        if (DecodePngFile(knife_pbr_png, pbr_rgba, pw, ph)) {
+            setKnifePbrTexture(device, pbr_rgba.data(), pw, ph, slot4);
+            knife_pbr_loaded = true;
+            if (log_) log_("cs_render: loaded knife PBR map %s (%ux%u)", knife_pbr_png.c_str(), pw, ph);
+        }
     }
-    setKnifePbrTexture(device, knife_pbr.data(), 16, 16, slot4);
+    if (!knife_pbr_loaded) {
+        std::filesystem::path kr_path = kp.parent_path() / "textures" / "knife_butterfly" / "knife_butterfly_rough_psd_80f06397.png";
+        std::filesystem::path kao_path = kp.parent_path() / "textures" / "knife_butterfly" / "knife_butterfly_ao_psd_496afc91.png";
+        std::vector<uint8_t> r_rgba, ao_rgba;
+        unsigned rw = 0, rh = 0, aow = 0, aoh = 0;
+        bool has_r = std::filesystem::exists(kr_path) && DecodePngFile(kr_path.string(), r_rgba, rw, rh);
+        bool has_ao = std::filesystem::exists(kao_path) && DecodePngFile(kao_path.string(), ao_rgba, aow, aoh);
+        if (has_r || has_ao) {
+            std::vector<uint8_t> orm;
+            unsigned orm_w = 0, orm_h = 0;
+            if (eldenring::cs::packOrmTexture(has_ao ? ao_rgba.data() : nullptr, aow, aoh,
+                                              has_r ? r_rgba.data() : nullptr, rw, rh,
+                                              216 /* metallic=0.85 */, orm, orm_w, orm_h)) {
+                setKnifePbrTexture(device, orm.data(), orm_w, orm_h, slot4);
+                knife_pbr_loaded = true;
+                if (log_) log_("cs_render: packed knife ORM PBR map (%ux%u) from AO/Roughness assets", orm_w, orm_h);
+            }
+        }
+    }
+    if (!knife_pbr_loaded) {
+        // Polished blade fallback: AO=255, Roughness=38 (0.15), Metallic=216 (0.85)
+        std::vector<uint8_t> knife_pbr(16 * 16 * 4);
+        for (size_t p = 0; p < knife_pbr.size(); p += 4) {
+            knife_pbr[p] = 255;     // AO = 1.0
+            knife_pbr[p + 1] = 38;  // Roughness = 0.15 (polished steel)
+            knife_pbr[p + 2] = 216; // Metallic = 0.85
+            knife_pbr[p + 3] = 255;
+        }
+        setKnifePbrTexture(device, knife_pbr.data(), 16, 16, slot4);
+    }
 
     // 6. Glove PBR Map (ORM)
-    // Tactical glove: AO=255, Roughness=216 (0.85), Metallic=12 (0.05)
-    std::vector<uint8_t> glove_pbr(16 * 16 * 4);
-    for (size_t p = 0; p < glove_pbr.size(); p += 4) {
-        glove_pbr[p] = 255;     // AO = 1.0
-        glove_pbr[p + 1] = 216; // Roughness = 0.85 (tactical fabric)
-        glove_pbr[p + 2] = 12;  // Metallic = 0.05
-        glove_pbr[p + 3] = 255;
+    bool glove_pbr_loaded = false;
+    if (!glove_pbr_png.empty() && std::filesystem::exists(glove_pbr_png)) {
+        std::vector<uint8_t> pbr_rgba;
+        unsigned pw = 0, ph = 0;
+        if (DecodePngFile(glove_pbr_png, pbr_rgba, pw, ph)) {
+            setGlovePbrTexture(device, pbr_rgba.data(), pw, ph, slot5);
+            glove_pbr_loaded = true;
+            if (log_) log_("cs_render: loaded glove PBR map %s (%ux%u)", glove_pbr_png.c_str(), pw, ph);
+        }
     }
-    setGlovePbrTexture(device, glove_pbr.data(), 16, 16, slot5);
+    if (!glove_pbr_loaded) {
+        std::filesystem::path gao_path = gp.parent_path() / "textures" / "glove_hardknuckle" / "glove_hardknuckle_ao_psd_5be17a0d.png";
+        std::vector<uint8_t> ao_rgba;
+        unsigned aow = 0, aoh = 0;
+        if (std::filesystem::exists(gao_path) && DecodePngFile(gao_path.string(), ao_rgba, aow, aoh)) {
+            std::vector<uint8_t> orm;
+            unsigned orm_w = 0, orm_h = 0;
+            if (eldenring::cs::packOrmTexture(ao_rgba.data(), aow, aoh, nullptr, 0, 0,
+                                              12 /* metallic=0.05 */, orm, orm_w, orm_h)) {
+                setGlovePbrTexture(device, orm.data(), orm_w, orm_h, slot5);
+                glove_pbr_loaded = true;
+                if (log_) log_("cs_render: packed glove ORM PBR map (%ux%u) from AO asset", orm_w, orm_h);
+            }
+        }
+    }
+    if (!glove_pbr_loaded) {
+        // Tactical glove fallback: AO=255, Roughness=216 (0.85), Metallic=12 (0.05)
+        std::vector<uint8_t> glove_pbr(16 * 16 * 4);
+        for (size_t p = 0; p < glove_pbr.size(); p += 4) {
+            glove_pbr[p] = 255;     // AO = 1.0
+            glove_pbr[p + 1] = 216; // Roughness = 0.85 (tactical fabric)
+            glove_pbr[p + 2] = 12;  // Metallic = 0.05
+            glove_pbr[p + 3] = 255;
+        }
+        setGlovePbrTexture(device, glove_pbr.data(), 16, 16, slot5);
+    }
 
     return true;
 }
+
 
 bool CsRenderer::loadModel(ID3D12Device* device, const std::string& path) {
     if (!model_.loadFromFile(path)) {
@@ -610,7 +676,8 @@ bool CsRenderer::loadModel(ID3D12Device* device, const std::string& path) {
 }
 
 bool CsRenderer::loadWeapon(ID3D12Device* device, const eldenring::cs::CSWeaponDefinition& def) {
-    active_weapon_ = &def;
+    active_weapon_def_ = def;
+    has_active_weapon_ = true;
     if (!def.model_csvm_path.empty()) {
         loadModel(device, def.model_csvm_path);
     }
@@ -619,69 +686,7 @@ bool CsRenderer::loadWeapon(ID3D12Device* device, const eldenring::cs::CSWeaponD
 }
 
 void CsRenderer::tick(float dt, uint8_t state, float anim_time) {
-    (void)dt;
-    // Base viewmodel placement in first-person camera space
-    // CS2 viewmodel is naturally aligned with the camera origin (0, 0, 0)
-    // Idle stance has subtle breathing bob
-    const float bob = std::sin(anim_time * 2.5f) * 0.003f;
-    fp::M4 base = fp::translate(0.f, bob, 0.f);
-
-    if (state == 1) { // Authentic CS2 Butterfly Inspect Tricks
-        cs_anims::SampleTrack(cs_anims::kInspectBlade, cs_anims::kInspectFrameCount, cs_anims::kInspectFps, anim_time, blade_pose_);
-        cs_anims::SampleTrack(cs_anims::kInspectFront, cs_anims::kInspectFrameCount, cs_anims::kInspectFps, anim_time, handle_front_pose_);
-        cs_anims::SampleTrack(cs_anims::kInspectRear, cs_anims::kInspectFrameCount, cs_anims::kInspectFps, anim_time, handle_rear_pose_);
-        cs_anims::SampleTrack(cs_anims::kInspectLock, cs_anims::kInspectFrameCount, cs_anims::kInspectFps, anim_time, lock_pose_);
-        cs_anims::SampleTrack(cs_anims::kInspectArms, cs_anims::kInspectFrameCount, cs_anims::kInspectFps, anim_time, arms_pose_);
-        blade_pose_ = fp::mul(base, blade_pose_);
-        handle_front_pose_ = fp::mul(base, handle_front_pose_);
-        handle_rear_pose_ = fp::mul(base, handle_rear_pose_);
-        lock_pose_ = fp::mul(base, lock_pose_);
-        arms_pose_ = fp::mul(base, arms_pose_);
-        base_pose_ = arms_pose_;
-    } else if (state == 4) { // Authentic CS2 Butterfly Deploy Flip
-        cs_anims::SampleTrack(cs_anims::kDeployBlade, cs_anims::kDeployFrameCount, cs_anims::kDeployFps, anim_time, blade_pose_);
-        cs_anims::SampleTrack(cs_anims::kDeployFront, cs_anims::kDeployFrameCount, cs_anims::kDeployFps, anim_time, handle_front_pose_);
-        cs_anims::SampleTrack(cs_anims::kDeployRear, cs_anims::kDeployFrameCount, cs_anims::kDeployFps, anim_time, handle_rear_pose_);
-        cs_anims::SampleTrack(cs_anims::kDeployLock, cs_anims::kDeployFrameCount, cs_anims::kDeployFps, anim_time, lock_pose_);
-        cs_anims::SampleTrack(cs_anims::kDeployArms, cs_anims::kDeployFrameCount, cs_anims::kDeployFps, anim_time, arms_pose_);
-        blade_pose_ = fp::mul(base, blade_pose_);
-        handle_front_pose_ = fp::mul(base, handle_front_pose_);
-        handle_rear_pose_ = fp::mul(base, handle_rear_pose_);
-        lock_pose_ = fp::mul(base, lock_pose_);
-        arms_pose_ = fp::mul(base, arms_pose_);
-        base_pose_ = arms_pose_;
-    } else if (state == 3) { // Authentic CS2 Backstab / Heavy Attack
-        cs_anims::SampleTrack(cs_anims::kBackstabBlade, cs_anims::kBackstabFrameCount, cs_anims::kBackstabFps, anim_time, blade_pose_);
-        cs_anims::SampleTrack(cs_anims::kBackstabFront, cs_anims::kBackstabFrameCount, cs_anims::kBackstabFps, anim_time, handle_front_pose_);
-        cs_anims::SampleTrack(cs_anims::kBackstabRear, cs_anims::kBackstabFrameCount, cs_anims::kBackstabFps, anim_time, handle_rear_pose_);
-        cs_anims::SampleTrack(cs_anims::kBackstabLock, cs_anims::kBackstabFrameCount, cs_anims::kBackstabFps, anim_time, lock_pose_);
-        cs_anims::SampleTrack(cs_anims::kBackstabArms, cs_anims::kBackstabFrameCount, cs_anims::kBackstabFps, anim_time, arms_pose_);
-        blade_pose_ = fp::mul(base, blade_pose_);
-        handle_front_pose_ = fp::mul(base, handle_front_pose_);
-        handle_rear_pose_ = fp::mul(base, handle_rear_pose_);
-        lock_pose_ = fp::mul(base, lock_pose_);
-        arms_pose_ = fp::mul(base, arms_pose_);
-        base_pose_ = arms_pose_;
-    } else if (state == 2) { // Slash (Light Attack)
-        const float p = std::clamp(anim_time / 0.35f, 0.f, 1.f);
-        const float slash_rot = -30.f + p * 60.f;
-        const float forward = -std::sin(p * 3.14159f) * 0.08f;
-        fp::M4 slash_base = fp::mul(base, fp::translate(0.f, 0.f, forward));
-        slash_base = fp::mul(slash_base, fp::rotZ(slash_rot));
-        blade_pose_ = slash_base;
-        handle_front_pose_ = slash_base;
-        handle_rear_pose_ = slash_base;
-        lock_pose_ = slash_base;
-        base_pose_ = slash_base;
-        arms_pose_ = slash_base;
-    } else { // Idle
-        blade_pose_ = base;
-        handle_front_pose_ = base;
-        handle_rear_pose_ = base;
-        lock_pose_ = base;
-        base_pose_ = base;
-        arms_pose_ = base;
-    }
+    animator_.tick(dt, state, anim_time);
 }
 
 void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
@@ -733,34 +738,34 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
         const auto& sub = model_.submeshes[i];
         const auto type = (i < submesh_types_.size()) ? submesh_types_[i] : SubmeshType::Base;
 
-        fp::M4 pose = base_pose_;
+        fp::M4 pose = animator_.basePose();
         float tint[4] = {0.25f, 0.25f, 0.28f, 1.0f};
         const float is_arm = (type == SubmeshType::Arms) ? 1.0f : 0.0f;
 
         switch (type) {
             case SubmeshType::Blade:
-                pose = blade_pose_;
+                pose = animator_.bladePose();
                 tint[0] = 0.95f; tint[1] = 0.95f; tint[2] = 0.98f; tint[3] = 1.0f; // Steel blade
                 break;
             case SubmeshType::HandleFront:
-                pose = handle_front_pose_;
+                pose = animator_.handleFrontPose();
                 tint[0] = 0.25f; tint[1] = 0.25f; tint[2] = 0.28f; tint[3] = 1.0f; // Front handle
                 break;
             case SubmeshType::HandleRear:
-                pose = handle_rear_pose_;
+                pose = animator_.handleRearPose();
                 tint[0] = 0.25f; tint[1] = 0.25f; tint[2] = 0.28f; tint[3] = 1.0f; // Rear handle
                 break;
             case SubmeshType::Lock:
-                pose = lock_pose_;
+                pose = animator_.lockPose();
                 tint[0] = 0.85f; tint[1] = 0.85f; tint[2] = 0.88f; tint[3] = 1.0f; // Lock latch
                 break;
             case SubmeshType::Arms:
-                pose = arms_pose_;
+                pose = animator_.armsPose();
                 tint[0] = 0.20f; tint[1] = 0.22f; tint[2] = 0.24f; tint[3] = 1.0f; // Tactical glove
                 break;
             case SubmeshType::Base:
             default:
-                pose = base_pose_;
+                pose = animator_.basePose();
                 tint[0] = 0.25f; tint[1] = 0.25f; tint[2] = 0.28f; tint[3] = 1.0f;
                 break;
         }
@@ -774,5 +779,6 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
         list->DrawIndexedInstanced(sub.index_count, 1, sub.first_index, sub.base_vertex, 0);
     }
 }
+
 
 } // namespace erov

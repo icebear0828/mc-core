@@ -8,13 +8,18 @@ CSWeaponRegistry& CSWeaponRegistry::instance() {
 }
 
 CSWeaponRegistry::CSWeaponRegistry() {
-    // Register built-in CS weapons by default
+    resetToDefaults();
+}
+
+void CSWeaponRegistry::resetToDefaults() {
+    clear();
     registerWeapon(createButterflyKnifeDefinition());
     registerWeapon(createAK47Definition());
     registerWeapon(createAWPDefinition());
     registerWeapon(createM4A1SDefinition());
     active_weapon_id_ = "weapon_knife_butterfly";
 }
+
 
 bool CSWeaponRegistry::registerWeapon(const CSWeaponDefinition& def) {
     if (def.id.empty()) return false;
