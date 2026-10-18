@@ -68,6 +68,7 @@ if(WIN32)
         src/combat/combat_service.cpp
         src/input/hotkey_dispatcher.cpp
         src/hooks/game_hooks.cpp
+        src/cs_renderer_d3d12.cpp
         eldenring_dinput8.def)
     set_target_properties(eldenring_adapter PROPERTIES
         OUTPUT_NAME dinput8
