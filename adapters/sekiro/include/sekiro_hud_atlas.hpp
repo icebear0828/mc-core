@@ -85,6 +85,8 @@ using ::mc::hud::kUV_DESTROY_STAGE_6;
 using ::mc::hud::kUV_DESTROY_STAGE_7;
 using ::mc::hud::kUV_DESTROY_STAGE_8;
 using ::mc::hud::kUV_DESTROY_STAGE_9;
+using ::mc::hud::kUV_ITEM_CREEPER_SPAWN_EGG;
+using ::mc::hud::kUV_ITEM_SKELETON_SPAWN_EGG;
 using ::mc::hud::kUV_ITEMS;
 using ::mc::hud::kHudAtlasWidth;
 using ::mc::hud::kHudAtlasHeight;

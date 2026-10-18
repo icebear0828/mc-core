@@ -111,7 +111,9 @@ inline bool mainHandClaimsRightClick(ItemId item) {
         case ItemId::BlockDirt:
         case ItemId::BlockStone:
         case ItemId::BlockTnt:
-        case ItemId::ZombieSpawnEgg: return true;
+        case ItemId::ZombieSpawnEgg:
+        case ItemId::CreeperSpawnEgg:
+        case ItemId::SkeletonSpawnEgg: return true;
         default: return false;
     }
 }

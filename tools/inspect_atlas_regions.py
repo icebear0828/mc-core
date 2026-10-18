@@ -5,19 +5,22 @@ Inspect the deployed mc_hud_atlas.png and check UV regions for:
 2. entity_shield
 3. diamond armor icons
 """
+import sys
 from PIL import Image
 from pathlib import Path
 
 GAME_DIR = Path(r"C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game")
 ATLAS_PATH = GAME_DIR / "mods" / "mc_adapter" / "mc_hud_atlas.png"
 
-def check():
-    if not ATLAS_PATH.is_file():
-        print(f"Error: {ATLAS_PATH} not found")
+def check(path: Path = ATLAS_PATH):
+    if len(sys.argv) > 1:
+        path = Path(sys.argv[1])
+    if not path.is_file():
+        print(f"Error: {path} not found")
         return
-    img = Image.open(ATLAS_PATH).convert("RGBA")
+    img = Image.open(path).convert("RGBA")
     w, h = img.size
-    print(f"Atlas dimensions: {w}x{h}")
+    print(f"Atlas {path.name} dimensions: {w}x{h}")
 
     # UV definitions from include/mc/hud_atlas.hpp
     # kUV_ITEM_SHIELD = {0.908203f, 0.320312f, 0.939453f, 0.351562f};
@@ -34,6 +37,9 @@ def check():
         "diamond_chestplate": (0.443359, 0.320312, 0.474609, 0.351562),
         "diamond_leggings": (0.478516, 0.320312, 0.509766, 0.351562),
         "diamond_boots": (0.513672, 0.320312, 0.544922, 0.351562),
+        "zombie_spawn_egg": (0.716797, 0.320312, 0.748047, 0.351562),
+        "creeper_spawn_egg": (0.785156, 0.369141, 0.816406, 0.400391),
+        "skeleton_spawn_egg": (0.818359, 0.369141, 0.849609, 0.400391),
     }
 
     for name, (u0, v0, u1, v1) in regions.items():

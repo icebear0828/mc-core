@@ -235,3 +235,78 @@ TEST_F(GameHooksTest, SpawnBulletDetourCapturesRequestAndLogs) {
     EXPECT_EQ(res, &dummy_handle);
     EXPECT_EQ(captured_req, &dummy_request);
 }
+
+TEST_F(GameHooksTest, CreativeKillDetourBlocksPlayerKill) {
+    auto& hooks = GameHooks::Instance();
+    bool should_block = true;
+    GameHooksCallbacks cb;
+    cb.should_block_creative_kill = [&](void*) -> bool {
+        return should_block;
+    };
+    hooks.setCallbacks(cb);
+
+    static int orig_cr_kill_called = 0;
+    orig_cr_kill_called = 0;
+    hooks.setCreativeKillOrigForTesting([](void*) {
+        orig_cr_kill_called++;
+    });
+
+    int dummy_chr = 42;
+    // When should_block is true, orig must NOT be called
+    GameHooks::InvokeCreativeKillDetour(&dummy_chr);
+    EXPECT_EQ(orig_cr_kill_called, 0);
+
+    // When should_block is false, orig must be called
+    should_block = false;
+    GameHooks::InvokeCreativeKillDetour(&dummy_chr);
+    EXPECT_EQ(orig_cr_kill_called, 1);
+}
+
+TEST_F(GameHooksTest, CreativeFallDetourZeroesFallWhenDisabled) {
+    auto& hooks = GameHooks::Instance();
+    bool fall_disabled = true;
+    GameHooksCallbacks cb;
+    cb.is_fall_damage_disabled = [&]() -> bool {
+        return fall_disabled;
+    };
+    hooks.setCallbacks(cb);
+
+    hooks.setCreativeFallOrigForTesting([](void*) -> float {
+        return 25.5f;
+    });
+
+    int dummy_module = 1;
+    // When fall damage is disabled, return 0.0f
+    float res = GameHooks::InvokeCreativeFallDetour(&dummy_module);
+    EXPECT_FLOAT_EQ(res, 0.0f);
+
+    // When fall damage is enabled, return orig (25.5f)
+    fall_disabled = false;
+    res = GameHooks::InvokeCreativeFallDetour(&dummy_module);
+    EXPECT_FLOAT_EQ(res, 25.5f);
+}
+
+TEST_F(GameHooksTest, CreativeFallExceededDetourDeniesWhenLongFall) {
+    auto& hooks = GameHooks::Instance();
+    bool deny_exceeded = true;
+    GameHooksCallbacks cb;
+    cb.should_deny_fall_time_exceeded = [&](void*, float) -> bool {
+        return deny_exceeded;
+    };
+    hooks.setCallbacks(cb);
+
+    hooks.setCreativeFallExceededOrigForTesting([](void*, float) -> bool {
+        return true; // Game engine would otherwise say fall exceeded -> die
+    });
+
+    int dummy_module = 1;
+    // When should_deny is true, return false (do not timeout kill)
+    bool res = GameHooks::InvokeCreativeFallExceededDetour(&dummy_module, 5.0f);
+    EXPECT_FALSE(res);
+
+    // When should_deny is false, return orig (true)
+    deny_exceeded = false;
+    res = GameHooks::InvokeCreativeFallExceededDetour(&dummy_module, 5.0f);
+    EXPECT_TRUE(res);
+}
+

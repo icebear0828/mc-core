@@ -294,6 +294,40 @@ TEST(EldenRingMobs, MultiModelRegistrySupportsDifferentEntityModelsConcurrently)
     EXPECT_EQ(draws[1].bones.size(), skeleton.bones.size());
 }
 
+TEST(EldenRingMobs, ConcurrentSimulationOfCreeperZombieSkeleton) {
+    const auto zombie = loadZombie();
+    std::ifstream skel_file(std::string(MC_ASSET_DIR) + "/models/entities/skeleton.geo.json");
+    std::stringstream ss_s;
+    ss_s << skel_file.rdbuf();
+    const auto skeleton = mc::model::EntityModel::fromJson(ss_s.str()).value();
+
+    std::ifstream crp_file(std::string(MC_ASSET_DIR) + "/models/entities/creeper.geo.json");
+    std::stringstream ss_c;
+    ss_c << crp_file.rdbuf();
+    const auto creeper = mc::model::EntityModel::fromJson(ss_c.str()).value();
+
+    MobRegistry r;
+    r.registerModel("zombie", &zombie);
+    r.registerModel("skeleton", &skeleton);
+    r.registerModel("creeper", &creeper);
+
+    MobSnapshot s_z = at(10, 0.f, 0.f);
+    s_z.model_type = "zombie";
+    MobSnapshot s_s = at(20, 2.f, 0.f);
+    s_s.model_type = "skeleton";
+    MobSnapshot s_c = at(30, 4.f, 0.f);
+    s_c.model_type = "creeper";
+
+    const auto draws = r.update(1.f / 60.f, {s_z, s_s, s_c});
+    ASSERT_EQ(draws.size(), 3u);
+    EXPECT_EQ(draws[0].model_type, "zombie");
+    EXPECT_EQ(draws[0].bones.size(), zombie.bones.size());
+    EXPECT_EQ(draws[1].model_type, "skeleton");
+    EXPECT_EQ(draws[1].bones.size(), skeleton.bones.size());
+    EXPECT_EQ(draws[2].model_type, "creeper");
+    EXPECT_EQ(draws[2].bones.size(), creeper.bones.size());
+}
+
 TEST(EldenRingMobs, CreeperQuadrupedLegsSwingAlternatelyDuringWalk) {
     std::ifstream creeper_file(std::string(MC_ASSET_DIR) + "/models/entities/creeper.geo.json");
     std::stringstream ss;
@@ -368,6 +402,168 @@ TEST(EldenRingMobs, SwellScalesBonesOutwardFromFeet) {
     EXPECT_FLOAT_EQ(draws[1].parts[head].m[5], 1.35f);
     EXPECT_FLOAT_EQ(draws[1].parts[head].m[10], 1.35f);
 }
+
+TEST(EldenRingMobs, SkeletonRaisesAndAimsArmsWhenBowChargeIsPositive) {
+    std::ifstream skel_file(std::string(MC_ASSET_DIR) + "/models/entities/skeleton.geo.json");
+    std::stringstream ss;
+    ss << skel_file.rdbuf();
+    const auto skeleton = mc::model::EntityModel::fromJson(ss.str()).value();
+
+    MobRegistry r;
+    r.registerModel("skeleton", &skeleton);
+
+    const size_t ix_rarm = boneIx(skeleton, "right_arm");
+    const size_t ix_larm = boneIx(skeleton, "left_arm");
+
+    MobSnapshot idle_s = at(100, 0.f, 0.f);
+    idle_s.model_type = "skeleton";
+    idle_s.bow_charge = 0.0f;
+    const auto idle_draws = r.update(1.f / 60.f, {idle_s});
+
+    MobSnapshot aim_s = at(100, 0.f, 0.f);
+    aim_s.model_type = "skeleton";
+    aim_s.bow_charge = 1.0f; // Fully drawn
+    const auto aim_draws = r.update(1.f / 60.f, {aim_s});
+
+    ASSERT_EQ(idle_draws.size(), 1u);
+    ASSERT_EQ(aim_draws.size(), 1u);
+
+    const auto& idle_r = idle_draws[0].bones[ix_rarm];
+    const auto& aim_r = aim_draws[0].bones[ix_rarm];
+    const auto& idle_l = idle_draws[0].bones[ix_larm];
+    const auto& aim_l = aim_draws[0].bones[ix_larm];
+
+    bool r_differs = false, l_differs = false;
+    for (int k = 0; k < 12; ++k) {
+        if (std::fabs(idle_r.m[k] - aim_r.m[k]) > 0.05f) r_differs = true;
+        if (std::fabs(idle_l.m[k] - aim_l.m[k]) > 0.05f) l_differs = true;
+    }
+    EXPECT_TRUE(r_differs) << "Right arm must rotate into bow draw pose when bow_charge > 0";
+    EXPECT_TRUE(l_differs) << "Left arm must rotate into bow hold pose when bow_charge > 0";
+}
+
+TEST(EldenRingMobs, ZombieSwingsArmDownwardsDuringMeleeAttack) {
+    const auto zombie = loadZombie();
+    MobRegistry r;
+    r.registerModel("zombie", &zombie);
+
+    const size_t ix_rarm = boneIx(zombie, "right_arm");
+
+    MobSnapshot idle_s = at(200, 0.f, 0.f);
+    idle_s.model_type = "zombie";
+    idle_s.swing_progress = 0.0f;
+    const auto idle_draws = r.update(1.f / 60.f, {idle_s});
+
+    MobSnapshot swing_s = at(200, 0.f, 0.f);
+    swing_s.model_type = "zombie";
+    swing_s.swing_progress = 0.5f; // Mid-swing downward strike
+    const auto swing_draws = r.update(1.f / 60.f, {swing_s});
+
+    ASSERT_EQ(idle_draws.size(), 1u);
+    ASSERT_EQ(swing_draws.size(), 1u);
+
+    const auto& idle_r = idle_draws[0].bones[ix_rarm];
+    const auto& swing_r = swing_draws[0].bones[ix_rarm];
+
+    bool arm_swung = false;
+    for (int k = 0; k < 12; ++k) {
+        if (std::fabs(idle_r.m[k] - swing_r.m[k]) > 0.05f) arm_swung = true;
+    }
+    EXPECT_TRUE(arm_swung) << "Zombie arm must swing downward when swing_progress > 0";
+}
+
+TEST(EldenRingMobs, SkeletonDrawCarriesHeldBowItem) {
+    std::ifstream skel_file(std::string(MC_ASSET_DIR) + "/models/entities/skeleton.geo.json");
+    std::stringstream ss;
+    ss << skel_file.rdbuf();
+    const auto skeleton = mc::model::EntityModel::fromJson(ss.str()).value();
+
+    MobRegistry r;
+    r.registerModel("skeleton", &skeleton);
+
+    MobSnapshot s = at(101, 0.f, 0.f);
+    s.model_type = "skeleton";
+    s.bow_charge = 0.0f;
+    const auto draws_idle = r.update(1.f / 60.f, {s});
+    ASSERT_EQ(draws_idle.size(), 1u);
+    EXPECT_EQ(draws_idle[0].held_item, static_cast<uint16_t>(mc::ItemId::Bow));
+
+    s.bow_charge = 1.0f;
+    const auto draws_aim = r.update(1.f / 60.f, {s});
+    ASSERT_EQ(draws_aim.size(), 1u);
+    EXPECT_EQ(draws_aim[0].held_item, static_cast<uint16_t>(mc::ItemId::BowPulling2));
+}
+
+TEST(EldenRingMobs, SkeletonIdleArmsHangDownInsteadOfForwardZombiePose) {
+    std::ifstream skel_file(std::string(MC_ASSET_DIR) + "/models/entities/skeleton.geo.json");
+    std::stringstream ss;
+    ss << skel_file.rdbuf();
+    const auto skeleton = mc::model::EntityModel::fromJson(ss.str()).value();
+
+    MobRegistry r;
+    r.registerModel("skeleton", &skeleton);
+
+    MobSnapshot idle_s = at(102, 0.f, 0.f);
+    idle_s.model_type = "skeleton";
+    idle_s.yaw = 0.0f;
+    idle_s.bow_charge = 0.0f; // Idle / not aiming
+    const auto draws = r.update(1.f / 60.f, {idle_s});
+    ASSERT_EQ(draws.size(), 1u);
+
+    const size_t arm = boneIx(skeleton, "right_arm");
+    const mc::Vec3 pivot = mc::model::bonePivotHost(skeleton.bones[arm], eldenring::render::kBasis);
+    // In canonical coords, arm extends along -Z (down). In hand_rest, point along the lower end of the arm:
+    const mc::Vec3 hand_rest = eldenring::render::kBasis.fromCanonical({0.f, 0.f, -10.f * mc::rig::kCmPerModelPixel});
+    const mc::Vec3 pivot_now = mc::rig::transformPoint(draws[0].bones[arm], pivot);
+    const mc::Vec3 hand = mc::rig::transformPoint(draws[0].bones[arm], hand_rest);
+    const mc::Vec3 dir = (hand - pivot_now).normalized();
+
+    // Idle skeleton arms must hang down (negative Y in host basis), NOT stick straight forward (+Z) like a zombie
+    EXPECT_LT(dir.y, -0.6f) << "Skeleton idle arm must hang down naturally (dir.y=" << dir.y << ")";
+    EXPECT_LT(dir.z, 0.5f) << "Skeleton idle arm must not point forward like a zombie (dir.z=" << dir.z << ")";
+}
+
+TEST(EldenRingMobs, SkeletonBowAimTiltsHeadAndArmsToMatchAimPitch) {
+    std::ifstream skel_file(std::string(MC_ASSET_DIR) + "/models/entities/skeleton.geo.json");
+    std::stringstream ss;
+    ss << skel_file.rdbuf();
+    const auto skeleton = mc::model::EntityModel::fromJson(ss.str()).value();
+
+    MobRegistry r;
+    r.registerModel("skeleton", &skeleton);
+
+    // Snapshot with high upward aim pitch (e.g. +0.5 rad = ~29 deg upward)
+    MobSnapshot s = at(103, 0.f, 0.f);
+    s.model_type = "skeleton";
+    s.yaw = 0.0f;
+    s.pitch = 0.5f;
+    s.bow_charge = 1.0f; // Fully drawn bow
+
+    const auto draws = r.update(1.f / 60.f, {s});
+    ASSERT_EQ(draws.size(), 1u);
+
+    const size_t arm_ix = boneIx(skeleton, "right_arm");
+    const size_t head_ix = boneIx(skeleton, "head");
+
+    const mc::Vec3 arm_pivot = mc::model::bonePivotHost(skeleton.bones[arm_ix], eldenring::render::kBasis);
+    const mc::Vec3 hand_rest = eldenring::render::kBasis.fromCanonical({0.f, 0.f, -10.f * mc::rig::kCmPerModelPixel});
+    const mc::Vec3 arm_pivot_now = mc::rig::transformPoint(draws[0].bones[arm_ix], arm_pivot);
+    const mc::Vec3 hand_now = mc::rig::transformPoint(draws[0].bones[arm_ix], hand_rest);
+    const mc::Vec3 aim_dir = (hand_now - arm_pivot_now).normalized();
+
+    // Aiming upward: arm must point upward along +Y
+    EXPECT_GT(aim_dir.y, 0.3f) << "Skeleton right arm must tilt upward with pitch (aim_dir.y=" << aim_dir.y << ")";
+    EXPECT_GT(aim_dir.z, 0.7f) << "Skeleton right arm must point forward along +Z (aim_dir.z=" << aim_dir.z << ")";
+
+    // Head must also tilt upward
+    const mc::Vec3 head_pivot = mc::model::bonePivotHost(skeleton.bones[head_ix], eldenring::render::kBasis);
+    const mc::Vec3 nose_rest = eldenring::render::kBasis.fromCanonical({8.f * mc::rig::kCmPerModelPixel, 0.f, 24.f * mc::rig::kCmPerModelPixel});
+    const mc::Vec3 head_pivot_now = mc::rig::transformPoint(draws[0].bones[head_ix], head_pivot);
+    const mc::Vec3 nose_now = mc::rig::transformPoint(draws[0].bones[head_ix], nose_rest);
+    const mc::Vec3 look_dir = (nose_now - head_pivot_now).normalized();
+    EXPECT_GT(look_dir.y, 0.2f) << "Skeleton head must tilt upward to track pitch (look_dir.y=" << look_dir.y << ")";
+}
+
 
 
 

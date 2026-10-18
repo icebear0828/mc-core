@@ -31,11 +31,8 @@ using HitReactHeavyFn = void (*)(void* self, void* a, void* b, void* out, uint64
 
 // Creative trampolines
 using CreativeKillFn = void (*)(void* chr);
-using CreativeLandingFn = void (*)(void* fall_module);
 using CreativeFallFn = float (*)(void* fall_module);
-using CreativeSpEffectFn = bool (*)(void* container, int sp_effect);
 using CreativeFallExceededFn = bool (*)(void* fall_module, float threshold);
-using CreativeEventFn = uint64_t (*)(void* self, void* event);
 
 ClampFn g_clamp_orig = nullptr;
 CameraStepFn g_camstep_orig = nullptr;
@@ -51,11 +48,8 @@ HitReactFn g_hitreact_orig = nullptr;
 HitReactHeavyFn g_hitreact_heavy_orig = nullptr;
 
 CreativeKillFn g_cr_kill_orig = nullptr;
-CreativeLandingFn g_cr_land_orig = nullptr;
 CreativeFallFn g_cr_fall_orig = nullptr;
-CreativeSpEffectFn g_cr_sp_orig = nullptr;
 CreativeFallExceededFn g_cr_exceeded_orig = nullptr;
-CreativeEventFn g_cr_event_orig = nullptr;
 
 #ifdef _WIN32
 // Native detours
@@ -122,14 +116,7 @@ void __fastcall CreativeKillDetourInternal(void* chr) {
     if (inst.callbacks().should_block_creative_kill && inst.callbacks().should_block_creative_kill(chr)) {
         return;
     }
-    if (inst.callbacks().on_creative_probe) inst.callbacks().on_creative_probe("CSChrKillModule", chr);
     if (g_cr_kill_orig) g_cr_kill_orig(chr);
-}
-
-void __fastcall CreativeLandingDetourInternal(void* fall_module) {
-    auto& inst = GameHooks::Instance();
-    if (inst.callbacks().on_creative_probe) inst.callbacks().on_creative_probe("hard landing", fall_module);
-    if (g_cr_land_orig) g_cr_land_orig(fall_module);
 }
 
 float __fastcall CreativeFallDetourInternal(void* fall_module) {
@@ -138,25 +125,12 @@ float __fastcall CreativeFallDetourInternal(void* fall_module) {
     return g_cr_fall_orig ? g_cr_fall_orig(fall_module) : 0.f;
 }
 
-bool __fastcall CreativeSpEffectDetourInternal(void* container, int sp_effect) {
-    auto& inst = GameHooks::Instance();
-    if (inst.callbacks().on_creative_probe) inst.callbacks().on_creative_probe("hasSpEffect", container);
-    return g_cr_sp_orig ? g_cr_sp_orig(container, sp_effect) : false;
-}
-
 bool __fastcall CreativeFallExceededDetourInternal(void* fall_module, float threshold) {
     auto& inst = GameHooks::Instance();
     if (inst.callbacks().should_deny_fall_time_exceeded && inst.callbacks().should_deny_fall_time_exceeded(fall_module, threshold)) {
         return false;
     }
-    if (inst.callbacks().on_creative_probe) inst.callbacks().on_creative_probe("fall time exceeded", fall_module);
     return g_cr_exceeded_orig ? g_cr_exceeded_orig(fall_module, threshold) : false;
-}
-
-uint64_t __fastcall CreativeEventDetourInternal(void* self, void* event) {
-    auto& inst = GameHooks::Instance();
-    if (inst.callbacks().on_creative_probe) inst.callbacks().on_creative_probe("chr event dispatch", self);
-    return g_cr_event_orig ? g_cr_event_orig(self, event) : 0;
 }
 #endif
 
@@ -188,11 +162,8 @@ void GameHooks::resetForTesting() {
     g_hitreact_orig = nullptr;
     g_hitreact_heavy_orig = nullptr;
     g_cr_kill_orig = nullptr;
-    g_cr_land_orig = nullptr;
     g_cr_fall_orig = nullptr;
-    g_cr_sp_orig = nullptr;
     g_cr_exceeded_orig = nullptr;
-    g_cr_event_orig = nullptr;
 }
 
 void GameHooks::setClampOrigForTesting(void* (*fn)(void*, int32_t)) { g_clamp_orig = fn; }
@@ -204,6 +175,9 @@ void GameHooks::setBreakTestOrigForTesting(bool (*fn)(void*, uint8_t*)) { g_brea
 void GameHooks::setKillChrOrigForTesting(void (*fn)(void*)) { g_kill_orig = fn; }
 void GameHooks::setHitVfxOrigForTesting(uint8_t (*fn)(void*, void*, uint8_t*, void*)) { g_hitvfx_orig = fn; }
 void GameHooks::setSpawnBulletOrigForTesting(uint32_t* (*fn)(void*, uint32_t*, void*, void*)) { g_spawn_bullet_orig = fn; }
+void GameHooks::setCreativeKillOrigForTesting(void (*fn)(void*)) { g_cr_kill_orig = fn; }
+void GameHooks::setCreativeFallOrigForTesting(float (*fn)(void*)) { g_cr_fall_orig = fn; }
+void GameHooks::setCreativeFallExceededOrigForTesting(bool (*fn)(void*, float)) { g_cr_exceeded_orig = fn; }
 
 void* GameHooks::InvokeClampDetour(void* module, int32_t value) {
     void* r = g_clamp_orig ? g_clamp_orig(module, value) : module;
@@ -327,6 +301,36 @@ uint32_t* GameHooks::InvokeSpawnBulletDetour(void* manager, uint32_t* out_handle
     return r;
 }
 
+void GameHooks::InvokeCreativeKillDetour(void* chr) {
+#ifdef _WIN32
+    CreativeKillDetourInternal(chr);
+#else
+    auto& inst = Instance();
+    if (inst.cb_.should_block_creative_kill && inst.cb_.should_block_creative_kill(chr)) return;
+    if (g_cr_kill_orig) g_cr_kill_orig(chr);
+#endif
+}
+
+float GameHooks::InvokeCreativeFallDetour(void* fall_module) {
+#ifdef _WIN32
+    return CreativeFallDetourInternal(fall_module);
+#else
+    auto& inst = Instance();
+    if (inst.cb_.is_fall_damage_disabled && inst.cb_.is_fall_damage_disabled()) return 0.f;
+    return g_cr_fall_orig ? g_cr_fall_orig(fall_module) : 0.f;
+#endif
+}
+
+bool GameHooks::InvokeCreativeFallExceededDetour(void* fall_module, float threshold) {
+#ifdef _WIN32
+    return CreativeFallExceededDetourInternal(fall_module, threshold);
+#else
+    auto& inst = Instance();
+    if (inst.cb_.should_deny_fall_time_exceeded && inst.cb_.should_deny_fall_time_exceeded(fall_module, threshold)) return false;
+    return g_cr_exceeded_orig ? g_cr_exceeded_orig(fall_module, threshold) : false;
+#endif
+}
+
 bool GameHooks::initMinHook() {
 #ifdef _WIN32
     static std::mutex m;
@@ -438,38 +442,25 @@ bool GameHooks::setupDamageHooks(uintptr_t base,
 #endif
 }
 
-bool GameHooks::setupCreativeProbes(uintptr_t base,
-                                    uintptr_t kill_wrapper_addr,
-                                    uintptr_t hard_landing_addr,
-                                    uintptr_t fall_height_addr,
-                                    uintptr_t sp_effect_addr,
-                                    uintptr_t fall_exceeded_addr,
-                                    uintptr_t event_dispatch_addr) {
+bool GameHooks::setupCreativeHooks(uintptr_t base,
+                                   uintptr_t kill_wrapper_addr,
+                                   uintptr_t fall_height_addr,
+                                   uintptr_t fall_exceeded_addr) {
     (void)base;
 #ifdef _WIN32
     if (!initMinHook()) return false;
     if (kill_wrapper_addr != 0 && MH_CreateHook(reinterpret_cast<void*>(kill_wrapper_addr), reinterpret_cast<void*>(&CreativeKillDetourInternal), reinterpret_cast<void**>(&g_cr_kill_orig)) == MH_OK) {
         MH_EnableHook(reinterpret_cast<void*>(kill_wrapper_addr));
     }
-    if (hard_landing_addr != 0 && MH_CreateHook(reinterpret_cast<void*>(hard_landing_addr), reinterpret_cast<void*>(&CreativeLandingDetourInternal), reinterpret_cast<void**>(&g_cr_land_orig)) == MH_OK) {
-        MH_EnableHook(reinterpret_cast<void*>(hard_landing_addr));
-    }
     if (fall_height_addr != 0 && MH_CreateHook(reinterpret_cast<void*>(fall_height_addr), reinterpret_cast<void*>(&CreativeFallDetourInternal), reinterpret_cast<void**>(&g_cr_fall_orig)) == MH_OK) {
         MH_EnableHook(reinterpret_cast<void*>(fall_height_addr));
-    }
-    if (sp_effect_addr != 0 && MH_CreateHook(reinterpret_cast<void*>(sp_effect_addr), reinterpret_cast<void*>(&CreativeSpEffectDetourInternal), reinterpret_cast<void**>(&g_cr_sp_orig)) == MH_OK) {
-        MH_EnableHook(reinterpret_cast<void*>(sp_effect_addr));
     }
     if (fall_exceeded_addr != 0 && MH_CreateHook(reinterpret_cast<void*>(fall_exceeded_addr), reinterpret_cast<void*>(&CreativeFallExceededDetourInternal), reinterpret_cast<void**>(&g_cr_exceeded_orig)) == MH_OK) {
         MH_EnableHook(reinterpret_cast<void*>(fall_exceeded_addr));
     }
-    if (event_dispatch_addr != 0 && MH_CreateHook(reinterpret_cast<void*>(event_dispatch_addr), reinterpret_cast<void*>(&CreativeEventDetourInternal), reinterpret_cast<void**>(&g_cr_event_orig)) == MH_OK) {
-        MH_EnableHook(reinterpret_cast<void*>(event_dispatch_addr));
-    }
     return true;
 #else
-    (void)base; (void)kill_wrapper_addr; (void)hard_landing_addr; (void)fall_height_addr;
-    (void)sp_effect_addr; (void)fall_exceeded_addr; (void)event_dispatch_addr;
+    (void)base; (void)kill_wrapper_addr; (void)fall_height_addr; (void)fall_exceeded_addr;
     return true;
 #endif
 }

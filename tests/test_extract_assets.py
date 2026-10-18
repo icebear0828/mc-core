@@ -171,19 +171,43 @@ def test_export_mob_skin_writes_the_zombie_skin_unchanged(tmp_path):
     assert written.getpixel((0, 0)) == (40, 120, 60, 255)
 
 
+def test_export_mob_skin_supports_creeper_and_skeleton_64x32(tmp_path):
+    import zipfile
+    from extract_mc_assets import export_mob_skin
+
+    jar_path = tmp_path / "client.jar"
+    with zipfile.ZipFile(jar_path, "w") as z:
+        creeper_img = _solid((64, 32), (0x0D, 0xA7, 0x00, 255))
+        skeleton_img = _solid((64, 32), (0xC1, 0xC1, 0xC1, 255))
+        z.writestr("assets/minecraft/textures/entity/creeper/creeper.png", _png(creeper_img))
+        z.writestr("assets/minecraft/textures/entity/skeleton/skeleton.png", _png(skeleton_img))
+
+    out_c = export_mob_skin(jar_path, tmp_path / "out", "creeper")
+    assert out_c == tmp_path / "out" / "creeper.png"
+    written_c = Image.open(out_c).convert("RGBA")
+    assert written_c.size == (64, 32)
+    assert written_c.getpixel((0, 0)) == (0x0D, 0xA7, 0x00, 255)
+
+    out_s = export_mob_skin(jar_path, tmp_path / "out", "skeleton")
+    assert out_s == tmp_path / "out" / "skeleton.png"
+    written_s = Image.open(out_s).convert("RGBA")
+    assert written_s.size == (64, 32)
+    assert written_s.getpixel((0, 0)) == (0xC1, 0xC1, 0xC1, 255)
+
+
 def test_export_mob_skin_rejects_unknown_mobs_missing_entries_and_wrong_sizes(tmp_path):
     import zipfile
     from extract_mc_assets import export_mob_skin
 
     jar = _jar_with_mob(tmp_path / "client.jar", _solid((64, 64), (1, 1, 1, 255)))
     with pytest.raises(ValueError):
-        export_mob_skin(jar, tmp_path / "out", "creeper")  # only the humanoid mobs share the player's UV layout
+        export_mob_skin(jar, tmp_path / "out", "blaze")
     empty = tmp_path / "empty.jar"
     with zipfile.ZipFile(empty, "w") as z:
         z.writestr("readme.txt", "x")
     with pytest.raises(FileNotFoundError):
         export_mob_skin(empty, tmp_path / "out", "zombie")
-    legacy = _jar_with_mob(tmp_path / "legacy.jar", _solid((64, 32), (1, 2, 3, 255)))
+    legacy = _jar_with_mob(tmp_path / "legacy.jar", _solid((32, 32), (1, 2, 3, 255)))
     with pytest.raises(ValueError):
         export_mob_skin(legacy, tmp_path / "out", "zombie")
 
@@ -266,6 +290,7 @@ HUD_KEYS = [
     "empty_armor_slot_helmet", "empty_armor_slot_chestplate", "empty_armor_slot_leggings", "empty_armor_slot_boots",
     "armor_empty", "armor_half", "armor_full",
     *[f"destroy_stage_{i}" for i in range(10)],
+    "item_creeper_spawn_egg", "item_skeleton_spawn_egg",
 ]
 
 HUD_SIZES = {
@@ -493,6 +518,31 @@ def test_zombie_spawn_egg_prefers_the_mobs_own_texture_of_newer_jars(tmp_path):
     atlas, uv = build_hud_atlas(jar)
     region = _hud_region(atlas, uv["item_zombie_spawn_egg"])
     assert {region.getpixel((x, y)) for x in range(16) for y in range(16)} == {(12, 34, 56, 255)}
+
+
+def test_creeper_and_skeleton_spawn_eggs_have_distinct_sprites_and_colors(tmp_path):
+    import zipfile
+    from extract_mc_assets import build_hud_atlas
+
+    jar = _hud_jar(tmp_path / "client.jar")
+    with zipfile.ZipFile(jar, "a") as z:
+        z.writestr("assets/minecraft/textures/item/zombie_spawn_egg.png", _png(_solid((16, 16), (0x00, 0xAF, 0xAF, 255))))
+        z.writestr("assets/minecraft/textures/item/creeper_spawn_egg.png", _png(_solid((16, 16), (0x0D, 0xA7, 0x00, 255))))
+        z.writestr("assets/minecraft/textures/item/skeleton_spawn_egg.png", _png(_solid((16, 16), (0xC1, 0xC1, 0xC1, 255))))
+
+    atlas, uv = build_hud_atlas(jar)
+    assert "item_zombie_spawn_egg" in uv
+    assert "item_creeper_spawn_egg" in uv
+    assert "item_skeleton_spawn_egg" in uv
+    assert uv["item_zombie_spawn_egg"] != uv["item_creeper_spawn_egg"]
+    assert uv["item_creeper_spawn_egg"] != uv["item_skeleton_spawn_egg"]
+
+    r_z = _hud_region(atlas, uv["item_zombie_spawn_egg"])
+    r_c = _hud_region(atlas, uv["item_creeper_spawn_egg"])
+    r_s = _hud_region(atlas, uv["item_skeleton_spawn_egg"])
+    assert r_z.getpixel((0, 0)) == (0x00, 0xAF, 0xAF, 255)
+    assert r_c.getpixel((0, 0)) == (0x0D, 0xA7, 0x00, 255)
+    assert r_s.getpixel((0, 0)) == (0xC1, 0xC1, 0xC1, 255)
 
 
 def test_the_three_drawn_bow_sprites_are_copied_from_the_jar_and_have_placeholders_without_one(tmp_path):

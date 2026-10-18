@@ -332,6 +332,7 @@ void FlightStep();          // defined after them
 void DriveVelocityFromKeys(uintptr_t module, bool force_zero);
 void GroundSprintStep(float dt);
 void VirtualSummonsStep(float dt);
+RayResult CastStaticRay(const float from[3], const float disp[3]);
 extern std::atomic<bool> g_flying;
 std::atomic<unsigned> g_camstep_calls{0}, g_camstep_changed{0};
 
@@ -350,6 +351,7 @@ bool WriteBytesSafe(uintptr_t address, const void* src, size_t n) {
 // cached pointers: a summon that disappears meanwhile is simply not enumerated any more).
 std::mutex g_summon_mutex;
 std::vector<eldenring::mobs::MobSnapshot> g_summon_list; // the team 47 summons seen by the last HideSummonModels (render thread), read by the HUD provider
+std::vector<eldenring::summon::ArrowDraw> g_summon_arrows; // active in-flight arrows from virtual summons
 float g_mob_yaw_offset = eldenring::live::summon::kDefaultMobYawOffset; // monster/wolf orientation quaternion aligns forward; default 0 (mob_yaw_offset_deg)
 eldenring::summon::VirtualSummonManager g_virtual_summons;
 
@@ -472,14 +474,17 @@ void HideSummonModels() {
             it = last_hp.erase(it);
         }
     }
+    std::vector<eldenring::summon::ArrowDraw> virt_arrows;
     if (!mc_on || PlayerDead()) {
         g_hidden_flag_addresses.clear(); // the ones left belong to summons that are gone: nothing to put back
     } else {
         const auto virt_snaps = g_virtual_summons.generateSnapshots();
         seen.insert(seen.end(), virt_snaps.begin(), virt_snaps.end());
+        virt_arrows = g_virtual_summons.getActiveArrows();
     }
     std::lock_guard<std::mutex> g(g_summon_mutex);
     g_summon_list = mc_on ? seen : std::vector<eldenring::mobs::MobSnapshot>{};
+    g_summon_arrows = mc_on ? virt_arrows : std::vector<eldenring::summon::ArrowDraw>{};
 }
 
 void VirtualSummonsStep(float dt) {
@@ -505,12 +510,33 @@ void VirtualSummonsStep(float dt) {
     pp.pos[2] = p_pos[2];
     pp.yaw = eldenring::render::yawFromQuat(p_q[0], p_q[1], p_q[2], p_q[3]);
 
+    static std::once_flag samplers_init;
+    std::call_once(samplers_init, [] {
+        g_virtual_summons.setLineOfSightSampler([](const float from[3], const float to[3]) -> bool {
+            float disp[3] = {to[0] - from[0], to[1] - from[1], to[2] - from[2]};
+            const RayResult hit = CastStaticRay(from, disp);
+            if (hit.ok && hit.hit && hit.fraction < 0.95f) return false;
+            return true;
+        });
+        g_virtual_summons.setWorldRaycastSampler([](const float from[3], const float to[3], float hit_pos[3]) -> bool {
+            float disp[3] = {to[0] - from[0], to[1] - from[1], to[2] - from[2]};
+            const RayResult hit = CastStaticRay(from, disp);
+            if (hit.ok && hit.hit) {
+                hit_pos[0] = hit.pos[0];
+                hit_pos[1] = hit.pos[1];
+                hit_pos[2] = hit.pos[2];
+                return true;
+            }
+            return false;
+        });
+    });
+
     std::vector<EnemyInfo> enemies;
     enumerateEnemies(g_reader, g_img.base, enemies, 512);
 
     std::vector<eldenring::summon::EnemyTarget> enemy_targets;
     for (const EnemyInfo& e : enemies) {
-        if (e.team != eldenring::live::summon::kTeam && e.hp > 0 && e.chr != player) {
+        if (e.team != eldenring::live::summon::kTeam && e.hp > 0 && e.chr != player && e.hostile) {
             eldenring::summon::EnemyTarget et;
             et.chr_ins = e.chr;
             et.hp = e.hp;
@@ -528,11 +554,13 @@ void VirtualSummonsStep(float dt) {
     auto intents = g_virtual_summons.drainDamageIntents();
     for (const auto& in : intents) {
         g_queue.enqueue(in.target_chr_ins, static_cast<int>(in.damage_amount), NowTick());
+        eraudio::Play("entity.arrow.hit", 1.0f);
     }
 
     auto proj_intents = g_virtual_summons.drainProjectileIntents();
     for (const auto& pi : proj_intents) {
         eraudio::Play("entity.arrow.shoot", 1.0f);
+        erov::SpawnFx(erov::FxKind::Crit, pi.origin, 2);
         Log("virtual ranged summon: fired projectile at target %llX (damage=%.1f)",
             static_cast<unsigned long long>(pi.target_chr_ins), pi.damage);
     }
@@ -542,6 +570,15 @@ void VirtualSummonsStep(float dt) {
         eraudio::Play("entity.generic.explode", 1.0f);
         Log("virtual creeper: DETONATION at (%.2f %.2f %.2f)!", ev.pos[0], ev.pos[1], ev.pos[2]);
         eldenring::world::VoxelWorldRuntime::Instance().enqueueTntIntent(ev.pos, ev.radius, ev.damage);
+    }
+
+    const auto active_arrows = g_virtual_summons.getActiveArrows();
+    for (const auto& arr : active_arrows) {
+        erov::SpawnFx(erov::FxKind::Crit, arr.pos, 1);
+    }
+    {
+        std::lock_guard<std::mutex> g(g_summon_mutex);
+        g_summon_arrows = active_arrows;
     }
 }
 
@@ -960,7 +997,7 @@ std::atomic<uint64_t> g_last_summon_ms{0};
 constexpr uint64_t kSummonCooldownMs = 200; // Fast and responsive virtual summon (no FromSoftware engine locks)
 
 // Returns false when capacity is full or player pose unreadable. Completely decoupled from CSBuddyMan.
-bool QueueSummon(const char* source) {
+bool QueueSummon(const char* source, const char* requested_mob = nullptr) {
     const uint64_t now = GetTickCount64();
     if (now - g_last_summon_ms.load(std::memory_order_relaxed) < kSummonCooldownMs) return false;
     g_last_summon_ms.store(now);
@@ -983,9 +1020,9 @@ bool QueueSummon(const char* source) {
     p.pos[2] = pos[2];
     p.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]);
 
-    std::string model_type = "creeper"; // Default to creeper for active summon feature
+    std::string model_type = (requested_mob != nullptr && requested_mob[0] != '\0') ? requested_mob : "creeper";
     std::vector<uint8_t> summon_txt;
-    if (ReadFileAll(g_game_dir + "mc_er_summon.txt", summon_txt) && !summon_txt.empty()) {
+    if (requested_mob == nullptr && ReadFileAll(g_game_dir + "mc_er_summon.txt", summon_txt) && !summon_txt.empty()) {
         std::string content(reinterpret_cast<const char*>(summon_txt.data()), summon_txt.size());
         for (char& c : content) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         if (content.find("creeper") != std::string::npos) model_type = "creeper";
@@ -1001,13 +1038,17 @@ bool QueueSummon(const char* source) {
     return true;
 }
 
-// Right click with the zombie spawn egg in hand: one summon; in survival the egg is used up. True when the click was the egg's.
+// Right click with any spawn egg in hand: one summon corresponding to the egg; in survival the egg is used up.
 bool TryUseSpawnEgg() {
+    mc::ItemId held = mc::ItemId::None;
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
-        if (g_melee.heldItem() != mc::ItemId::ZombieSpawnEgg || g_melee.countAt(g_melee.selectedSlot()) == 0) return false;
+        held = g_melee.heldItem();
+        if (!mc::isSpawnEgg(held) || g_melee.countAt(g_melee.selectedSlot()) == 0) return false;
     }
-    if (!QueueSummon("spawn egg")) return true; // refused (feature off or too soon): the click is still the egg's
+    const std::string_view mob_type = mc::spawnEggToMobType(held);
+    const std::string mob_str = mob_type.empty() ? "zombie" : std::string(mob_type);
+    if (!QueueSummon("spawn egg", mob_str.c_str())) return true; // refused (too soon): the click is still the egg's
     std::lock_guard<std::mutex> g(g_melee_mutex);
     if (creative::consumesItems(CurrentGameMode())) g_melee.consumeAt(g_melee.selectedSlot());
     g_melee.startSwing();
@@ -1462,16 +1503,14 @@ bool ReadFileAll(const std::string& path, std::vector<uint8_t>& out) {
 
 void SetupCreativeProbes() {
     g_cr_log.store(FileExists(g_game_dir + "mc_er_creativelog.txt"));
-    uintptr_t kw = 0, hl = 0, fh = 0, sp = 0, fe = 0, ev = 0;
+    uintptr_t kw = 0, fh = 0, fe = 0;
     LocateByPrefix(g_img, sigs::kKillWrapper, kw);
-    LocateByPrefix(g_img, sigs::kHardLanding, hl);
     LocateByPrefix(g_img, sigs::kFallHeight, fh);
-    LocateByPrefix(g_img, sigs::kHasSpEffect, sp);
     LocateByPrefix(g_img, sigs::kFallTimeExceeded, fe);
-    LocateByPrefix(g_img, sigs::kChrEventDispatch, ev);
-    eldenring::hooks::GameHooks::Instance().setupCreativeProbes(
-        g_img.base, kw, hl, fh, sp, fe, ev);
-    Log("creative: probes configured (log=%d)", g_cr_log.load() ? 1 : 0);
+    eldenring::hooks::GameHooks::Instance().setupCreativeHooks(
+        g_img.base, kw, fh, fe);
+    Log("creative: hooks configured (kill_wrapper=%p fall_height=%p fall_time_exceeded=%p)",
+        reinterpret_cast<void*>(kw), reinterpret_cast<void*>(fh), reinterpret_cast<void*>(fe));
 }
 
 // ---- spawn_bullet request logger (read-only, switch file mc_er_bulletlog.txt) -----------------------------------------------------------
@@ -1820,12 +1859,6 @@ void SetupGameHooksCallbacks() {
         return true;
     };
 
-    cb.on_creative_probe = [](const char* name, void* obj) {
-        if (g_cr_log.load(std::memory_order_relaxed)) {
-            Log("creative: %s probe invoked on %p", name, obj);
-        }
-    };
-
     eldenring::hooks::GameHooks::Instance().setCallbacks(cb);
 }
 
@@ -1998,11 +2031,14 @@ void UpdateNativeModel(uintptr_t player, bool hide) {
 bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     {   // the mobs over the summons (mc_er_summonhide.txt): only while MC mode is on, otherwise the wolves are not drawn at all and nothing replaces them
         std::vector<eldenring::mobs::MobSnapshot> mobs;
+        std::vector<eldenring::summon::ArrowDraw> arrows;
         if (g_summon_hide.load(std::memory_order_relaxed) && g_mc_mode.load(std::memory_order_relaxed)) {
             std::lock_guard<std::mutex> g(g_summon_mutex);
             mobs = g_summon_list;
+            arrows = g_summon_arrows;
         }
         erov::SetMobs(mobs);
+        erov::SetArrows(arrows);
     }
     const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
     if (world == 0) return false;
@@ -2214,33 +2250,29 @@ void SetupOverlay() {
                 Log("skin: %s missing or not 64x64, the figure stays flat grey-brown (extract it with tools/extract_mc_assets.py --export-steve-skin)", skin_path.c_str());
             }
         }
-        {   // the mobs' model: check creeper.geo.json first, then fallback to zombie.geo.json
-            std::vector<uint8_t> json;
-            std::string model_path = g_game_dir + "mods\\mc_adapter\\models\\creeper.geo.json";
-            if (!FileExists(model_path)) {
-                model_path = g_game_dir + "mods\\mc_adapter\\models\\zombie.geo.json";
-            }
-            std::optional<mc::model::EntityModel> model;
-            if (ReadFileAll(model_path, json)) model = mc::model::EntityModel::fromJson(std::string_view(reinterpret_cast<const char*>(json.data()), json.size()));
-            if (model && !model->bones.empty()) {
-                erov::SetMobModel(*model);
-                Log("mobs: model %s: %s, %zu bones", model_path.c_str(), model->identifier.c_str(), model->bones.size());
-            } else {
-                Log("mobs: no model at %s, the mobs use the Steve rig", model_path.c_str());
-            }
-        }
-        {
-            std::vector<uint8_t> mob_skin;
-            unsigned zw = 0, zh = 0;
-            std::string skin_path = g_game_dir + "mods\\mc_adapter\\creeper.png";
-            if (!FileExists(skin_path)) {
-                skin_path = g_game_dir + "mods\\mc_adapter\\zombie.png";
-            }
-            if (erov::DecodePngFile(skin_path, mob_skin, zw, zh) && zw == 64 && (zh == 64 || zh == 32)) {
-                erov::SetMobSkin(mob_skin.data(), zw, zh);
-                Log("skin: external file %s (%ux%u)", skin_path.c_str(), zw, zh);
-            } else {
-                Log("skin: %s missing or not 64x64/64x32", skin_path.c_str());
+        {   // Load all available mob models and skins (creeper, zombie, skeleton)
+            const std::vector<std::string> supported_mobs = {"creeper", "zombie", "skeleton"};
+            for (const auto& mob : supported_mobs) {
+                std::string model_path = g_game_dir + "mods\\mc_adapter\\models\\" + mob + ".geo.json";
+                std::vector<uint8_t> json;
+                if (ReadFileAll(model_path, json)) {
+                    auto model = mc::model::EntityModel::fromJson(std::string_view(reinterpret_cast<const char*>(json.data()), json.size()));
+                    if (model && !model->bones.empty()) {
+                        erov::SetMobModel(mob, *model);
+                        Log("mobs: model %s (%s): %zu bones", mob.c_str(), model->identifier.c_str(), model->bones.size());
+                    }
+                } else {
+                    Log("mobs: model file missing at %s", model_path.c_str());
+                }
+                std::string skin_path = g_game_dir + "mods\\mc_adapter\\" + mob + ".png";
+                std::vector<uint8_t> mob_skin;
+                unsigned zw = 0, zh = 0;
+                if (erov::DecodePngFile(skin_path, mob_skin, zw, zh) && zw == 64 && (zh == 64 || zh == 32)) {
+                    erov::SetMobSkin(mob, mob_skin.data(), zw, zh);
+                    Log("mobs: skin %s (%ux%u)", mob.c_str(), zw, zh);
+                } else {
+                    Log("mobs: skin %s missing or not 64x64/64x32 at %s", mob.c_str(), skin_path.c_str());
+                }
             }
         }
         g_steve_enabled.store(true);
