@@ -217,9 +217,21 @@ TEST(EldenRingHudTex, EveryPaletteItemHasADistinctIcon) {
         for (mc::ItemId other : mc::paletteItems()) {
             if (other == id) continue;
             const mc::hud::HudUV* ov = eldenring::render::uvForItem(other);
-            EXPECT_TRUE(ov->u0 != uv->u0 || ov->v0 != uv->v0);
+            EXPECT_TRUE(ov->u0 != uv->u0 || ov->v0 != uv->v0) << "Items " << static_cast<int>(id) << " and " << static_cast<int>(other) << " collision";
         }
     }
+}
+
+TEST(EldenRingHudTex, SpawnEggsHaveDistinctIcons) {
+    const auto* z = eldenring::render::uvForItem(mc::ItemId::ZombieSpawnEgg);
+    const auto* c = eldenring::render::uvForItem(mc::ItemId::CreeperSpawnEgg);
+    const auto* s = eldenring::render::uvForItem(mc::ItemId::SkeletonSpawnEgg);
+    ASSERT_NE(z, nullptr);
+    ASSERT_NE(c, nullptr);
+    ASSERT_NE(s, nullptr);
+    EXPECT_NE(z->u0, c->u0);
+    EXPECT_NE(c->u0, s->u0);
+    EXPECT_NE(z->u0, s->u0);
 }
 
 TEST(EldenRingHudTex, UpscaleNearestReplicatesEveryPixel) {

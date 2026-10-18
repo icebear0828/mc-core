@@ -271,25 +271,29 @@ std::array<FaceDef, 6> cubeFaces(const Cube& c) {
                 z1 = c.origin.z + c.size.z + c.inflate;
     const float u = c.u, v = c.v, w = c.size.x, h = c.size.y, d = c.size.z;
 
-    const float u_west = c.mirror ? (u + d + w) : u;
-    const float u_east = c.mirror ? u : (u + d + w);
-
-    // A mirrored cube (Minecraft's ModelPart.mirror): every face's texture is flipped horizontally AND the west and east faces take each
-    // other's rectangle. The left arm and leg of the humanoids are the right ones mirrored this way.
+    // Bedrock box UV layout:
+    // [u .. u+d]: East face (+X)
+    // [u+d .. u+d+w]: North face (-Z, Front)
+    // [u+d+w .. u+2d+w]: West face (-X)
+    // [u+2d+w .. u+2d+2w]: South face (+Z, Back)
+    // Mirrored cube (ModelPart.mirror): East and West swap rectangles, and every face is flipped horizontally.
+    const float u_east = c.mirror ? (u + d + w) : u;
+    const float u_west = c.mirror ? u : (u + d + w);
     const bool m = c.mirror;
+
     return {{
-        // North / Front (-Z)
-        {{{x0, y0, z0}, {x1, y0, z0}, {x1, y1, z0}, {x0, y1, z0}}, u + d, v + d, w, h, m},
-        // South / Back (+Z)
-        {{{x1, y0, z1}, {x0, y0, z1}, {x0, y1, z1}, {x1, y1, z1}}, u + d + w + d, v + d, w, h, m},
-        // West (-X)
-        {{{x0, y0, z1}, {x0, y0, z0}, {x0, y1, z0}, {x0, y1, z1}}, u_west, v + d, d, h, m},
-        // East (+X)
-        {{{x1, y0, z0}, {x1, y0, z1}, {x1, y1, z1}, {x1, y1, z0}}, u_east, v + d, d, h, m},
-        // Top (+Y)
-        {{{x0, y1, z0}, {x1, y1, z0}, {x1, y1, z1}, {x0, y1, z1}}, u + d, v, w, d, m},
-        // Bottom (-Y)
-        {{{x0, y0, z1}, {x1, y0, z1}, {x1, y0, z0}, {x0, y0, z0}}, u + d + w, v, w, d, m},
+        // North / Front (-Z): East side (+X) at U-left, West side (-X) at U-right
+        {{{x1, y0, z0}, {x0, y0, z0}, {x0, y1, z0}, {x1, y1, z0}}, u + d, v + d, w, h, m},
+        // South / Back (+Z): West side (-X) at U-left, East side (+X) at U-right
+        {{{x0, y0, z1}, {x1, y0, z1}, {x1, y1, z1}, {x0, y1, z1}}, u + d + w + d, v + d, w, h, m},
+        // West (-X): North side (-Z) at U-left, South side (+Z) at U-right
+        {{{x0, y0, z0}, {x0, y0, z1}, {x0, y1, z1}, {x0, y1, z0}}, u_west, v + d, d, h, m},
+        // East (+X): South side (+Z) at U-left, North side (-Z) at U-right
+        {{{x1, y0, z1}, {x1, y0, z0}, {x1, y1, z0}, {x1, y1, z1}}, u_east, v + d, d, h, m},
+        // Top (+Y): East side (+X) at U-left, West side (-X) at U-right; South at V-top, North at V-bottom
+        {{{x1, y1, z0}, {x0, y1, z0}, {x0, y1, z1}, {x1, y1, z1}}, u + d, v, w, d, m},
+        // Bottom (-Y): West side (-X) at U-left, East side (+X) at U-right; South at V-top, North at V-bottom
+        {{{x0, y0, z0}, {x1, y0, z0}, {x1, y0, z1}, {x0, y0, z1}}, u + d + w, v, w, d, m},
     }};
 }
 

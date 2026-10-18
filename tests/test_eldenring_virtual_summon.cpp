@@ -359,12 +359,12 @@ TEST(VirtualSummonTest, AntiClippingPushoutSeparatesSummonsFromOverlapping) {
 TEST(VirtualSummonTest, AntiClippingStopsMobFromPenetratingTargetAabb) {
     VirtualSummonManager mgr;
     const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
-    // Mob spawned at (0, 0, -2.0)
+    // Mob spawned at (0, 0, 2.0)
     uint64_t id = mgr.spawnMob("creeper", p, 2.0f);
 
-    // Enemy placed at (0, 0, -1.5), distance is 0.5m (less than collision separation radius 0.65m)
+    // Enemy placed at (0, 0, 2.5), distance is 0.5m (less than collision separation radius 0.65m)
     std::vector<EnemyTarget> enemies = {
-        makeEnemy(0xEE11, 0.0f, 0.0f, -1.5f, 100, 100)
+        makeEnemy(0xEE11, 0.0f, 0.0f, 2.5f, 100, 100)
     };
 
     // Update for 0.5 second of pursuit
@@ -374,7 +374,7 @@ TEST(VirtualSummonTest, AntiClippingStopsMobFromPenetratingTargetAabb) {
     ASSERT_NE(mob, nullptr);
 
     float dx = mob->pos[0] - 0.0f;
-    float dz = mob->pos[2] - (-1.5f);
+    float dz = mob->pos[2] - 2.5f;
     float dist = std::sqrt(dx * dx + dz * dz);
 
     // Sum of radiuses: creeper ~0.3m + target ~0.35m = ~0.65m.
@@ -436,44 +436,51 @@ TEST(VirtualSummonTest, SkeletonRangedCombatMaintainsStandoffAndFires) {
     uint64_t skel_id = mgr.spawnMob("skeleton", p, 2.0f);
     ASSERT_NE(skel_id, 0u);
 
-    // Enemy placed at (0, 0, 8.0) -> distance is 10.0m
+    // Enemy placed at (0, 0, 12.0) -> distance is 10.0m
     // (within attack_range 14.0m and > attack_min_range 4.0m)
     std::vector<EnemyTarget> enemies = {
-        makeEnemy(0xAAAA, 0.0f, 0.0f, 8.0f, 200, 200)
+        makeEnemy(0xAAAA, 0.0f, 0.0f, 12.0f, 200, 200)
     };
 
-    // Step 0.1s
-    mgr.update(0.1f, p, enemies);
+    // Step 0.8s (bow draw duration)
+    mgr.update(0.8f, p, enemies);
 
     const auto* skel = mgr.findMob(skel_id);
     ASSERT_NE(skel, nullptr);
 
-    // Skeleton should face the enemy (+Z direction has yaw = +-pi)
-    EXPECT_NEAR(std::abs(skel->yaw), 3.1415926f, 0.1f);
+    // Skeleton should face the enemy (+Z direction has yaw = 0.0 in Elden Ring basis)
+    EXPECT_NEAR(skel->yaw, 0.0f, 0.1f);
 
     // Skeleton should NOT charge blindly into melee range; it maintains standoff
-    EXPECT_NEAR(skel->pos[2], -2.0f, 0.5f);
+    EXPECT_NEAR(skel->pos[2], 2.0f, 0.5f);
 
-    // Fired projectile and damage intent
-    auto dmg_intents = mgr.drainDamageIntents();
-    ASSERT_EQ(dmg_intents.size(), 1u);
-    EXPECT_EQ(dmg_intents[0].target_chr_ins, 0xAAAAu);
-    EXPECT_FLOAT_EQ(dmg_intents[0].damage_amount, 7.0f);
-    EXPECT_EQ(dmg_intents[0].source_mob_id, skel_id);
-
+    // Fired projectile intent
     auto proj_intents = mgr.drainProjectileIntents();
     ASSERT_EQ(proj_intents.size(), 1u);
     EXPECT_EQ(proj_intents[0].target_chr_ins, 0xAAAAu);
     EXPECT_FLOAT_EQ(proj_intents[0].damage, 7.0f);
     EXPECT_FLOAT_EQ(proj_intents[0].speed, 22.0f);
 
-    // Cooldown in effect: step another 0.5s (0.6s total < 1.5s cooldown) -> no new intents
+    // Arrow in flight: step 0.5s to reach target at 10m (10m / 22m/s ~ 0.45s)
+    mgr.update(0.5f, p, enemies);
+    auto dmg_intents = mgr.drainDamageIntents();
+    ASSERT_EQ(dmg_intents.size(), 1u);
+    EXPECT_EQ(dmg_intents[0].target_chr_ins, 0xAAAAu);
+    EXPECT_FLOAT_EQ(dmg_intents[0].damage_amount, 7.0f);
+    EXPECT_EQ(dmg_intents[0].source_mob_id, skel_id);
+
+    // Cooldown in effect: step another 0.5s (0.5s < 1.5s cooldown) -> no new intents
     mgr.update(0.5f, p, enemies);
     EXPECT_TRUE(mgr.drainDamageIntents().empty());
     EXPECT_TRUE(mgr.drainProjectileIntents().empty());
 
-    // Step 1.0s more (total 1.6s > 1.5s cooldown) -> fires second arrow!
-    mgr.update(1.0f, p, enemies);
+    // Step 2.0s: cooldown expires and second arrow is fired
+    mgr.update(2.0f, p, enemies);
+    auto second_proj = mgr.drainProjectileIntents();
+    EXPECT_EQ(second_proj.size(), 1u);
+
+    // Step 0.5s: second arrow flies and hits target
+    mgr.update(0.5f, p, enemies);
     auto second_shots = mgr.drainDamageIntents();
     EXPECT_EQ(second_shots.size(), 1u);
 }
@@ -481,19 +488,19 @@ TEST(VirtualSummonTest, SkeletonRangedCombatMaintainsStandoffAndFires) {
 TEST(VirtualSummonTest, SkeletonKitingWhenEnemyRushesClose) {
     VirtualSummonManager mgr;
     const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
-    // Skeleton spawned at (0, 0, -2.0)
+    // Skeleton spawned at (0, 0, 2.0) ahead of player
     uint64_t skel_id = mgr.spawnMob("skeleton", p, 2.0f);
     ASSERT_NE(skel_id, 0u);
 
-    // Enemy placed at (0, 0, 0.0) -> distance is 2.0m, which is LESS than attack_min_range (4.0m)
+    // Enemy placed at (0, 0, 3.0) -> distance is 1.0m, which is LESS than attack_min_range (4.0m)
     std::vector<EnemyTarget> enemies = {
-        makeEnemy(0xBBBB, 0.0f, 0.0f, 0.0f, 200, 200)
+        makeEnemy(0xBBBB, 0.0f, 0.0f, 3.0f, 200, 200)
     };
 
-    float initial_z = mgr.findMob(skel_id)->pos[2]; // -2.0f
+    float initial_z = mgr.findMob(skel_id)->pos[2]; // 2.0f
 
-    // Step 0.5s: skeleton should back up (kite) away from enemy at (0, 0, 0)
-    // Moving backwards means Z decreases further (e.g. from -2.0 to -2.5)
+    // Step 0.5s: skeleton should back up (kite) away from enemy at (0, 0, 3.0)
+    // Moving backwards away from enemy means Z decreases (e.g. from 2.0 to 1.5)
     mgr.update(0.5f, p, enemies);
 
     const auto* skel = mgr.findMob(skel_id);
@@ -748,4 +755,129 @@ TEST(VirtualSummonTest, ShiftTranslatesAllMobsAndProjectiles) {
     EXPECT_FLOAT_EQ(s_after->pos[1], s_y0);
     EXPECT_FLOAT_EQ(s_after->pos[2], s_z0 + 32.0f);
 }
+
+TEST(VirtualSummonTest, SkeletonChargesBowProgressivelyBeforeFiring) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t skel_id = mgr.spawnMob("skeleton", p, 2.0f);
+    ASSERT_NE(skel_id, 0u);
+
+    std::vector<EnemyTarget> enemies = {
+        makeEnemy(0xCCCC, 0.0f, 0.0f, 10.0f, 200, 200)
+    };
+
+    // Step 0.2s: Skeleton aims and begins pulling the bow
+    mgr.update(0.2f, p, enemies);
+    const auto* skel = mgr.findMob(skel_id);
+    ASSERT_NE(skel, nullptr);
+    EXPECT_GT(skel->bow_charge, 0.1f);
+    EXPECT_LT(skel->bow_charge, 1.0f);
+
+    // Snapshot also carries bow_charge
+    auto snaps = mgr.generateSnapshots();
+    ASSERT_EQ(snaps.size(), 1u);
+    EXPECT_FLOAT_EQ(snaps[0].bow_charge, skel->bow_charge);
+
+    // No projectile fired yet mid-charge
+    EXPECT_TRUE(mgr.drainProjectileIntents().empty());
+
+    // Step remaining draw time (total > 0.8s) -> arrow released, bow_charge reset!
+    mgr.update(0.7f, p, enemies);
+    EXPECT_FALSE(mgr.drainProjectileIntents().empty());
+    EXPECT_FLOAT_EQ(skel->bow_charge, 0.0f);
+}
+
+TEST(VirtualSummonTest, ZombieAdvancesSwingProgressDuringMeleeAttack) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t z_id = mgr.spawnMob("zombie", p, 2.0f);
+    ASSERT_NE(z_id, 0u);
+
+    // Enemy placed right in melee range (1.0m)
+    std::vector<EnemyTarget> enemies = {
+        makeEnemy(0xDDDD, 0.0f, 0.0f, 1.0f, 200, 200)
+    };
+
+    // Update 1: attack triggers
+    mgr.update(0.05f, p, enemies);
+    const auto* z = mgr.findMob(z_id);
+    ASSERT_NE(z, nullptr);
+    EXPECT_GT(z->swing_progress, 0.0f);
+    EXPECT_LE(z->swing_progress, 0.5f);
+
+    // Snapshot carries swing_progress
+    auto snaps = mgr.generateSnapshots();
+    ASSERT_EQ(snaps.size(), 1u);
+    EXPECT_FLOAT_EQ(snaps[0].swing_progress, z->swing_progress);
+
+    // Step past swing duration (> 0.35s)
+    mgr.update(0.4f, p, enemies);
+    EXPECT_FLOAT_EQ(z->swing_progress, 0.0f);
+}
+
+TEST(VirtualSummonTest, SkeletonArrowBallisticTrajectoryAndInFlightSnapshots) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    // Skeleton spawned at (0, 0, 0)
+    uint64_t skel_id = mgr.spawnMob("skeleton", p, 0.0f);
+    ASSERT_NE(skel_id, 0u);
+
+    // Enemy placed at (0, 0, 10.0) -> distance is 10.0m
+    std::vector<EnemyTarget> enemies = {
+        makeEnemy(0xEE01, 0.0f, 0.0f, 10.0f, 200, 200)
+    };
+
+    // Step 0.8s: bow fully drawn and arrow launched!
+    mgr.update(0.8f, p, enemies);
+
+    auto arrows = mgr.getActiveArrows();
+    ASSERT_EQ(arrows.size(), 1u);
+    EXPECT_NEAR(arrows[0].pos[0], 0.0f, 0.5f);
+    EXPECT_NEAR(arrows[0].pos[1], 1.4f, 0.5f);
+    EXPECT_NEAR(arrows[0].pos[2], 0.0f, 0.5f);
+    EXPECT_GT(arrows[0].dir[2], 0.5f); // Pointing forward along +Z
+
+    // Step 0.1s: arrow travels along trajectory
+    float z_prev = arrows[0].pos[2];
+    mgr.update(0.1f, p, enemies);
+
+    auto arrows_step = mgr.getActiveArrows();
+    ASSERT_EQ(arrows_step.size(), 1u);
+    EXPECT_GT(arrows_step[0].pos[2], z_prev + 1.0f); // Fast flight forward
+
+    // Step remaining flight time (0.5s): arrow hits target at 10m
+    mgr.update(0.5f, p, enemies);
+    EXPECT_TRUE(mgr.getActiveArrows().empty()); // Arrow consumed on hit
+
+    auto dmg = mgr.drainDamageIntents();
+    ASSERT_FALSE(dmg.empty());
+    EXPECT_EQ(dmg[0].target_chr_ins, 0xEE01u);
+}
+
+TEST(VirtualSummonTest, ArrowWorldMatrixAlignsWithTrajectoryDirection) {
+    eldenring::summon::ArrowDraw arrow;
+    arrow.pos[0] = 12.0f;
+    arrow.pos[1] = 5.0f;
+    arrow.pos[2] = -20.0f;
+    // 45 degrees up and forward
+    arrow.dir[0] = 0.0f;
+    arrow.dir[1] = 0.7071f;
+    arrow.dir[2] = 0.7071f;
+
+    const mc::rig::Mat4 m = eldenring::summon::arrowWorldMatrix(arrow);
+
+    // Origin maps to arrow.pos
+    const mc::Vec3 origin = mc::rig::transformPoint(m, {0.0f, 0.0f, 0.0f});
+    EXPECT_NEAR(origin.x, 12.0f, 1e-3f);
+    EXPECT_NEAR(origin.y, 5.0f, 1e-3f);
+    EXPECT_NEAR(origin.z, -20.0f, 1e-3f);
+
+    // Tip at +Z (0, 0, 1) in local arrow frame should point along dir (y > 0, z > 0)
+    const mc::Vec3 tip = mc::rig::transformPoint(m, {0.0f, 0.0f, 1.0f});
+    const mc::Vec3 flight_vec = (tip - origin).normalized();
+    EXPECT_NEAR(flight_vec.x, 0.0f, 1e-3f);
+    EXPECT_NEAR(flight_vec.y, 0.7071f, 1e-3f);
+    EXPECT_NEAR(flight_vec.z, 0.7071f, 1e-3f);
+}
+
 

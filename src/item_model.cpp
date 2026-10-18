@@ -98,6 +98,8 @@ bool isHeldAsFlatSprite(ItemId item) {
         case ItemId::TotemOfUndying:
         case ItemId::FireworkRocket:
         case ItemId::ZombieSpawnEgg:
+        case ItemId::CreeperSpawnEgg:
+        case ItemId::SkeletonSpawnEgg:
         case ItemId::BowPulling0:
         case ItemId::BowPulling1:
         case ItemId::BowPulling2:

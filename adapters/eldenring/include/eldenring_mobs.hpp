@@ -7,10 +7,12 @@
 // simply disappears while alive is dropped after a while. Pure logic; the loader fills it, the overlay draws the result.
 
 #include "eldenring_steve.hpp"
+#include "mc/bow.hpp"
 #include "mc/entity_model.hpp"
 #include "mc/mobs.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <map>
 #include <vector>
@@ -35,6 +37,8 @@ struct MobSnapshot {
     std::string model_type;
     float scale{1.0f};
     float white_flash{0.0f};
+    float bow_charge{0.0f};     // [0, 1] for ranged archer aim
+    float swing_progress{0.0f}; // [0, 1] for melee attack swing
 };
 
 struct MobDraw {
@@ -49,6 +53,8 @@ struct MobDraw {
     eldenring::render::PartMatrices parts{};
     float scale{1.0f};
     float white_flash{0.0f};
+    uint16_t held_item{0};
+    float bow_charge{0.0f};
 };
 
 class MobRegistry {
@@ -133,13 +139,59 @@ private:
         float dying{-1.f}; // seconds since the hit points ran out; < 0: alive
     };
 
-    // One matrix per bone: the animator's rotation of the Steve part a bone is named after (bones with other names stay at rest), the figure
-    // standing at the snapshot's feet and turned to its heading.
+    static inline mc::Quat mobEulerToHostQuat(float pitch, float yaw, float roll) {
+        const float cy = std::cos(yaw * 0.5f);
+        const float sy = std::sin(yaw * 0.5f);
+        const float cp = std::cos(pitch * 0.5f);
+        const float sp = std::sin(pitch * 0.5f);
+        const float cr = std::cos(roll * 0.5f);
+        const float sr = std::sin(roll * 0.5f);
+
+        mc::Quat q;
+        q.w = cr * cp * cy + sr * sp * sy;
+        q.x = sr * cp * cy - cr * sp * sy;
+        q.y = cr * sp * cy + sr * cp * sy;
+        q.z = cr * cp * sy - sr * sp * cy;
+        return eldenring::render::hostQuat(q);
+    }
+
     static std::vector<mc::rig::Mat4> poseFromAnimator(const mc::model::EntityModel& model, const mc::SteveAnimator::PartTransforms& t, const MobSnapshot& s) {
         std::vector<mc::Quat> extra(model.bones.size());
         for (size_t i = 0; i < model.bones.size(); ++i) {
             const std::string& name = model.bones[i].name;
-            if (const auto part = mc::model::humanoidPartForBone(name)) {
+            if (s.model_type == "skeleton") {
+                if (name == "right_arm") {
+                    if (s.bow_charge > 0.0f) {
+                        extra[i] = mobEulerToHostQuat(0.15f * s.bow_charge, -0.45f * s.bow_charge, 0.05f * s.bow_charge);
+                    } else {
+                        const float swing = -2.0f * (t[static_cast<size_t>(mc::StevePart::RightArm)].rot.y);
+                        extra[i] = mobEulerToHostQuat(1.45f + swing, 0.0f, 0.0f);
+                    }
+                } else if (name == "left_arm") {
+                    if (s.bow_charge > 0.0f) {
+                        extra[i] = mobEulerToHostQuat(0.0f, 0.35f * s.bow_charge, -0.05f * s.bow_charge);
+                    } else {
+                        const float swing = -2.0f * (t[static_cast<size_t>(mc::StevePart::LeftArm)].rot.y);
+                        extra[i] = mobEulerToHostQuat(1.45f + swing, 0.0f, 0.0f);
+                    }
+                } else if (const auto part = mc::model::humanoidPartForBone(name)) {
+                    extra[i] = eldenring::render::hostQuat(t[static_cast<size_t>(*part)].rot);
+                } else if (name == "leg0" || name == "leg3") {
+                    extra[i] = eldenring::render::hostQuat(t[static_cast<size_t>(mc::StevePart::RightLeg)].rot);
+                } else if (name == "leg1" || name == "leg2") {
+                    extra[i] = eldenring::render::hostQuat(t[static_cast<size_t>(mc::StevePart::LeftLeg)].rot);
+                }
+            } else if (s.bow_charge > 0.0f && name == "right_arm") {
+                extra[i] = mobEulerToHostQuat(0.15f * s.bow_charge, -0.45f * s.bow_charge, 0.05f * s.bow_charge);
+            } else if (s.bow_charge > 0.0f && name == "left_arm") {
+                extra[i] = mobEulerToHostQuat(0.0f, 0.35f * s.bow_charge, -0.05f * s.bow_charge);
+            } else if (s.swing_progress > 0.0f && name == "right_arm") {
+                const float swing = std::sin(s.swing_progress * 3.14159265f);
+                extra[i] = mobEulerToHostQuat(-swing * 0.8f, swing * 0.3f, -swing * 0.2f);
+            } else if (s.swing_progress > 0.0f && name == "left_arm") {
+                const float swing = std::sin(s.swing_progress * 3.14159265f);
+                extra[i] = mobEulerToHostQuat(-swing * 0.4f, -swing * 0.2f, 0.f);
+            } else if (const auto part = mc::model::humanoidPartForBone(name)) {
                 extra[i] = eldenring::render::hostQuat(t[static_cast<size_t>(*part)].rot);
             } else if (name == "leg0" || name == "leg3") {
                 extra[i] = eldenring::render::hostQuat(t[static_cast<size_t>(mc::StevePart::RightLeg)].rot);
@@ -163,12 +215,24 @@ private:
         const mc::model::EntityModel* model = getModel(s.model_type);
         if (!d.dying) {
             mc::SteveAnimInput in = e.motion.update(dt, s.feet, s.yaw);
-            if (model != nullptr) in.arms_sway_only = true; // the file's rest rotation holds the arms out
-            else in.arms_forward = true;
+            in.bow_charge = s.bow_charge;
+            in.swing_progress = s.swing_progress;
+            if (s.model_type == "skeleton") {
+                in.arms_sway_only = false;
+                in.arms_forward = false;
+            } else if (model != nullptr) {
+                in.arms_sway_only = true; // the file's rest rotation holds the arms out
+            } else {
+                in.arms_forward = true;
+            }
             e.anim.update(dt, in);
         }
         d.scale = s.scale > 0.01f ? s.scale : 1.0f;
         d.white_flash = s.white_flash;
+        if (s.model_type == "skeleton") {
+            d.held_item = static_cast<uint16_t>(mc::shownBow(mc::ItemId::Bow, s.bow_charge));
+            d.bow_charge = s.bow_charge;
+        }
         const mc::Vec3 feet{s.feet[0], s.feet[1], s.feet[2]};
         const mc::rig::Mat4 flip = d.fall > 0.f ? eldenring::render::deathFallMatrix(feet, s.yaw, d.fall) : mc::rig::Mat4{};
         const mc::rig::Mat4 swell_mat = d.scale != 1.0f ? scaleAboutPoint(feet, d.scale) : mc::rig::Mat4{};

@@ -5,10 +5,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
-#include <mutex>
 
 namespace eldenring::summon {
 
@@ -69,6 +71,37 @@ struct ProjectileIntent {
     float speed{22.0f};
 };
 
+struct VirtualArrow {
+    uint64_t id{0};
+    uint64_t source_mob_id{0};
+    uintptr_t target_chr_ins{0};
+    float pos[3]{0.0f, 0.0f, 0.0f};
+    float vel[3]{0.0f, 0.0f, 0.0f};
+    float damage{7.0f};
+    float age{0.0f};
+    float max_age{3.0f};
+};
+
+struct ArrowDraw {
+    uint64_t id{0};
+    float pos[3]{0.0f, 0.0f, 0.0f};
+    float dir[3]{0.0f, 0.0f, 1.0f};
+};
+
+inline mc::rig::Mat4 arrowWorldMatrix(const ArrowDraw& arrow) {
+    const float dx = arrow.dir[0];
+    const float dy = arrow.dir[1];
+    const float dz = arrow.dir[2];
+    const float dist_h = std::sqrt(dx * dx + dz * dz);
+    const float yaw = std::atan2(dx, dz);
+    const float pitch = std::atan2(dy, std::max(dist_h, 1e-4f));
+
+    const mc::rig::Mat4 r_pitch = mc::rig::rotationAboutAxis({1.0f, 0.0f, 0.0f}, -pitch);
+    const mc::rig::Mat4 r_yaw = mc::rig::rotationAboutAxis({0.0f, 1.0f, 0.0f}, yaw);
+    const mc::rig::Mat4 t = mc::rig::translation({arrow.pos[0], arrow.pos[1], arrow.pos[2]});
+    return r_pitch * r_yaw * t;
+}
+
 struct VirtualMob {
     uint64_t id{0};
     std::string model_type{"zombie"};
@@ -96,6 +129,8 @@ struct VirtualMob {
     float damage{6.0f};
     float vel_y{0.0f};
     bool on_ground{true};
+    float bow_charge{0.0f};     // [0, 1] for ranged archer aim
+    float swing_progress{0.0f}; // [0, 1] for melee attack swing
 };
 
 class VirtualSummonManager {
@@ -268,10 +303,10 @@ public:
         mob.cooldown_duration = arch ? arch->attack_cooldown : 1.0f;
         mob.damage = arch ? arch->damage : 6.0f;
 
-        // Spawn position ahead of player matching heading
-        mob.pos[0] = player.pos[0] - std::sin(player.yaw) * forward_distance;
+        // Spawn position ahead of player matching heading (+sin(yaw), +cos(yaw))
+        mob.pos[0] = player.pos[0] + std::sin(player.yaw) * forward_distance;
         mob.pos[1] = player.pos[1];
-        mob.pos[2] = player.pos[2] - std::cos(player.yaw) * forward_distance;
+        mob.pos[2] = player.pos[2] + std::cos(player.yaw) * forward_distance;
         mob.yaw = player.yaw;
 
         mobs_.push_back(mob);
@@ -306,6 +341,64 @@ public:
 
     void update(float dt, const PlayerPose& player, const std::vector<EnemyTarget>& enemies) {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
+
+        // 1. Update existing flying arrows with continuous swept collision
+        for (auto it = active_arrows_.begin(); it != active_arrows_.end();) {
+            it->age += dt;
+            const float prev_x = it->pos[0];
+            const float prev_y = it->pos[1];
+            const float prev_z = it->pos[2];
+
+            it->pos[0] += it->vel[0] * dt;
+            it->pos[1] += it->vel[1] * dt;
+            it->pos[2] += it->vel[2] * dt;
+            it->vel[1] -= 9.8f * dt; // gravity arc
+
+            const float next_x = it->pos[0];
+            const float next_y = it->pos[1];
+            const float next_z = it->pos[2];
+
+            const float seg_x = next_x - prev_x;
+            const float seg_y = next_y - prev_y;
+            const float seg_z = next_z - prev_z;
+            const float seg_len_sq = seg_x * seg_x + seg_y * seg_y + seg_z * seg_z;
+
+            bool hit = false;
+            for (const auto& enemy : enemies) {
+                if (enemy.hp <= 0) continue;
+                const float to_enemy_x = enemy.pos[0] - prev_x;
+                const float to_enemy_y = (enemy.pos[1] + 1.0f) - prev_y;
+                const float to_enemy_z = enemy.pos[2] - prev_z;
+
+                float t = 0.0f;
+                if (seg_len_sq > 1e-4f) {
+                    t = std::clamp((to_enemy_x * seg_x + to_enemy_y * seg_y + to_enemy_z * seg_z) / seg_len_sq, 0.0f, 1.0f);
+                }
+                const float close_x = prev_x + seg_x * t;
+                const float close_y = prev_y + seg_y * t;
+                const float close_z = prev_z + seg_z * t;
+
+                const float dx = close_x - enemy.pos[0];
+                const float dy = close_y - (enemy.pos[1] + 1.0f);
+                const float dz = close_z - enemy.pos[2];
+                if (dx * dx + dy * dy + dz * dz <= 1.5f * 1.5f) {
+                    DamageIntent intent;
+                    intent.target_chr_ins = enemy.chr_ins;
+                    intent.damage_amount = it->damage;
+                    intent.source_mob_id = it->source_mob_id;
+                    damage_intents_.push_back(intent);
+                    hit = true;
+                    break;
+                }
+            }
+
+            if (hit || it->age >= it->max_age) {
+                it = active_arrows_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
         for (auto it = mobs_.begin(); it != mobs_.end();) {
             VirtualMob& mob = *it;
 
@@ -324,6 +417,12 @@ public:
             }
             if (mob.attack_cooldown > 0.0f) {
                 mob.attack_cooldown = std::max(0.0f, mob.attack_cooldown - dt);
+            }
+            if (mob.swing_progress > 0.0f) {
+                mob.swing_progress += dt / 0.35f;
+                if (mob.swing_progress >= 1.0f) {
+                    mob.swing_progress = 0.0f;
+                }
             }
 
             const bool is_creeper = (mob.attack_style == MobAttackStyle::SuicideExplode);
@@ -369,7 +468,7 @@ public:
                 float dist = std::sqrt(dx * dx + dz * dz);
 
                 if (dist > 1e-4f) {
-                    mob.yaw = std::atan2(-dx, -dz);
+                    mob.yaw = std::atan2(dx, dz);
                 }
 
                 if (is_creeper) {
@@ -436,27 +535,42 @@ public:
                     // Fire ranged attack when within attack range and cooldown ready
                     if (dist <= mob.attack_range) {
                         if (mob.attack_cooldown <= 0.0f) {
-                            DamageIntent intent;
-                            intent.target_chr_ins = best_target;
-                            intent.damage_amount = mob.damage;
-                            intent.source_mob_id = mob.id;
-                            damage_intents_.push_back(intent);
+                            mob.bow_charge = std::min(1.0f, mob.bow_charge + dt / 0.8f);
+                            if (mob.bow_charge >= 1.0f) {
+                                ProjectileIntent proj;
+                                proj.source_mob_id = mob.id;
+                                proj.target_chr_ins = best_target;
+                                proj.origin[0] = mob.pos[0];
+                                proj.origin[1] = mob.pos[1] + 1.4f;
+                                proj.origin[2] = mob.pos[2];
+                                proj.direction[0] = dx / dist;
+                                proj.direction[1] = (target_pos[1] - (mob.pos[1] + 1.4f)) / dist;
+                                proj.direction[2] = dz / dist;
+                                proj.damage = mob.damage;
+                                proj.speed = 22.0f;
+                                projectile_intents_.push_back(proj);
 
-                            ProjectileIntent proj;
-                            proj.source_mob_id = mob.id;
-                            proj.target_chr_ins = best_target;
-                            proj.origin[0] = mob.pos[0];
-                            proj.origin[1] = mob.pos[1] + 1.4f;
-                            proj.origin[2] = mob.pos[2];
-                            proj.direction[0] = dx / dist;
-                            proj.direction[1] = (target_pos[1] - (mob.pos[1] + 1.4f)) / dist;
-                            proj.direction[2] = dz / dist;
-                            proj.damage = mob.damage;
-                            proj.speed = 22.0f;
-                            projectile_intents_.push_back(proj);
+                                VirtualArrow va;
+                                va.id = next_arrow_id_++;
+                                va.source_mob_id = mob.id;
+                                va.target_chr_ins = best_target;
+                                va.pos[0] = proj.origin[0];
+                                va.pos[1] = proj.origin[1];
+                                va.pos[2] = proj.origin[2];
+                                va.vel[0] = proj.direction[0] * proj.speed;
+                                va.vel[1] = proj.direction[1] * proj.speed + 1.2f;
+                                va.vel[2] = proj.direction[2] * proj.speed;
+                                va.damage = mob.damage;
+                                active_arrows_.push_back(va);
 
-                            mob.attack_cooldown = mob.cooldown_duration;
+                                mob.bow_charge = 0.0f;
+                                mob.attack_cooldown = mob.cooldown_duration;
+                            }
+                        } else {
+                            mob.bow_charge = 0.0f;
                         }
+                    } else {
+                        mob.bow_charge = std::max(0.0f, mob.bow_charge - dt * 2.0f);
                     }
                 } else if (mob.attack_style == MobAttackStyle::Melee) {
                     // Standard melee attack for zombie/iron_golem/wolf
@@ -468,6 +582,7 @@ public:
                             intent.source_mob_id = mob.id;
                             damage_intents_.push_back(intent);
                             mob.attack_cooldown = mob.cooldown_duration;
+                            mob.swing_progress = 0.01f;
                         }
                     } else {
                         float step = std::min(dist, mob.speed * dt);
@@ -478,6 +593,7 @@ public:
                     }
                 }
             } else if (!is_creeper || !mob.manual_primed) {
+                mob.bow_charge = std::max(0.0f, mob.bow_charge - dt * 2.0f);
                 // Follow player when idle (if not manually primed creeper)
                 // In Minecraft / natural companion behaviour: summons smoothly follow player on XZ ground.
                 float dx = player.pos[0] - mob.pos[0];
@@ -490,7 +606,7 @@ public:
                     float dir_z = dz / dist;
                     mob.pos[0] += dir_x * step;
                     mob.pos[2] += dir_z * step;
-                    mob.yaw = std::atan2(-dx, -dz);
+                    mob.yaw = std::atan2(dx, dz);
                 }
             }
 
@@ -678,7 +794,32 @@ public:
             s.model_type = mob.model_type;
             s.scale = mob.scale;
             s.white_flash = mob.white_flash;
+            s.bow_charge = mob.bow_charge;
+            s.swing_progress = mob.swing_progress;
             out.push_back(s);
+        }
+        return out;
+    }
+
+    [[nodiscard]] std::vector<ArrowDraw> getActiveArrows() const {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        std::vector<ArrowDraw> out;
+        out.reserve(active_arrows_.size());
+        for (const auto& a : active_arrows_) {
+            ArrowDraw d;
+            d.id = a.id;
+            d.pos[0] = a.pos[0];
+            d.pos[1] = a.pos[1];
+            d.pos[2] = a.pos[2];
+            float len = std::sqrt(a.vel[0] * a.vel[0] + a.vel[1] * a.vel[1] + a.vel[2] * a.vel[2]);
+            if (len > 1e-4f) {
+                d.dir[0] = a.vel[0] / len;
+                d.dir[1] = a.vel[1] / len;
+                d.dir[2] = a.vel[2] / len;
+            } else {
+                d.dir[0] = 0.0f; d.dir[1] = 0.0f; d.dir[2] = 1.0f;
+            }
+            out.push_back(d);
         }
         return out;
     }
@@ -689,6 +830,7 @@ public:
         damage_intents_.clear();
         projectile_intents_.clear();
         explosion_events_.clear();
+        active_arrows_.clear();
     }
 
     void shift(float dx, float dy, float dz) {
@@ -704,16 +846,23 @@ public:
             proj.origin[1] += dy;
             proj.origin[2] += dz;
         }
+        for (auto& a : active_arrows_) {
+            a.pos[0] += dx;
+            a.pos[1] += dy;
+            a.pos[2] += dz;
+        }
     }
 
 private:
     mutable std::recursive_mutex mutex_;
     uint64_t next_id_{0x10001};
+    uint64_t next_arrow_id_{1};
     std::vector<MobArchetype> archetypes_;
     std::vector<VirtualMob> mobs_;
     std::vector<DamageIntent> damage_intents_;
     std::vector<ProjectileIntent> projectile_intents_;
     std::vector<CreeperExplosionEvent> explosion_events_;
+    std::vector<VirtualArrow> active_arrows_;
     GroundSampler ground_sampler_;
 };
 

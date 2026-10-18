@@ -426,12 +426,22 @@ void SteveRenderer::release() {
     Rel(mob_vertices_);
     Rel(mob_indices_);
     mob_ranges_.clear();
+    for (auto& [name, m] : mob_meshes_) {
+        if (m.vertices != mob_vertices_) Rel(m.vertices);
+        if (m.indices != mob_indices_) Rel(m.indices);
+    }
+    mob_meshes_.clear();
     Rel(skin_.tex);
     Rel(skin_.upload);
     skin_.pending = false;
     Rel(mob_skin_.tex);
     Rel(mob_skin_.upload);
     mob_skin_.pending = false;
+    for (auto& [name, s] : mob_skins_map_) {
+        Rel(s.tex);
+        Rel(s.upload);
+    }
+    mob_skins_map_.clear();
     Rel(stats_);
     Rel(stats_init_);
     Rel(stats_readback_);
@@ -450,6 +460,9 @@ void SteveRenderer::release() {
     Rel(offhand_vertices_);
     Rel(offhand_indices_);
     offhand_items_.clear();
+    Rel(arrow_vertices_);
+    Rel(arrow_indices_);
+    arrow_index_count_ = 0;
 }
 
 bool SteveRenderer::readStats(uint32_t out[64]) {
@@ -548,6 +561,34 @@ bool SteveRenderer::initHeldItems(ID3D12Device* device, const uint8_t* atlas_rgb
         vertices.insert(vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
         indices.insert(indices.end(), mesh.indices.begin(), mesh.indices.end());
         held_items_[cell.item] = d;
+        if (item == mc::ItemId::Arrow) {
+            const mc::rig::ItemSprite arrow_sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
+            mc::rig::RigMesh arrow_mesh = mc::rig::buildFlatItemMesh(arrow_sprite);
+            constexpr float inv_sqrt2 = 0.70710678f;
+            constexpr float scale = 0.5f;
+            for (auto& v : arrow_mesh.vertices) {
+                // 1. Rotate -45 deg around Z so diagonal arrow aligns with X
+                const float x1 = (v.x + v.y) * inv_sqrt2;
+                const float y1 = (-v.x + v.y) * inv_sqrt2;
+                const float z1 = v.z;
+                // 2. Rotate +90 deg around Y so +X points along +Z (Elden Ring forward)
+                v.x = z1 * scale;
+                v.y = y1 * scale;
+                v.z = x1 * scale;
+            }
+            Rel(arrow_vertices_);
+            Rel(arrow_indices_);
+            arrow_index_count_ = 0;
+            if (!arrow_mesh.vertices.empty()) {
+                arrow_vertices_ = UploadBuffer(device, arrow_mesh.vertices.data(), arrow_mesh.vertices.size() * sizeof(mc::rig::RigVertex));
+                arrow_indices_ = UploadBuffer(device, arrow_mesh.indices.data(), arrow_mesh.indices.size() * sizeof(uint16_t));
+                if (arrow_vertices_ && arrow_indices_) {
+                    arrow_index_count_ = static_cast<unsigned>(arrow_mesh.indices.size());
+                    arrow_vbv_ = {arrow_vertices_->GetGPUVirtualAddress(), static_cast<UINT>(arrow_mesh.vertices.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
+                    arrow_ibv_ = {arrow_indices_->GetGPUVirtualAddress(), static_cast<UINT>(arrow_mesh.indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
+                }
+            }
+        }
         if (item == mc::ItemId::Shield) { // the raised shield has its own display transform
             const mc::rig::RigMesh up = mc::rig::buildShieldMesh(ShieldSheet(), eldenring::render::kBasis, mc::rig::Hand::Right, true);
             FpDraw u;
@@ -807,6 +848,14 @@ bool SteveRenderer::setMobSkin(ID3D12Device* device, const uint8_t* rgba, unsign
     return CreateSkinTexture(device, rgba, width, height, slot, mob_skin_);
 }
 
+bool SteveRenderer::setMobSkin(ID3D12Device* device, std::string_view name, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    SkinGpu& upload = mob_skins_map_[std::string(name)];
+    Rel(upload.tex);
+    Rel(upload.upload);
+    upload.pending = false;
+    return CreateSkinTexture(device, rgba, width, height, slot, upload);
+}
+
 void SteveRenderer::setDepthView(ID3D12Device* device, ID3D12Resource* depth, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
     D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
     sd.Format = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
@@ -836,45 +885,90 @@ void SteveRenderer::drawDepthView(ID3D12GraphicsCommandList* list, ID3D12Descrip
 }
 
 bool SteveRenderer::setMobModel(ID3D12Device* device, const mc::model::EntityModel& model) {
-    Rel(mob_vertices_);
-    Rel(mob_indices_);
-    mob_ranges_.clear();
+    return setMobModel(device, "", model);
+}
+
+bool SteveRenderer::setMobModel(ID3D12Device* device, std::string_view name, const mc::model::EntityModel& model) {
     if (!device || model.bones.empty()) return false;
     std::vector<mc::rig::RigVertex> vertices;
     std::vector<uint16_t> indices;
+    std::vector<BoneRange> ranges;
     for (const mc::model::Bone& bone : model.bones) {
         const mc::rig::RigMesh mesh = model.buildBoneMesh(bone, eldenring::render::kBasis);
         BoneRange r;
         r.base_vertex = static_cast<int>(vertices.size());
         r.first_index = static_cast<unsigned>(indices.size());
         r.index_count = static_cast<unsigned>(mesh.indices.size());
-        mob_ranges_.push_back(r);
+        ranges.push_back(r);
         vertices.insert(vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
         indices.insert(indices.end(), mesh.indices.begin(), mesh.indices.end());
     }
     if (vertices.empty() || indices.empty()) {
-        mob_ranges_.clear();
         return false;
     }
-    mob_vertices_ = UploadBuffer(device, vertices.data(), vertices.size() * sizeof(mc::rig::RigVertex));
-    mob_indices_ = UploadBuffer(device, indices.data(), indices.size() * sizeof(uint16_t));
-    if (!mob_vertices_ || !mob_indices_) {
+    ID3D12Resource* vb = UploadBuffer(device, vertices.data(), vertices.size() * sizeof(mc::rig::RigVertex));
+    ID3D12Resource* ib = UploadBuffer(device, indices.data(), indices.size() * sizeof(uint16_t));
+    if (!vb || !ib) {
+        Rel(vb);
+        Rel(ib);
+        return false;
+    }
+    MobGpuMesh gpu;
+    gpu.vertices = vb;
+    gpu.indices = ib;
+    gpu.ranges = std::move(ranges);
+    gpu.vbv = {vb->GetGPUVirtualAddress(), static_cast<UINT>(vertices.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
+    gpu.ibv = {ib->GetGPUVirtualAddress(), static_cast<UINT>(indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
+    for (size_t i = 0; i < model.bones.size(); ++i) {
+        if (model.bones[i].name == "right_arm") gpu.right_arm_ix = static_cast<int>(i);
+        else if (model.bones[i].name == "left_arm") gpu.left_arm_ix = static_cast<int>(i);
+    }
+
+    if (name.empty()) {
         Rel(mob_vertices_);
         Rel(mob_indices_);
-        mob_ranges_.clear();
-        return false;
+        mob_vertices_ = vb;
+        mob_indices_ = ib;
+        mob_vbv_ = gpu.vbv;
+        mob_ibv_ = gpu.ibv;
+        mob_ranges_ = gpu.ranges;
+    } else {
+        auto it = mob_meshes_.find(std::string(name));
+        if (it != mob_meshes_.end()) {
+            if (it->second.vertices != mob_vertices_) Rel(it->second.vertices);
+            if (it->second.indices != mob_indices_) Rel(it->second.indices);
+        }
+        mob_meshes_[std::string(name)] = gpu;
     }
-    mob_vbv_ = {mob_vertices_->GetGPUVirtualAddress(), static_cast<UINT>(vertices.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
-    mob_ibv_ = {mob_indices_->GetGPUVirtualAddress(), static_cast<UINT>(indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
     return true;
+}
+
+bool SteveRenderer::mobModelReady(std::string_view name) const {
+    if (name.empty()) return mobModelReady();
+    auto it = mob_meshes_.find(std::string(name));
+    if (it != mob_meshes_.end()) return it->second.vertices != nullptr && !it->second.ranges.empty();
+    return mobModelReady();
 }
 
 void SteveRenderer::drawMobModel(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table, unsigned width,
                                  unsigned height, const mc::rig::Mat4& view_proj, const std::vector<mc::rig::Mat4>& bones, const SteveParams& params,
-                                 D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
-    if (!ready() || !own_depth_ || !dsv_heap_ || !mobModelReady()) return;
+                                 D3D12_CPU_DESCRIPTOR_HANDLE rtv, std::string_view model_type) {
+    if (!ready() || !own_depth_ || !dsv_heap_) return;
     RecordSkinUpload(list, skin_);
     RecordSkinUpload(list, mob_skin_);
+    for (auto& [name, s] : mob_skins_map_) {
+        RecordSkinUpload(list, s);
+    }
+    const MobGpuMesh* mesh = nullptr;
+    if (!model_type.empty()) {
+        auto it = mob_meshes_.find(std::string(model_type));
+        if (it != mob_meshes_.end()) mesh = &it->second;
+    }
+    const D3D12_VERTEX_BUFFER_VIEW* vbv = mesh ? &mesh->vbv : &mob_vbv_;
+    const D3D12_INDEX_BUFFER_VIEW* ibv = mesh ? &mesh->ibv : &mob_ibv_;
+    const std::vector<BoneRange>& ranges = mesh ? mesh->ranges : mob_ranges_;
+    if (ranges.empty() || vbv->BufferLocation == 0 || ibv->BufferLocation == 0) return;
+
     D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
     D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
     list->RSSetViewports(1, &vp);
@@ -888,16 +982,29 @@ void SteveRenderer::drawMobModel(ID3D12GraphicsCommandList* list, ID3D12Descript
     list->SetDescriptorHeaps(1, heaps);
     list->SetGraphicsRootDescriptorTable(1, depth_table);
     list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    list->IASetVertexBuffers(0, 1, &mob_vbv_);
-    list->IASetIndexBuffer(&mob_ibv_);
+    list->IASetVertexBuffers(0, 1, vbv);
+    list->IASetIndexBuffer(ibv);
     list->SetGraphicsRoot32BitConstants(0, 16, view_proj.m.data(), 0);
     const float extra[8] = {params.depth_const, params.rel_bias, params.abs_bias, params.mode, params.depth_w, params.depth_h, static_cast<float>(width), static_cast<float>(height)};
     list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
     list->SetGraphicsRoot32BitConstants(0, 4, params.tint, 40);
-    for (size_t i = 0; i < mob_ranges_.size() && i < bones.size(); ++i) {
-        if (mob_ranges_[i].index_count == 0) continue;
+    for (size_t i = 0; i < ranges.size() && i < bones.size(); ++i) {
+        if (ranges[i].index_count == 0) continue;
         list->SetGraphicsRoot32BitConstants(0, 16, bones[i].m.data(), 16);
-        list->DrawIndexedInstanced(mob_ranges_[i].index_count, 1, mob_ranges_[i].first_index, mob_ranges_[i].base_vertex, 0);
+        list->DrawIndexedInstanced(ranges[i].index_count, 1, ranges[i].first_index, ranges[i].base_vertex, 0);
+    }
+    if (params.held_item != 0 && held_vertices_ && params.held_table.ptr != 0) {
+        int arm_ix = mesh ? mesh->right_arm_ix : -1;
+        if (arm_ix >= 0 && static_cast<size_t>(arm_ix) < bones.size()) {
+            const auto it = held_items_.find(params.held_item);
+            if (it != held_items_.end()) {
+                list->SetGraphicsRootDescriptorTable(1, params.held_table);
+                list->IASetVertexBuffers(0, 1, &held_vbv_);
+                list->IASetIndexBuffer(&held_ibv_);
+                list->SetGraphicsRoot32BitConstants(0, 16, bones[arm_ix].m.data(), 16);
+                list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
+            }
+        }
     }
 }
 
@@ -933,12 +1040,61 @@ void SteveRenderer::drawShadows(ID3D12GraphicsCommandList* list, ID3D12Descripto
     }
 }
 
+void SteveRenderer::drawArrows(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
+                               D3D12_GPU_DESCRIPTOR_HANDLE atlas_table, unsigned width, unsigned height,
+                               const mc::rig::Mat4& view_proj,
+                               const std::vector<mc::rig::Mat4>& arrow_matrices,
+                               const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
+    if (!ready() || !own_depth_ || !dsv_heap_ || arrow_matrices.empty() || atlas_table.ptr == 0) return;
+    const bool have_custom_arrow = (arrow_vertices_ != nullptr && arrow_indices_ != nullptr && arrow_index_count_ > 0);
+    const auto it = held_items_.find(static_cast<uint16_t>(mc::ItemId::Arrow));
+    if (!have_custom_arrow && it == held_items_.end()) return;
+
+    D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
+    D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+    list->RSSetViewports(1, &vp);
+    list->RSSetScissorRects(1, &sc);
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
+    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+    if (!params.keep_depth) list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    list->SetPipelineState(pso_);
+    list->SetGraphicsRootSignature(root_);
+    ID3D12DescriptorHeap* heaps[] = {srv_heap};
+    list->SetDescriptorHeaps(1, heaps);
+    list->SetGraphicsRootDescriptorTable(1, atlas_table);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    if (have_custom_arrow) {
+        list->IASetVertexBuffers(0, 1, &arrow_vbv_);
+        list->IASetIndexBuffer(&arrow_ibv_);
+    } else {
+        list->IASetVertexBuffers(0, 1, &held_vbv_);
+        list->IASetIndexBuffer(&held_ibv_);
+    }
+    list->SetGraphicsRoot32BitConstants(0, 16, view_proj.m.data(), 0);
+    const float extra[8] = {params.depth_const, params.rel_bias, params.abs_bias, params.mode, params.depth_w, params.depth_h, static_cast<float>(width), static_cast<float>(height)};
+    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
+    const float no_tint[4] = {0.f, 0.f, 0.f, 0.f};
+    list->SetGraphicsRoot32BitConstants(0, 4, no_tint, 40);
+
+    for (const auto& mat : arrow_matrices) {
+        list->SetGraphicsRoot32BitConstants(0, 16, mat.m.data(), 16);
+        if (have_custom_arrow) {
+            list->DrawIndexedInstanced(arrow_index_count_, 1, 0, 0, 0);
+        } else {
+            list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
+        }
+    }
+}
+
 void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table,
                          unsigned width, unsigned height, const mc::rig::Mat4& view_proj,
                          const eldenring::render::PartMatrices& parts, const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
     if (!ready() || !own_depth_ || !dsv_heap_) return;
     RecordSkinUpload(list, skin_);
     RecordSkinUpload(list, mob_skin_);
+    for (auto& [name, s] : mob_skins_map_) {
+        RecordSkinUpload(list, s);
+    }
     D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
     D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
     list->RSSetViewports(1, &vp);

@@ -207,14 +207,15 @@ TEST(EntityModel, MirroredCubeFlipsEveryFaceHorizontallyAndSwapsTheSideFaces) {
         EXPECT_NEAR(plain.vertices[static_cast<size_t>(face * 4)].u, mirrored.vertices[static_cast<size_t>(face * 4 + 1)].u, 1e-6f) << face;
         EXPECT_NEAR(plain.vertices[static_cast<size_t>(face * 4 + 1)].u, mirrored.vertices[static_cast<size_t>(face * 4)].u, 1e-6f) << face;
     }
-    // the west and east faces take each other's rectangle (u 0..4 and 8..12 for u=0, depth 4, width 4)
-    EXPECT_EQ(faceURange(plain, 2), (std::pair<float, float>{0.f, 4.f}));
-    EXPECT_EQ(faceURange(plain, 3), (std::pair<float, float>{8.f, 12.f}));
-    EXPECT_EQ(faceURange(mirrored, 2), (std::pair<float, float>{8.f, 12.f}));
-    EXPECT_EQ(faceURange(mirrored, 3), (std::pair<float, float>{0.f, 4.f}));
+    // the west and east faces take each other's rectangle:
+    // Bedrock standard box UV: East is [0..4], West is [8..12] (for u=0, depth 4, width 4)
+    EXPECT_EQ(faceURange(plain, 2), (std::pair<float, float>{8.f, 12.f}));
+    EXPECT_EQ(faceURange(plain, 3), (std::pair<float, float>{0.f, 4.f}));
+    EXPECT_EQ(faceURange(mirrored, 2), (std::pair<float, float>{0.f, 4.f}));
+    EXPECT_EQ(faceURange(mirrored, 3), (std::pair<float, float>{8.f, 12.f}));
     // and are flipped too: the first vertex of the west face was on the left of its rectangle, now it is on the right
-    EXPECT_NEAR(plain.vertices[8].u * 64.f, 0.f, 1e-4f);
-    EXPECT_NEAR(mirrored.vertices[8].u * 64.f, 12.f, 1e-4f);
+    EXPECT_NEAR(plain.vertices[8].u * 64.f, 8.f, 1e-4f);
+    EXPECT_NEAR(mirrored.vertices[8].u * 64.f, 4.f, 1e-4f);
 }
 
 namespace {
@@ -365,6 +366,97 @@ TEST(EntityModel, ParsesActualCreeperAndSkeletonGeoJsonFiles) {
         ASSERT_TRUE(opt.has_value());
         EXPECT_EQ(opt->identifier, mob_id);
     }
+}
+
+TEST(EntityModel, CreeperHeadFaceUvOrientationMatchesMinecraftStandard) {
+    // Bedrock Creeper head cube: origin = [-4, 18, -4], size = [8, 8, 8], uv = [0, 0]
+    EntityModel model;
+    model.texture_width = 64.0f;
+    model.texture_height = 32.0f;
+    Bone head_bone;
+    head_bone.name = "head";
+    Cube c;
+    c.origin = {-4.0f, 18.0f, -4.0f};
+    c.size = {8.0f, 8.0f, 8.0f};
+    c.u = 0.0f;
+    c.v = 0.0f;
+    c.mirror = false;
+    head_bone.cubes.push_back(c);
+    model.bones.push_back(head_bone);
+
+    const rig::HostBasis basis{
+        .forward = {1.f, 0.f, 0.f},
+        .left = {0.f, 1.f, 0.f},
+        .up = {0.f, 0.f, 1.f},
+        .units_per_cm = 1.0f,
+    };
+    const rig::RigMesh mesh = model.buildBoneMesh("head", basis);
+    ASSERT_EQ(mesh.vertices.size(), 24u);
+
+    // Bedrock coords to Canonical cm:
+    // canonical.x = -bedrock.z * s
+    // canonical.y =  bedrock.x * s
+    // canonical.z =  bedrock.y * s
+    // For head:
+    // Front face (North) is at bedrock.z = -4 -> canonical.x = +4 * s (forward)
+    // East (+X) is at bedrock.x = +4 -> canonical.y = +4 * s (left)
+    // West (-X) is at bedrock.x = -4 -> canonical.y = -4 * s (right)
+    // Top (+Y) is at bedrock.y = 26 -> canonical.z = +26 * s (up)
+    // Bottom (-Y) is at bedrock.y = 18 -> canonical.z = +18 * s (down)
+
+    // Check North face (face 0, vertices 0..3):
+    // Standard Bedrock: East side of face connects to East face (U = 8px)
+    // West side of face connects to West face (U = 16px)
+    // Top of face connects to Top face (V = 8px)
+    // Bottom of face connects to Bottom (V = 16px)
+    bool found_east_top = false;
+    bool found_west_top = false;
+    bool found_east_bottom = false;
+    bool found_west_bottom = false;
+
+    constexpr float s = rig::kCmPerModelPixel;
+    for (size_t i = 0; i < 4; ++i) {
+        const auto& v = mesh.vertices[i];
+        EXPECT_NEAR(v.x, 4.0f * s, 1e-3f) << "Vertex " << i << " must be on front face (+X forward)";
+        const float u_px = v.u * 64.0f;
+        const float v_px = v.v * 32.0f;
+
+        if (std::abs(v.y - 4.0f * s) < 1e-3f && std::abs(v.z - 26.0f * s) < 1e-3f) {
+            // East-Top: should be U = 8.0, V = 8.0
+            EXPECT_NEAR(u_px, 8.0f, 1e-3f) << "Front face East-Top U must be 8 (left of face texture)";
+            EXPECT_NEAR(v_px, 8.0f, 1e-3f) << "Front face East-Top V must be 8 (top of face texture)";
+            found_east_top = true;
+        } else if (std::abs(v.y - (-4.0f * s)) < 1e-3f && std::abs(v.z - 26.0f * s) < 1e-3f) {
+            // West-Top: should be U = 16.0, V = 8.0
+            EXPECT_NEAR(u_px, 16.0f, 1e-3f) << "Front face West-Top U must be 16 (right of face texture)";
+            EXPECT_NEAR(v_px, 8.0f, 1e-3f) << "Front face West-Top V must be 8 (top of face texture)";
+            found_west_top = true;
+        } else if (std::abs(v.y - 4.0f * s) < 1e-3f && std::abs(v.z - 18.0f * s) < 1e-3f) {
+            // East-Bottom: should be U = 8.0, V = 16.0
+            EXPECT_NEAR(u_px, 8.0f, 1e-3f) << "Front face East-Bottom U must be 8";
+            EXPECT_NEAR(v_px, 16.0f, 1e-3f) << "Front face East-Bottom V must be 16";
+            found_east_bottom = true;
+        } else if (std::abs(v.y - (-4.0f * s)) < 1e-3f && std::abs(v.z - 18.0f * s) < 1e-3f) {
+            // West-Bottom: should be U = 16.0, V = 16.0
+            EXPECT_NEAR(u_px, 16.0f, 1e-3f) << "Front face West-Bottom U must be 16";
+            EXPECT_NEAR(v_px, 16.0f, 1e-3f) << "Front face West-Bottom V must be 16";
+            found_west_bottom = true;
+        }
+    }
+    EXPECT_TRUE(found_east_top);
+    EXPECT_TRUE(found_west_top);
+    EXPECT_TRUE(found_east_bottom);
+    EXPECT_TRUE(found_west_bottom);
+
+    // Also verify East face (+X, left) and West face (-X, right) UV rects:
+    // Bedrock standard: East = [0..8], West = [16..24]
+    // Face indices in appendCubeMesh: 0=North, 1=South, 2=West, 3=East
+    const auto [w_lo, w_hi] = faceURange(mesh, 2);
+    const auto [e_lo, e_hi] = faceURange(mesh, 3);
+    EXPECT_NEAR(e_lo, 0.0f, 1e-3f) << "East face U min must be 0";
+    EXPECT_NEAR(e_hi, 8.0f, 1e-3f) << "East face U max must be 8";
+    EXPECT_NEAR(w_lo, 16.0f, 1e-3f) << "West face U min must be 16";
+    EXPECT_NEAR(w_hi, 24.0f, 1e-3f) << "West face U max must be 24";
 }
 
 } // namespace

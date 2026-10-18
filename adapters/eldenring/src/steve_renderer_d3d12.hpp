@@ -51,8 +51,9 @@ public:
     // Creates the skin texture (RGBA8, usually 64x64) and its SRV at `slot`, which must directly follow the depth SRV in the
     // heap (the two share one descriptor table: t0 depth, t1 skin). The pixels are copied to the GPU by the first draw().
     bool setSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
-    // The same for the mobs' skin (zombie): its SRV at `slot` must directly follow a depth SRV copy, they form the table the mobs are drawn with.
+    // The same for the mobs' skin: its SRV at `slot` must directly follow a depth SRV copy, they form the table the mobs are drawn with.
     bool setMobSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    bool setMobSkin(ID3D12Device* device, std::string_view name, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
 
     // The figure's own depth buffer (D32_FLOAT, standard 0..1 depth, cleared by draw()). Recreated when the size changes.
     bool ensureDepth(ID3D12Device* device, unsigned width, unsigned height);
@@ -111,11 +112,13 @@ public:
     // A model read from a Bedrock geometry file (mc::model::EntityModel), drawn with the mobs' skin: one mesh per bone built in the game's axes
     // (feet at the origin, rest pose), one matrix per bone from mc::model::boneMatrices. Returns false when the buffers cannot be created.
     bool setMobModel(ID3D12Device* device, const mc::model::EntityModel& model);
+    bool setMobModel(ID3D12Device* device, std::string_view name, const mc::model::EntityModel& model);
     [[nodiscard]] bool mobModelReady() const { return mob_vertices_ != nullptr && !mob_ranges_.empty(); }
+    [[nodiscard]] bool mobModelReady(std::string_view name) const;
     // Same passes as draw() (own depth buffer, depth test against the scene), without the held item and the calibration histogram.
     void drawMobModel(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table, unsigned width,
                       unsigned height, const mc::rig::Mat4& view_proj, const std::vector<mc::rig::Mat4>& bones, const SteveParams& params,
-                      D3D12_CPU_DESCRIPTOR_HANDLE rtv);
+                      D3D12_CPU_DESCRIPTOR_HANDLE rtv, std::string_view model_type = "");
 
     // The blob shadows (flat black discs with a soft edge, eldenring_shadow.hpp) on the ground under the figures. Uses the figure's own depth buffer
     // (cleared unless params.keep_depth) so placed blocks hide them; the scene's depth hides them the way it hides the figure. Draw before the figure.
@@ -123,6 +126,13 @@ public:
     void drawShadows(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table, unsigned width, unsigned height,
                      const mc::rig::Mat4& view_proj, const std::vector<eldenring::shadow::Shadow>& shadows, const SteveParams& params,
                      D3D12_CPU_DESCRIPTOR_HANDLE rtv);
+
+    // Draws flying Minecraft arrows in 3D world space using the held item atlas
+    void drawArrows(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
+                    D3D12_GPU_DESCRIPTOR_HANDLE atlas_table, unsigned width, unsigned height,
+                    const mc::rig::Mat4& view_proj,
+                    const std::vector<mc::rig::Mat4>& arrow_matrices,
+                    const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv);
 
 private:
     static constexpr int kShadowSegments = 24;
@@ -136,11 +146,22 @@ private:
         unsigned index_count{0}, first_index{0};
         int base_vertex{0};
     };
+    struct MobGpuMesh {
+        ID3D12Resource* vertices{nullptr};
+        ID3D12Resource* indices{nullptr};
+        D3D12_VERTEX_BUFFER_VIEW vbv{};
+        D3D12_INDEX_BUFFER_VIEW ibv{};
+        std::vector<BoneRange> ranges;
+        int right_arm_ix{-1};
+        int left_arm_ix{-1};
+    };
     ID3D12Resource* mob_vertices_{nullptr};
     ID3D12Resource* mob_indices_{nullptr};
     D3D12_VERTEX_BUFFER_VIEW mob_vbv_{};
     D3D12_INDEX_BUFFER_VIEW mob_ibv_{};
     std::vector<BoneRange> mob_ranges_;
+    std::map<std::string, MobGpuMesh> mob_meshes_;
+    std::map<std::string, SkinGpu> mob_skins_map_;
     ID3D12RootSignature* root_{nullptr};
     ID3D12PipelineState* pso_{nullptr};
     ID3D12PipelineState* pso_depthview_{nullptr};
@@ -167,6 +188,11 @@ private:
     D3D12_VERTEX_BUFFER_VIEW offhand_vbv_{};
     D3D12_INDEX_BUFFER_VIEW offhand_ibv_{};
     std::map<uint16_t, FpDraw> offhand_items_;
+    ID3D12Resource* arrow_vertices_{nullptr};
+    ID3D12Resource* arrow_indices_{nullptr};
+    D3D12_VERTEX_BUFFER_VIEW arrow_vbv_{};
+    D3D12_INDEX_BUFFER_VIEW arrow_ibv_{};
+    unsigned arrow_index_count_{0};
     struct BlockSlot {
         ID3D12Resource* vb{nullptr};
         ID3D12Resource* ib{nullptr};

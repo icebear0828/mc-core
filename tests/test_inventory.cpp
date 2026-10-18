@@ -208,11 +208,13 @@ TEST(Inventory, ReturnCursorPutsTheStackBackAndDropsWhatDoesNotFit) {
     EXPECT_TRUE(inv.cursor().empty()); // lost, as an item dropped out of a full inventory
 }
 
-TEST(ZombieSpawnEgg, StacksTo64AndIsOfferedByThePalette) {
-    EXPECT_EQ(maxStackSize(ItemId::ZombieSpawnEgg), 64u);
-    bool found = false;
-    for (ItemId id : paletteItems()) found = found || id == ItemId::ZombieSpawnEgg;
-    EXPECT_TRUE(found);
+TEST(SpawnEggs, StackTo64AndAreOfferedByThePalette) {
+    for (ItemId egg : {ItemId::ZombieSpawnEgg, ItemId::CreeperSpawnEgg, ItemId::SkeletonSpawnEgg}) {
+        EXPECT_EQ(maxStackSize(egg), 64u);
+        bool found = false;
+        for (ItemId id : paletteItems()) found = found || id == egg;
+        EXPECT_TRUE(found);
+    }
     EXPECT_LE(paletteItems().size(), static_cast<size_t>(InventoryLayout::kPaletteSlots));
 }
 
@@ -356,6 +358,12 @@ TEST(Inventory, StartInventoryHasSpawnEggsReadyInBackpack) {
     EXPECT_TRUE(inv.has(ItemId::ZombieSpawnEgg));
     EXPECT_EQ(inv.slot(15).item, ItemId::ZombieSpawnEgg);
     EXPECT_EQ(inv.slot(15).count, 64u);
+    EXPECT_TRUE(inv.has(ItemId::CreeperSpawnEgg));
+    EXPECT_EQ(inv.slot(16).item, ItemId::CreeperSpawnEgg);
+    EXPECT_EQ(inv.slot(16).count, 64u);
+    EXPECT_TRUE(inv.has(ItemId::SkeletonSpawnEgg));
+    EXPECT_EQ(inv.slot(17).item, ItemId::SkeletonSpawnEgg);
+    EXPECT_EQ(inv.slot(17).count, 64u);
 }
 
 
