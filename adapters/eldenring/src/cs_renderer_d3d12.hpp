@@ -131,14 +131,7 @@ private:
     eldenring::cs::CSViewModelAnimator animator_;
     LogFn log_{nullptr};
 
-    enum class SubmeshType {
-        Blade,
-        HandleFront,
-        HandleRear,
-        Lock,
-        Arms,
-        Base
-    };
+    using SubmeshType = eldenring::cs::SubmeshType;
     std::vector<SubmeshType> submesh_types_;
 };
 

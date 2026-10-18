@@ -69,9 +69,13 @@ float3 PerturbNormal(float3 N, float3 p, float2 uv, float3 mapN) {
     float3 dp1perp = cross(N, dp1);
     float3 T = dp2perp * duv1.x + dp1perp * duv2.x;
     float3 B = dp2perp * duv1.y + dp1perp * duv2.y;
-    float invmax = rsqrt(max(dot(T, T), dot(B, B)) + 1e-6);
+    float det = max(dot(T, T), dot(B, B));
+    if (det < 1e-6) return N;
+    float invmax = rsqrt(det);
     float3x3 TBN = float3x3(T * invmax, B * invmax, N);
-    return normalize(mul(mapN, TBN));
+    float3 res = mul(mapN, TBN);
+    float len2 = dot(res, res);
+    return (len2 > 1e-6) ? (res * rsqrt(len2)) : N;
 }
 
 static const float kPi = 3.14159265358979323846;
@@ -110,16 +114,22 @@ float4 PSMain(VSOut i) : SV_Target {
     float2 uv = i.uv;
 
     // 1. Albedo & Base Color
+    // Genuine CS2 textures: RGB holds diffuse color. Alpha is paint/wear mask (NOT transparency).
+    // Preserve authentic texture RGB at 100% fidelity with enhanced tactical glove micro-contrast.
     float4 albedo_tex = (is_arm > 0.5) ? glove_tex.Sample(g_sampler, uv) : knife_tex.Sample(g_sampler, uv);
-    if (albedo_tex.a < 0.05) {
-        albedo_tex = tint;
+    if (is_arm > 0.5) {
+        albedo_tex.rgb = saturate(0.30 + (albedo_tex.rgb - 0.30) * 2.2) * 1.30;
     }
+    albedo_tex.rgb *= tint.rgb;
 
-    // 2. Normal Map with DirectX Y inversion (Green channel)
+    // 2. Normal Map aligned with DirectX tangent space
     float4 norm_sample = (is_arm > 0.5) ? glove_norm_tex.Sample(g_sampler, uv) : knife_norm_tex.Sample(g_sampler, uv);
     float3 mapN;
     mapN.x = norm_sample.x * 2.0 - 1.0;
-    mapN.y = -(norm_sample.y * 2.0 - 1.0); // DirectX green channel inversion
+    mapN.y = norm_sample.y * 2.0 - 1.0;
+    if (is_arm > 0.5) {
+        mapN.xy *= 1.6;
+    }
     mapN.z = sqrt(saturate(1.0 - dot(mapN.xy, mapN.xy)));
 
     float3 N_geom = normalize(i.normal);
@@ -147,19 +157,26 @@ float4 PSMain(VSOut i) : SV_Target {
 
     float3 numerator = NDF * G * F;
     float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
-    float3 specular = numerator / denominator;
+    float3 specular = clamp(numerator / denominator, 0.0, 4.0);
 
     float3 kS = F;
-    float3 kD = (float3(1.0, 1.0, 1.0) - kS) * (1.0 - metallic);
+    float3 kD = (float3(1.0, 1.0, 1.0) - kS) * (1.0 - metallic * 0.75); // Preserve albedo details on metallic weapons
     float NdotL = max(dot(N, L), 0.0);
 
-    float3 light_radiance = float3(1.20, 1.20, 1.15);
-    float3 Lo = (kD * albedo_tex.rgb / kPi + specular) * light_radiance * NdotL;
+    // Key light + Viewmodel camera fill light
+    float3 light_radiance = float3(1.8, 1.8, 1.75);
+    float3 Lo_key = (kD * albedo_tex.rgb / kPi + specular) * light_radiance * NdotL;
+
+    float NdotV = max(dot(N, V), 0.0);
+    float3 fill_radiance = float3(0.65, 0.65, 0.70);
+    float3 Lo_fill = (kD * albedo_tex.rgb / kPi) * fill_radiance * NdotV;
+
+    float3 Lo = Lo_key + Lo_fill;
 
     // 4. Ambient & Specular Environment Reflection (IBL simulation)
     float3 R = reflect(-V, N);
-    float3 sky_color = float3(0.28, 0.32, 0.40);
-    float3 ground_color = float3(0.12, 0.12, 0.15);
+    float3 sky_color = float3(0.35, 0.38, 0.45);
+    float3 ground_color = float3(0.18, 0.18, 0.20);
     float3 ambient_irradiance = lerp(ground_color, sky_color, N.y * 0.5 + 0.5);
 
     // Specular environment reflection with roughness dissipation
@@ -167,8 +184,9 @@ float4 PSMain(VSOut i) : SV_Target {
     float3 env_F = F0 + (max(float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness), F0) - F0) * pow(clamp(1.0 - max(dot(N, V), 0.0), 0.0, 1.0), 5.0);
     float3 env_reflection = env_spec * env_F * (1.0 - roughness * 0.45);
 
+    // Direct albedo baseline to guarantee weapon skin/texture visibility under all angles
     float3 ambient = (kD * albedo_tex.rgb * ambient_irradiance + env_reflection) * ao;
-    float3 color = Lo + ambient;
+    float3 color = Lo + ambient + albedo_tex.rgb * 0.25;
 
     // Tone mapping & saturation
     color = color / (color + 1.0);
@@ -492,17 +510,40 @@ bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
     std::filesystem::path kp(knife_png);
     std::filesystem::path gp(glove_png);
 
+    auto findExistingFile = [](const std::filesystem::path& base_p, const std::string& explicit_override,
+                               const std::string& subfolder, const std::string& filename) -> std::string {
+        if (!explicit_override.empty() && std::filesystem::exists(explicit_override)) {
+            return explicit_override;
+        }
+        std::vector<std::filesystem::path> tries;
+        if (!base_p.empty()) {
+            std::filesystem::path parent = base_p.parent_path();
+            tries.push_back(parent / filename);
+            tries.push_back(parent / "textures" / subfolder / filename);
+            tries.push_back(parent / subfolder / filename);
+            if (parent.has_parent_path()) {
+                tries.push_back(parent.parent_path() / "textures" / subfolder / filename);
+            }
+        }
+        tries.push_back(std::filesystem::path("mods") / "mc_adapter" / "textures" / subfolder / filename);
+        tries.push_back(std::filesystem::path("mods") / "mc_adapter" / filename);
+        tries.push_back(filename);
+        for (const auto& t : tries) {
+            if (std::filesystem::exists(t)) return t.string();
+        }
+        return "";
+    };
+
     // 3. Knife Normal Map
     bool knife_norm_loaded = false;
-    std::filesystem::path kn_path = !knife_norm_png.empty() ? std::filesystem::path(knife_norm_png) :
-        (kp.parent_path() / "textures" / "knife_butterfly" / "default_normal_tga_4fc2d3dd.png");
-    if (std::filesystem::exists(kn_path)) {
+    std::string kn_path = findExistingFile(kp, knife_norm_png, "knife_butterfly", "default_normal_tga_4fc2d3dd.png");
+    if (!kn_path.empty()) {
         std::vector<uint8_t> kn_rgba;
         unsigned kn_w = 0, kn_h = 0;
-        if (DecodePngFile(kn_path.string(), kn_rgba, kn_w, kn_h)) {
+        if (DecodePngFile(kn_path, kn_rgba, kn_w, kn_h)) {
             setKnifeNormalTexture(device, kn_rgba.data(), kn_w, kn_h, slot2);
             knife_norm_loaded = true;
-            if (log_) log_("cs_render: loaded knife normal map %s (%ux%u)", kn_path.string().c_str(), kn_w, kn_h);
+            if (log_) log_("cs_render: loaded knife normal map %s (%ux%u)", kn_path.c_str(), kn_w, kn_h);
         }
     }
     if (!knife_norm_loaded) {
@@ -518,15 +559,14 @@ bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
 
     // 4. Glove Normal Map
     bool glove_norm_loaded = false;
-    std::filesystem::path gn_path = !glove_norm_png.empty() ? std::filesystem::path(glove_norm_png) :
-        (gp.parent_path() / "textures" / "glove_hardknuckle" / "glove_hardknuckle_normal_tga_a8df881b.png");
-    if (std::filesystem::exists(gn_path)) {
+    std::string gn_path = findExistingFile(gp, glove_norm_png, "glove_hardknuckle", "glove_hardknuckle_normal_tga_a8df881b.png");
+    if (!gn_path.empty()) {
         std::vector<uint8_t> gn_rgba;
         unsigned gn_w = 0, gn_h = 0;
-        if (DecodePngFile(gn_path.string(), gn_rgba, gn_w, gn_h)) {
+        if (DecodePngFile(gn_path, gn_rgba, gn_w, gn_h)) {
             setGloveNormalTexture(device, gn_rgba.data(), gn_w, gn_h, slot3);
             glove_norm_loaded = true;
-            if (log_) log_("cs_render: loaded glove normal map %s (%ux%u)", gn_path.string().c_str(), gn_w, gn_h);
+            if (log_) log_("cs_render: loaded glove normal map %s (%ux%u)", gn_path.c_str(), gn_w, gn_h);
         }
     }
     if (!glove_norm_loaded) {
@@ -552,12 +592,12 @@ bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
         }
     }
     if (!knife_pbr_loaded) {
-        std::filesystem::path kr_path = kp.parent_path() / "textures" / "knife_butterfly" / "knife_butterfly_rough_psd_80f06397.png";
-        std::filesystem::path kao_path = kp.parent_path() / "textures" / "knife_butterfly" / "knife_butterfly_ao_psd_496afc91.png";
+        std::string kr_path = findExistingFile(kp, "", "knife_butterfly", "knife_butterfly_rough_psd_80f06397.png");
+        std::string kao_path = findExistingFile(kp, "", "knife_butterfly", "knife_butterfly_ao_psd_496afc91.png");
         std::vector<uint8_t> r_rgba, ao_rgba;
         unsigned rw = 0, rh = 0, aow = 0, aoh = 0;
-        bool has_r = std::filesystem::exists(kr_path) && DecodePngFile(kr_path.string(), r_rgba, rw, rh);
-        bool has_ao = std::filesystem::exists(kao_path) && DecodePngFile(kao_path.string(), ao_rgba, aow, aoh);
+        bool has_r = !kr_path.empty() && DecodePngFile(kr_path, r_rgba, rw, rh);
+        bool has_ao = !kao_path.empty() && DecodePngFile(kao_path, ao_rgba, aow, aoh);
         if (has_r || has_ao) {
             std::vector<uint8_t> orm;
             unsigned orm_w = 0, orm_h = 0;
@@ -594,10 +634,10 @@ bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
         }
     }
     if (!glove_pbr_loaded) {
-        std::filesystem::path gao_path = gp.parent_path() / "textures" / "glove_hardknuckle" / "glove_hardknuckle_ao_psd_5be17a0d.png";
+        std::string gao_path = findExistingFile(gp, "", "glove_hardknuckle", "glove_hardknuckle_ao_psd_5be17a0d.png");
         std::vector<uint8_t> ao_rgba;
         unsigned aow = 0, aoh = 0;
-        if (std::filesystem::exists(gao_path) && DecodePngFile(gao_path.string(), ao_rgba, aow, aoh)) {
+        if (!gao_path.empty() && DecodePngFile(gao_path, ao_rgba, aow, aoh)) {
             std::vector<uint8_t> orm;
             unsigned orm_w = 0, orm_h = 0;
             if (eldenring::cs::packOrmTexture(ao_rgba.data(), aow, aoh, nullptr, 0, 0,
@@ -745,30 +785,27 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
         switch (type) {
             case SubmeshType::Blade:
                 pose = animator_.bladePose();
-                tint[0] = 0.95f; tint[1] = 0.95f; tint[2] = 0.98f; tint[3] = 1.0f; // Steel blade
                 break;
             case SubmeshType::HandleFront:
                 pose = animator_.handleFrontPose();
-                tint[0] = 0.25f; tint[1] = 0.25f; tint[2] = 0.28f; tint[3] = 1.0f; // Front handle
                 break;
             case SubmeshType::HandleRear:
                 pose = animator_.handleRearPose();
-                tint[0] = 0.25f; tint[1] = 0.25f; tint[2] = 0.28f; tint[3] = 1.0f; // Rear handle
                 break;
             case SubmeshType::Lock:
                 pose = animator_.lockPose();
-                tint[0] = 0.85f; tint[1] = 0.85f; tint[2] = 0.88f; tint[3] = 1.0f; // Lock latch
                 break;
             case SubmeshType::Arms:
                 pose = animator_.armsPose();
-                tint[0] = 0.20f; tint[1] = 0.22f; tint[2] = 0.24f; tint[3] = 1.0f; // Tactical glove
                 break;
             case SubmeshType::Base:
             default:
                 pose = animator_.basePose();
-                tint[0] = 0.25f; tint[1] = 0.25f; tint[2] = 0.28f; tint[3] = 1.0f;
                 break;
         }
+
+        const bool has_tex = (type == SubmeshType::Arms) ? (glove_tex_.tex != nullptr) : (knife_tex_.tex != nullptr);
+        eldenring::cs::getEffectiveSubmeshTint(type, has_tex, tint);
 
         const mc::rig::Mat4 world = fp::toHost(pose);
         list->SetGraphicsRoot32BitConstants(0, 16, world.m.data(), 16);

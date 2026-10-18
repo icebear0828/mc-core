@@ -39,6 +39,7 @@
 #include "cs_renderer_d3d12.hpp"
 #include "eldenring_runtime_context.hpp"
 #include "eldenring_inventory_preview.hpp"
+#include "eldenring_diagnostics.hpp"
 
 namespace erov {
 namespace {
@@ -433,14 +434,20 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             D3D12_CPU_DESCRIPTOR_HANDLE glove_cpu = cs_table_cpu;
             glove_cpu.ptr += srv_inc;
 
-            const char* model_candidates[] = {
-                "mods\\mc_adapter\\cs_butterfly_viewmodel.bin",
-                "cs_butterfly_viewmodel.bin"
-            };
-            for (const char* p : model_candidates) {
-                if (g_cs.loadModel(g_s.device, p)) {
-                    char cs_msg[128];
-                    snprintf(cs_msg, sizeof(cs_msg), "overlay: CS viewmodel model loaded successfully from %s", p);
+            const std::string& game_dir = eldenring::diagnostics::GetGameDir();
+
+            std::vector<std::string> model_candidates;
+            if (!game_dir.empty()) {
+                model_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "cs_butterfly_viewmodel.bin").string());
+                model_candidates.push_back((std::filesystem::path(game_dir) / "cs_butterfly_viewmodel.bin").string());
+            }
+            model_candidates.push_back("mods\\mc_adapter\\cs_butterfly_viewmodel.bin");
+            model_candidates.push_back("cs_butterfly_viewmodel.bin");
+
+            for (const auto& p : model_candidates) {
+                if (std::filesystem::exists(p) && g_cs.loadModel(g_s.device, p)) {
+                    char cs_msg[256];
+                    snprintf(cs_msg, sizeof(cs_msg), "overlay: CS viewmodel model loaded successfully from %s", p.c_str());
                     Logf(cs_msg);
                     eldenring::RuntimeContext::Instance().mode().cs_mode.store(true);
                     eldenring::RuntimeContext::Instance().mode().first_person.store(true);
@@ -448,22 +455,32 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                 }
             }
 
-            const char* knife_tex_candidates[] = {
-                "mods\\mc_adapter\\knife_butterfly.png",
-                "mods\\mc_adapter\\textures\\knife_butterfly\\knife_butterfly_color_psd_5a5a48d7.png",
-                "knife_butterfly.png"
-            };
-            const char* glove_tex_candidates[] = {
-                "mods\\mc_adapter\\glove_hardknuckle.png",
-                "mods\\mc_adapter\\textures\\glove_hardknuckle\\glove_hardknuckle_black_color_psd_8f00aa00.png",
-                "glove_hardknuckle.png"
-            };
+            std::vector<std::string> knife_tex_candidates;
+            if (!game_dir.empty()) {
+                knife_tex_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "knife_butterfly.png").string());
+                knife_tex_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "knife_butterfly" / "knife_butterfly_color_psd_5a5a48d7.png").string());
+                knife_tex_candidates.push_back((std::filesystem::path(game_dir) / "knife_butterfly.png").string());
+            }
+            knife_tex_candidates.push_back("mods\\mc_adapter\\knife_butterfly.png");
+            knife_tex_candidates.push_back("mods\\mc_adapter\\textures\\knife_butterfly\\knife_butterfly_color_psd_5a5a48d7.png");
+            knife_tex_candidates.push_back("knife_butterfly.png");
+
+            std::vector<std::string> glove_tex_candidates;
+            if (!game_dir.empty()) {
+                glove_tex_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "glove_hardknuckle.png").string());
+                glove_tex_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "glove_hardknuckle" / "glove_hardknuckle_black_color_psd_8f00aa00.png").string());
+                glove_tex_candidates.push_back((std::filesystem::path(game_dir) / "glove_hardknuckle.png").string());
+            }
+            glove_tex_candidates.push_back("mods\\mc_adapter\\glove_hardknuckle.png");
+            glove_tex_candidates.push_back("mods\\mc_adapter\\textures\\glove_hardknuckle\\glove_hardknuckle_black_color_psd_8f00aa00.png");
+            glove_tex_candidates.push_back("glove_hardknuckle.png");
+
             std::string knife_png;
-            for (const char* p : knife_tex_candidates) {
+            for (const auto& p : knife_tex_candidates) {
                 if (std::filesystem::exists(p)) { knife_png = p; break; }
             }
             std::string glove_png;
-            for (const char* p : glove_tex_candidates) {
+            for (const auto& p : glove_tex_candidates) {
                 if (std::filesystem::exists(p)) { glove_png = p; break; }
             }
             g_cs.loadTexturesFromFiles(g_s.device, knife_png, glove_png, cs_table_cpu, glove_cpu);

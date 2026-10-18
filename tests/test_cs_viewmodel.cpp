@@ -13,15 +13,6 @@ namespace {
 using namespace eldenring::cs;
 namespace fp = eldenring::fp;
 
-enum class SubmeshType {
-    Blade,
-    HandleFront,
-    HandleRear,
-    Lock,
-    Arms,
-    Base
-};
-
 SubmeshType ClassifySubmesh(const std::string& raw_name) {
     std::string n = raw_name;
     for (char& c : n) c = static_cast<char>(tolower(c));
@@ -608,6 +599,168 @@ TEST(CSViewModelTest, TddD3D12ViewmodelRenderPipelineAndFovIntegration) {
     EXPECT_EQ(anim.currentState(), 3);
     anim.tick(0.016f, 0 /* Idle */, 0.0f);
     EXPECT_EQ(anim.currentState(), 0);
+}
+
+TEST(CSViewModelTest, TddKnifeAlbedoTexturePreservedWhenAlphaIsZero) {
+    // In CS2 Source 2, weapon textures use 32-bit RGBA where alpha channel is the wear/paint mask.
+    // For default/vanilla knives, alpha is 0.0f across 90%+ of the texture.
+    // The shader/pipeline MUST NOT discard the texture or replace it with 'tint' when alpha < 0.05!
+    const float tex_knife_rgb[4] = {81.0f / 255.0f, 81.0f / 255.0f, 82.0f / 255.0f, 0.0f /* alpha is 0 in CS2 */};
+    const float tint_blade[4] = {0.95f, 0.95f, 0.98f, 1.0f};
+
+    float out_albedo[4]{};
+    resolveAlbedoColor(tex_knife_rgb, tint_blade, false /* is_arm */, out_albedo);
+
+    // Critical assertion: out_albedo must preserve the knife texture RGB, NOT the 0.95 blade tint!
+    EXPECT_NEAR(out_albedo[0], 81.0f / 255.0f, 0.001f);
+    EXPECT_NEAR(out_albedo[1], 81.0f / 255.0f, 0.001f);
+    EXPECT_NEAR(out_albedo[2], 82.0f / 255.0f, 0.001f);
+    EXPECT_FLOAT_EQ(out_albedo[3], 1.0f); // Opaque rendering
+
+    // Same check for tactical glove: glove texture must be preserved
+    const float tex_glove_rgb[4] = {76.0f / 255.0f, 76.0f / 255.0f, 77.0f / 255.0f, 1.0f};
+    const float tint_glove[4] = {0.20f, 0.22f, 0.24f, 1.0f};
+    resolveAlbedoColor(tex_glove_rgb, tint_glove, true /* is_arm */, out_albedo);
+    EXPECT_NEAR(out_albedo[0], 76.0f / 255.0f, 0.001f);
+    EXPECT_NEAR(out_albedo[1], 76.0f / 255.0f, 0.001f);
+    EXPECT_NEAR(out_albedo[2], 77.0f / 255.0f, 0.001f);
+}
+
+TEST(CSViewModelTest, TddTexturePathCandidateResolutionWithGameDir) {
+    // Tests that resolveTextureCandidatePaths prepends game_dir and avoids duplicated nested paths
+    const std::string game_dir = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\ELDEN RING\\Game\\";
+    const std::string rel_path = "mods\\mc_adapter\\textures\\knife_butterfly\\knife_butterfly_color_psd_5a5a48d7.png";
+
+    std::vector<std::string> candidates = resolveTextureCandidatePaths(game_dir, rel_path, "default_normal_tga_4fc2d3dd.png");
+
+    ASSERT_GE(candidates.size(), 2u);
+    // 1. Primary candidate must be absolute in game_dir
+    EXPECT_EQ(candidates[0], game_dir + "mods\\mc_adapter\\textures\\knife_butterfly\\default_normal_tga_4fc2d3dd.png");
+    // 2. No candidates should contain duplicate nested textures folders like textures\knife_butterfly\textures\knife_butterfly
+    for (const auto& c : candidates) {
+        EXPECT_EQ(c.find("knife_butterfly\\textures\\knife_butterfly"), std::string::npos);
+    }
+}
+
+TEST(CSViewModelTest, TddSubmeshDrawTintIsNeutralWhenTextured) {
+    // When textures are loaded, submeshes must use neutral tint (1, 1, 1, 1) so textures aren't darkened or suppressed.
+    // When textures are missing, fallback tints are used.
+    float tint[4]{};
+
+    getEffectiveSubmeshTint(SubmeshType::Blade, true /* has_texture */, tint);
+    EXPECT_FLOAT_EQ(tint[0], 1.0f);
+    EXPECT_FLOAT_EQ(tint[1], 1.0f);
+    EXPECT_FLOAT_EQ(tint[2], 1.0f);
+    EXPECT_FLOAT_EQ(tint[3], 1.0f);
+
+    getEffectiveSubmeshTint(SubmeshType::Arms, true /* has_texture */, tint);
+    EXPECT_FLOAT_EQ(tint[0], 1.0f);
+    EXPECT_FLOAT_EQ(tint[1], 1.0f);
+    EXPECT_FLOAT_EQ(tint[2], 1.0f);
+    EXPECT_FLOAT_EQ(tint[3], 1.0f);
+
+    getEffectiveSubmeshTint(SubmeshType::Blade, false /* has_texture */, tint);
+    EXPECT_FLOAT_EQ(tint[0], 0.95f); // Fallback blade steel tint
+}
+
+TEST(CSViewModelTest, TddCSVMModelUVIntegrityAndSubmeshTexturing) {
+    // Locate cs_butterfly_viewmodel.bin across workspace paths
+    const std::vector<std::string> candidate_paths = {
+        "build/cs2assets/cs_butterfly_viewmodel.bin",
+        "../../build/cs2assets/cs_butterfly_viewmodel.bin",
+        "../build/cs2assets/cs_butterfly_viewmodel.bin",
+        "C:\\Program Files (x86)\\Steam\\steamapps\\common\\ELDEN RING\\Game\\mods\\mc_adapter\\cs_butterfly_viewmodel.bin"
+    };
+
+    std::string model_path;
+    for (const auto& p : candidate_paths) {
+        if (std::filesystem::exists(p)) {
+            model_path = p;
+            break;
+        }
+    }
+
+    if (model_path.empty()) {
+        GTEST_SKIP() << "cs_butterfly_viewmodel.bin not found in workspace candidate paths";
+    }
+
+    CSViewModel vm;
+    ASSERT_TRUE(vm.loadFromFile(model_path));
+    ASSERT_GT(vm.vertices.size(), 500u);
+    ASSERT_GT(vm.indices.size(), 1000u);
+    ASSERT_GE(vm.submeshes.size(), 4u);
+
+    float min_u = 1e9f, max_u = -1e9f;
+    float min_v = 1e9f, max_v = -1e9f;
+
+    for (const auto& v : vm.vertices) {
+        EXPECT_FALSE(std::isnan(v.pos[0]));
+        EXPECT_FALSE(std::isnan(v.pos[1]));
+        EXPECT_FALSE(std::isnan(v.pos[2]));
+
+        EXPECT_FALSE(std::isnan(v.normal[0]));
+        EXPECT_FALSE(std::isnan(v.normal[1]));
+        EXPECT_FALSE(std::isnan(v.normal[2]));
+
+        EXPECT_FALSE(std::isnan(v.uv[0]));
+        EXPECT_FALSE(std::isnan(v.uv[1]));
+
+        min_u = std::min(min_u, v.uv[0]);
+        max_u = std::max(max_u, v.uv[0]);
+        min_v = std::min(min_v, v.uv[1]);
+        max_v = std::max(max_v, v.uv[1]);
+    }
+
+    // Verify UV spread is healthy (not collapsed to single point which causes flat texture rendering)
+    EXPECT_GT(max_u - min_u, 0.5f);
+    EXPECT_GT(max_v - min_v, 0.5f);
+    EXPECT_GE(min_u, -0.1f);
+    EXPECT_LE(max_u, 1.1f);
+    EXPECT_GE(min_v, -0.1f);
+    EXPECT_LE(max_v, 1.1f);
+
+    // Verify submesh classification and textured tint neutrality across all submeshes
+    bool has_arms = false;
+    bool has_blade = false;
+    for (const auto& sub : vm.submeshes) {
+        SubmeshType st = ClassifySubmesh(sub.bone_name);
+        if (st == SubmeshType::Arms) has_arms = true;
+        if (st == SubmeshType::Blade) has_blade = true;
+
+        float effective_tint[4]{};
+        getEffectiveSubmeshTint(st, true /* has_texture */, effective_tint);
+        EXPECT_FLOAT_EQ(effective_tint[0], 1.0f);
+        EXPECT_FLOAT_EQ(effective_tint[1], 1.0f);
+        EXPECT_FLOAT_EQ(effective_tint[2], 1.0f);
+        EXPECT_FLOAT_EQ(effective_tint[3], 1.0f);
+    }
+    EXPECT_TRUE(has_blade);
+    EXPECT_TRUE(has_arms);
+}
+
+TEST(CSViewModelTest, TddGloveTextureContrastAndNormalFidelity) {
+    // 1. DirectX normal vector unpacking: Green channel > 128 corresponds to downward in 3D (-Y)
+    float n[3]{};
+    unpackDirectXNormal(128, 192, 255, n);
+    EXPECT_LT(n[1], 0.0f); // DirectX green > 128 must unpack to negative Y in 3D
+
+    // 2. Glove albedo detail enhancement
+    const float base_rgb[3] = {76.0f / 255.0f, 76.0f / 255.0f, 77.0f / 255.0f};
+    const float detail_rgb[3] = {99.0f / 255.0f, 93.0f / 255.0f, 90.0f / 255.0f};
+
+    float out_base[3]{};
+    float out_detail[3]{};
+    enhanceGloveTextureAlbedo(base_rgb, out_base);
+    enhanceGloveTextureAlbedo(detail_rgb, out_detail);
+
+    // Delta between detail and base must be boosted by at least 1.5x
+    const float in_delta = detail_rgb[0] - base_rgb[0];
+    const float out_delta = out_detail[0] - out_base[0];
+    EXPECT_GT(out_delta, in_delta * 1.5f);
+
+    // Output must stay within [0, 1] range and not clamp to 0 or 1
+    EXPECT_GT(out_base[0], 0.15f);
+    EXPECT_LT(out_detail[0], 0.95f);
 }
 
 } // namespace

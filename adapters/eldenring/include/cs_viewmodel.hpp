@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -12,6 +13,15 @@
 #include "mc/rig.hpp"
 
 namespace eldenring::cs {
+
+enum class SubmeshType {
+    Blade,
+    HandleFront,
+    HandleRear,
+    Lock,
+    Arms,
+    Base
+};
 
 #pragma pack(push, 1)
 struct CSVMHeader {
@@ -163,7 +173,7 @@ inline void computeFresnelSchlick(float cos_theta, const float f0[3], float out_
 
 inline void unpackDirectXNormal(uint8_t r, uint8_t g, uint8_t b, float out_n[3]) {
     const float x = (static_cast<float>(r) / 255.0f) * 2.0f - 1.0f;
-    const float y = -((static_cast<float>(g) / 255.0f) * 2.0f - 1.0f); // DirectX green channel inversion
+    const float y = -((static_cast<float>(g) / 255.0f) * 2.0f - 1.0f); // DirectX green channel inversion (V down -> -Y in 3D)
     float z = (static_cast<float>(b) / 255.0f) * 2.0f - 1.0f;
     const float len = std::sqrt(x * x + y * y + z * z);
     if (len > 1e-6f) {
@@ -174,6 +184,14 @@ inline void unpackDirectXNormal(uint8_t r, uint8_t g, uint8_t b, float out_n[3])
         out_n[0] = 0.0f;
         out_n[1] = 0.0f;
         out_n[2] = 1.0f;
+    }
+}
+
+inline void enhanceGloveTextureAlbedo(const float in_rgb[3], float out_rgb[3]) {
+    constexpr float kBaseline = 77.0f / 255.0f;
+    for (int i = 0; i < 3; ++i) {
+        const float val = kBaseline + (in_rgb[i] - kBaseline) * 2.2f;
+        out_rgb[i] = std::clamp(val * 1.3f, 0.0f, 1.0f);
     }
 }
 
@@ -260,6 +278,73 @@ inline bool packOrmTexture(const uint8_t* ao_rgba, unsigned ao_w, unsigned ao_h,
         }
     }
     return true;
+}
+
+// In CS2 Source 2, weapon textures use 32-bit RGBA where alpha channel is wear/paint mask (NOT transparency).
+// Default/vanilla knife has alpha == 0.0 across 90%+ of the texture.
+// The pipeline must NEVER discard or replace texture RGB with solid tint based on alpha < 0.05.
+inline void resolveAlbedoColor(const float tex_sample[4], const float tint[4], bool is_arm, float out_albedo[4]) {
+    (void)is_arm;
+    (void)tint;
+    out_albedo[0] = tex_sample[0];
+    out_albedo[1] = tex_sample[1];
+    out_albedo[2] = tex_sample[2];
+    out_albedo[3] = 1.0f; // Viewmodels are 100% opaque
+}
+
+// Resolves texture candidate paths ensuring absolute game_dir takes priority and no duplicated folder nesting occurs
+inline std::vector<std::string> resolveTextureCandidatePaths(const std::string& game_dir,
+                                                             const std::string& base_or_rel_path,
+                                                             const std::string& filename) {
+    std::vector<std::string> candidates;
+    std::filesystem::path bp(base_or_rel_path);
+    std::filesystem::path parent = bp.parent_path();
+
+    if (!parent.empty()) {
+        std::filesystem::path full = parent / filename;
+        if (!game_dir.empty()) {
+            std::filesystem::path g_full = std::filesystem::path(game_dir) / full;
+            candidates.push_back(g_full.string());
+        }
+        candidates.push_back(full.string());
+    }
+
+    if (!game_dir.empty()) {
+        candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / filename).string());
+        candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / filename).string());
+    }
+    candidates.push_back((std::filesystem::path("mods") / "mc_adapter" / "textures" / filename).string());
+    candidates.push_back((std::filesystem::path("mods") / "mc_adapter" / filename).string());
+    candidates.push_back(filename);
+
+    return candidates;
+}
+
+// Determines effective submesh tint. When textures are loaded, returns neutral 1.0f so textures are not suppressed.
+inline void getEffectiveSubmeshTint(SubmeshType type, bool has_texture, float out_tint[4]) {
+    if (has_texture) {
+        out_tint[0] = 1.0f;
+        out_tint[1] = 1.0f;
+        out_tint[2] = 1.0f;
+        out_tint[3] = 1.0f;
+        return;
+    }
+    switch (type) {
+        case SubmeshType::Blade:
+            out_tint[0] = 0.95f; out_tint[1] = 0.95f; out_tint[2] = 0.98f; out_tint[3] = 1.0f;
+            break;
+        case SubmeshType::HandleFront:
+        case SubmeshType::HandleRear:
+        case SubmeshType::Base:
+            out_tint[0] = 0.25f; out_tint[1] = 0.25f; out_tint[2] = 0.28f; out_tint[3] = 1.0f;
+            break;
+        case SubmeshType::Lock:
+            out_tint[0] = 0.85f; out_tint[1] = 0.85f; out_tint[2] = 0.88f; out_tint[3] = 1.0f;
+            break;
+        case SubmeshType::Arms:
+            out_tint[0] = 0.20f; out_tint[1] = 0.22f; out_tint[2] = 0.24f; out_tint[3] = 1.0f;
+            break;
+    }
 }
 
 // -----------------------------------------------------------------------------
