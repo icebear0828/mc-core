@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 #include <vector>
 #include "cs_animation_tracks.hpp"
@@ -47,18 +48,32 @@ struct CSVMSubmesh {
     uint32_t index_count{0};
 };
 
+struct CSVMAnimClip {
+    std::string name;
+    float fps{30.0f};
+    uint32_t frame_count{0};
+    std::vector<eldenring::fp::M4> blade_frames;
+    std::vector<eldenring::fp::M4> front_frames;
+    std::vector<eldenring::fp::M4> rear_frames;
+    std::vector<eldenring::fp::M4> lock_frames;
+    std::vector<eldenring::fp::M4> arms_frames;
+};
+
 class CSViewModel {
 public:
     CSVMHeader header_{};
     std::vector<CSVMSubmesh> submeshes;
     std::vector<CSVMVertex> vertices;
     std::vector<uint32_t> indices;
+    std::map<std::string, CSVMAnimClip> anim_clips;
+
+    [[nodiscard]] const CSVMHeader& header() const { return header_; }
 
     bool loadFromMemory(const uint8_t* data, size_t size) {
         if (!data || size < sizeof(CSVMHeader)) return false;
 
         std::memcpy(&header_, data, sizeof(CSVMHeader));
-        if (std::memcmp(header_.magic, "CSVM", 4) != 0 || header_.version != 1) {
+        if (std::memcmp(header_.magic, "CSVM", 4) != 0 || (header_.version != 1 && header_.version != 2)) {
             return false;
         }
 
@@ -96,6 +111,51 @@ public:
         if (offset + ib_bytes > size) return false;
         indices.resize(header_.total_indices);
         std::memcpy(indices.data(), data + offset, ib_bytes);
+        offset += ib_bytes;
+
+        // Version 2: Read animation clips
+        anim_clips.clear();
+        if (header_.version >= 2 && offset + sizeof(uint32_t) <= size) {
+            uint32_t num_clips = 0;
+            std::memcpy(&num_clips, data + offset, sizeof(uint32_t));
+            offset += sizeof(uint32_t);
+
+            for (uint32_t c = 0; c < num_clips; ++c) {
+                if (offset + sizeof(uint32_t) > size) return false;
+                uint32_t c_name_len = 0;
+                std::memcpy(&c_name_len, data + offset, sizeof(uint32_t));
+                offset += sizeof(uint32_t);
+
+                if (offset + c_name_len > size) return false;
+                std::string clip_name(reinterpret_cast<const char*>(data + offset), c_name_len);
+                offset += c_name_len;
+
+                if (offset + sizeof(float) + sizeof(uint32_t) > size) return false;
+                CSVMAnimClip clip;
+                clip.name = clip_name;
+                std::memcpy(&clip.fps, data + offset, sizeof(float)); offset += sizeof(float);
+                std::memcpy(&clip.frame_count, data + offset, sizeof(uint32_t)); offset += sizeof(uint32_t);
+
+                const size_t m4_size = sizeof(eldenring::fp::M4);
+                const size_t frame_bytes = 5 * m4_size;
+                if (offset + clip.frame_count * frame_bytes > size) return false;
+
+                clip.blade_frames.resize(clip.frame_count);
+                clip.front_frames.resize(clip.frame_count);
+                clip.rear_frames.resize(clip.frame_count);
+                clip.lock_frames.resize(clip.frame_count);
+                clip.arms_frames.resize(clip.frame_count);
+
+                for (uint32_t f = 0; f < clip.frame_count; ++f) {
+                    std::memcpy(&clip.blade_frames[f], data + offset, m4_size); offset += m4_size;
+                    std::memcpy(&clip.front_frames[f], data + offset, m4_size); offset += m4_size;
+                    std::memcpy(&clip.rear_frames[f], data + offset, m4_size); offset += m4_size;
+                    std::memcpy(&clip.lock_frames[f], data + offset, m4_size); offset += m4_size;
+                    std::memcpy(&clip.arms_frames[f], data + offset, m4_size); offset += m4_size;
+                }
+                anim_clips[clip_name] = std::move(clip);
+            }
+        }
 
         return true;
     }
@@ -361,6 +421,10 @@ struct CSViewModelPose {
 
 class CSViewModelAnimator {
 public:
+    void setModel(const CSViewModel* model) {
+        model_ = model;
+    }
+
     void tick(float dt, uint8_t state, float anim_time) {
         (void)dt;
         current_state_ = state;
@@ -369,12 +433,24 @@ public:
         const float bob = std::sin(anim_time * 2.5f) * 0.003f;
         eldenring::fp::M4 base = eldenring::fp::translate(0.f, bob, 0.f);
 
+        const auto* inspect_clip = (model_ && model_->anim_clips.count("inspect")) ? &model_->anim_clips.at("inspect") : nullptr;
+        const auto* deploy_clip = (model_ && model_->anim_clips.count("deploy")) ? &model_->anim_clips.at("deploy") : nullptr;
+        const auto* backstab_clip = (model_ && model_->anim_clips.count("backstab")) ? &model_->anim_clips.at("backstab") : nullptr;
+
         if (state == 1) { // Authentic CS2 Butterfly Inspect Tricks
-            erov::cs_anims::SampleTrack(erov::cs_anims::kInspectBlade, erov::cs_anims::kInspectFrameCount, erov::cs_anims::kInspectFps, anim_time, pose_.blade_pose);
-            erov::cs_anims::SampleTrack(erov::cs_anims::kInspectFront, erov::cs_anims::kInspectFrameCount, erov::cs_anims::kInspectFps, anim_time, pose_.handle_front_pose);
-            erov::cs_anims::SampleTrack(erov::cs_anims::kInspectRear, erov::cs_anims::kInspectFrameCount, erov::cs_anims::kInspectFps, anim_time, pose_.handle_rear_pose);
-            erov::cs_anims::SampleTrack(erov::cs_anims::kInspectLock, erov::cs_anims::kInspectFrameCount, erov::cs_anims::kInspectFps, anim_time, pose_.lock_pose);
-            erov::cs_anims::SampleTrack(erov::cs_anims::kInspectArms, erov::cs_anims::kInspectFrameCount, erov::cs_anims::kInspectFps, anim_time, pose_.arms_pose);
+            if (inspect_clip && inspect_clip->frame_count > 0) {
+                erov::cs_anims::SampleDynamicTrack(inspect_clip->blade_frames, inspect_clip->fps, anim_time, pose_.blade_pose);
+                erov::cs_anims::SampleDynamicTrack(inspect_clip->front_frames, inspect_clip->fps, anim_time, pose_.handle_front_pose);
+                erov::cs_anims::SampleDynamicTrack(inspect_clip->rear_frames, inspect_clip->fps, anim_time, pose_.handle_rear_pose);
+                erov::cs_anims::SampleDynamicTrack(inspect_clip->lock_frames, inspect_clip->fps, anim_time, pose_.lock_pose);
+                erov::cs_anims::SampleDynamicTrack(inspect_clip->arms_frames, inspect_clip->fps, anim_time, pose_.arms_pose);
+            } else {
+                pose_.blade_pose = eldenring::fp::M4{};
+                pose_.handle_front_pose = eldenring::fp::M4{};
+                pose_.handle_rear_pose = eldenring::fp::M4{};
+                pose_.lock_pose = eldenring::fp::M4{};
+                pose_.arms_pose = eldenring::fp::M4{};
+            }
             pose_.blade_pose = eldenring::fp::mul(base, pose_.blade_pose);
             pose_.handle_front_pose = eldenring::fp::mul(base, pose_.handle_front_pose);
             pose_.handle_rear_pose = eldenring::fp::mul(base, pose_.handle_rear_pose);
@@ -382,11 +458,19 @@ public:
             pose_.arms_pose = eldenring::fp::mul(base, pose_.arms_pose);
             pose_.base_pose = pose_.arms_pose;
         } else if (state == 4) { // Authentic CS2 Butterfly Deploy Flip
-            erov::cs_anims::SampleTrack(erov::cs_anims::kDeployBlade, erov::cs_anims::kDeployFrameCount, erov::cs_anims::kDeployFps, anim_time, pose_.blade_pose);
-            erov::cs_anims::SampleTrack(erov::cs_anims::kDeployFront, erov::cs_anims::kDeployFrameCount, erov::cs_anims::kDeployFps, anim_time, pose_.handle_front_pose);
-            erov::cs_anims::SampleTrack(erov::cs_anims::kDeployRear, erov::cs_anims::kDeployFrameCount, erov::cs_anims::kDeployFps, anim_time, pose_.handle_rear_pose);
-            erov::cs_anims::SampleTrack(erov::cs_anims::kDeployLock, erov::cs_anims::kDeployFrameCount, erov::cs_anims::kDeployFps, anim_time, pose_.lock_pose);
-            erov::cs_anims::SampleTrack(erov::cs_anims::kDeployArms, erov::cs_anims::kDeployFrameCount, erov::cs_anims::kDeployFps, anim_time, pose_.arms_pose);
+            if (deploy_clip && deploy_clip->frame_count > 0) {
+                erov::cs_anims::SampleDynamicTrack(deploy_clip->blade_frames, deploy_clip->fps, anim_time, pose_.blade_pose);
+                erov::cs_anims::SampleDynamicTrack(deploy_clip->front_frames, deploy_clip->fps, anim_time, pose_.handle_front_pose);
+                erov::cs_anims::SampleDynamicTrack(deploy_clip->rear_frames, deploy_clip->fps, anim_time, pose_.handle_rear_pose);
+                erov::cs_anims::SampleDynamicTrack(deploy_clip->lock_frames, deploy_clip->fps, anim_time, pose_.lock_pose);
+                erov::cs_anims::SampleDynamicTrack(deploy_clip->arms_frames, deploy_clip->fps, anim_time, pose_.arms_pose);
+            } else {
+                pose_.blade_pose = eldenring::fp::M4{};
+                pose_.handle_front_pose = eldenring::fp::M4{};
+                pose_.handle_rear_pose = eldenring::fp::M4{};
+                pose_.lock_pose = eldenring::fp::M4{};
+                pose_.arms_pose = eldenring::fp::M4{};
+            }
             pose_.blade_pose = eldenring::fp::mul(base, pose_.blade_pose);
             pose_.handle_front_pose = eldenring::fp::mul(base, pose_.handle_front_pose);
             pose_.handle_rear_pose = eldenring::fp::mul(base, pose_.handle_rear_pose);
@@ -394,11 +478,19 @@ public:
             pose_.arms_pose = eldenring::fp::mul(base, pose_.arms_pose);
             pose_.base_pose = pose_.arms_pose;
         } else if (state == 3) { // Authentic CS2 Backstab / Heavy Attack
-            erov::cs_anims::SampleTrack(erov::cs_anims::kBackstabBlade, erov::cs_anims::kBackstabFrameCount, erov::cs_anims::kBackstabFps, anim_time, pose_.blade_pose);
-            erov::cs_anims::SampleTrack(erov::cs_anims::kBackstabFront, erov::cs_anims::kBackstabFrameCount, erov::cs_anims::kBackstabFps, anim_time, pose_.handle_front_pose);
-            erov::cs_anims::SampleTrack(erov::cs_anims::kBackstabRear, erov::cs_anims::kBackstabFrameCount, erov::cs_anims::kBackstabFps, anim_time, pose_.handle_rear_pose);
-            erov::cs_anims::SampleTrack(erov::cs_anims::kBackstabLock, erov::cs_anims::kBackstabFrameCount, erov::cs_anims::kBackstabFps, anim_time, pose_.lock_pose);
-            erov::cs_anims::SampleTrack(erov::cs_anims::kBackstabArms, erov::cs_anims::kBackstabFrameCount, erov::cs_anims::kBackstabFps, anim_time, pose_.arms_pose);
+            if (backstab_clip && backstab_clip->frame_count > 0) {
+                erov::cs_anims::SampleDynamicTrack(backstab_clip->blade_frames, backstab_clip->fps, anim_time, pose_.blade_pose);
+                erov::cs_anims::SampleDynamicTrack(backstab_clip->front_frames, backstab_clip->fps, anim_time, pose_.handle_front_pose);
+                erov::cs_anims::SampleDynamicTrack(backstab_clip->rear_frames, backstab_clip->fps, anim_time, pose_.handle_rear_pose);
+                erov::cs_anims::SampleDynamicTrack(backstab_clip->lock_frames, backstab_clip->fps, anim_time, pose_.lock_pose);
+                erov::cs_anims::SampleDynamicTrack(backstab_clip->arms_frames, backstab_clip->fps, anim_time, pose_.arms_pose);
+            } else {
+                pose_.blade_pose = eldenring::fp::M4{};
+                pose_.handle_front_pose = eldenring::fp::M4{};
+                pose_.handle_rear_pose = eldenring::fp::M4{};
+                pose_.lock_pose = eldenring::fp::M4{};
+                pose_.arms_pose = eldenring::fp::M4{};
+            }
             pose_.blade_pose = eldenring::fp::mul(base, pose_.blade_pose);
             pose_.handle_front_pose = eldenring::fp::mul(base, pose_.handle_front_pose);
             pose_.handle_rear_pose = eldenring::fp::mul(base, pose_.handle_rear_pose);
@@ -438,6 +530,7 @@ public:
     [[nodiscard]] float currentAnimTime() const { return anim_time_; }
 
 private:
+    const CSViewModel* model_{nullptr};
     CSViewModelPose pose_{};
     uint8_t current_state_{0};
     float anim_time_{0.0f};

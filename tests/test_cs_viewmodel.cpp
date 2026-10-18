@@ -192,18 +192,126 @@ TEST(CSViewModelTest, KnifeOrientationIsForwardAndFaceFacingCameraNotSideways) {
     EXPECT_LT(blade_tip.y, 0.0f);
 }
 
-#include "cs_animation_tracks.hpp"
+TEST(CSViewModelTest, MemorySerializationRoundtripV2WithClips) {
+    CSViewModel model;
+    std::vector<uint8_t> buffer;
+
+    CSVMHeader hdr{};
+    std::memcpy(hdr.magic, "CSVM", 4);
+    hdr.version = 2; // V2 with anim tracks
+    hdr.num_submeshes = 1;
+    hdr.total_vertices = 1;
+    hdr.total_indices = 1;
+
+    buffer.resize(sizeof(CSVMHeader));
+    std::memcpy(buffer.data(), &hdr, sizeof(CSVMHeader));
+
+    // Append 1 submesh
+    std::string sname = "blade";
+    uint32_t slen = static_cast<uint32_t>(sname.size());
+    size_t off = buffer.size();
+    buffer.resize(off + 4 + slen + 16);
+    std::memcpy(buffer.data() + off, &slen, 4); off += 4;
+    std::memcpy(buffer.data() + off, sname.data(), slen); off += slen;
+    uint32_t zero = 0, one = 1;
+    std::memcpy(buffer.data() + off, &zero, 4); off += 4; // bone_idx
+    std::memcpy(buffer.data() + off, &zero, 4); off += 4; // first_idx
+    std::memcpy(buffer.data() + off, &zero, 4); off += 4; // base_v
+    std::memcpy(buffer.data() + off, &one, 4);           // count
+
+    // 1 vertex (32 bytes)
+    CSVMVertex v{{0.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {0.5f, 0.5f}};
+    off = buffer.size();
+    buffer.resize(off + sizeof(v));
+    std::memcpy(buffer.data() + off, &v, sizeof(v));
+
+    // 1 index
+    off = buffer.size();
+    buffer.resize(off + 4);
+    std::memcpy(buffer.data() + off, &zero, 4);
+
+    // Anim chunk: 1 clip ("test_clip", 2 frames)
+    uint32_t num_clips = 1;
+    off = buffer.size();
+    buffer.resize(off + 4);
+    std::memcpy(buffer.data() + off, &num_clips, 4);
+
+    std::string cname = "test_clip";
+    uint32_t clen = static_cast<uint32_t>(cname.size());
+    off = buffer.size();
+    buffer.resize(off + 4 + clen + 8);
+    std::memcpy(buffer.data() + off, &clen, 4); off += 4;
+    std::memcpy(buffer.data() + off, cname.data(), clen); off += clen;
+    float fps = 30.0f;
+    uint32_t frame_count = 2;
+    std::memcpy(buffer.data() + off, &fps, 4); off += 4;
+    std::memcpy(buffer.data() + off, &frame_count, 4);
+
+    // 2 frames * 5 matrices (16 floats each)
+    eldenring::fp::M4 id{};
+    eldenring::fp::M4 rot = eldenring::fp::scale(2.0f);
+    for (int f = 0; f < 2; ++f) {
+        for (int p = 0; p < 5; ++p) {
+            off = buffer.size();
+            buffer.resize(off + sizeof(eldenring::fp::M4));
+            std::memcpy(buffer.data() + off, (f == 0) ? &id : &rot, sizeof(eldenring::fp::M4));
+        }
+    }
+
+    EXPECT_TRUE(model.loadFromMemory(buffer.data(), buffer.size()));
+    EXPECT_EQ(model.header().version, 2u);
+    EXPECT_EQ(model.anim_clips.size(), 1u);
+    ASSERT_TRUE(model.anim_clips.count("test_clip") > 0);
+    const auto& clip = model.anim_clips.at("test_clip");
+    EXPECT_EQ(clip.frame_count, 2u);
+    EXPECT_FLOAT_EQ(clip.fps, 30.0f);
+    EXPECT_FLOAT_EQ(clip.blade_frames[0].m[0], 1.0f);
+    EXPECT_FLOAT_EQ(clip.blade_frames[1].m[0], 2.0f);
+}
 
 TEST(CSViewModelTest, AuthenticCS2AnimationTracksFidelity) {
     using namespace erov::cs_anims;
 
+    // Locate cs_butterfly_viewmodel.bin across candidate paths
+    const std::vector<std::string> candidate_paths = {
+        "build/cs2assets/cs_butterfly_viewmodel.bin",
+        "../../build/cs2assets/cs_butterfly_viewmodel.bin",
+        "../build/cs2assets/cs_butterfly_viewmodel.bin",
+        "C:\\Program Files (x86)\\Steam\\steamapps\\common\\ELDEN RING\\Game\\mods\\mc_adapter\\cs_butterfly_viewmodel.bin"
+    };
+
+    std::string model_path;
+    for (const auto& p : candidate_paths) {
+        if (std::filesystem::exists(p)) {
+            model_path = p;
+            break;
+        }
+    }
+
+    if (model_path.empty()) {
+        GTEST_SKIP() << "cs_butterfly_viewmodel.bin not found in workspace candidate paths";
+    }
+
+    CSViewModel vm;
+    ASSERT_TRUE(vm.loadFromFile(model_path));
+    EXPECT_EQ(vm.header().version, 2u);
+
     // 1. Inspect Animation track checks
-    EXPECT_EQ(kInspectFrameCount, 124u);
-    EXPECT_FLOAT_EQ(kInspectFps, 30.0f);
-    EXPECT_NEAR(kInspectDuration, 4.10f, 0.05f);
+    ASSERT_TRUE(vm.anim_clips.count("inspect") > 0);
+    const auto& inspect = vm.anim_clips.at("inspect");
+    EXPECT_EQ(inspect.frame_count, 124u);
+    EXPECT_FLOAT_EQ(inspect.fps, 30.0f);
+    EXPECT_EQ(inspect.blade_frames.size(), 124u);
+    EXPECT_EQ(inspect.front_frames.size(), 124u);
+    EXPECT_EQ(inspect.rear_frames.size(), 124u);
+    EXPECT_EQ(inspect.lock_frames.size(), 124u);
+    EXPECT_EQ(inspect.arms_frames.size(), 124u);
+
+    const float inspect_duration = static_cast<float>(inspect.frame_count - 1) / inspect.fps;
+    EXPECT_NEAR(inspect_duration, 4.10f, 0.05f);
 
     // Frame 0 must be resting identity matrix
-    const auto& f0 = kInspectBlade[0];
+    const auto& f0 = inspect.blade_frames[0];
     EXPECT_NEAR(f0.m[0], 1.0f, 0.01f);
     EXPECT_NEAR(f0.m[5], 1.0f, 0.01f);
     EXPECT_NEAR(f0.m[10], 1.0f, 0.01f);
@@ -213,7 +321,7 @@ TEST(CSViewModelTest, AuthenticCS2AnimationTracksFidelity) {
     EXPECT_NEAR(f0.m[11], 0.0f, 0.01f);
 
     // Last frame (123) must smoothly return to resting identity matrix (< 0.02 delta)
-    const auto& f_last = kInspectBlade[123];
+    const auto& f_last = inspect.blade_frames[123];
     EXPECT_NEAR(f_last.m[0], 1.0f, 0.02f);
     EXPECT_NEAR(f_last.m[5], 1.0f, 0.02f);
     EXPECT_NEAR(f_last.m[10], 1.0f, 0.02f);
@@ -223,31 +331,53 @@ TEST(CSViewModelTest, AuthenticCS2AnimationTracksFidelity) {
     EXPECT_NEAR(f_last.m[11], 0.0f, 0.02f);
 
     // Middle of inspect (frame 60) must have significant flourish rotation (trace significantly differs from 4.0)
-    const auto& f60 = kInspectBlade[60];
+    const auto& f60 = inspect.blade_frames[60];
     const float trace = f60.m[0] + f60.m[5] + f60.m[10] + f60.m[15];
     EXPECT_LT(trace, 2.5f); // Substantial rotation away from identity!
 
     // 2. Deploy Animation track checks
-    EXPECT_EQ(kDeployFrameCount, 31u);
-    EXPECT_FLOAT_EQ(kDeployFps, 30.0f);
-    EXPECT_NEAR(kDeployDuration, 1.0f, 0.05f);
+    ASSERT_TRUE(vm.anim_clips.count("deploy") > 0);
+    const auto& deploy = vm.anim_clips.at("deploy");
+    EXPECT_EQ(deploy.frame_count, 31u);
+    EXPECT_FLOAT_EQ(deploy.fps, 30.0f);
+    const float deploy_duration = static_cast<float>(deploy.frame_count - 1) / deploy.fps;
+    EXPECT_NEAR(deploy_duration, 1.0f, 0.05f);
 
     // End of deploy (frame 30) must be resting identity matrix
-    const auto& d_last = kDeployBlade[30];
+    const auto& d_last = deploy.blade_frames[30];
     EXPECT_NEAR(d_last.m[0], 1.0f, 0.01f);
     EXPECT_NEAR(d_last.m[5], 1.0f, 0.01f);
     EXPECT_NEAR(d_last.m[10], 1.0f, 0.01f);
 
     // 3. Backstab Animation track checks
-    EXPECT_EQ(kBackstabFrameCount, 36u);
-    EXPECT_FLOAT_EQ(kBackstabFps, 30.0f);
+    ASSERT_TRUE(vm.anim_clips.count("backstab") > 0);
+    const auto& backstab = vm.anim_clips.at("backstab");
+    EXPECT_EQ(backstab.frame_count, 36u);
+    EXPECT_FLOAT_EQ(backstab.fps, 30.0f);
 
-    // 4. Test sampling function
+    // 4. Test dynamic sampling function
     eldenring::fp::M4 sampled{};
-    SampleTrack(kInspectBlade, kInspectFrameCount, kInspectFps, 0.0f, sampled);
+    SampleDynamicTrack(inspect.blade_frames, inspect.fps, 0.0f, sampled);
     EXPECT_NEAR(sampled.m[0], 1.0f, 0.01f);
-    SampleTrack(kInspectBlade, kInspectFrameCount, kInspectFps, kInspectDuration, sampled);
+    SampleDynamicTrack(inspect.blade_frames, inspect.fps, inspect_duration, sampled);
     EXPECT_NEAR(sampled.m[0], 1.0f, 0.02f);
+
+    // 5. Test CSViewModelAnimator dynamic integration
+    CSViewModelAnimator anim;
+    anim.setModel(&vm);
+
+    // Tick inspect at t = 0 (resting)
+    anim.tick(0.016f, 1 /* Inspect */, 0.0f);
+    EXPECT_NEAR(anim.bladePose().m[0], 1.0f, 0.02f);
+
+    // Tick inspect at t = 2.0s (mid flourish)
+    anim.tick(0.016f, 1 /* Inspect */, 2.0f);
+    const float mid_trace = anim.bladePose().m[0] + anim.bladePose().m[5] + anim.bladePose().m[10] + anim.bladePose().m[15];
+    EXPECT_LT(mid_trace, 3.0f); // Demonstrates dynamic flourish applied to renderer pose
+
+    // Tick deploy at end
+    anim.tick(0.016f, 4 /* Deploy */, deploy_duration);
+    EXPECT_NEAR(anim.bladePose().m[0], 1.0f, 0.02f);
 }
 
 TEST(CSViewModelTest, Decoupled68DegreeViewmodelProjection) {
@@ -475,7 +605,24 @@ TEST(CSViewModelTest, TddWeaponRegistryResetToDefaultsAndDynamicSwitching) {
 }
 
 TEST(CSViewModelTest, TddCsRendererNaturalPoseAndStateTransitions) {
+    CSViewModel vm;
+    const std::vector<std::string> candidate_paths = {
+        "build/cs2assets/cs_butterfly_viewmodel.bin",
+        "../../build/cs2assets/cs_butterfly_viewmodel.bin",
+        "../build/cs2assets/cs_butterfly_viewmodel.bin",
+        "C:\\Program Files (x86)\\Steam\\steamapps\\common\\ELDEN RING\\Game\\mods\\mc_adapter\\cs_butterfly_viewmodel.bin"
+    };
+    for (const auto& p : candidate_paths) {
+        if (std::filesystem::exists(p)) {
+            vm.loadFromFile(p);
+            break;
+        }
+    }
+
     CSViewModelAnimator anim;
+    if (!vm.anim_clips.empty()) {
+        anim.setModel(&vm);
+    }
     EXPECT_EQ(anim.currentState(), 0);
 
     // State 0: Idle stance. Camera origin must be strictly at (0, 0, 0)

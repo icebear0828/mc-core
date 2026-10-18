@@ -710,8 +710,9 @@ bool CsRenderer::loadModel(ID3D12Device* device, const std::string& path) {
         }
     }
 
-    if (log_) log_("cs_render: CSVM model loaded: %u vertices, %u indices, %zu submeshes",
-                   model_.header_.total_vertices, model_.header_.total_indices, model_.submeshes.size());
+    animator_.setModel(&model_);
+    if (log_) log_("cs_render: CSVM model loaded: %u vertices, %u indices, %zu submeshes, %zu anim clips",
+                   model_.header_.total_vertices, model_.header_.total_indices, model_.submeshes.size(), model_.anim_clips.size());
     return true;
 }
 
