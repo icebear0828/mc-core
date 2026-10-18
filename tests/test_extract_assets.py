@@ -171,6 +171,23 @@ def test_export_mob_skin_writes_the_zombie_skin_unchanged(tmp_path):
     assert written.getpixel((0, 0)) == (40, 120, 60, 255)
 
 
+def test_export_mob_skin_writes_the_skeleton_skin(tmp_path):
+    import zipfile
+    from extract_mc_assets import export_mob_skin
+
+    jar_path = tmp_path / "client.jar"
+    skin = _solid((64, 64), (180, 180, 180, 255))
+    skin.putpixel((5, 5), (50, 50, 50, 255))
+    with zipfile.ZipFile(jar_path, "w") as z:
+        z.writestr("assets/minecraft/textures/entity/skeleton/skeleton.png", _png(skin))
+
+    out = export_mob_skin(jar_path, tmp_path / "out", "skeleton")
+    assert out == tmp_path / "out" / "skeleton.png"
+    written = Image.open(out).convert("RGBA")
+    assert written.size == (64, 64)
+    assert written.getpixel((5, 5)) == (50, 50, 50, 255)
+
+
 def test_export_mob_skin_rejects_unknown_mobs_missing_entries_and_wrong_sizes(tmp_path):
     import zipfile
     from extract_mc_assets import export_mob_skin
@@ -266,6 +283,7 @@ HUD_KEYS = [
     "empty_armor_slot_helmet", "empty_armor_slot_chestplate", "empty_armor_slot_leggings", "empty_armor_slot_boots",
     "armor_empty", "armor_half", "armor_full",
     *[f"destroy_stage_{i}" for i in range(10)],
+    "item_creeper_spawn_egg", "item_skeleton_spawn_egg",
 ]
 
 HUD_SIZES = {
@@ -493,6 +511,37 @@ def test_zombie_spawn_egg_prefers_the_mobs_own_texture_of_newer_jars(tmp_path):
     atlas, uv = build_hud_atlas(jar)
     region = _hud_region(atlas, uv["item_zombie_spawn_egg"])
     assert {region.getpixel((x, y)) for x in range(16) for y in range(16)} == {(12, 34, 56, 255)}
+
+
+def test_creeper_and_skeleton_spawn_eggs_tinted_and_direct_textures(tmp_path):
+    import zipfile
+    from extract_mc_assets import build_hud_atlas
+
+    # 1. Test fallback to tinted egg
+    atlas, uv = build_hud_atlas(_hud_jar(tmp_path / "legacy.jar"))
+    assert "item_creeper_spawn_egg" in uv
+    assert "item_skeleton_spawn_egg" in uv
+
+    creeper_egg = _hud_region(atlas, uv["item_creeper_spawn_egg"])
+    # 200 * 0x0D // 255 = 10, 200 * 0xA7 // 255 = 130, 200 * 0x0B // 255 = 8
+    assert creeper_egg.getpixel((3, 3)) == (10, 130, 8, 255)
+    # spot is 0x000000
+    assert creeper_egg.getpixel((8, 8)) == (0, 0, 0, 255)
+
+    skeleton_egg = _hud_region(atlas, uv["item_skeleton_spawn_egg"])
+    # 200 * 0xC1 / 255 = 151
+    assert skeleton_egg.getpixel((3, 3)) == (151, 151, 151, 255)
+    # spot is 0x494949
+    assert skeleton_egg.getpixel((8, 8)) == (0x49, 0x49, 0x49, 255)
+
+    # 2. Test modern jar texture preference
+    modern_jar = _hud_jar(tmp_path / "modern.jar")
+    with zipfile.ZipFile(modern_jar, "a") as z:
+        z.writestr("assets/minecraft/textures/item/creeper_spawn_egg.png", _png(_solid((16, 16), (11, 22, 33, 255))))
+        z.writestr("assets/minecraft/textures/item/skeleton_spawn_egg.png", _png(_solid((16, 16), (44, 55, 66, 255))))
+    atlas2, uv2 = build_hud_atlas(modern_jar)
+    assert _hud_region(atlas2, uv2["item_creeper_spawn_egg"]).getpixel((0, 0)) == (11, 22, 33, 255)
+    assert _hud_region(atlas2, uv2["item_skeleton_spawn_egg"]).getpixel((0, 0)) == (44, 55, 66, 255)
 
 
 def test_the_three_drawn_bow_sprites_are_copied_from_the_jar_and_have_placeholders_without_one(tmp_path):

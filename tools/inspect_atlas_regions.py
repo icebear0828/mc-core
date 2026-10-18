@@ -8,16 +8,18 @@ Inspect the deployed mc_hud_atlas.png and check UV regions for:
 from PIL import Image
 from pathlib import Path
 
-GAME_DIR = Path(r"C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game")
-ATLAS_PATH = GAME_DIR / "mods" / "mc_adapter" / "mc_hud_atlas.png"
+import sys
 
-def check():
-    if not ATLAS_PATH.is_file():
-        print(f"Error: {ATLAS_PATH} not found")
+GAME_DIR = Path(r"C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game")
+DEFAULT_ATLAS = GAME_DIR / "mods" / "mc_adapter" / "mc_hud_atlas.png"
+
+def check(atlas_path: Path = DEFAULT_ATLAS):
+    if not atlas_path.is_file():
+        print(f"Error: {atlas_path} not found")
         return
-    img = Image.open(ATLAS_PATH).convert("RGBA")
+    img = Image.open(atlas_path).convert("RGBA")
     w, h = img.size
-    print(f"Atlas dimensions: {w}x{h}")
+    print(f"Atlas {atlas_path} dimensions: {w}x{h}")
 
     # UV definitions from include/mc/hud_atlas.hpp
     # kUV_ITEM_SHIELD = {0.908203f, 0.320312f, 0.939453f, 0.351562f};
@@ -34,6 +36,9 @@ def check():
         "diamond_chestplate": (0.443359, 0.320312, 0.474609, 0.351562),
         "diamond_leggings": (0.478516, 0.320312, 0.509766, 0.351562),
         "diamond_boots": (0.513672, 0.320312, 0.544922, 0.351562),
+        "zombie_spawn_egg": (0.716797, 0.320312, 0.748047, 0.351562),
+        "creeper_spawn_egg": (0.785156, 0.369141, 0.816406, 0.400391),
+        "skeleton_spawn_egg": (0.818359, 0.369141, 0.849609, 0.400391),
     }
 
     for name, (u0, v0, u1, v1) in regions.items():
@@ -43,10 +48,11 @@ def check():
         y1 = int(round(v1 * h))
         box = (x0, y0, x1, y1)
         cropped = img.crop(box)
-        pixels = list(cropped.getdata())
+        pixels = [cropped.getpixel((x, y)) for y in range(cropped.height) for x in range(cropped.width)]
         non_transparent = [p for p in pixels if p[3] > 0]
         alpha_sum = sum(p[3] for p in pixels)
         print(f"Region {name} {box} ({x1-x0}x{y1-y0}): {len(non_transparent)}/{len(pixels)} solid pixels, total alpha: {alpha_sum}")
 
 if __name__ == "__main__":
-    check()
+    target = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_ATLAS
+    check(target)

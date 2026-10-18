@@ -53,6 +53,7 @@ public:
     bool setSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
     // The same for the mobs' skin (zombie): its SRV at `slot` must directly follow a depth SRV copy, they form the table the mobs are drawn with.
     bool setMobSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    bool setMobSkinNamed(ID3D12Device* device, const char* name, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
 
     // The figure's own depth buffer (D32_FLOAT, standard 0..1 depth, cleared by draw()). Recreated when the size changes.
     bool ensureDepth(ID3D12Device* device, unsigned width, unsigned height);
@@ -184,6 +185,7 @@ private:
     unsigned own_depth_w_{0}, own_depth_h_{0};
     SkinGpu skin_;     // Steve
     SkinGpu mob_skin_; // the mobs over the summons (zombie)
+    std::map<std::string, SkinGpu> mob_skins_named_;
     ID3D12Resource* vertices_{nullptr};
     ID3D12Resource* indices_{nullptr};
     D3D12_VERTEX_BUFFER_VIEW vbv_{};

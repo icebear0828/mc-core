@@ -74,6 +74,8 @@ TEST(HudEngineTest, ItemSlotsAndDisplayNames) {
 
 TEST(HudEngineTest, ZombieSpawnEggHasItsVanillaName) {
     EXPECT_STREQ(HudEngine::getItemDisplayName(ItemId::ZombieSpawnEgg), "Zombie Spawn Egg");
+    EXPECT_STREQ(HudEngine::getItemDisplayName(ItemId::CreeperSpawnEgg), "Creeper Spawn Egg");
+    EXPECT_STREQ(HudEngine::getItemDisplayName(ItemId::SkeletonSpawnEgg), "Skeleton Spawn Egg");
 }
 
 TEST(HudEngineTest, HeartContainersCalculation) {

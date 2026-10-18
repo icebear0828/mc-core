@@ -93,8 +93,30 @@ enum class ItemId : uint16_t {
     DiamondHelmet,
     DiamondChestplate,
     DiamondLeggings,
-    DiamondBoots
+    DiamondBoots,
+    CreeperSpawnEgg,
+    SkeletonSpawnEgg
 };
+
+constexpr bool isSpawnEgg(ItemId item) noexcept {
+    return item == ItemId::ZombieSpawnEgg || item == ItemId::CreeperSpawnEgg || item == ItemId::SkeletonSpawnEgg;
+}
+
+constexpr const char* spawnEggToMobType(ItemId item) noexcept {
+    switch (item) {
+        case ItemId::CreeperSpawnEgg:  return "creeper";
+        case ItemId::SkeletonSpawnEgg: return "skeleton";
+        case ItemId::ZombieSpawnEgg:   return "zombie";
+        default: return nullptr;
+    }
+}
+
+inline ItemId mobTypeToSpawnEgg(std::string_view type) noexcept {
+    if (type == "creeper") return ItemId::CreeperSpawnEgg;
+    if (type == "skeleton") return ItemId::SkeletonSpawnEgg;
+    if (type == "zombie") return ItemId::ZombieSpawnEgg;
+    return ItemId::None;
+}
 
 enum class ArmorSlot : uint8_t {
     Helmet = 0,

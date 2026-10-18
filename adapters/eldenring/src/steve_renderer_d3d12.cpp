@@ -432,6 +432,12 @@ void SteveRenderer::release() {
     Rel(mob_skin_.tex);
     Rel(mob_skin_.upload);
     mob_skin_.pending = false;
+    for (auto& [_, s] : mob_skins_named_) {
+        Rel(s.tex);
+        Rel(s.upload);
+        s.pending = false;
+    }
+    mob_skins_named_.clear();
     Rel(stats_);
     Rel(stats_init_);
     Rel(stats_readback_);
@@ -807,6 +813,15 @@ bool SteveRenderer::setMobSkin(ID3D12Device* device, const uint8_t* rgba, unsign
     return CreateSkinTexture(device, rgba, width, height, slot, mob_skin_);
 }
 
+bool SteveRenderer::setMobSkinNamed(ID3D12Device* device, const char* name, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    if (!name || name[0] == '\0') return setMobSkin(device, rgba, width, height, slot);
+    SkinGpu& s = mob_skins_named_[name];
+    Rel(s.tex);
+    Rel(s.upload);
+    s.pending = false;
+    return CreateSkinTexture(device, rgba, width, height, slot, s);
+}
+
 void SteveRenderer::setDepthView(ID3D12Device* device, ID3D12Resource* depth, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
     D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
     sd.Format = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
@@ -875,6 +890,7 @@ void SteveRenderer::drawMobModel(ID3D12GraphicsCommandList* list, ID3D12Descript
     if (!ready() || !own_depth_ || !dsv_heap_ || !mobModelReady()) return;
     RecordSkinUpload(list, skin_);
     RecordSkinUpload(list, mob_skin_);
+    for (auto& [_, s] : mob_skins_named_) RecordSkinUpload(list, s);
     D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
     D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
     list->RSSetViewports(1, &vp);
@@ -939,6 +955,7 @@ void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* 
     if (!ready() || !own_depth_ || !dsv_heap_) return;
     RecordSkinUpload(list, skin_);
     RecordSkinUpload(list, mob_skin_);
+    for (auto& [_, s] : mob_skins_named_) RecordSkinUpload(list, s);
     D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
     D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
     list->RSSetViewports(1, &vp);
@@ -1029,6 +1046,7 @@ void SteveRenderer::drawInventoryPreview(ID3D12GraphicsCommandList* list, ID3D12
     if (!ready() || !own_depth_ || !dsv_heap_) return;
     RecordSkinUpload(list, skin_);
     RecordSkinUpload(list, mob_skin_);
+    for (auto& [_, s] : mob_skins_named_) RecordSkinUpload(list, s);
     list->RSSetViewports(1, &vp);
     list->RSSetScissorRects(1, &sc);
     const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
