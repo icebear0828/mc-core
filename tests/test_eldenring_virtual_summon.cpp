@@ -442,8 +442,8 @@ TEST(VirtualSummonTest, SkeletonRangedCombatMaintainsStandoffAndFires) {
         makeEnemy(0xAAAA, 0.0f, 0.0f, 12.0f, 200, 200)
     };
 
-    // Step 0.1s
-    mgr.update(0.1f, p, enemies);
+    // Step 0.8s (bow draw duration)
+    mgr.update(0.8f, p, enemies);
 
     const auto* skel = mgr.findMob(skel_id);
     ASSERT_NE(skel, nullptr);
@@ -467,13 +467,13 @@ TEST(VirtualSummonTest, SkeletonRangedCombatMaintainsStandoffAndFires) {
     EXPECT_FLOAT_EQ(proj_intents[0].damage, 7.0f);
     EXPECT_FLOAT_EQ(proj_intents[0].speed, 22.0f);
 
-    // Cooldown in effect: step another 0.5s (0.6s total < 1.5s cooldown) -> no new intents
+    // Cooldown in effect: step another 0.5s (0.5s < 1.5s cooldown) -> no new intents
     mgr.update(0.5f, p, enemies);
     EXPECT_TRUE(mgr.drainDamageIntents().empty());
     EXPECT_TRUE(mgr.drainProjectileIntents().empty());
 
-    // Step 1.0s more (total 1.6s > 1.5s cooldown) -> fires second arrow!
-    mgr.update(1.0f, p, enemies);
+    // Step 2.0s more (total > 1.5s cooldown + 0.8s draw) -> fires second arrow!
+    mgr.update(2.0f, p, enemies);
     auto second_shots = mgr.drainDamageIntents();
     EXPECT_EQ(second_shots.size(), 1u);
 }
@@ -747,5 +747,64 @@ TEST(VirtualSummonTest, ShiftTranslatesAllMobsAndProjectiles) {
     EXPECT_FLOAT_EQ(s_after->pos[0], s_x0);
     EXPECT_FLOAT_EQ(s_after->pos[1], s_y0);
     EXPECT_FLOAT_EQ(s_after->pos[2], s_z0 + 32.0f);
+}
+
+TEST(VirtualSummonTest, SkeletonChargesBowProgressivelyBeforeFiring) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t skel_id = mgr.spawnMob("skeleton", p, 2.0f);
+    ASSERT_NE(skel_id, 0u);
+
+    std::vector<EnemyTarget> enemies = {
+        makeEnemy(0xCCCC, 0.0f, 0.0f, 10.0f, 200, 200)
+    };
+
+    // Step 0.2s: Skeleton aims and begins pulling the bow
+    mgr.update(0.2f, p, enemies);
+    const auto* skel = mgr.findMob(skel_id);
+    ASSERT_NE(skel, nullptr);
+    EXPECT_GT(skel->bow_charge, 0.1f);
+    EXPECT_LT(skel->bow_charge, 1.0f);
+
+    // Snapshot also carries bow_charge
+    auto snaps = mgr.generateSnapshots();
+    ASSERT_EQ(snaps.size(), 1u);
+    EXPECT_FLOAT_EQ(snaps[0].bow_charge, skel->bow_charge);
+
+    // No projectile fired yet mid-charge
+    EXPECT_TRUE(mgr.drainProjectileIntents().empty());
+
+    // Step remaining draw time (total > 0.8s) -> arrow released, bow_charge reset!
+    mgr.update(0.7f, p, enemies);
+    EXPECT_FALSE(mgr.drainProjectileIntents().empty());
+    EXPECT_FLOAT_EQ(skel->bow_charge, 0.0f);
+}
+
+TEST(VirtualSummonTest, ZombieAdvancesSwingProgressDuringMeleeAttack) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t z_id = mgr.spawnMob("zombie", p, 2.0f);
+    ASSERT_NE(z_id, 0u);
+
+    // Enemy placed right in melee range (1.0m)
+    std::vector<EnemyTarget> enemies = {
+        makeEnemy(0xDDDD, 0.0f, 0.0f, 1.0f, 200, 200)
+    };
+
+    // Update 1: attack triggers
+    mgr.update(0.05f, p, enemies);
+    const auto* z = mgr.findMob(z_id);
+    ASSERT_NE(z, nullptr);
+    EXPECT_GT(z->swing_progress, 0.0f);
+    EXPECT_LE(z->swing_progress, 0.5f);
+
+    // Snapshot carries swing_progress
+    auto snaps = mgr.generateSnapshots();
+    ASSERT_EQ(snaps.size(), 1u);
+    EXPECT_FLOAT_EQ(snaps[0].swing_progress, z->swing_progress);
+
+    // Step past swing duration (> 0.35s)
+    mgr.update(0.4f, p, enemies);
+    EXPECT_FLOAT_EQ(z->swing_progress, 0.0f);
 }
 

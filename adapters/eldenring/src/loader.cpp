@@ -2218,33 +2218,29 @@ void SetupOverlay() {
                 Log("skin: %s missing or not 64x64, the figure stays flat grey-brown (extract it with tools/extract_mc_assets.py --export-steve-skin)", skin_path.c_str());
             }
         }
-        {   // the mobs' model: check creeper.geo.json first, then fallback to zombie.geo.json
-            std::vector<uint8_t> json;
-            std::string model_path = g_game_dir + "mods\\mc_adapter\\models\\creeper.geo.json";
-            if (!FileExists(model_path)) {
-                model_path = g_game_dir + "mods\\mc_adapter\\models\\zombie.geo.json";
-            }
-            std::optional<mc::model::EntityModel> model;
-            if (ReadFileAll(model_path, json)) model = mc::model::EntityModel::fromJson(std::string_view(reinterpret_cast<const char*>(json.data()), json.size()));
-            if (model && !model->bones.empty()) {
-                erov::SetMobModel(*model);
-                Log("mobs: model %s: %s, %zu bones", model_path.c_str(), model->identifier.c_str(), model->bones.size());
-            } else {
-                Log("mobs: no model at %s, the mobs use the Steve rig", model_path.c_str());
-            }
-        }
-        {
-            std::vector<uint8_t> mob_skin;
-            unsigned zw = 0, zh = 0;
-            std::string skin_path = g_game_dir + "mods\\mc_adapter\\creeper.png";
-            if (!FileExists(skin_path)) {
-                skin_path = g_game_dir + "mods\\mc_adapter\\zombie.png";
-            }
-            if (erov::DecodePngFile(skin_path, mob_skin, zw, zh) && zw == 64 && (zh == 64 || zh == 32)) {
-                erov::SetMobSkin(mob_skin.data(), zw, zh);
-                Log("skin: external file %s (%ux%u)", skin_path.c_str(), zw, zh);
-            } else {
-                Log("skin: %s missing or not 64x64/64x32", skin_path.c_str());
+        {   // Load all available mob models and skins (creeper, zombie, skeleton)
+            const std::vector<std::string> supported_mobs = {"creeper", "zombie", "skeleton"};
+            for (const auto& mob : supported_mobs) {
+                std::string model_path = g_game_dir + "mods\\mc_adapter\\models\\" + mob + ".geo.json";
+                std::vector<uint8_t> json;
+                if (ReadFileAll(model_path, json)) {
+                    auto model = mc::model::EntityModel::fromJson(std::string_view(reinterpret_cast<const char*>(json.data()), json.size()));
+                    if (model && !model->bones.empty()) {
+                        erov::SetMobModel(mob, *model);
+                        Log("mobs: model %s (%s): %zu bones", mob.c_str(), model->identifier.c_str(), model->bones.size());
+                    }
+                } else {
+                    Log("mobs: model file missing at %s", model_path.c_str());
+                }
+                std::string skin_path = g_game_dir + "mods\\mc_adapter\\" + mob + ".png";
+                std::vector<uint8_t> mob_skin;
+                unsigned zw = 0, zh = 0;
+                if (erov::DecodePngFile(skin_path, mob_skin, zw, zh) && zw == 64 && (zh == 64 || zh == 32)) {
+                    erov::SetMobSkin(mob, mob_skin.data(), zw, zh);
+                    Log("mobs: skin %s (%ux%u)", mob.c_str(), zw, zh);
+                } else {
+                    Log("mobs: skin %s missing or not 64x64/64x32 at %s", mob.c_str(), skin_path.c_str());
+                }
             }
         }
         g_steve_enabled.store(true);

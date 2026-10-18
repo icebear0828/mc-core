@@ -96,6 +96,8 @@ struct VirtualMob {
     float damage{6.0f};
     float vel_y{0.0f};
     bool on_ground{true};
+    float bow_charge{0.0f};     // [0, 1] for ranged archer aim
+    float swing_progress{0.0f}; // [0, 1] for melee attack swing
 };
 
 class VirtualSummonManager {
@@ -325,6 +327,12 @@ public:
             if (mob.attack_cooldown > 0.0f) {
                 mob.attack_cooldown = std::max(0.0f, mob.attack_cooldown - dt);
             }
+            if (mob.swing_progress > 0.0f) {
+                mob.swing_progress += dt / 0.35f;
+                if (mob.swing_progress >= 1.0f) {
+                    mob.swing_progress = 0.0f;
+                }
+            }
 
             const bool is_creeper = (mob.attack_style == MobAttackStyle::SuicideExplode);
 
@@ -436,27 +444,35 @@ public:
                     // Fire ranged attack when within attack range and cooldown ready
                     if (dist <= mob.attack_range) {
                         if (mob.attack_cooldown <= 0.0f) {
-                            DamageIntent intent;
-                            intent.target_chr_ins = best_target;
-                            intent.damage_amount = mob.damage;
-                            intent.source_mob_id = mob.id;
-                            damage_intents_.push_back(intent);
+                            mob.bow_charge = std::min(1.0f, mob.bow_charge + dt / 0.8f);
+                            if (mob.bow_charge >= 1.0f) {
+                                DamageIntent intent;
+                                intent.target_chr_ins = best_target;
+                                intent.damage_amount = mob.damage;
+                                intent.source_mob_id = mob.id;
+                                damage_intents_.push_back(intent);
 
-                            ProjectileIntent proj;
-                            proj.source_mob_id = mob.id;
-                            proj.target_chr_ins = best_target;
-                            proj.origin[0] = mob.pos[0];
-                            proj.origin[1] = mob.pos[1] + 1.4f;
-                            proj.origin[2] = mob.pos[2];
-                            proj.direction[0] = dx / dist;
-                            proj.direction[1] = (target_pos[1] - (mob.pos[1] + 1.4f)) / dist;
-                            proj.direction[2] = dz / dist;
-                            proj.damage = mob.damage;
-                            proj.speed = 22.0f;
-                            projectile_intents_.push_back(proj);
+                                ProjectileIntent proj;
+                                proj.source_mob_id = mob.id;
+                                proj.target_chr_ins = best_target;
+                                proj.origin[0] = mob.pos[0];
+                                proj.origin[1] = mob.pos[1] + 1.4f;
+                                proj.origin[2] = mob.pos[2];
+                                proj.direction[0] = dx / dist;
+                                proj.direction[1] = (target_pos[1] - (mob.pos[1] + 1.4f)) / dist;
+                                proj.direction[2] = dz / dist;
+                                proj.damage = mob.damage;
+                                proj.speed = 22.0f;
+                                projectile_intents_.push_back(proj);
 
-                            mob.attack_cooldown = mob.cooldown_duration;
+                                mob.bow_charge = 0.0f;
+                                mob.attack_cooldown = mob.cooldown_duration;
+                            }
+                        } else {
+                            mob.bow_charge = 0.0f;
                         }
+                    } else {
+                        mob.bow_charge = std::max(0.0f, mob.bow_charge - dt * 2.0f);
                     }
                 } else if (mob.attack_style == MobAttackStyle::Melee) {
                     // Standard melee attack for zombie/iron_golem/wolf
@@ -468,6 +484,7 @@ public:
                             intent.source_mob_id = mob.id;
                             damage_intents_.push_back(intent);
                             mob.attack_cooldown = mob.cooldown_duration;
+                            mob.swing_progress = 0.01f;
                         }
                     } else {
                         float step = std::min(dist, mob.speed * dt);
@@ -478,6 +495,7 @@ public:
                     }
                 }
             } else if (!is_creeper || !mob.manual_primed) {
+                mob.bow_charge = std::max(0.0f, mob.bow_charge - dt * 2.0f);
                 // Follow player when idle (if not manually primed creeper)
                 // In Minecraft / natural companion behaviour: summons smoothly follow player on XZ ground.
                 float dx = player.pos[0] - mob.pos[0];
@@ -678,6 +696,8 @@ public:
             s.model_type = mob.model_type;
             s.scale = mob.scale;
             s.white_flash = mob.white_flash;
+            s.bow_charge = mob.bow_charge;
+            s.swing_progress = mob.swing_progress;
             out.push_back(s);
         }
         return out;

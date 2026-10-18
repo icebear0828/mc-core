@@ -11,6 +11,7 @@
 #include "mc/mobs.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <map>
 #include <vector>
@@ -35,6 +36,8 @@ struct MobSnapshot {
     std::string model_type;
     float scale{1.0f};
     float white_flash{0.0f};
+    float bow_charge{0.0f};     // [0, 1] for ranged archer aim
+    float swing_progress{0.0f}; // [0, 1] for melee attack swing
 };
 
 struct MobDraw {
@@ -133,13 +136,39 @@ private:
         float dying{-1.f}; // seconds since the hit points ran out; < 0: alive
     };
 
+    static inline mc::Quat mobEulerToHostQuat(float pitch, float yaw, float roll) {
+        const float cy = std::cos(yaw * 0.5f);
+        const float sy = std::sin(yaw * 0.5f);
+        const float cp = std::cos(pitch * 0.5f);
+        const float sp = std::sin(pitch * 0.5f);
+        const float cr = std::cos(roll * 0.5f);
+        const float sr = std::sin(roll * 0.5f);
+
+        mc::Quat q;
+        q.w = cr * cp * cy + sr * sp * sy;
+        q.x = sr * cp * cy - cr * sp * sy;
+        q.y = cr * sp * cy + sr * cp * sy;
+        q.z = cr * cp * sy - sr * sp * cy;
+        return eldenring::render::hostQuat(q);
+    }
+
     // One matrix per bone: the animator's rotation of the Steve part a bone is named after (bones with other names stay at rest), the figure
     // standing at the snapshot's feet and turned to its heading.
     static std::vector<mc::rig::Mat4> poseFromAnimator(const mc::model::EntityModel& model, const mc::SteveAnimator::PartTransforms& t, const MobSnapshot& s) {
         std::vector<mc::Quat> extra(model.bones.size());
         for (size_t i = 0; i < model.bones.size(); ++i) {
             const std::string& name = model.bones[i].name;
-            if (const auto part = mc::model::humanoidPartForBone(name)) {
+            if (s.bow_charge > 0.0f && name == "right_arm") {
+                extra[i] = mobEulerToHostQuat(0.15f * s.bow_charge, -0.45f * s.bow_charge, 0.05f * s.bow_charge);
+            } else if (s.bow_charge > 0.0f && name == "left_arm") {
+                extra[i] = mobEulerToHostQuat(0.0f, 0.35f * s.bow_charge, -0.05f * s.bow_charge);
+            } else if (s.swing_progress > 0.0f && name == "right_arm") {
+                const float swing = std::sin(s.swing_progress * 3.14159265f);
+                extra[i] = mobEulerToHostQuat(-swing * 0.8f, swing * 0.3f, -swing * 0.2f);
+            } else if (s.swing_progress > 0.0f && name == "left_arm") {
+                const float swing = std::sin(s.swing_progress * 3.14159265f);
+                extra[i] = mobEulerToHostQuat(-swing * 0.4f, -swing * 0.2f, 0.f);
+            } else if (const auto part = mc::model::humanoidPartForBone(name)) {
                 extra[i] = eldenring::render::hostQuat(t[static_cast<size_t>(*part)].rot);
             } else if (name == "leg0" || name == "leg3") {
                 extra[i] = eldenring::render::hostQuat(t[static_cast<size_t>(mc::StevePart::RightLeg)].rot);
@@ -163,6 +192,8 @@ private:
         const mc::model::EntityModel* model = getModel(s.model_type);
         if (!d.dying) {
             mc::SteveAnimInput in = e.motion.update(dt, s.feet, s.yaw);
+            in.bow_charge = s.bow_charge;
+            in.swing_progress = s.swing_progress;
             if (model != nullptr) in.arms_sway_only = true; // the file's rest rotation holds the arms out
             else in.arms_forward = true;
             e.anim.update(dt, in);

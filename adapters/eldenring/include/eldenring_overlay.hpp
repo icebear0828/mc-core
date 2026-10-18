@@ -109,10 +109,12 @@ void SetHudAtlas(const uint8_t* rgba, unsigned width, unsigned height);
 // Writes `frames` lines of per-frame figure and camera positions to the log (diagnosing jitter).
 void RequestFrameTrace(int frames);
 
-// The mobs' skin (RGBA8, 64x64, the zombie): call before the overlay is created. Without it the mobs wear the Steve skin.
+// The mobs' skin (RGBA8, 64x64 / 64x32): call before the overlay is created. Without it the mobs wear the Steve skin.
 void SetMobSkin(const uint8_t* rgba, unsigned width, unsigned height);
+void SetMobSkin(std::string_view name, const uint8_t* rgba, unsigned width, unsigned height);
 // The mobs' model (a Bedrock geometry file parsed by the loader): call before the overlay is created. Without it the mobs are drawn with the Steve rig.
 void SetMobModel(const mc::model::EntityModel& model);
+void SetMobModel(std::string_view name, const mc::model::EntityModel& model);
 // The mobs drawn over the game's summons this frame (positions and headings in game metres/radians). Thread safe, replaces the last list.
 void SetMobs(const std::vector<eldenring::mobs::MobSnapshot>& mobs);
 

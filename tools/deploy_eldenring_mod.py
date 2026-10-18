@@ -95,12 +95,18 @@ def main():
             shutil.copy2(src_geo, models_dir / f"{mob}.geo.json")
             print(f"[MODEL DEPLOY] Copied {mob}.geo.json to: {models_dir / f'{mob}.geo.json'}")
 
+    # Check build/authentic_atlas first for extracted vanilla textures, fallback to source textures
+    auth_dir = root / "build" / "authentic_atlas"
     src_textures = root / "assets" / "source" / "textures"
-    for tex in ["creeper.png", "zombie.png"]:
-        src_tex = src_textures / tex
+    for mob in ["creeper", "zombie", "skeleton"]:
+        tex_file = f"{mob}.png"
+        src_tex = auth_dir / tex_file
+        if not src_tex.is_file():
+            src_tex = src_textures / tex_file
         if src_tex.is_file():
-            shutil.copy2(src_tex, game_dir / "mods" / "mc_adapter" / tex)
-            print(f"[TEXTURE DEPLOY] Copied {tex} to: {game_dir / 'mods' / 'mc_adapter' / tex}")
+            dst_tex = game_dir / "mods" / "mc_adapter" / tex_file
+            shutil.copy2(src_tex, dst_tex)
+            print(f"[TEXTURE DEPLOY] Copied {mob} skin ({src_tex}) to: {dst_tex}")
 
     # Deploy golden crossbow bolt template (mc_er_bullet.bin)
     src_bullet = root / "tools" / "reverse" / "eldenring" / "templates" / "mc_er_bullet.bin"
