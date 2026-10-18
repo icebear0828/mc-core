@@ -9,6 +9,9 @@
 #ifndef VK_SPACE
 #define VK_SPACE 0x20
 #endif
+#ifndef VK_F1
+#define VK_F1 0x70
+#endif
 #ifndef VK_F2
 #define VK_F2 0x71
 #endif
@@ -328,4 +331,45 @@ TEST_F(HotkeyDispatcherTest, InputDisabledShortCircuitsClickAttackAndInteraction
     left_click_edge_ = true;
     dispatcher_->tick(0.016f);
     EXPECT_TRUE(attack_called_);
+}
+
+TEST_F(HotkeyDispatcherTest, CsModeToggleAndKnifeInspectLifecycle) {
+    auto& ctx = RuntimeContext::Instance();
+    EXPECT_FALSE(ctx.mode().cs_mode.load());
+
+    // Press F1 to toggle CS mode ON
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+
+    EXPECT_TRUE(ctx.mode().cs_mode.load());
+    EXPECT_TRUE(ctx.mode().first_person.load());
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 4); // Deploy triggered
+
+    // Press F to trigger butterfly inspect
+    setKey('F', true);
+    dispatcher_->tick(0.016f);
+    setKey('F', false);
+    dispatcher_->tick(0.016f);
+
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 1); // Inspect triggered
+    EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "cs.knife.inspect") != played_sounds_.end());
+
+    // Left click to trigger knife slash
+    left_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 2); // Slash triggered
+    EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "cs.knife.slash") != played_sounds_.end());
+
+    // Right click to trigger backstab
+    right_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 3); // Backstab triggered
+    EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "cs.knife.hit") != played_sounds_.end());
+
+    // Press F1 again to toggle CS mode OFF
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    EXPECT_FALSE(ctx.mode().cs_mode.load());
 }

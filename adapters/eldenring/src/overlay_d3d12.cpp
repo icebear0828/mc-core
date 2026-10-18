@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 
 #include <mutex>
 #include <vector>
@@ -35,6 +36,8 @@
 #include "overlay_d3d12.hpp"
 #include "png_wic.hpp"
 #include "steve_renderer_d3d12.hpp"
+#include "cs_renderer_d3d12.hpp"
+#include "eldenring_runtime_context.hpp"
 #include "eldenring_inventory_preview.hpp"
 
 namespace erov {
@@ -104,6 +107,7 @@ std::atomic<int> g_trace_left{0}; // F12: frames of per-frame figure/camera posi
 std::vector<uint8_t> g_skin_rgba; // decoded by the loader; applied when the renderer is created
 unsigned g_skin_w = 0, g_skin_h = 0;
 SteveRenderer g_steve;
+CsRenderer g_cs;
 mc::SteveAnimator g_anim;
 eldenring::render::SteveMotion g_motion;
 eldenring::render::HeadTracker g_head;
@@ -204,6 +208,7 @@ void WaitForGpu() {
 void Teardown() {
     if (g_s.ready) WaitForGpu();
     g_steve.release();
+    g_cs.release();
     if (g_s.imgui_ready) {
         ImGui_ImplDX12_Shutdown();
         ImGui::DestroyContext();
@@ -278,7 +283,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
     rtv_desc.NumDescriptors = g_s.buffers;
     D3D12_DESCRIPTOR_HEAP_DESC srv_desc{};
     srv_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    srv_desc.NumDescriptors = 16; // 0: ImGui, 1-2: Steve, 3: HUD, 4-5: FP items, 6-7: Held, 8-9: Creeper, 10-11: Zombie, 12-13: Skeleton, 14-15: extra
+    srv_desc.NumDescriptors = 32; // 0: ImGui, 1-2: Steve, 3: HUD, 4-5: FP items, 6-7: Held, 8-9: Creeper, 10-11: Zombie, 12-13: Skeleton, 14-15: extra, 16-21: CS2 viewmodel PBR
     srv_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(g_s.device->CreateDescriptorHeap(&rtv_desc, IID_PPV_ARGS(&g_s.rtv_heap))) ||
         FAILED(g_s.device->CreateDescriptorHeap(&srv_desc, IID_PPV_ARGS(&g_s.srv_heap)))) {
@@ -420,6 +425,49 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
         }
         g_depth_dirty.store(true); // bind the depth captured so far
         CreateAtlasTexture(srv_inc);
+        if (!g_cs.init(g_s.device, g_s.format, g_log)) {
+            Logf("overlay: CS viewmodel renderer unavailable");
+        } else {
+            D3D12_CPU_DESCRIPTOR_HANDLE cs_table_cpu = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
+            cs_table_cpu.ptr += static_cast<SIZE_T>(srv_inc) * 16;
+            D3D12_CPU_DESCRIPTOR_HANDLE glove_cpu = cs_table_cpu;
+            glove_cpu.ptr += srv_inc;
+
+            const char* model_candidates[] = {
+                "mods\\mc_adapter\\cs_butterfly_viewmodel.bin",
+                "cs_butterfly_viewmodel.bin"
+            };
+            for (const char* p : model_candidates) {
+                if (g_cs.loadModel(g_s.device, p)) {
+                    char cs_msg[128];
+                    snprintf(cs_msg, sizeof(cs_msg), "overlay: CS viewmodel model loaded successfully from %s", p);
+                    Logf(cs_msg);
+                    eldenring::RuntimeContext::Instance().mode().cs_mode.store(true);
+                    eldenring::RuntimeContext::Instance().mode().first_person.store(true);
+                    break;
+                }
+            }
+
+            const char* knife_tex_candidates[] = {
+                "mods\\mc_adapter\\knife_butterfly.png",
+                "mods\\mc_adapter\\textures\\knife_butterfly\\knife_butterfly_color_psd_5a5a48d7.png",
+                "knife_butterfly.png"
+            };
+            const char* glove_tex_candidates[] = {
+                "mods\\mc_adapter\\glove_hardknuckle.png",
+                "mods\\mc_adapter\\textures\\glove_hardknuckle\\glove_hardknuckle_black_color_psd_8f00aa00.png",
+                "glove_hardknuckle.png"
+            };
+            std::string knife_png;
+            for (const char* p : knife_tex_candidates) {
+                if (std::filesystem::exists(p)) { knife_png = p; break; }
+            }
+            std::string glove_png;
+            for (const char* p : glove_tex_candidates) {
+                if (std::filesystem::exists(p)) { glove_png = p; break; }
+            }
+            g_cs.loadTexturesFromFiles(g_s.device, knife_png, glove_png, cs_table_cpu, glove_cpu);
+        }
         {
             // The first-person arm and the sprites of the default hotbar items.
             std::vector<SteveRenderer::FpItemCell> cells;
@@ -842,6 +890,44 @@ void DrawInventory(const HudState& hud, float w, float h) {
 eldenring::live::HeartAnimator g_hearts;
 
 void DrawHud(const HudState& hud, float w, float h) {
+    if (hud.cs_mode) {
+        ImDrawList* dl = ImGui::GetBackgroundDrawList();
+        const float cx = w * 0.5f, cy = h * 0.5f;
+        const ImU32 green = IM_COL32(0, 255, 120, 240);
+        const ImU32 shadow = IM_COL32(0, 0, 0, 200);
+        const float gap = 5.f, len = 9.f, th = 2.f;
+
+        // Center dot
+        dl->AddRectFilled({cx - 1.f, cy - 1.f}, {cx + 2.f, cy + 2.f}, shadow);
+        dl->AddRectFilled({cx, cy}, {cx + 1.f, cy + 1.f}, green);
+
+        auto line = [&](float x0, float y0, float x1, float y1) {
+            dl->AddLine({x0, y0}, {x1, y1}, shadow, th + 2.f);
+            dl->AddLine({x0, y0}, {x1, y1}, green, th);
+        };
+        line(cx - gap - len, cy, cx - gap, cy);
+        line(cx + gap, cy, cx + gap + len, cy);
+        line(cx, cy - gap - len, cx, cy - gap);
+        line(cx, cy + gap, cx, cy + gap + len);
+
+        // Weapon Card in bottom right
+        const float card_w = 270.f, card_h = 105.f;
+        const float x = w - card_w - 25.f, y = h - card_h - 25.f;
+        dl->AddRectFilled({x, y}, {x + card_w, y + card_h}, IM_COL32(12, 18, 26, 220), 6.f);
+        dl->AddRect({x, y}, {x + card_w, y + card_h}, IM_COL32(0, 255, 140, 230), 6.f, 0, 2.0f);
+
+        auto& r_mode = eldenring::RuntimeContext::Instance().mode();
+        const uint8_t state = r_mode.cs_knife_state.load();
+        const char* status_str = (state == 1) ? "[SPINNING FLOWER...]" :
+                                 (state == 2) ? "[SLASH ATTACK]" :
+                                 (state == 3) ? "[BACKSTAB CRIT]" :
+                                 (state == 4) ? "[DEPLOYING...]" : "[READY]";
+        dl->AddText(ImGui::GetFont(), 19.f, {x + 14.f, y + 10.f}, IM_COL32(0, 255, 150, 255), "BUTTERFLY KNIFE (CS2)");
+        dl->AddText(ImGui::GetFont(), 15.f, {x + 14.f, y + 36.f}, IM_COL32(255, 215, 0, 255), status_str);
+        dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 60.f}, IM_COL32(200, 210, 225, 230), "[F] Spin Inspect  |  [LMB] Slash");
+        dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[RMB] Backstab    |  [F1] Mode Toggle");
+        return;
+    }
     if (hud.inv_open) {
         DrawInventory(hud, w, h);
         return;
@@ -1095,7 +1181,7 @@ void DrawHud(const HudState& hud, float w, float h) {
 void RenderFrame(IDXGISwapChain* sc) {
     HudState hud;
     SteveState steve;
-    if (!g_provider || !g_provider(hud, steve) || !hud.show || !hud.mc_mode) return;
+    if (!g_provider || !g_provider(hud, steve) || !hud.show || (!hud.mc_mode && !hud.cs_mode)) return;
 
     if (g_depth_dirty.exchange(false)) {
         std::lock_guard<std::mutex> g(g_depth_mutex);
@@ -1374,8 +1460,24 @@ void RenderFrame(IDXGISwapChain* sc) {
     } else {
         g_mob_registry.clear();
     }
-    if (steve.first_person && !steve.dead && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
-        g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
+    auto& r_mode = eldenring::RuntimeContext::Instance().mode();
+    const bool cs_active = r_mode.cs_mode.load() && g_cs.ready();
+    const bool mc_fp_active = !cs_active && steve.first_person && !steve.dead && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
+        g_steve.ensureDepth(g_s.device, g_s.width, g_s.height);
+
+    if (cs_active && !steve.dead) {
+        const mc::rig::Mat4 proj = g_cs.computeViewmodelProjection(g_s.width, g_s.height);
+        const UINT srv_inc = g_s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        D3D12_GPU_DESCRIPTOR_HANDLE cs_tex_table = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
+        cs_tex_table.ptr += static_cast<UINT64>(srv_inc) * 16;
+        if (g_steve.ready()) {
+            g_steve.ensureDepth(g_s.device, g_s.width, g_s.height);
+        }
+        const D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_steve.ready() ? g_steve.dsvHandle() : D3D12_CPU_DESCRIPTOR_HANDLE{};
+        g_cs.tick(dt, r_mode.cs_knife_state.load(), r_mode.cs_knife_anim_time.load());
+        g_cs.draw(g_s.list, g_s.srv_heap, cs_tex_table, g_s.width, g_s.height, proj, f.rtv, dsv);
+        g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
+    } else if (mc_fp_active) {
         namespace fp = eldenring::fp;
         // The hand: lowered/raised by the hotbar and the attack cooldown, swaying behind the view, bobbing with the steps.
         const mc::ItemId wanted = static_cast<mc::ItemId>(steve.held_item);

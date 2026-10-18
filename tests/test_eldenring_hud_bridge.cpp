@@ -291,3 +291,14 @@ TEST(HudBridgeTest, PopulateHudStateHungerShakingOnlyAtCriticalFood) {
     EXPECT_EQ(hud.food, 0);
     EXPECT_TRUE(hud.food_shaking);
 }
+
+TEST(HudBridgeTest, PopulateHudStateSynchronizesCsMode) {
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().cs_mode.store(true);
+
+    erov::HudState hud{};
+    PopulateHudStateFromContext(hud, ctx);
+
+    EXPECT_TRUE(hud.cs_mode);
+}

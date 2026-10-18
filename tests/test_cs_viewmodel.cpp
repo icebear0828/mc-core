@@ -570,6 +570,46 @@ TEST(CSViewModelTest, TddCookTorrancePbrEnergyConservationAndOrmPacking) {
     EXPECT_FLOAT_EQ(grazing_rad[2], 0.0f);
 }
 
+TEST(CSViewModelTest, TddD3D12ViewmodelRenderPipelineAndFovIntegration) {
+    // 1. Verify decoupled 68° FOV projection matrix across standard display aspect ratios
+    const struct { unsigned w, h; float expected_aspect; } ratios[] = {
+        {1920, 1080, 16.f / 9.f},
+        {1920, 1200, 16.f / 10.f},
+        {2560, 1080, 2560.f / 1080.f},
+        {1024, 768, 4.f / 3.f}
+    };
+
+    ViewmodelProjectionConfig cfg{};
+    cfg.fov_deg = 68.0f;
+    cfg.z_near = 0.01f;
+    cfg.z_far = 20.0f;
+
+    for (const auto& r : ratios) {
+        mc::rig::Mat4 proj = computeViewmodelProjection(r.w, r.h, cfg);
+        // Left-handed perspective projection checks:
+        // m[0] = cot(fov_y / 2) / aspect
+        // m[5] = cot(fov_y / 2)
+        constexpr float kDeg = 3.14159265f / 180.0f;
+        const float cot_half_fov = 1.0f / std::tan(68.0f * kDeg * 0.5f);
+        EXPECT_NEAR(proj.m[5], cot_half_fov, 0.001f);
+        EXPECT_NEAR(proj.m[0], cot_half_fov / r.expected_aspect, 0.001f);
+        EXPECT_NEAR(proj.m[11], 1.0f, 0.001f); // LH Z-forward
+    }
+
+    // 2. Verify state transition and animation sampling in CSViewModelAnimator
+    CSViewModelAnimator anim;
+    anim.tick(0.016f, 4 /* Deploy */, 0.1f);
+    EXPECT_EQ(anim.currentState(), 4);
+    anim.tick(0.016f, 1 /* Inspect */, 0.5f);
+    EXPECT_EQ(anim.currentState(), 1);
+    anim.tick(0.016f, 2 /* Slash */, 0.15f);
+    EXPECT_EQ(anim.currentState(), 2);
+    anim.tick(0.016f, 3 /* Backstab */, 0.2f);
+    EXPECT_EQ(anim.currentState(), 3);
+    anim.tick(0.016f, 0 /* Idle */, 0.0f);
+    EXPECT_EQ(anim.currentState(), 0);
+}
+
 } // namespace
 
 

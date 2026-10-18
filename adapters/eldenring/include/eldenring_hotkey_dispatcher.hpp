@@ -104,6 +104,7 @@ private:
     bool prev4_{false};
     bool prev_f3_{false};
     bool prev_f2_{false};
+    bool prev_f1_{false};
     bool prev_gameplay_f_{false};
 };
 
