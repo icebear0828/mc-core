@@ -1,10 +1,13 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <string>
 #include <vector>
+#include "mc/rig.hpp"
 
 namespace eldenring::cs {
 
@@ -96,4 +99,75 @@ public:
     }
 };
 
+// -----------------------------------------------------------------------------
+// Source 2 / CS2 Independent Viewmodel Projection Matrix
+// Decoupled from the host game's main camera FOV (Source 2 standard 68 degrees)
+// -----------------------------------------------------------------------------
+struct ViewmodelProjectionConfig {
+    float fov_deg{68.0f};           // Official CS2 viewmodel FOV (68 deg)
+    float offset_x{0.0f};           // viewmodel_offset_x
+    float offset_y{0.0f};           // viewmodel_offset_y
+    float offset_z{0.0f};           // viewmodel_offset_z
+    float z_near{0.01f};            // Near clip tuned for viewmodels
+    float z_far{20.0f};             // Far clip tuned for viewmodels
+    bool use_game_projection{false};// Decoupled by default
+};
+
+inline mc::rig::Mat4 computeViewmodelProjection(unsigned width, unsigned height, const ViewmodelProjectionConfig& cfg = {}) {
+    const float aspect = (height > 0) ? (static_cast<float>(width) / static_cast<float>(height)) : (16.0f / 9.0f);
+    constexpr float kPi = 3.14159265358979323846f;
+    constexpr float kDeg = kPi / 180.0f;
+    mc::rig::Mat4 proj = mc::rig::perspectiveLH(cfg.fov_deg * kDeg, aspect, cfg.z_near, cfg.z_far);
+    if (cfg.offset_x != 0.0f || cfg.offset_y != 0.0f || cfg.offset_z != 0.0f) {
+        mc::rig::Mat4 offset_mat = mc::rig::translation(mc::Vec3{cfg.offset_x, cfg.offset_y, cfg.offset_z});
+        proj = offset_mat * proj;
+    }
+    return proj;
+}
+
+// -----------------------------------------------------------------------------
+// Cook-Torrance PBR BRDF & Normal Map Math Helpers
+// -----------------------------------------------------------------------------
+inline float computeGgxD(float NdotH, float roughness) {
+    constexpr float kPi = 3.14159265358979323846f;
+    const float alpha = roughness * roughness;
+    const float alpha2 = alpha * alpha;
+    const float NdotH2 = NdotH * NdotH;
+    const float denom = NdotH2 * (alpha2 - 1.0f) + 1.0f;
+    return alpha2 / (kPi * denom * denom + 1e-7f);
+}
+
+inline float computeSmithG(float NdotV, float NdotL, float roughness) {
+    const float r = roughness + 1.0f;
+    const float k = (r * r) / 8.0f;
+    const float g1_v = NdotV / (NdotV * (1.0f - k) + k);
+    const float g1_l = NdotL / (NdotL * (1.0f - k) + k);
+    return g1_v * g1_l;
+}
+
+inline void computeFresnelSchlick(float cos_theta, const float f0[3], float out_f[3]) {
+    const float clamped_cos = std::clamp(cos_theta, 0.0f, 1.0f);
+    const float p = std::pow(1.0f - clamped_cos, 5.0f);
+    for (int i = 0; i < 3; ++i) {
+        out_f[i] = f0[i] + (1.0f - f0[i]) * p;
+    }
+}
+
+inline void unpackDirectXNormal(uint8_t r, uint8_t g, uint8_t b, float out_n[3]) {
+    const float x = (static_cast<float>(r) / 255.0f) * 2.0f - 1.0f;
+    const float y = -((static_cast<float>(g) / 255.0f) * 2.0f - 1.0f); // DirectX green channel inversion
+    float z = (static_cast<float>(b) / 255.0f) * 2.0f - 1.0f;
+    const float len = std::sqrt(x * x + y * y + z * z);
+    if (len > 1e-6f) {
+        out_n[0] = x / len;
+        out_n[1] = y / len;
+        out_n[2] = z / len;
+    } else {
+        out_n[0] = 0.0f;
+        out_n[1] = 0.0f;
+        out_n[2] = 1.0f;
+    }
+}
+
 } // namespace eldenring::cs
+

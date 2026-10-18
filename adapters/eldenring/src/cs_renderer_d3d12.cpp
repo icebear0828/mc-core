@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 
 #include "cs_renderer_d3d12.hpp"
 #include "cs_animation_tracks.hpp"
@@ -26,21 +27,25 @@ cbuffer Root : register(b0) {
     float3 padding;
 };
 
-Texture2D knife_tex : register(t0);
-Texture2D glove_tex : register(t1);
-SamplerState g_sampler : register(s0);
+Texture2D knife_tex       : register(t0);
+Texture2D glove_tex       : register(t1);
+Texture2D knife_norm_tex  : register(t2);
+Texture2D glove_norm_tex  : register(t3);
+Texture2D knife_pbr_tex   : register(t4);
+Texture2D glove_pbr_tex   : register(t5);
+SamplerState g_sampler    : register(s0);
 
 struct VSIn {
-    float3 pos : POSITION;
+    float3 pos    : POSITION;
     float3 normal : NORMAL;
-    float2 uv : TEXCOORD0;
+    float2 uv     : TEXCOORD0;
 };
 
 struct VSOut {
-    float4 pos : SV_POSITION;
+    float4 pos    : SV_POSITION;
     float3 normal : NORMAL;
-    float2 uv : TEXCOORD0;
-    float3 wpos : TEXCOORD1;
+    float2 uv     : TEXCOORD0;
+    float3 wpos   : TEXCOORD1;
 };
 
 VSOut VSMain(VSIn i) {
@@ -53,26 +58,123 @@ VSOut VSMain(VSIn i) {
     return o;
 }
 
+// Industry-standard Cotangent Frame to compute Tangent-Binormal-Normal (TBN)
+// from screen derivatives without requiring vertex tangents
+float3 PerturbNormal(float3 N, float3 p, float2 uv, float3 mapN) {
+    float3 dp1 = ddx(p);
+    float3 dp2 = ddy(p);
+    float2 duv1 = ddx(uv);
+    float2 duv2 = ddy(uv);
+    float3 dp2perp = cross(dp2, N);
+    float3 dp1perp = cross(N, dp1);
+    float3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+    float3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+    float invmax = rsqrt(max(dot(T, T), dot(B, B)) + 1e-6);
+    float3x3 TBN = float3x3(T * invmax, B * invmax, N);
+    return normalize(mul(mapN, TBN));
+}
+
+static const float kPi = 3.14159265358979323846;
+
+// Cook-Torrance Microfacet Distribution: Trowbridge-Reitz GGX
+float DistributionGGX(float3 N, float3 H, float roughness) {
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH * NdotH;
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    return a2 / (kPi * denom * denom + 1e-7);
+}
+
+// Geometric Occlusion / Masking: Smith Schlick-GGX
+float GeometrySchlickGGX(float NdotV, float roughness) {
+    float r = (roughness + 1.0);
+    float k = (r * r) / 8.0;
+    return NdotV / (NdotV * (1.0 - k) + k);
+}
+
+float GeometrySmith(float3 N, float3 V, float3 L, float roughness) {
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx2 = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1 = GeometrySchlickGGX(NdotL, roughness);
+    return ggx2 * ggx1;
+}
+
+// Fresnel-Schlick approximation
+float3 FresnelSchlick(float cosTheta, float3 F0) {
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
 float4 PSMain(VSOut i) : SV_Target {
-    float3 n = normalize(i.normal);
-    float3 l = normalize(light_dir.xyz);
-    float diff = max(dot(n, l), 0.0) * 0.65 + 0.35;
+    float2 uv = i.uv;
 
-    float3 v = normalize(-i.wpos);
-    float3 h = normalize(l + v);
-    float spec = pow(max(dot(n, h), 0.0), 32.0);
-
-    float4 tex_col = (is_arm > 0.5) ? glove_tex.Sample(g_sampler, i.uv) : knife_tex.Sample(g_sampler, i.uv);
-    if (tex_col.a < 0.05) {
-        tex_col = tint;
+    // 1. Albedo & Base Color
+    float4 albedo_tex = (is_arm > 0.5) ? glove_tex.Sample(g_sampler, uv) : knife_tex.Sample(g_sampler, uv);
+    if (albedo_tex.a < 0.05) {
+        albedo_tex = tint;
     }
 
-    float metallic = (is_arm > 0.5) ? 0.05 : 0.65;
-    float3 rgb = tex_col.rgb * diff + spec * metallic;
-    return float4(saturate(rgb), 1.0);
+    // 2. Normal Map with DirectX Y inversion (Green channel)
+    float4 norm_sample = (is_arm > 0.5) ? glove_norm_tex.Sample(g_sampler, uv) : knife_norm_tex.Sample(g_sampler, uv);
+    float3 mapN;
+    mapN.x = norm_sample.x * 2.0 - 1.0;
+    mapN.y = -(norm_sample.y * 2.0 - 1.0); // DirectX green channel inversion
+    mapN.z = sqrt(saturate(1.0 - dot(mapN.xy, mapN.xy)));
+
+    float3 N_geom = normalize(i.normal);
+    float3 N = PerturbNormal(N_geom, i.wpos, uv, mapN);
+
+    // 3. PBR Maps (ORM: R=AO, G=Roughness, B=Metallic)
+    float4 pbr = (is_arm > 0.5) ? glove_pbr_tex.Sample(g_sampler, uv) : knife_pbr_tex.Sample(g_sampler, uv);
+    float ao = pbr.r;
+    float roughness = clamp(pbr.g, 0.05, 0.98);
+    float metallic = clamp(pbr.b, 0.0, 1.0);
+
+    // In camera space, view position is origin (0, 0, 0)
+    float3 V = normalize(-i.wpos);
+    float3 L = normalize(light_dir.xyz);
+    float3 H = normalize(V + L);
+
+    // Dielectric baseline F0 = 0.04, metallic interpolates to albedo
+    float3 F0 = float3(0.04, 0.04, 0.04);
+    F0 = lerp(F0, albedo_tex.rgb, metallic);
+
+    // Cook-Torrance BRDF evaluation
+    float NDF = DistributionGGX(N, H, roughness);
+    float G = GeometrySmith(N, V, L, roughness);
+    float3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
+
+    float3 numerator = NDF * G * F;
+    float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
+    float3 specular = numerator / denominator;
+
+    float3 kS = F;
+    float3 kD = (float3(1.0, 1.0, 1.0) - kS) * (1.0 - metallic);
+    float NdotL = max(dot(N, L), 0.0);
+
+    float3 light_radiance = float3(1.20, 1.20, 1.15);
+    float3 Lo = (kD * albedo_tex.rgb / kPi + specular) * light_radiance * NdotL;
+
+    // 4. Ambient & Specular Environment Reflection (IBL simulation)
+    float3 R = reflect(-V, N);
+    float3 sky_color = float3(0.28, 0.32, 0.40);
+    float3 ground_color = float3(0.12, 0.12, 0.15);
+    float3 ambient_irradiance = lerp(ground_color, sky_color, N.y * 0.5 + 0.5);
+
+    // Specular environment reflection with roughness dissipation
+    float3 env_spec = lerp(ground_color, sky_color, R.y * 0.5 + 0.5);
+    float3 env_F = F0 + (max(float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness), F0) - F0) * pow(clamp(1.0 - max(dot(N, V), 0.0), 0.0, 1.0), 5.0);
+    float3 env_reflection = env_spec * env_F * (1.0 - roughness * 0.45);
+
+    float3 ambient = (kD * albedo_tex.rgb * ambient_irradiance + env_reflection) * ao;
+    float3 color = Lo + ambient;
+
+    // Tone mapping & saturation
+    color = color / (color + 1.0);
+    return float4(saturate(color), 1.0);
 }
 )hlsl";
-
 
 template <typename T>
 void Rel(T*& p) {
@@ -128,10 +230,10 @@ bool CsRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     release();
     log_ = log;
 
-    // Root signature: 44 root constants (b0) + 1 descriptor table (t0..t1: knife & glove) + 1 static sampler (s0)
+    // Root signature: 44 root constants (b0) + 1 descriptor table (t0..t5: 6 textures) + 1 static sampler (s0)
     D3D12_DESCRIPTOR_RANGE range{};
     range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    range.NumDescriptors = 2; // t0: knife_tex, t1: glove_tex
+    range.NumDescriptors = 6; // t0: knife_albedo, t1: glove_albedo, t2: knife_norm, t3: glove_norm, t4: knife_pbr, t5: glove_pbr
     range.BaseShaderRegister = 0;
     range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
@@ -218,9 +320,8 @@ bool CsRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
         return false;
     }
 
-    if (log_) log_("cs_render: D3D12 pipeline initialized successfully");
+    if (log_) log_("cs_render: D3D12 Cook-Torrance PBR pipeline initialized successfully");
     return true;
-
 }
 
 void CsRenderer::release() {
@@ -230,6 +331,10 @@ void CsRenderer::release() {
     Rel(ib_);
     knife_tex_.release();
     glove_tex_.release();
+    knife_normal_tex_.release();
+    glove_normal_tex_.release();
+    knife_pbr_tex_.release();
+    glove_pbr_tex_.release();
 }
 
 bool CsRenderer::TextureGpu::create(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
@@ -323,35 +428,133 @@ bool CsRenderer::setGloveTexture(ID3D12Device* device, const uint8_t* rgba, unsi
     return glove_tex_.create(device, rgba, width, height, slot);
 }
 
+bool CsRenderer::setKnifeNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    return knife_normal_tex_.create(device, rgba, width, height, slot);
+}
+
+bool CsRenderer::setGloveNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    return glove_normal_tex_.create(device, rgba, width, height, slot);
+}
+
+bool CsRenderer::setKnifePbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    return knife_pbr_tex_.create(device, rgba, width, height, slot);
+}
+
+bool CsRenderer::setGlovePbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    return glove_pbr_tex_.create(device, rgba, width, height, slot);
+}
+
 bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
                                       const std::string& knife_png,
                                       const std::string& glove_png,
                                       D3D12_CPU_DESCRIPTOR_HANDLE knife_slot,
                                       D3D12_CPU_DESCRIPTOR_HANDLE glove_slot) {
+    if (!device) return false;
+
+    const UINT srv_inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_CPU_DESCRIPTOR_HANDLE slot0 = knife_slot;
+    D3D12_CPU_DESCRIPTOR_HANDLE slot1 = (glove_slot.ptr != 0) ? glove_slot : D3D12_CPU_DESCRIPTOR_HANDLE{slot0.ptr + srv_inc};
+    D3D12_CPU_DESCRIPTOR_HANDLE slot2 = D3D12_CPU_DESCRIPTOR_HANDLE{slot0.ptr + 2 * srv_inc}; // knife_norm
+    D3D12_CPU_DESCRIPTOR_HANDLE slot3 = D3D12_CPU_DESCRIPTOR_HANDLE{slot0.ptr + 3 * srv_inc}; // glove_norm
+    D3D12_CPU_DESCRIPTOR_HANDLE slot4 = D3D12_CPU_DESCRIPTOR_HANDLE{slot0.ptr + 4 * srv_inc}; // knife_pbr
+    D3D12_CPU_DESCRIPTOR_HANDLE slot5 = D3D12_CPU_DESCRIPTOR_HANDLE{slot0.ptr + 5 * srv_inc}; // glove_pbr
+
+    // 1. Knife Base Color (Albedo)
     std::vector<uint8_t> knife_rgba;
     unsigned kw = 0, kh = 0;
     if (!knife_png.empty() && DecodePngFile(knife_png, knife_rgba, kw, kh)) {
-        if (setKnifeTexture(device, knife_rgba.data(), kw, kh, knife_slot)) {
-            if (log_) log_("cs_render: loaded knife texture %s (%ux%u)", knife_png.c_str(), kw, kh);
-        }
+        setKnifeTexture(device, knife_rgba.data(), kw, kh, slot0);
+        if (log_) log_("cs_render: loaded knife texture %s (%ux%u)", knife_png.c_str(), kw, kh);
     } else {
         std::vector<uint8_t> fallback(16 * 16 * 4, 210);
-        setKnifeTexture(device, fallback.data(), 16, 16, knife_slot);
+        for (size_t p = 3; p < fallback.size(); p += 4) fallback[p] = 255;
+        setKnifeTexture(device, fallback.data(), 16, 16, slot0);
         if (log_) log_("cs_render: knife texture not found at %s, using fallback", knife_png.c_str());
     }
 
+    // 2. Glove Base Color (Albedo)
     std::vector<uint8_t> glove_rgba;
     unsigned gw = 0, gh = 0;
     if (!glove_png.empty() && DecodePngFile(glove_png, glove_rgba, gw, gh)) {
-        if (setGloveTexture(device, glove_rgba.data(), gw, gh, glove_slot)) {
-            if (log_) log_("cs_render: loaded glove texture %s (%ux%u)", glove_png.c_str(), gw, gh);
-        }
+        setGloveTexture(device, glove_rgba.data(), gw, gh, slot1);
+        if (log_) log_("cs_render: loaded glove texture %s (%ux%u)", glove_png.c_str(), gw, gh);
     } else {
         std::vector<uint8_t> fallback(16 * 16 * 4, 45);
         for (size_t p = 3; p < fallback.size(); p += 4) fallback[p] = 255;
-        setGloveTexture(device, fallback.data(), 16, 16, glove_slot);
+        setGloveTexture(device, fallback.data(), 16, 16, slot1);
         if (log_) log_("cs_render: glove texture not found at %s, using fallback", glove_png.c_str());
     }
+
+    // 3. Knife Normal Map (look in textures directory or fallback flat normal [128, 128, 255, 255])
+    bool knife_norm_loaded = false;
+    std::filesystem::path kp(knife_png);
+    std::filesystem::path kn_path = kp.parent_path() / "textures" / "knife_butterfly" / "default_normal_tga_4fc2d3dd.png";
+    if (std::filesystem::exists(kn_path)) {
+        std::vector<uint8_t> kn_rgba;
+        unsigned kn_w = 0, kn_h = 0;
+        if (DecodePngFile(kn_path.string(), kn_rgba, kn_w, kn_h)) {
+            setKnifeNormalTexture(device, kn_rgba.data(), kn_w, kn_h, slot2);
+            knife_norm_loaded = true;
+            if (log_) log_("cs_render: loaded knife normal map %s (%ux%u)", kn_path.string().c_str(), kn_w, kn_h);
+        }
+    }
+    if (!knife_norm_loaded) {
+        std::vector<uint8_t> flat_norm(16 * 16 * 4, 128);
+        for (size_t p = 0; p < flat_norm.size(); p += 4) {
+            flat_norm[p] = 128;     // X = 0
+            flat_norm[p + 1] = 128; // Y = 0
+            flat_norm[p + 2] = 255; // Z = 1
+            flat_norm[p + 3] = 255;
+        }
+        setKnifeNormalTexture(device, flat_norm.data(), 16, 16, slot2);
+    }
+
+    // 4. Glove Normal Map (look in textures directory or fallback)
+    bool glove_norm_loaded = false;
+    std::filesystem::path gp(glove_png);
+    std::filesystem::path gn_path = gp.parent_path() / "textures" / "glove_hardknuckle" / "glove_hardknuckle_normal_tga_a8df881b.png";
+    if (std::filesystem::exists(gn_path)) {
+        std::vector<uint8_t> gn_rgba;
+        unsigned gn_w = 0, gn_h = 0;
+        if (DecodePngFile(gn_path.string(), gn_rgba, gn_w, gn_h)) {
+            setGloveNormalTexture(device, gn_rgba.data(), gn_w, gn_h, slot3);
+            glove_norm_loaded = true;
+            if (log_) log_("cs_render: loaded glove normal map %s (%ux%u)", gn_path.string().c_str(), gn_w, gn_h);
+        }
+    }
+    if (!glove_norm_loaded) {
+        std::vector<uint8_t> flat_norm(16 * 16 * 4, 128);
+        for (size_t p = 0; p < flat_norm.size(); p += 4) {
+            flat_norm[p] = 128;
+            flat_norm[p + 1] = 128;
+            flat_norm[p + 2] = 255;
+            flat_norm[p + 3] = 255;
+        }
+        setGloveNormalTexture(device, flat_norm.data(), 16, 16, slot3);
+    }
+
+    // 5. Knife PBR Map (ORM: R=AO, G=Roughness, B=Metallic)
+    // Polished blade: AO=255, Roughness=38 (0.15), Metallic=216 (0.85)
+    std::vector<uint8_t> knife_pbr(16 * 16 * 4);
+    for (size_t p = 0; p < knife_pbr.size(); p += 4) {
+        knife_pbr[p] = 255;     // AO = 1.0
+        knife_pbr[p + 1] = 38;  // Roughness = 0.15 (polished steel)
+        knife_pbr[p + 2] = 216; // Metallic = 0.85
+        knife_pbr[p + 3] = 255;
+    }
+    setKnifePbrTexture(device, knife_pbr.data(), 16, 16, slot4);
+
+    // 6. Glove PBR Map (ORM)
+    // Tactical glove: AO=255, Roughness=216 (0.85), Metallic=12 (0.05)
+    std::vector<uint8_t> glove_pbr(16 * 16 * 4);
+    for (size_t p = 0; p < glove_pbr.size(); p += 4) {
+        glove_pbr[p] = 255;     // AO = 1.0
+        glove_pbr[p + 1] = 216; // Roughness = 0.85 (tactical fabric)
+        glove_pbr[p + 2] = 12;  // Metallic = 0.05
+        glove_pbr[p + 3] = 255;
+    }
+    setGlovePbrTexture(device, glove_pbr.data(), 16, 16, slot5);
+
     return true;
 }
 
@@ -406,11 +609,19 @@ bool CsRenderer::loadModel(ID3D12Device* device, const std::string& path) {
     return true;
 }
 
+bool CsRenderer::loadWeapon(ID3D12Device* device, const eldenring::cs::CSWeaponDefinition& def) {
+    active_weapon_ = &def;
+    if (!def.model_csvm_path.empty()) {
+        loadModel(device, def.model_csvm_path);
+    }
+    if (log_) log_("cs_render: loaded weapon '%s' (%s, slot %d)", def.id.c_str(), def.display_name.c_str(), static_cast<int>(def.slot));
+    return true;
+}
 
 void CsRenderer::tick(float dt, uint8_t state, float anim_time) {
     (void)dt;
     // Base viewmodel placement in first-person camera space
-    // CS2 viewmodel is already pre-posed into authentic camera space
+    // CS2 viewmodel is naturally aligned with the camera origin (0, 0, 0)
     // Idle stance has subtle breathing bob
     const float bob = std::sin(anim_time * 2.5f) * 0.003f;
     fp::M4 base = fp::translate(0.f, bob, 0.f);
@@ -493,6 +704,10 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
 
     knife_tex_.recordUpload(list);
     glove_tex_.recordUpload(list);
+    knife_normal_tex_.recordUpload(list);
+    glove_normal_tex_.recordUpload(list);
+    knife_pbr_tex_.recordUpload(list);
+    glove_pbr_tex_.recordUpload(list);
 
     list->SetPipelineState(pso_);
     list->SetGraphicsRootSignature(root_);
@@ -507,8 +722,9 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
     list->IASetVertexBuffers(0, 1, &vbv_);
     list->IASetIndexBuffer(&ibv_);
 
-    // 16 floats view_proj
-    list->SetGraphicsRoot32BitConstants(0, 16, projection.m.data(), 0);
+    // Decoupled Viewmodel Projection: Source 2 official 68 deg FOV
+    const mc::rig::Mat4 final_proj = vm_config_.use_game_projection ? projection : computeViewmodelProjection(width, height);
+    list->SetGraphicsRoot32BitConstants(0, 16, final_proj.m.data(), 0);
 
     const float light[4] = {0.35f, 0.85f, -0.40f, 0.0f};
     list->SetGraphicsRoot32BitConstants(0, 4, light, 32);
@@ -558,6 +774,5 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
         list->DrawIndexedInstanced(sub.index_count, 1, sub.first_index, sub.base_vertex, 0);
     }
 }
-
 
 } // namespace erov

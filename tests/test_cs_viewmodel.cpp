@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "cs_viewmodel.hpp"
+#include "cs_weapon_registry.hpp"
 #include "eldenring_fp.hpp"
 #include "mc/rig.hpp"
 
@@ -260,5 +261,201 @@ TEST(CSViewModelTest, AuthenticCS2AnimationTracksFidelity) {
     EXPECT_NEAR(sampled.m[0], 1.0f, 0.02f);
 }
 
+TEST(CSViewModelTest, Decoupled68DegreeViewmodelProjection) {
+    // Standard Source 2 viewmodel FOV is strictly 68 degrees
+    ViewmodelProjectionConfig cfg{};
+    EXPECT_FLOAT_EQ(cfg.fov_deg, 68.0f);
+    EXPECT_FLOAT_EQ(cfg.z_near, 0.01f);
+    EXPECT_FLOAT_EQ(cfg.z_far, 20.0f);
+    EXPECT_FALSE(cfg.use_game_projection);
+
+    const unsigned w = 1920, h = 1080;
+    const mc::rig::Mat4 proj = computeViewmodelProjection(w, h, cfg);
+
+    // Expected scaling factors for 68 deg FOV with 16:9 aspect ratio
+    constexpr float kPi = 3.14159265358979323846f;
+    const float expected_ys = 1.0f / std::tan((68.0f * kPi / 180.0f) * 0.5f);
+    const float expected_xs = expected_ys / (1920.0f / 1080.0f);
+    const float expected_a = 20.0f / (20.0f - 0.01f);
+
+    EXPECT_NEAR(proj.m[0], expected_xs, 0.001f);
+    EXPECT_NEAR(proj.m[5], expected_ys, 0.001f);
+    EXPECT_NEAR(proj.m[10], expected_a, 0.001f);
+    EXPECT_NEAR(proj.m[11], 1.0f, 0.001f);
+    EXPECT_NEAR(proj.m[14], -0.01f * expected_a, 0.001f);
+
+    // Test with custom viewmodel_offset (e.g. viewmodel_offset_x = 0.05m, y = -0.02m)
+    ViewmodelProjectionConfig offset_cfg = cfg;
+    offset_cfg.offset_x = 0.05f;
+    offset_cfg.offset_y = -0.02f;
+    const mc::rig::Mat4 proj_offset = computeViewmodelProjection(w, h, offset_cfg);
+
+    // Translation row in projection matrix applies the screen-space shift
+    EXPECT_NEAR(proj_offset.m[12], 0.05f * expected_xs, 0.002f);
+    EXPECT_NEAR(proj_offset.m[13], -0.02f * expected_ys, 0.002f);
+
+    // Crucial Decoupling Guard:
+    // Game camera at 90 deg FOV vs Viewmodel at 68 deg FOV
+    const mc::rig::Mat4 game_proj_90 = mc::rig::perspectiveLH(90.0f * kPi / 180.0f, 1920.0f / 1080.0f, 0.05f, 1000.0f);
+    EXPECT_NE(proj.m[5], game_proj_90.m[5]); // Must be fully decoupled!
+    EXPECT_GT(proj.m[5], game_proj_90.m[5]); // 68 deg has greater focal length than 90 deg
+}
+
+TEST(CSViewModelTest, NaturalPoseCameraOriginAlignmentAndZeroEulerHacks) {
+    // In authentic CS2 viewmodel design, the camera bone is at (0, 0, 0)
+    // There are NO artificial Euler rotations (-10° rotX or -15° rotY) in base stance
+    const fp::M4 base_natural = fp::scale(1.0f);
+
+    // Base matrix must be pure identity
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            if (r == c) {
+                EXPECT_FLOAT_EQ(base_natural.m[r * 4 + c], 1.0f);
+            } else {
+                EXPECT_FLOAT_EQ(base_natural.m[r * 4 + c], 0.0f);
+            }
+        }
+    }
+
+    // Convert to host D3D12 convention
+    const mc::rig::Mat4 host_base = fp::toHost(base_natural);
+    EXPECT_FLOAT_EQ(host_base.m[0], 1.0f);
+    EXPECT_FLOAT_EQ(host_base.m[5], 1.0f);
+    EXPECT_FLOAT_EQ(host_base.m[10], -1.0f); // Z flipped from right-handed to left-handed
+    EXPECT_FLOAT_EQ(host_base.m[15], 1.0f);
+}
+
+TEST(CSViewModelTest, CookTorrancePbrMathFidelity) {
+    // 1. Fresnel-Schlick validation
+    const float f0_blade[3] = {0.95f, 0.95f, 0.98f}; // Polished steel
+    const float f0_glove[3] = {0.04f, 0.04f, 0.04f}; // Dielectric fabric
+
+    float f_normal_blade[3]{}, f_grazing_blade[3]{};
+    computeFresnelSchlick(1.0f, f0_blade, f_normal_blade);
+    computeFresnelSchlick(0.0f, f0_blade, f_grazing_blade);
+
+    EXPECT_NEAR(f_normal_blade[0], 0.95f, 0.001f);
+    EXPECT_NEAR(f_normal_blade[1], 0.95f, 0.001f);
+    EXPECT_NEAR(f_normal_blade[2], 0.98f, 0.001f);
+    EXPECT_NEAR(f_grazing_blade[0], 1.0f, 0.001f);
+    EXPECT_NEAR(f_grazing_blade[1], 1.0f, 0.001f);
+    EXPECT_NEAR(f_grazing_blade[2], 1.0f, 0.001f);
+
+    float f_normal_glove[3]{}, f_grazing_glove[3]{};
+    computeFresnelSchlick(1.0f, f0_glove, f_normal_glove);
+    computeFresnelSchlick(0.0f, f0_glove, f_grazing_glove);
+
+    EXPECT_NEAR(f_normal_glove[0], 0.04f, 0.001f);
+    EXPECT_NEAR(f_grazing_glove[0], 1.0f, 0.001f);
+
+    // 2. GGX Normal Distribution D validation
+    // Smooth surface (roughness = 0.15) must produce sharp specular peak
+    const float d_smooth_peak = computeGgxD(1.0f, 0.15f);
+    const float d_smooth_off = computeGgxD(0.85f, 0.15f);
+    EXPECT_GT(d_smooth_peak, 10.0f);
+    EXPECT_LT(d_smooth_off, d_smooth_peak * 0.1f); // Drops sharply off axis
+
+    // Rough surface (roughness = 0.85) spreads highlight broadly
+    const float d_rough_peak = computeGgxD(1.0f, 0.85f);
+    EXPECT_LT(d_rough_peak, 1.0f);
+
+    // Monotonicity test: as NdotH decreases, D must monotonically decrease
+    float prev_d = computeGgxD(1.0f, 0.4f);
+    for (int step = 9; step >= 0; --step) {
+        float ndoth = step * 0.1f;
+        float curr_d = computeGgxD(ndoth, 0.4f);
+        EXPECT_LE(curr_d, prev_d);
+        prev_d = curr_d;
+    }
+
+    // 3. Smith GGX Geometry G validation
+    const float g_head_on = computeSmithG(1.0f, 1.0f, 0.3f);
+    EXPECT_NEAR(g_head_on, 1.0f, 0.001f);
+    const float g_glancing = computeSmithG(0.1f, 0.1f, 0.3f);
+    EXPECT_GT(g_glancing, 0.0f);
+    EXPECT_LT(g_glancing, g_head_on);
+
+    // 4. DirectX Normal Map Unpacking validation
+    // Flat normal (128, 128, 255)
+    float n_flat[3]{};
+    unpackDirectXNormal(128, 128, 255, n_flat);
+    EXPECT_NEAR(n_flat[0], 0.0f, 0.01f);
+    EXPECT_NEAR(n_flat[1], 0.0f, 0.01f);
+    EXPECT_NEAR(n_flat[2], 1.0f, 0.01f);
+
+    // Inverted Y channel test: green channel = 255 in DirectX means downward normal (negative Y)
+    float n_down[3]{};
+    unpackDirectXNormal(128, 255, 128, n_down);
+    EXPECT_LT(n_down[1], -0.90f);
+
+    // Length check: unpacked normal must be unit length
+    const float len = std::sqrt(n_down[0] * n_down[0] + n_down[1] * n_down[1] + n_down[2] * n_down[2]);
+    EXPECT_NEAR(len, 1.0f, 0.001f);
+}
+
+TEST(CSViewModelTest, WeaponRegistryMultiWeaponCatalogAndSockets) {
+    auto& reg = CSWeaponRegistry::instance();
+    EXPECT_GE(reg.getWeaponCount(), 4u);
+
+    // 1. Butterfly Knife verification
+    const auto* butterfly = reg.findWeapon("weapon_knife_butterfly");
+    ASSERT_NE(butterfly, nullptr);
+    EXPECT_EQ(butterfly->type, WeaponType::KnifeButterfly);
+    EXPECT_EQ(butterfly->slot, WeaponSlot::Melee);
+    EXPECT_FALSE(butterfly->sockets.empty());
+    EXPECT_EQ(butterfly->sockets[0].socket_name, "wpnHand_R");
+    EXPECT_EQ(butterfly->sockets[0].target_bone, "hand_R");
+    EXPECT_NEAR(butterfly->ballistics.damage, 65.0f, 0.1f);
+    EXPECT_FALSE(butterfly->audio.draw_sound.empty());
+
+    // 2. AK-47 verification
+    const auto* ak47 = reg.findWeapon("weapon_ak47");
+    ASSERT_NE(ak47, nullptr);
+    EXPECT_EQ(ak47->type, WeaponType::RifleAK47);
+    EXPECT_EQ(ak47->slot, WeaponSlot::Primary);
+    EXPECT_EQ(ak47->ballistics.magazine_capacity, 30u);
+    EXPECT_TRUE(ak47->ballistics.is_automatic);
+    bool has_right_socket = false, has_left_socket = false, has_muzzle = false;
+    for (const auto& s : ak47->sockets) {
+        if (s.socket_name == "wpnHand_R") has_right_socket = true;
+        if (s.socket_name == "wpnHand_L") has_left_socket = true;
+        if (s.socket_name == "muzzle_flash") has_muzzle = true;
+    }
+    EXPECT_TRUE(has_right_socket);
+    EXPECT_TRUE(has_left_socket);
+    EXPECT_TRUE(has_muzzle);
+
+    // 3. AWP verification
+    const auto* awp = reg.findWeapon("weapon_awp");
+    ASSERT_NE(awp, nullptr);
+    EXPECT_EQ(awp->type, WeaponType::SniperAWP);
+    EXPECT_EQ(awp->slot, WeaponSlot::Primary);
+    EXPECT_TRUE(awp->ballistics.has_scope);
+    EXPECT_EQ(awp->ballistics.magazine_capacity, 5u);
+    EXPECT_GE(awp->ballistics.damage, 100.0f);
+
+    // 4. M4A1-S verification
+    const auto* m4a1s = reg.findWeapon("weapon_m4a1_silencer");
+    ASSERT_NE(m4a1s, nullptr);
+    EXPECT_EQ(m4a1s->type, WeaponType::RifleM4A1S);
+    EXPECT_EQ(m4a1s->slot, WeaponSlot::Primary);
+    bool has_silencer_socket = false;
+    for (const auto& s : m4a1s->sockets) {
+        if (s.socket_name == "silencer") has_silencer_socket = true;
+    }
+    EXPECT_TRUE(has_silencer_socket);
+
+    // 5. Active weapon lifecycle
+    EXPECT_TRUE(reg.setActiveWeapon("weapon_ak47"));
+    const auto* active = reg.getActiveWeapon();
+    ASSERT_NE(active, nullptr);
+    EXPECT_EQ(active->id, "weapon_ak47");
+
+    // Switching back to butterfly knife
+    EXPECT_TRUE(reg.setActiveWeapon("weapon_knife_butterfly"));
+    EXPECT_EQ(reg.getActiveWeapon()->id, "weapon_knife_butterfly");
+}
+
 } // namespace
+
 

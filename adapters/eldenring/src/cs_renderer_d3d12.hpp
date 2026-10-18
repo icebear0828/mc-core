@@ -5,12 +5,16 @@
 #include <string>
 #include <vector>
 #include "cs_viewmodel.hpp"
+#include "cs_weapon_registry.hpp"
 #include "eldenring_fp.hpp"
 #include "mc/rig.hpp"
 
 namespace erov {
 
 namespace fp = eldenring::fp;
+
+using ViewmodelProjectionConfig = eldenring::cs::ViewmodelProjectionConfig;
+using eldenring::cs::computeViewmodelProjection;
 
 class CsRenderer {
 public:
@@ -21,13 +25,51 @@ public:
     [[nodiscard]] bool ready() const { return pso_ != nullptr && vb_ != nullptr; }
 
     bool loadModel(ID3D12Device* device, const std::string& path);
+
+    // Textures:
+    // t0: knife_albedo
+    // t1: glove_albedo
+    // t2: knife_normal (DirectX format: G inverted)
+    // t3: glove_normal
+    // t4: knife_pbr (ORM: R=AO, G=Roughness, B=Metallic)
+    // t5: glove_pbr
     bool setKnifeTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
     bool setGloveTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    bool setKnifeNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    bool setGloveNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    bool setKnifePbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    bool setGlovePbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+
     bool loadTexturesFromFiles(ID3D12Device* device,
                                const std::string& knife_png,
                                const std::string& glove_png,
                                D3D12_CPU_DESCRIPTOR_HANDLE knife_slot,
                                D3D12_CPU_DESCRIPTOR_HANDLE glove_slot);
+
+    // Viewmodel projection & stance management
+    void setViewmodelConfig(const ViewmodelProjectionConfig& cfg) { vm_config_ = cfg; }
+    [[nodiscard]] const ViewmodelProjectionConfig& getViewmodelConfig() const { return vm_config_; }
+    [[nodiscard]] mc::rig::Mat4 computeViewmodelProjection(unsigned width, unsigned height) const {
+        return eldenring::cs::computeViewmodelProjection(width, height, vm_config_);
+    }
+
+    // Weapon registry pipeline
+    bool loadWeapon(ID3D12Device* device, const eldenring::cs::CSWeaponDefinition& def);
+    [[nodiscard]] const eldenring::cs::CSWeaponDefinition* activeWeapon() const { return active_weapon_; }
+
+    // Cook-Torrance PBR & normal map math verification (accessible for unit test suites)
+    static float computeGgxD(float NdotH, float roughness) {
+        return eldenring::cs::computeGgxD(NdotH, roughness);
+    }
+    static float computeSmithG(float NdotV, float NdotL, float roughness) {
+        return eldenring::cs::computeSmithG(NdotV, NdotL, roughness);
+    }
+    static void computeFresnelSchlick(float cos_theta, const float f0[3], float out_f[3]) {
+        eldenring::cs::computeFresnelSchlick(cos_theta, f0, out_f);
+    }
+    static void unpackDirectXNormal(uint8_t r, uint8_t g, uint8_t b, float out_n[3]) {
+        eldenring::cs::unpackDirectXNormal(r, g, b, out_n);
+    }
 
     void tick(float dt, uint8_t state, float anim_time);
 
@@ -62,6 +104,13 @@ private:
 
     TextureGpu knife_tex_;
     TextureGpu glove_tex_;
+    TextureGpu knife_normal_tex_;
+    TextureGpu glove_normal_tex_;
+    TextureGpu knife_pbr_tex_;
+    TextureGpu glove_pbr_tex_;
+
+    ViewmodelProjectionConfig vm_config_{};
+    const eldenring::cs::CSWeaponDefinition* active_weapon_{nullptr};
 
     eldenring::cs::CSViewModel model_;
     LogFn log_{nullptr};

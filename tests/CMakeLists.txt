@@ -93,6 +93,7 @@ add_executable(mc_tests
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/combat/combat_service.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/input/hotkey_dispatcher.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/hooks/game_hooks.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/cs_weapon_registry.cpp
 )
 
 
