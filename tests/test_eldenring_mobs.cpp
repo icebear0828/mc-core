@@ -523,6 +523,47 @@ TEST(EldenRingMobs, SkeletonIdleArmsHangDownInsteadOfForwardZombiePose) {
     EXPECT_LT(dir.z, 0.5f) << "Skeleton idle arm must not point forward like a zombie (dir.z=" << dir.z << ")";
 }
 
+TEST(EldenRingMobs, SkeletonBowAimTiltsHeadAndArmsToMatchAimPitch) {
+    std::ifstream skel_file(std::string(MC_ASSET_DIR) + "/models/entities/skeleton.geo.json");
+    std::stringstream ss;
+    ss << skel_file.rdbuf();
+    const auto skeleton = mc::model::EntityModel::fromJson(ss.str()).value();
+
+    MobRegistry r;
+    r.registerModel("skeleton", &skeleton);
+
+    // Snapshot with high upward aim pitch (e.g. +0.5 rad = ~29 deg upward)
+    MobSnapshot s = at(103, 0.f, 0.f);
+    s.model_type = "skeleton";
+    s.yaw = 0.0f;
+    s.pitch = 0.5f;
+    s.bow_charge = 1.0f; // Fully drawn bow
+
+    const auto draws = r.update(1.f / 60.f, {s});
+    ASSERT_EQ(draws.size(), 1u);
+
+    const size_t arm_ix = boneIx(skeleton, "right_arm");
+    const size_t head_ix = boneIx(skeleton, "head");
+
+    const mc::Vec3 arm_pivot = mc::model::bonePivotHost(skeleton.bones[arm_ix], eldenring::render::kBasis);
+    const mc::Vec3 hand_rest = eldenring::render::kBasis.fromCanonical({0.f, 0.f, -10.f * mc::rig::kCmPerModelPixel});
+    const mc::Vec3 arm_pivot_now = mc::rig::transformPoint(draws[0].bones[arm_ix], arm_pivot);
+    const mc::Vec3 hand_now = mc::rig::transformPoint(draws[0].bones[arm_ix], hand_rest);
+    const mc::Vec3 aim_dir = (hand_now - arm_pivot_now).normalized();
+
+    // Aiming upward: arm must point upward along +Y
+    EXPECT_GT(aim_dir.y, 0.3f) << "Skeleton right arm must tilt upward with pitch (aim_dir.y=" << aim_dir.y << ")";
+    EXPECT_GT(aim_dir.z, 0.7f) << "Skeleton right arm must point forward along +Z (aim_dir.z=" << aim_dir.z << ")";
+
+    // Head must also tilt upward
+    const mc::Vec3 head_pivot = mc::model::bonePivotHost(skeleton.bones[head_ix], eldenring::render::kBasis);
+    const mc::Vec3 nose_rest = eldenring::render::kBasis.fromCanonical({8.f * mc::rig::kCmPerModelPixel, 0.f, 24.f * mc::rig::kCmPerModelPixel});
+    const mc::Vec3 head_pivot_now = mc::rig::transformPoint(draws[0].bones[head_ix], head_pivot);
+    const mc::Vec3 nose_now = mc::rig::transformPoint(draws[0].bones[head_ix], nose_rest);
+    const mc::Vec3 look_dir = (nose_now - head_pivot_now).normalized();
+    EXPECT_GT(look_dir.y, 0.2f) << "Skeleton head must tilt upward to track pitch (look_dir.y=" << look_dir.y << ")";
+}
+
 
 
 

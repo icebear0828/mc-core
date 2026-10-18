@@ -332,6 +332,7 @@ void FlightStep();          // defined after them
 void DriveVelocityFromKeys(uintptr_t module, bool force_zero);
 void GroundSprintStep(float dt);
 void VirtualSummonsStep(float dt);
+RayResult CastStaticRay(const float from[3], const float disp[3]);
 extern std::atomic<bool> g_flying;
 std::atomic<unsigned> g_camstep_calls{0}, g_camstep_changed{0};
 
@@ -509,12 +510,33 @@ void VirtualSummonsStep(float dt) {
     pp.pos[2] = p_pos[2];
     pp.yaw = eldenring::render::yawFromQuat(p_q[0], p_q[1], p_q[2], p_q[3]);
 
+    static std::once_flag samplers_init;
+    std::call_once(samplers_init, [] {
+        g_virtual_summons.setLineOfSightSampler([](const float from[3], const float to[3]) -> bool {
+            float disp[3] = {to[0] - from[0], to[1] - from[1], to[2] - from[2]};
+            const RayResult hit = CastStaticRay(from, disp);
+            if (hit.ok && hit.hit && hit.fraction < 0.95f) return false;
+            return true;
+        });
+        g_virtual_summons.setWorldRaycastSampler([](const float from[3], const float to[3], float hit_pos[3]) -> bool {
+            float disp[3] = {to[0] - from[0], to[1] - from[1], to[2] - from[2]};
+            const RayResult hit = CastStaticRay(from, disp);
+            if (hit.ok && hit.hit) {
+                hit_pos[0] = hit.pos[0];
+                hit_pos[1] = hit.pos[1];
+                hit_pos[2] = hit.pos[2];
+                return true;
+            }
+            return false;
+        });
+    });
+
     std::vector<EnemyInfo> enemies;
     enumerateEnemies(g_reader, g_img.base, enemies, 512);
 
     std::vector<eldenring::summon::EnemyTarget> enemy_targets;
     for (const EnemyInfo& e : enemies) {
-        if (e.team != eldenring::live::summon::kTeam && e.hp > 0 && e.chr != player) {
+        if (e.team != eldenring::live::summon::kTeam && e.hp > 0 && e.chr != player && e.hostile) {
             eldenring::summon::EnemyTarget et;
             et.chr_ins = e.chr;
             et.hp = e.hp;
@@ -532,11 +554,13 @@ void VirtualSummonsStep(float dt) {
     auto intents = g_virtual_summons.drainDamageIntents();
     for (const auto& in : intents) {
         g_queue.enqueue(in.target_chr_ins, static_cast<int>(in.damage_amount), NowTick());
+        eraudio::Play("entity.arrow.hit", 1.0f);
     }
 
     auto proj_intents = g_virtual_summons.drainProjectileIntents();
     for (const auto& pi : proj_intents) {
         eraudio::Play("entity.arrow.shoot", 1.0f);
+        erov::SpawnFx(erov::FxKind::Crit, pi.origin, 2);
         Log("virtual ranged summon: fired projectile at target %llX (damage=%.1f)",
             static_cast<unsigned long long>(pi.target_chr_ins), pi.damage);
     }
@@ -549,6 +573,9 @@ void VirtualSummonsStep(float dt) {
     }
 
     const auto active_arrows = g_virtual_summons.getActiveArrows();
+    for (const auto& arr : active_arrows) {
+        erov::SpawnFx(erov::FxKind::Crit, arr.pos, 1);
+    }
     {
         std::lock_guard<std::mutex> g(g_summon_mutex);
         g_summon_arrows = active_arrows;

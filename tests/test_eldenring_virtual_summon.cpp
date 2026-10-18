@@ -880,4 +880,112 @@ TEST(VirtualSummonTest, ArrowWorldMatrixAlignsWithTrajectoryDirection) {
     EXPECT_NEAR(flight_vec.z, 0.7071f, 1e-3f);
 }
 
+TEST(VirtualSummonTest, SkeletonDoesNotTargetEnemiesWithoutLineOfSight) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t skel_id = mgr.spawnMob("skeleton", p, 0.0f);
+    ASSERT_NE(skel_id, 0u);
+
+    // Enemy placed at (0, 0, 8.0)
+    std::vector<EnemyTarget> enemies = {
+        makeEnemy(0xEE01, 0.0f, 0.0f, 8.0f, 100, 100)
+    };
+
+    // Obstacle blocking Line of Sight
+    mgr.setLineOfSightSampler([](const float*, const float*) {
+        // Block all vision
+        return false;
+    });
+
+    // Step 1.0s: without line of sight, skeleton must not charge bow or shoot
+    mgr.update(1.0f, p, enemies);
+
+    EXPECT_TRUE(mgr.getActiveArrows().empty());
+    EXPECT_TRUE(mgr.drainProjectileIntents().empty());
+    EXPECT_TRUE(mgr.drainDamageIntents().empty());
+    const auto* mob = mgr.findMob(skel_id);
+    ASSERT_NE(mob, nullptr);
+    EXPECT_EQ(mob->target_chr_ins, 0u);
+    EXPECT_EQ(mob->bow_charge, 0.0f);
+}
+
+TEST(VirtualSummonTest, Skeleton3DDistanceCheckRejectsFarUndergroundEnemies) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t skel_id = mgr.spawnMob("skeleton", p, 0.0f);
+    ASSERT_NE(skel_id, 0u);
+
+    // Enemy has dx=2, dz=2 (horizontal dist ~2.8m), but dy=-40.0m (deep cave/underground)
+    // 3D distance is ~40.1m, well beyond kDetectRadius (16m)
+    std::vector<EnemyTarget> enemies = {
+        makeEnemy(0xCA01, 2.0f, -40.0f, 2.0f, 100, 100)
+    };
+
+    mgr.update(1.0f, p, enemies);
+
+    EXPECT_TRUE(mgr.getActiveArrows().empty());
+    EXPECT_TRUE(mgr.drainProjectileIntents().empty());
+    const auto* mob = mgr.findMob(skel_id);
+    ASSERT_NE(mob, nullptr);
+    EXPECT_EQ(mob->target_chr_ins, 0u);
+}
+
+TEST(VirtualSummonTest, ArrowCollidesWithTerrainAndStopsWithoutDealingDamageBehindWall) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t skel_id = mgr.spawnMob("skeleton", p, 0.0f);
+    ASSERT_NE(skel_id, 0u);
+
+    // Enemy placed at (0, 0, 10.0)
+    std::vector<EnemyTarget> enemies = {
+        makeEnemy(0xEE02, 0.0f, 0.0f, 10.0f, 100, 100)
+    };
+
+    // Target initially visible so shot is initiated
+    mgr.setLineOfSightSampler([](const float[3], const float[3]) {
+        return true;
+    });
+
+    // World collision sampler: solid wall at Z = 5.0m
+    mgr.setWorldRaycastSampler([](const float from[3], const float to[3], float hit_pos[3]) -> bool {
+        if (from[2] < 5.0f && to[2] >= 5.0f) {
+            hit_pos[0] = from[0];
+            hit_pos[1] = from[1];
+            hit_pos[2] = 5.0f;
+            return true;
+        }
+        return false;
+    });
+
+    // Step 0.8s: arrow launches
+    mgr.update(0.8f, p, enemies);
+    ASSERT_EQ(mgr.getActiveArrows().size(), 1u);
+
+    // Step 0.5s: arrow reaches Z=5.0m wall and impacts
+    mgr.update(0.5f, p, enemies);
+
+    // Arrow is stopped by the wall, consumed, and NEVER hit enemy at Z=10.0m
+    EXPECT_TRUE(mgr.getActiveArrows().empty());
+    EXPECT_TRUE(mgr.drainDamageIntents().empty()) << "Arrow stopped by wall must not deal damage behind wall!";
+}
+
+TEST(VirtualSummonTest, SkeletonCalculatesAimPitchAndOutputsPitchInSnapshots) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t skel_id = mgr.spawnMob("skeleton", p, 0.0f);
+    ASSERT_NE(skel_id, 0u);
+
+    // Enemy standing on a high cliff: at (0, 10.0, 10.0) -> dy ~= 8.6m, dist_h = 10m
+    // Expected pitch is atan2(8.6, 10) ~= +0.71 rad (~40 deg)
+    std::vector<EnemyTarget> enemies = {
+        makeEnemy(0xCF01, 0.0f, 10.0f, 10.0f, 100, 100)
+    };
+
+    mgr.update(0.1f, p, enemies);
+
+    const auto snaps = mgr.generateSnapshots();
+    ASSERT_EQ(snaps.size(), 1u);
+    EXPECT_GT(snaps[0].pitch, 0.3f) << "Skeleton must look upward at elevated enemy (pitch=" << snaps[0].pitch << ")";
+}
+
 

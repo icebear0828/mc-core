@@ -130,12 +130,15 @@ struct VirtualMob {
     float vel_y{0.0f};
     bool on_ground{true};
     float bow_charge{0.0f};     // [0, 1] for ranged archer aim
+    float pitch{0.0f};          // aim elevation pitch in radians
     float swing_progress{0.0f}; // [0, 1] for melee attack swing
 };
 
 class VirtualSummonManager {
 public:
     using GroundSampler = std::function<std::optional<float>(float x, float current_y, float z)>;
+    using LineOfSightSampler = std::function<bool(const float from[3], const float to[3])>;
+    using WorldRaycastSampler = std::function<bool(const float from[3], const float to[3], float hit_pos[3])>;
 
     static constexpr size_t kMaxVirtualSummons = 16;
     static constexpr float kFollowRadiusMin = 2.5f;
@@ -154,6 +157,16 @@ public:
     void setGroundSampler(GroundSampler sampler) {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         ground_sampler_ = std::move(sampler);
+    }
+
+    void setLineOfSightSampler(LineOfSightSampler sampler) {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        los_sampler_ = std::move(sampler);
+    }
+
+    void setWorldRaycastSampler(WorldRaycastSampler sampler) {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        raycast_sampler_ = std::move(sampler);
     }
 
     void initDefaultArchetypes() {
@@ -363,6 +376,15 @@ public:
             const float seg_z = next_z - prev_z;
             const float seg_len_sq = seg_x * seg_x + seg_y * seg_y + seg_z * seg_z;
 
+            // 1a. Check physical world/terrain geometry collision
+            const float from_pt[3] = {prev_x, prev_y, prev_z};
+            const float to_pt[3] = {next_x, next_y, next_z};
+            float hit_pos[3] = {};
+            if (raycast_sampler_ && raycast_sampler_(from_pt, to_pt, hit_pos)) {
+                it = active_arrows_.erase(it);
+                continue;
+            }
+
             bool hit = false;
             for (const auto& enemy : enemies) {
                 if (enemy.hp <= 0) continue;
@@ -440,7 +462,7 @@ public:
                 }
             }
 
-            // Find closest active hostile enemy
+            // Find closest active hostile enemy with Line of Sight
             uintptr_t best_target = 0;
             float best_dist_sq = kDetectRadius * kDetectRadius;
             float target_pos[3]{0.0f, 0.0f, 0.0f};
@@ -448,9 +470,17 @@ public:
             for (const auto& enemy : enemies) {
                 if (!enemy.is_hostile || enemy.hp <= 0 || enemy.chr_ins == 0) continue;
                 float dx = enemy.pos[0] - mob.pos[0];
+                float dy = enemy.pos[1] - mob.pos[1];
                 float dz = enemy.pos[2] - mob.pos[2];
-                float d_sq = dx * dx + dz * dz;
+                float d_sq = dx * dx + dy * dy + dz * dz;
                 if (d_sq < best_dist_sq) {
+                    if (los_sampler_) {
+                        const float eye_pos[3] = {mob.pos[0], mob.pos[1] + 1.4f, mob.pos[2]};
+                        const float enemy_mid[3] = {enemy.pos[0], enemy.pos[1] + 1.0f, enemy.pos[2]};
+                        if (!los_sampler_(eye_pos, enemy_mid)) {
+                            continue; // Blocked by obstacle / wall / terrain
+                        }
+                    }
                     best_dist_sq = d_sq;
                     best_target = enemy.chr_ins;
                     target_pos[0] = enemy.pos[0];
@@ -464,11 +494,14 @@ public:
             if (best_target != 0) {
                 // Moving toward or attacking target (As designed per item 2: mob pursues target)
                 float dx = target_pos[0] - mob.pos[0];
+                float dy = (target_pos[1] + 1.0f) - (mob.pos[1] + 1.4f);
                 float dz = target_pos[2] - mob.pos[2];
                 float dist = std::sqrt(dx * dx + dz * dz);
+                float dist_3d = std::sqrt(dx * dx + dy * dy + dz * dz);
 
                 if (dist > 1e-4f) {
                     mob.yaw = std::atan2(dx, dz);
+                    mob.pitch = std::atan2(dy, dist);
                 }
 
                 if (is_creeper) {
@@ -543,9 +576,10 @@ public:
                                 proj.origin[0] = mob.pos[0];
                                 proj.origin[1] = mob.pos[1] + 1.4f;
                                 proj.origin[2] = mob.pos[2];
-                                proj.direction[0] = dx / dist;
-                                proj.direction[1] = (target_pos[1] - (mob.pos[1] + 1.4f)) / dist;
-                                proj.direction[2] = dz / dist;
+                                const float aim_len = std::max(dist_3d, 1e-4f);
+                                proj.direction[0] = dx / aim_len;
+                                proj.direction[1] = dy / aim_len;
+                                proj.direction[2] = dz / aim_len;
                                 proj.damage = mob.damage;
                                 proj.speed = 22.0f;
                                 projectile_intents_.push_back(proj);
@@ -558,7 +592,7 @@ public:
                                 va.pos[1] = proj.origin[1];
                                 va.pos[2] = proj.origin[2];
                                 va.vel[0] = proj.direction[0] * proj.speed;
-                                va.vel[1] = proj.direction[1] * proj.speed + 1.2f;
+                                va.vel[1] = proj.direction[1] * proj.speed + 0.8f;
                                 va.vel[2] = proj.direction[2] * proj.speed;
                                 va.damage = mob.damage;
                                 active_arrows_.push_back(va);
@@ -572,7 +606,8 @@ public:
                     } else {
                         mob.bow_charge = std::max(0.0f, mob.bow_charge - dt * 2.0f);
                     }
-                } else if (mob.attack_style == MobAttackStyle::Melee) {
+                }
+ else if (mob.attack_style == MobAttackStyle::Melee) {
                     // Standard melee attack for zombie/iron_golem/wolf
                     if (dist <= mob.attack_range) {
                         if (mob.attack_cooldown <= 0.0f) {
@@ -593,6 +628,7 @@ public:
                     }
                 }
             } else if (!is_creeper || !mob.manual_primed) {
+                mob.pitch = 0.0f;
                 mob.bow_charge = std::max(0.0f, mob.bow_charge - dt * 2.0f);
                 // Follow player when idle (if not manually primed creeper)
                 // In Minecraft / natural companion behaviour: summons smoothly follow player on XZ ground.
@@ -795,6 +831,7 @@ public:
             s.scale = mob.scale;
             s.white_flash = mob.white_flash;
             s.bow_charge = mob.bow_charge;
+            s.pitch = mob.pitch;
             s.swing_progress = mob.swing_progress;
             out.push_back(s);
         }
@@ -864,6 +901,8 @@ private:
     std::vector<CreeperExplosionEvent> explosion_events_;
     std::vector<VirtualArrow> active_arrows_;
     GroundSampler ground_sampler_;
+    LineOfSightSampler los_sampler_;
+    WorldRaycastSampler raycast_sampler_;
 };
 
 } // namespace eldenring::summon

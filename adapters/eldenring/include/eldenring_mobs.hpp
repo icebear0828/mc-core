@@ -38,6 +38,7 @@ struct MobSnapshot {
     float scale{1.0f};
     float white_flash{0.0f};
     float bow_charge{0.0f};     // [0, 1] for ranged archer aim
+    float pitch{0.0f};          // vertical elevation aim angle in radians
     float swing_progress{0.0f}; // [0, 1] for melee attack swing
 };
 
@@ -160,16 +161,22 @@ private:
         for (size_t i = 0; i < model.bones.size(); ++i) {
             const std::string& name = model.bones[i].name;
             if (s.model_type == "skeleton") {
-                if (name == "right_arm") {
+                if (name == "head") {
                     if (s.bow_charge > 0.0f) {
-                        extra[i] = mobEulerToHostQuat(0.15f * s.bow_charge, -0.45f * s.bow_charge, 0.05f * s.bow_charge);
+                        extra[i] = mobEulerToHostQuat(-s.pitch, 0.0f, 0.0f);
+                    } else if (const auto part = mc::model::humanoidPartForBone(name)) {
+                        extra[i] = eldenring::render::hostQuat(t[static_cast<size_t>(*part)].rot);
+                    }
+                } else if (name == "right_arm") {
+                    if (s.bow_charge > 0.0f) {
+                        extra[i] = mobEulerToHostQuat(-s.pitch, -0.15f * s.bow_charge, 0.05f * s.bow_charge);
                     } else {
                         const float swing = -2.0f * (t[static_cast<size_t>(mc::StevePart::RightArm)].rot.y);
                         extra[i] = mobEulerToHostQuat(1.45f + swing, 0.0f, 0.0f);
                     }
                 } else if (name == "left_arm") {
                     if (s.bow_charge > 0.0f) {
-                        extra[i] = mobEulerToHostQuat(0.0f, 0.35f * s.bow_charge, -0.05f * s.bow_charge);
+                        extra[i] = mobEulerToHostQuat(-s.pitch - 0.2f * s.bow_charge, 0.35f + 0.15f * s.bow_charge, -0.1f * s.bow_charge);
                     } else {
                         const float swing = -2.0f * (t[static_cast<size_t>(mc::StevePart::LeftArm)].rot.y);
                         extra[i] = mobEulerToHostQuat(1.45f + swing, 0.0f, 0.0f);

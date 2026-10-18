@@ -563,29 +563,77 @@ bool SteveRenderer::initHeldItems(ID3D12Device* device, const uint8_t* atlas_rgb
         held_items_[cell.item] = d;
         if (item == mc::ItemId::Arrow) {
             const mc::rig::ItemSprite arrow_sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
-            mc::rig::RigMesh arrow_mesh = mc::rig::buildFlatItemMesh(arrow_sprite);
+            const mc::rig::RigMesh base_mesh = mc::rig::buildFlatItemMesh(arrow_sprite);
             constexpr float inv_sqrt2 = 0.70710678f;
-            constexpr float scale = 0.5f;
-            for (auto& v : arrow_mesh.vertices) {
-                // 1. Rotate -45 deg around Z so diagonal arrow aligns with X
-                const float x1 = (v.x + v.y) * inv_sqrt2;
-                const float y1 = (-v.x + v.y) * inv_sqrt2;
-                const float z1 = v.z;
-                // 2. Rotate +90 deg around Y so +X points along +Z (Elden Ring forward)
-                v.x = z1 * scale;
-                v.y = y1 * scale;
-                v.z = x1 * scale;
+            constexpr float scale = 0.55f;
+
+            std::vector<mc::rig::RigVertex> full_arrow_verts;
+            std::vector<uint16_t> full_arrow_indices;
+
+            if (!base_mesh.vertices.empty()) {
+                // Plane 1: Extruded horizontal profile (XZ plane)
+                const uint16_t base1 = static_cast<uint16_t>(full_arrow_verts.size());
+                for (auto v : base_mesh.vertices) {
+                    const float x1 = (v.x + v.y) * inv_sqrt2;
+                    const float y1 = (-v.x + v.y) * inv_sqrt2;
+                    const float z1 = v.z;
+                    v.x = y1 * scale;
+                    v.y = z1 * 2.0f;
+                    v.z = x1 * scale;
+                    full_arrow_verts.push_back(v);
+                }
+                for (uint16_t idx : base_mesh.indices) full_arrow_indices.push_back(static_cast<uint16_t>(base1 + idx));
+
+                // Plane 2: Extruded vertical profile (YZ plane), rotated 90 deg around flight axis (Z)
+                const uint16_t base2 = static_cast<uint16_t>(full_arrow_verts.size());
+                for (auto v : base_mesh.vertices) {
+                    const float x1 = (v.x + v.y) * inv_sqrt2;
+                    const float y1 = (-v.x + v.y) * inv_sqrt2;
+                    const float z1 = v.z;
+                    v.x = z1 * 2.0f;
+                    v.y = y1 * scale;
+                    v.z = x1 * scale;
+                    full_arrow_verts.push_back(v);
+                }
+                for (uint16_t idx : base_mesh.indices) full_arrow_indices.push_back(static_cast<uint16_t>(base2 + idx));
+
+                // Plane 3 & 4: Dual crossed billboard quads along length of shaft (XZ and YZ) for solid visibility at distance
+                const float u0 = static_cast<float>(cell.x) / static_cast<float>(atlas_w);
+                const float v0 = static_cast<float>(cell.y) / static_cast<float>(atlas_h);
+                const float u1 = static_cast<float>(cell.x + cell.w) / static_cast<float>(atlas_w);
+                const float v1 = static_cast<float>(cell.y + cell.h) / static_cast<float>(atlas_h);
+                constexpr float half_len = 0.38f;
+                constexpr float half_w = 0.055f;
+
+                // Horizontal billboard in XZ
+                const uint16_t b_h = static_cast<uint16_t>(full_arrow_verts.size());
+                full_arrow_verts.push_back({-half_w, 0.0f, -half_len, u0, v1});
+                full_arrow_verts.push_back({ half_w, 0.0f, -half_len, u1, v1});
+                full_arrow_verts.push_back({ half_w, 0.0f,  half_len, u1, v0});
+                full_arrow_verts.push_back({-half_w, 0.0f,  half_len, u0, v0});
+                full_arrow_indices.insert(full_arrow_indices.end(), {b_h, static_cast<uint16_t>(b_h + 1), static_cast<uint16_t>(b_h + 2),
+                                                                    b_h, static_cast<uint16_t>(b_h + 2), static_cast<uint16_t>(b_h + 3)});
+
+                // Vertical billboard in YZ
+                const uint16_t b_v = static_cast<uint16_t>(full_arrow_verts.size());
+                full_arrow_verts.push_back({0.0f, -half_w, -half_len, u0, v1});
+                full_arrow_verts.push_back({0.0f,  half_w, -half_len, u1, v1});
+                full_arrow_verts.push_back({0.0f,  half_w,  half_len, u1, v0});
+                full_arrow_verts.push_back({0.0f, -half_w,  half_len, u0, v0});
+                full_arrow_indices.insert(full_arrow_indices.end(), {b_v, static_cast<uint16_t>(b_v + 1), static_cast<uint16_t>(b_v + 2),
+                                                                    b_v, static_cast<uint16_t>(b_v + 2), static_cast<uint16_t>(b_v + 3)});
             }
+
             Rel(arrow_vertices_);
             Rel(arrow_indices_);
             arrow_index_count_ = 0;
-            if (!arrow_mesh.vertices.empty()) {
-                arrow_vertices_ = UploadBuffer(device, arrow_mesh.vertices.data(), arrow_mesh.vertices.size() * sizeof(mc::rig::RigVertex));
-                arrow_indices_ = UploadBuffer(device, arrow_mesh.indices.data(), arrow_mesh.indices.size() * sizeof(uint16_t));
+            if (!full_arrow_verts.empty()) {
+                arrow_vertices_ = UploadBuffer(device, full_arrow_verts.data(), full_arrow_verts.size() * sizeof(mc::rig::RigVertex));
+                arrow_indices_ = UploadBuffer(device, full_arrow_indices.data(), full_arrow_indices.size() * sizeof(uint16_t));
                 if (arrow_vertices_ && arrow_indices_) {
-                    arrow_index_count_ = static_cast<unsigned>(arrow_mesh.indices.size());
-                    arrow_vbv_ = {arrow_vertices_->GetGPUVirtualAddress(), static_cast<UINT>(arrow_mesh.vertices.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
-                    arrow_ibv_ = {arrow_indices_->GetGPUVirtualAddress(), static_cast<UINT>(arrow_mesh.indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
+                    arrow_index_count_ = static_cast<unsigned>(full_arrow_indices.size());
+                    arrow_vbv_ = {arrow_vertices_->GetGPUVirtualAddress(), static_cast<UINT>(full_arrow_verts.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
+                    arrow_ibv_ = {arrow_indices_->GetGPUVirtualAddress(), static_cast<UINT>(full_arrow_indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
                 }
             }
         }
