@@ -238,6 +238,7 @@ void HotkeyDispatcher::tick(float dt) {
     const bool right_edge = !inv_open && input_enabled && cb_.take_right_click && cb_.take_right_click();
     if (mode.cs_mode.load() && fg && !is_dead && right_edge) {
         mode.cs_knife_state.store(3); // Backstab
+        mode.cs_knife_inspect.store(false);
         mode.cs_knife_anim_time.store(0.f);
         if (cb_.play_sound) cb_.play_sound("cs.knife.hit", 1.0f);
     } else if (right_edge && fg && want_suppress && !is_dead) {
@@ -335,6 +336,7 @@ void HotkeyDispatcher::tick(float dt) {
         else if (state == 4) max_t = 0.8f;  // Deploy
         if (state != 0 && t >= max_t) {
             mode.cs_knife_state.store(0); // Return to Idle
+            mode.cs_knife_inspect.store(false);
             mode.cs_knife_anim_time.store(0.f);
         } else {
             mode.cs_knife_anim_time.store(t);
@@ -347,6 +349,7 @@ void HotkeyDispatcher::tick(float dt) {
         if (f_down && !prev_gameplay_f_) {
             if (mode.cs_mode.load()) {
                 mode.cs_knife_state.store(1); // Inspect!
+                mode.cs_knife_inspect.store(true);
                 mode.cs_knife_anim_time.store(0.f);
                 if (cb_.play_sound) cb_.play_sound("cs.knife.inspect", 1.0f);
                 if (cb_.log) cb_.log("CS: Butterfly Knife Inspect (Flower Spin)");
@@ -366,6 +369,7 @@ void HotkeyDispatcher::tick(float dt) {
             if (d && !prev_digit_[i]) {
                 if (mode.cs_mode.load() && i < 3) {
                     mode.cs_knife_state.store(4); // Deploy!
+                    mode.cs_knife_inspect.store(false);
                     mode.cs_knife_anim_time.store(0.f);
                     if (cb_.play_sound) cb_.play_sound("cs.knife.deploy", 1.0f);
                 } else {
@@ -401,6 +405,7 @@ void HotkeyDispatcher::tick(float dt) {
     if (mode.cs_mode.load() && fg && alive) {
         if (click_edge) {
             mode.cs_knife_state.store(2); // Slash
+            mode.cs_knife_inspect.store(false);
             mode.cs_knife_anim_time.store(0.f);
             if (cb_.play_sound) cb_.play_sound("cs.knife.slash", 1.0f);
         }
@@ -427,10 +432,14 @@ void HotkeyDispatcher::tick(float dt) {
         if (new_cs) {
             mode.first_person.store(true);
             mode.cs_knife_state.store(4); // Deploy
+            mode.cs_knife_inspect.store(false);
             mode.cs_knife_anim_time.store(0.f);
             if (cb_.play_sound) cb_.play_sound("cs.knife.deploy", 1.0f);
             if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: ACTIVE (Butterfly Knife)");
         } else {
+            mode.cs_knife_state.store(0);
+            mode.cs_knife_inspect.store(false);
+            mode.cs_knife_anim_time.store(0.f);
             if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: OFF");
         }
     }
@@ -455,10 +464,18 @@ void HotkeyDispatcher::tick(float dt) {
 
     const bool d6 = fg && queryKey(VK_F6);
     if (d6 && !prev6_) {
-        const bool new_mc = !mode.mc_mode.load();
-        mode.mc_mode.store(new_mc);
-        if (cb_.log) cb_.log(std::string("F6: MC mode ") + (new_mc ? "on" : "off"));
-        if (cb_.reset_slot_probe) cb_.reset_slot_probe(slot_cursor_);
+        if (mode.cs_mode.load()) {
+            mode.cs_mode.store(false);
+            mode.cs_knife_state.store(0);
+            mode.cs_knife_inspect.store(false);
+            mode.cs_knife_anim_time.store(0.f);
+            if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: OFF (via F6)");
+        } else {
+            const bool new_mc = !mode.mc_mode.load();
+            mode.mc_mode.store(new_mc);
+            if (cb_.log) cb_.log(std::string("F6: MC mode ") + (new_mc ? "on" : "off"));
+            if (cb_.reset_slot_probe) cb_.reset_slot_probe(slot_cursor_);
+        }
     }
     prev6_ = d6;
 

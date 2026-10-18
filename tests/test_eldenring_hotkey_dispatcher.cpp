@@ -354,22 +354,46 @@ TEST_F(HotkeyDispatcherTest, CsModeToggleAndKnifeInspectLifecycle) {
     dispatcher_->tick(0.016f);
 
     EXPECT_EQ(ctx.mode().cs_knife_state.load(), 1); // Inspect triggered
+    EXPECT_TRUE(ctx.mode().cs_knife_inspect.load());
     EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "cs.knife.inspect") != played_sounds_.end());
 
     // Left click to trigger knife slash
     left_click_edge_ = true;
     dispatcher_->tick(0.016f);
     EXPECT_EQ(ctx.mode().cs_knife_state.load(), 2); // Slash triggered
+    EXPECT_FALSE(ctx.mode().cs_knife_inspect.load());
     EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "cs.knife.slash") != played_sounds_.end());
 
     // Right click to trigger backstab
     right_click_edge_ = true;
     dispatcher_->tick(0.016f);
     EXPECT_EQ(ctx.mode().cs_knife_state.load(), 3); // Backstab triggered
+    EXPECT_FALSE(ctx.mode().cs_knife_inspect.load());
     EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "cs.knife.hit") != played_sounds_.end());
+
+    // Advance time past backstab duration (0.6s) -> knife returns to idle (0)
+    dispatcher_->tick(0.7f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 0);
+    EXPECT_FALSE(ctx.mode().cs_knife_inspect.load());
+    EXPECT_FLOAT_EQ(ctx.mode().cs_knife_anim_time.load(), 0.f);
 
     // Press F1 again to toggle CS mode OFF
     setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    EXPECT_FALSE(ctx.mode().cs_mode.load());
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 0);
+    EXPECT_FALSE(ctx.mode().cs_knife_inspect.load());
+
+    // Toggle CS mode back ON via F1, then verify F6 toggles CS mode OFF
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    EXPECT_TRUE(ctx.mode().cs_mode.load());
+
+    setKey(VK_F6, true);
     dispatcher_->tick(0.016f);
     EXPECT_FALSE(ctx.mode().cs_mode.load());
 }
