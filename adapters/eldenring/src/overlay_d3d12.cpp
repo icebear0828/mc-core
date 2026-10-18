@@ -36,7 +36,9 @@
 #include "overlay_d3d12.hpp"
 #include "png_wic.hpp"
 #include "steve_renderer_d3d12.hpp"
+#if ENABLE_CS2_VIEWMODEL
 #include "cs_renderer_d3d12.hpp"
+#endif
 #include "eldenring_runtime_context.hpp"
 #include "eldenring_inventory_preview.hpp"
 #include "eldenring_diagnostics.hpp"
@@ -108,7 +110,9 @@ std::atomic<int> g_trace_left{0}; // F12: frames of per-frame figure/camera posi
 std::vector<uint8_t> g_skin_rgba; // decoded by the loader; applied when the renderer is created
 unsigned g_skin_w = 0, g_skin_h = 0;
 SteveRenderer g_steve;
+#if ENABLE_CS2_VIEWMODEL
 CsRenderer g_cs;
+#endif
 mc::SteveAnimator g_anim;
 eldenring::render::SteveMotion g_motion;
 eldenring::render::HeadTracker g_head;
@@ -209,7 +213,9 @@ void WaitForGpu() {
 void Teardown() {
     if (g_s.ready) WaitForGpu();
     g_steve.release();
+#if ENABLE_CS2_VIEWMODEL
     g_cs.release();
+#endif
     if (g_s.imgui_ready) {
         ImGui_ImplDX12_Shutdown();
         ImGui::DestroyContext();
@@ -426,6 +432,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
         }
         g_depth_dirty.store(true); // bind the depth captured so far
         CreateAtlasTexture(srv_inc);
+#if ENABLE_CS2_VIEWMODEL
         if (!g_cs.init(g_s.device, g_s.format, g_log)) {
             Logf("overlay: CS viewmodel renderer unavailable");
         } else {
@@ -485,6 +492,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             }
             g_cs.loadTexturesFromFiles(g_s.device, knife_png, glove_png, cs_table_cpu, glove_cpu);
         }
+#endif
         {
             // The first-person arm and the sprites of the default hotbar items.
             std::vector<SteveRenderer::FpItemCell> cells;
@@ -1477,11 +1485,16 @@ void RenderFrame(IDXGISwapChain* sc) {
     } else {
         g_mob_registry.clear();
     }
+#if ENABLE_CS2_VIEWMODEL
     auto& r_mode = eldenring::RuntimeContext::Instance().mode();
     const bool cs_active = r_mode.cs_mode.load() && g_cs.ready();
+#else
+    const bool cs_active = false;
+#endif
     const bool mc_fp_active = !cs_active && steve.first_person && !steve.dead && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
         g_steve.ensureDepth(g_s.device, g_s.width, g_s.height);
 
+#if ENABLE_CS2_VIEWMODEL
     if (cs_active && !steve.dead) {
         const mc::rig::Mat4 proj = g_cs.computeViewmodelProjection(g_s.width, g_s.height);
         const UINT srv_inc = g_s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -1494,7 +1507,9 @@ void RenderFrame(IDXGISwapChain* sc) {
         g_cs.tick(dt, r_mode.cs_knife_state.load(), r_mode.cs_knife_anim_time.load());
         g_cs.draw(g_s.list, g_s.srv_heap, cs_tex_table, g_s.width, g_s.height, proj, f.rtv, dsv);
         g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
-    } else if (mc_fp_active) {
+    } else
+#endif
+    if (mc_fp_active) {
         namespace fp = eldenring::fp;
         // The hand: lowered/raised by the hotbar and the attack cooldown, swaying behind the view, bobbing with the steps.
         const mc::ItemId wanted = static_cast<mc::ItemId>(steve.held_item);
