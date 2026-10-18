@@ -352,6 +352,9 @@ void HotkeyDispatcher::tick(float dt) {
                 const uint32_t take = std::min(need, reserve);
                 mode.cs_ammo.store(ammo + take);
                 mode.cs_reserve.store(reserve - take);
+                if (cb_.play_sound) {
+                    cb_.play_sound(mode.cs_weapon_slot.load() == 1 ? "cs.ak47.bolt" : "cs.knife.deploy", 1.0f);
+                }
             }
             mode.cs_knife_state.store(0); // Return to Idle
             mode.cs_knife_inspect.store(false);
@@ -371,8 +374,9 @@ void HotkeyDispatcher::tick(float dt) {
                 mode.cs_knife_state.store(1); // Inspect!
                 mode.cs_knife_inspect.store(true);
                 mode.cs_knife_anim_time.store(0.f);
-                if (cb_.play_sound) cb_.play_sound("cs.knife.inspect", 1.0f);
-                if (cb_.log) cb_.log("CS: Butterfly Knife Inspect (Flower Spin)");
+                const uint8_t slot = mode.cs_weapon_slot.load();
+                if (cb_.play_sound) cb_.play_sound(slot == 1 ? "cs.ak47.inspect" : "cs.knife.inspect", 1.0f);
+                if (cb_.log) cb_.log(slot == 0 ? "CS: Butterfly Knife Inspect (Flower Spin)" : "CS: weapon inspect");
             } else
 #endif
             {
@@ -411,7 +415,7 @@ void HotkeyDispatcher::tick(float dt) {
                     mode.cs_knife_state.store(4); // Deploy!
                     mode.cs_knife_inspect.store(false);
                     mode.cs_knife_anim_time.store(0.f);
-                    if (cb_.play_sound) cb_.play_sound("cs.knife.deploy", 1.0f);
+                    if (cb_.play_sound) cb_.play_sound(slot == 1 ? "cs.ak47.draw" : "cs.knife.deploy", 1.0f);
                 } else
 #endif
                 {
@@ -429,6 +433,7 @@ void HotkeyDispatcher::tick(float dt) {
             mode.cs_knife_state.store(5); // Reload
             mode.cs_knife_inspect.store(false);
             mode.cs_knife_anim_time.store(0.f);
+            if (cb_.play_sound) cb_.play_sound(mode.cs_weapon_slot.load() == 1 ? "cs.ak47.reload" : "cs.knife.deploy", 1.0f);
             if (cb_.log) cb_.log("CS: reload");
         }
         prev_reload_r_ = r_down;
@@ -482,7 +487,7 @@ void HotkeyDispatcher::tick(float dt) {
                     mode.cs_knife_inspect.store(false);
                     mode.cs_knife_anim_time.store(0.f);
                     cs_fire_cooldown_ = 60.f / rpm;
-                    if (cb_.play_sound) cb_.play_sound("cs.knife.slash", 1.0f); // placeholder until gun SFX lands
+                    if (cb_.play_sound) cb_.play_sound(slot == 1 ? "cs.ak47.fire" : "cs.knife.slash", 1.0f);
                 } else if (click_edge && cb_.log) {
                     cb_.log("CS: empty magazine - press R to reload");
                 }
