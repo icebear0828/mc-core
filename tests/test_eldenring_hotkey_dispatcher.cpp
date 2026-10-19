@@ -289,11 +289,16 @@ TEST_F(HotkeyDispatcherTest, ModeTogglesF5AndF6) {
     dispatcher_->tick(0.016f);
     EXPECT_EQ(ctx.currentGameMode(), creative::GameMode::Survival);
 
-    // Press F6 -> Toggle MC Mode
+    // Press F6 -> Toggle MC Mode (pure MC build only)
     EXPECT_TRUE(ctx.mode().mc_mode.load());
     setKey(VK_F6, true);
     dispatcher_->tick(0.016f);
+#if ENABLE_CS2_VIEWMODEL
+    // The CS2 build is CS-only at runtime: F6 must not enable MC mode.
+    EXPECT_TRUE(ctx.mode().mc_mode.load());
+#else
     EXPECT_FALSE(ctx.mode().mc_mode.load());
+#endif
 }
 
 TEST_F(HotkeyDispatcherTest, MiningConsumesLeftClickSoNoSwingAttack) {
@@ -449,6 +454,30 @@ TEST_F(HotkeyDispatcherTest, CsModeTurnsOffMcMode) {
     dispatcher_->tick(0.016f);
 
     EXPECT_TRUE(ctx.mode().cs_mode.load());
+    EXPECT_FALSE(ctx.mode().mc_mode.load());
+}
+
+TEST_F(HotkeyDispatcherTest, CsBuildF6NeverEnablesMcMode) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+    ASSERT_FALSE(ctx.mode().mc_mode.load());
+
+    // F6 leaves CS mode...
+    setKey(VK_F6, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F6, false);
+    dispatcher_->tick(0.016f);
+    EXPECT_FALSE(ctx.mode().cs_mode.load());
+
+    // ...and a second F6 must not bring MC mode back.
+    setKey(VK_F6, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F6, false);
+    dispatcher_->tick(0.016f);
     EXPECT_FALSE(ctx.mode().mc_mode.load());
 }
 

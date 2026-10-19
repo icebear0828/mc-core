@@ -523,6 +523,9 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
         g_depth_dirty.store(true); // bind the depth captured so far
         CreateAtlasTexture(srv_inc);
 #if ENABLE_CS2_VIEWMODEL
+        // The CS2 build is CS-only at runtime: never start in MC mode, even if
+        // a config file or a missing CS asset would otherwise fall back to it.
+        eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
         if (!g_cs.init(g_s.device, g_s.format, g_log)) {
             Logf("overlay: CS viewmodel renderer unavailable");
         } else {
