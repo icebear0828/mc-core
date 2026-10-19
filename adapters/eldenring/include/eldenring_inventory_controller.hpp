@@ -32,8 +32,8 @@ struct InventoryInputState {
 };
 
 struct InventoryCallbacks {
-    std::function<void(bool)> set_suppress_mouse_motion;
-    std::function<void(bool)> set_suppress_keyboard;
+    // Host input suppression is applied by HotkeyDispatcher from the ControlPlan;
+    // the inventory controller only owns its open/close state and UI logic.
     std::function<void(const char*)> log;
 };
 

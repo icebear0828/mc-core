@@ -28,6 +28,8 @@ struct HotkeyCallbacks {
     std::function<int()> take_wheel_notches;
     std::function<void(bool)> set_suppress_mouse_buttons;
     std::function<void(bool)> set_suppress_mouse_wheel;
+    std::function<void(bool)> set_suppress_mouse_motion;
+    std::function<void(bool)> set_suppress_keyboard;
     std::function<void(const int*, size_t)> set_masked_keys;
     std::function<unsigned(long&)> take_keyboard_failures;
 

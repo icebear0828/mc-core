@@ -92,9 +92,10 @@ ControlPlan（每帧一份：各 domain 的 authority + 要屏蔽的键）
   飞行模块自己积分位置。
 - **菜单/加载**：`WantSuppress()` 为假时，鼠标/攻击/使用回到 `Native`，
   否则玩家在菜单里点不了。
-- **背包**：目前仍由 `InventoryController` 直接调用
-  `SetSuppressMouseMotion` / `SetSuppressKeyboard`；`mc::requestInventory`
-  已经准备好，下一步可以迁进来。
+- **背包**：打开时由 `mc::requestInventory` 请求
+  `MouseMotion` / `Keyboard` / `Cursor = Mod`，dispatcher 统一应用
+  `SetSuppressMouseMotion` / `SetSuppressKeyboard`；`InventoryController`
+  只负责开关和 UI 逻辑，不再直接碰宿主输入。
 
 ## 4. 新增一个模式（推荐流程）
 
@@ -208,7 +209,9 @@ cmake --build build --config Release --target mc_tests
   翻滚、飞行、CS 按键/滚轮、背包、前后台、组合模式。
 - `tests/test_eldenring_hotkey_dispatcher.cpp`：真实 dispatcher 集成——
   MC 跳跃屏蔽空格、禁用翻滚屏蔽 Shift、创造飞行屏蔽移动键、CS 模式屏蔽
-  R/F/1-4 与滚轮。
+  R/F/1-4 与滚轮、背包打开时屏蔽鼠标移动/键盘。
+- `tests/test_eldenring_inventory_controller.cpp`：背包开关/UI 逻辑
+  （宿主输入抑制由 dispatcher 的 plan 测试覆盖）。
 
 ## 8. 反模式（代码审查直接打回）
 
@@ -230,6 +233,7 @@ cmake --build build --config Release --target mc_tests
 | `adapters/eldenring/src/input/hotkey_dispatcher.cpp` | 每 tick 构建 plan，应用键屏蔽/鼠标/滚轮 |
 | `adapters/eldenring/include/eldenring_runtime_context.hpp` | 用 packed atomic 发布 plan，提供 `modOwns` / `blocksNative` |
 | `adapters/eldenring/src/movement/player_locomotion.cpp` | 用 `Camera` authority 决定身体朝向 |
+| `adapters/eldenring/src/ui/inventory_controller.cpp` | 只维护背包开关/UI；宿主输入抑制由 dispatcher 的 plan 应用 |
 | `adapters/eldenring/src/loader.cpp` | 用 `Camera` authority 决定是否写第一人称相机 |
 | `tests/test_control_policy.cpp` | core 策略测试 |
 | `tests/test_eldenring_control_policy.cpp` | Elden Ring 模式矩阵测试 |
@@ -244,3 +248,5 @@ cmake --build build --config Release --target mc_tests
   `ControlDomain::Camera` authority。
 - `ModeConfig` 增加 `control_authority_bits`，跨线程无锁读。
 - 全量 C++ 测试从 1161 增加到 1186（新增 25 项策略/集成测试）。
+- 后续（2026-10-19）：背包的鼠标移动/键盘抑制迁入 `requestInventory`，由
+  dispatcher 统一应用；CS2 构建 1188 tests，纯 MC 构建 1130 tests。

@@ -24,6 +24,16 @@ TEST(EldenRingControlPolicy, DefaultPlanIsEmpty) {
     EXPECT_TRUE(plan.isDefault());
 }
 
+TEST(EldenRingControlPolicy, InventoryOwnsMouseMotionKeyboardAndCursor) {
+    ModeInputs in;
+    in.inventory_open = true;
+
+    const mc::ControlPlan plan = buildControlPlan(in);
+    EXPECT_TRUE(plan.blocksNative(mc::ControlDomain::MouseMotion));
+    EXPECT_TRUE(plan.blocksNative(mc::ControlDomain::Keyboard));
+    EXPECT_TRUE(plan.owns(mc::ControlDomain::Cursor));
+}
+
 TEST(EldenRingControlPolicy, FirstPersonOwnsTheCamera) {
     ModeInputs in;
     in.first_person = true;

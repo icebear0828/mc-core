@@ -102,8 +102,6 @@ void InventoryController::open(float screen_w, float screen_h, RuntimeContext& c
     erin::TakeRightClick();
     erin::TakeWheelNotches();
 #endif
-    if (callbacks_.set_suppress_mouse_motion) callbacks_.set_suppress_mouse_motion(true);
-    if (callbacks_.set_suppress_keyboard) callbacks_.set_suppress_keyboard(true);
     ctx.ui().inv_open.store(true, std::memory_order_release);
     if (callbacks_.log) {
         char buf[128];
@@ -116,8 +114,6 @@ void InventoryController::open(float screen_w, float screen_h, RuntimeContext& c
 void InventoryController::close(const char* why, mc::Inventory& inv, RuntimeContext& ctx) {
     inv.returnCursor();
     ctx.ui().inv_open.store(false, std::memory_order_release);
-    if (callbacks_.set_suppress_mouse_motion) callbacks_.set_suppress_mouse_motion(false);
-    if (callbacks_.set_suppress_keyboard) callbacks_.set_suppress_keyboard(false);
     if (callbacks_.log) {
         char buf[128];
         snprintf(buf, sizeof(buf), "inventory: closed (%s)", why);

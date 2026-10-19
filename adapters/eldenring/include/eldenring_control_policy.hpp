@@ -60,6 +60,11 @@ inline mc::ControlPlan buildControlPlan(const ModeInputs& in) {
         mc::requestFirstPerson(resolver);
     }
 
+    // Inventory UI owns mouse motion, the keyboard and the virtual cursor.
+    if (in.inventory_open) {
+        mc::requestInventory(resolver);
+    }
+
     // MC jump / roll keys are hidden from the native game while MC mode is on.
     if (in.mc_mode && in.foreground && !in.inventory_open) {
         // The MC locomotion module writes velocity and body yaw, while the host

@@ -316,6 +316,7 @@
 - **菜单标志**：`CSMenuMan+0x1C|+0x1D` 为菜单聚焦；`+0x1A` 是光标捕获，**不是**菜单标志。
 - **血液特效、战斗时的原生 HUD**：都用游戏自带设置关掉。
 - **控制策略层（2026-10-19，纯 MC 构建，用户实机确认“都没有问题”）**：第一人称、MC 跳跃/翻滚/飞行、鼠标/菜单/背包输入仲裁均正常；纯 MC 与 CS 是两个构建（`ENABLE_CS2_VIEWMODEL` OFF/ON），部署 MC 必须用 `build_pure_mc`。验证记录见 `ELDENRING_VERIFY_CHECKLIST.md` F25。
+- **背包输入抑制（2026-10-19，纯 MC 构建，用户实机确认“没问题了”）**：`InventoryController` 只维护开关/UI；`mc::requestInventory` 请求 `MouseMotion`/`Keyboard`/`Cursor = Mod`，由 dispatcher 从 `ControlPlan` 统一应用。验证记录见 F36。
 
 ---
 
