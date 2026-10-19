@@ -812,8 +812,8 @@ void EnqueueNearestHostile() {
 }
 
 // MC left click: the hostile enemy under the crosshair, in melee reach.
-void ClickAttack(float charged) {
-    eldenring::combat::CombatService::Instance().clickAttack(
+bool ClickAttack(float charged) {
+    return eldenring::combat::CombatService::Instance().clickAttack(
         charged, g_melee, g_combat_engine, g_queue, eldenring::RuntimeContext::Instance());
 }
 
@@ -1292,14 +1292,24 @@ void ProcessTntExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies) {
 }
 
 void EnemiesBlockCollisionStep(const float player_feet[3]) {
-    if (!g_mc_mode.load(std::memory_order_relaxed)) return;
+    const bool mc_on = g_mc_mode.load(std::memory_order_relaxed);
+#if ENABLE_CS2_VIEWMODEL
+    const bool cs_on = eldenring::RuntimeContext::Instance().mode().cs_mode.load(std::memory_order_relaxed);
+#else
+    const bool cs_on = false;
+#endif
+    if (!mc_on && !cs_on) return;
+
     std::vector<EnemyInfo> enemies;
     if (!enumerateEnemies(g_reader, g_img.base, enemies, 512)) {
         EntityManager::instance().clearCache();
         return;
     }
 
+    // The CS hitscan reads this cache on the input thread.
     EntityManager::instance().updateCacheFromGameThread(enemies);
+
+    if (!mc_on) return;
 
     // Process queued TNT explosion damage intents on game thread!
     ProcessTntExplosionsOnGameThread(enemies);
@@ -1606,16 +1616,44 @@ bool QueueBulletFire(float mc_damage) {
     return eldenring::combat::CombatService::Instance().queueBulletFire(mc_damage, g_ctx);
 }
 
+// CS hitscan: spread the shot, pick the hostile under the crosshair, check walls and enqueue the damage.
+// Runs on the input thread; the queue is drained on the game thread by DrainOnce.
+bool FireCsShot(float damage, float spread, float range, uint32_t tracer_frequency, uint8_t weapon_slot) {
+#if ENABLE_CS2_VIEWMODEL
+    eldenring::cs::CsShotParams params;
+    params.damage = damage;
+    params.spread_deg = spread;
+    params.max_range_m = range;
+    // Tracers are disabled by design; the weapon registry also keeps tracer_frequency at 0.
+    (void)tracer_frequency;
+    params.tracer_frequency = 0;
+    params.weapon_slot = weapon_slot;
+    return eldenring::combat::CombatService::Instance()
+        .fireCsShot(params, g_queue, NowTick(), eldenring::RuntimeContext::Instance())
+        .fired;
+#else
+    (void)damage;
+    (void)spread;
+    (void)range;
+    (void)tracer_frequency;
+    (void)weapon_slot;
+    return false;
+#endif
+}
+
 void SetupBulletLog() {
     const bool proj_log = FileExists(g_game_dir + "mc_er_bulletlog.txt");
     const bool arrow_dmg = FileExists(g_game_dir + "mc_er_arrowdmg.txt");
     const bool fire_enabled = FileExists(g_game_dir + "mc_er_bulletfire.txt");
+    const bool cs_shot_log = FileExists(g_game_dir + "mc_er_csshotlog.txt");
     g_proj_log.store(proj_log);
     g_arrow_damage.store(arrow_dmg);
     g_bullet_fire_enabled.store(fire_enabled);
     eldenring::combat::CombatService::Instance().setAimCalEnabled(FileExists(g_game_dir + "mc_er_aimcal.txt"));
     eldenring::combat::CombatService::Instance().setArrowDamage(arrow_dmg);
     eldenring::combat::CombatService::Instance().setBulletFireEnabled(fire_enabled);
+    eldenring::combat::CombatService::Instance().setCsShotLogEnabled(cs_shot_log);
+    if (cs_shot_log) Log("cs: mc_er_csshotlog.txt: every CS hitscan shot is logged");
     if (arrow_dmg) Log("bullet: mc_er_arrowdmg.txt: the player's bolts do MC bolt damage (9, balanced like the diamond sword)");
     if (fire_enabled) LoadBulletTemplate();
     if (!fire_enabled && !proj_log) return;
@@ -2199,7 +2237,13 @@ void SetupOverlay() {
                 else if (key == "fly_vspeed") g_fly_v_speed.store(std::clamp(value, 1.f, 40.f));
                 else if (key == "mc_jump") g_mc_jump.store(value != 0.f);
                 else if (key == "mc_jump_key") g_mc_jump_vk.store(static_cast<int>(value));
-                else if (key == "mc_mode") g_mc_mode.store(value != 0.f);
+                else if (key == "mc_mode") {
+#if ENABLE_CS2_VIEWMODEL
+                    g_mc_mode.store(false); // CS2 build: MC mode is not available
+#else
+                    g_mc_mode.store(value != 0.f);
+#endif
+                }
                 else if (key == "mc_gravity") g_mc_gravity.store(std::clamp(value, 5.f, 80.f));
                 else if (key == "mc_jump_speed") g_mc_jump_speed.store(std::clamp(value, 1.f, 20.f));
                 else if (key == "blocks") g_blocks_enabled.store(value != 0.f);
@@ -2425,6 +2469,10 @@ void SetupCombat() {
     cb.call_vfunc7 = [](uintptr_t dmg_module, uintptr_t attacker, void* ctx_ptr) { return CallVfunc7(dmg_module, attacker, ctx_ptr); };
     cb.play_sound = [](const char* snd, float vol) { eraudio::Play(snd, vol); };
     cb.spawn_fx = [](int kind, const float pos[3], int count) { erov::SpawnFx(static_cast<erov::FxKind>(kind), pos, count); };
+    cb.spawn_tracer = [](const float from[3], const float to[3], float life) { erov::SpawnTracer(from, to, life); };
+#if ENABLE_CS2_VIEWMODEL
+    cb.spawn_decal = [](const float pos[3], const float normal[3]) { erov::SpawnDecal(pos, normal); };
+#endif
     cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
     cb.reader = &g_reader;
     cb.image_base = g_img.base;
@@ -2492,12 +2540,14 @@ void SetupInput() {
         };
         cb.play_sound = [](const char* s, float v) { eraudio::Play(s, v); };
         cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
+        cb.clip_duration = [](const char* n) { return erov::CsClipDuration(n); };
         cb.take_left_click = erin::TakeLeftClick;
         cb.take_right_click = erin::TakeRightClick;
         cb.left_held = erin::LeftHeld;
         cb.right_held = erin::RightHeld;
         cb.take_wheel_notches = erin::TakeWheelNotches;
         cb.set_suppress_mouse_buttons = erin::SetSuppressMouseButtons;
+        cb.set_suppress_mouse_wheel = erin::SetSuppressMouseWheel;
         cb.set_masked_keys = erin::SetMaskedKeys;
         cb.take_keyboard_failures = erin::TakeKeyboardFailures;
         cb.step_mining = [](float dt, bool left_held) { return StepMining(dt, left_held); };
@@ -2508,6 +2558,7 @@ void SetupInput() {
         cb.click_attack = ClickAttack;
         cb.enqueue_nearest_hostile = EnqueueNearestHostile;
         cb.queue_bullet_fire = [](float dmg) { return QueueBulletFire(dmg); };
+        cb.queue_cs_shot = [](float damage, float spread, float range, uint32_t tracer, uint8_t slot) { return FireCsShot(damage, spread, range, tracer, slot); };
         cb.queue_summon = [](const char* src) { return QueueSummon(src); };
         cb.cycle_hidden_slot = [](int& cur) { CycleHiddenSlot(cur); };
         cb.reset_slot_probe = [](int& cur) { ResetSlotProbe(cur); };

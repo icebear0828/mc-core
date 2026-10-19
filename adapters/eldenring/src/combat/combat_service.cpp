@@ -8,6 +8,9 @@
 
 #include "eldenring_steve.hpp"
 #include "mc/consumables.hpp"
+#if ENABLE_CS2_VIEWMODEL
+#include "cs_impact_decals.hpp"
+#endif
 
 namespace eldenring::combat {
 
@@ -379,7 +382,11 @@ void CombatService::drainDamageQueue(DamageQueue& queue, const HitTemplate* tmpl
                     if (r.request.tag & 2u) callbacks_.spawn_fx(2 /* Sweep */, vpos, 0);
                 }
             }
+            // CS bullets have no arrow hit sound: the crosshair hitmarker is the feedback.
             if (callbacks_.play_sound) {
+#if ENABLE_CS2_VIEWMODEL
+                if (!(r.request.tag & eldenring::cs::kCsShotTag))
+#endif
                 callbacks_.play_sound((r.request.tag & 1u) ? "entity.player.attack.crit"
                                       : (r.request.tag & 2u) ? "entity.player.attack.sweep"
                                       : (r.request.tag & 4u) ? "entity.player.attack.strong"
@@ -520,25 +527,25 @@ bool CombatService::playerCanSee(const float player_feet[3], const float victim_
     return visible;
 }
 
-void CombatService::clickAttack(float charged, MeleeController& melee, CombatEngine& engine, DamageQueue& queue, RuntimeContext& ctx) {
+bool CombatService::clickAttack(float charged, MeleeController& melee, CombatEngine& engine, DamageQueue& queue, RuntimeContext& ctx) {
     CameraPose cam;
     if (!callbacks_.read_camera || !callbacks_.read_camera(cam)) {
         log("click: no camera or player");
-        return;
+        return false;
     }
     const uintptr_t player = callbacks_.get_player_chr ? callbacks_.get_player_chr() : 0;
     if (player == 0 || !callbacks_.read_physics_pos) {
         log("click: no camera or player");
-        return;
+        return false;
     }
     float feet[3] = {};
     if (!callbacks_.read_physics_pos(player, feet)) {
         log("click: no camera or player");
-        return;
+        return false;
     }
 
     const float cam_rel[3] = {cam.position[0] - feet[0], cam.position[1] - feet[1], cam.position[2] - feet[2]};
-    if (!callbacks_.reader) return;
+    if (!callbacks_.reader) return false;
     const uint64_t now_tick = GetTickCount64();
     const auto pick_res = EntityManager::instance().pickTargetWithFallback(
         cam_rel, cam.forward, *callbacks_.reader, callbacks_.image_base, now_tick, feet);
@@ -563,7 +570,7 @@ void CombatService::clickAttack(float charged, MeleeController& melee, CombatEng
         snprintf(detail_buf + dn, sizeof(detail_buf) - static_cast<size_t>(dn), " ]");
         log("click: no target (cam_rel %.1f %.1f %.1f, fwd %.2f %.2f %.2f, entities<=8m: %s)",
             cam_rel[0], cam_rel[1], cam_rel[2], cam.forward[0], cam.forward[1], cam.forward[2], detail_buf);
-        return;
+        return false;
     }
 
     const EnemyInfo& e = list[static_cast<size_t>(idx)];
@@ -613,6 +620,7 @@ void CombatService::clickAttack(float charged, MeleeController& melee, CombatEng
             log("click: sweep splash hit %d secondary targets within %.1fm", sweep_count, r_max);
         }
     }
+    return dmg > 0;
 }
 
 void CombatService::enqueueNearestHostile(DamageQueue& queue, uint64_t tick, float max_dist) {
@@ -811,6 +819,118 @@ bool CombatService::queueBulletFire(float mc_damage, RuntimeContext& ctx) {
     ctx.mode().bullet_fire_pending.store(true, std::memory_order_relaxed);
     return true;
 }
+
+#if ENABLE_CS2_VIEWMODEL
+CsShotResult CombatService::fireCsShot(const eldenring::cs::CsShotParams& params, DamageQueue& queue, uint64_t tick,
+                                       RuntimeContext& ctx) {
+    CsShotResult out;
+    if (!ctx.mode().cs_mode.load(std::memory_order_relaxed)) return out;
+    if (!callbacks_.get_player_chr || !callbacks_.read_camera || !callbacks_.read_physics_pos) return out;
+    const bool shot_log = cs_shot_log_enabled_.load(std::memory_order_relaxed);
+
+    const uintptr_t player = callbacks_.get_player_chr();
+    CameraPose cam{};
+    float feet[3]{};
+    if (player == 0 || !callbacks_.read_camera(cam) || !callbacks_.read_physics_pos(player, feet)) {
+        if (shot_log) log("CS-SHOT: camera or player unavailable");
+        return out;
+    }
+
+    // One RNG per input thread; the two uniforms are the whole spread sample.
+    static thread_local eldenring::cs::CsShotRng rng(0x51ED270Bu);
+    float dir[3];
+    eldenring::cs::spreadDirection(cam.forward, params.spread_deg, rng.next01(), rng.next01(), dir);
+
+    const float cam_rel[3] = {cam.position[0] - feet[0], cam.position[1] - feet[1], cam.position[2] - feet[2]};
+    const std::vector<EnemyInfo> enemies = EntityManager::instance().getCachedEnemies();
+    const eldenring::cs::CsShotTrace trace = eldenring::cs::traceTargets(cam_rel, dir, enemies, params);
+
+    out.fired = true;
+    for (int i = 0; i < 3; ++i) {
+        out.from[i] = cam.position[i] + dir[i] * 0.5f;
+        out.to[i] = cam.position[i] + dir[i] * params.max_range_m;
+    }
+
+    if (trace.index >= 0) {
+        const EnemyInfo& victim = enemies[static_cast<size_t>(trace.index)];
+        // Check the wall along the actual shot ray, not player-feet -> victim-torso: the latter blocks a
+        // head shot over low cover and disagrees with what the crosshair sees.
+        bool visible = true;
+        if (raycast_fn_ != nullptr) {
+            const float to[3] = {cam.position[0] + dir[0] * trace.distance,
+                                 cam.position[1] + dir[1] * trace.distance,
+                                 cam.position[2] + dir[2] * trace.distance};
+            visible = eldenring::live::hasLineOfSight([this](const float f[3], const float d[3]) {
+                return this->castStaticRay(f, d);
+            }, cam.position, to);
+        }
+        if (visible) {
+            const int er_damage = eldenring::cs::damageToEr(victim.max_hp, params.damage, trace.distance, params);
+            const bool queued = er_damage > 0 &&
+                queue.enqueue(victim.chr, er_damage, tick, eldenring::cs::kCsShotTag, true);
+            out.hit = queued;
+            out.victim_chr = victim.chr;
+            out.distance = trace.distance;
+            out.er_damage = er_damage;
+            for (int i = 0; i < 3; ++i) out.to[i] = cam.position[i] + dir[i] * trace.distance;
+            if (shot_log) log("CS-SHOT: hit chr=%p npc=%d dist=%.1f m cs=%.1f er=%d queued=%d",
+                reinterpret_cast<void*>(victim.chr), victim.npc_id, trace.distance, params.damage, er_damage, queued ? 1 : 0);
+        } else {
+            if (shot_log) log("CS-SHOT: target chr=%p blocked by static geometry at %.1f m", reinterpret_cast<void*>(victim.chr), trace.distance);
+        }
+    }
+
+    bool wall_hit = false;
+    if (!out.hit && raycast_fn_ != nullptr) {
+        // Stop the tracer on the first wall so a miss visibly ends where the bullet would.
+        const float disp[3] = {dir[0] * params.max_range_m, dir[1] * params.max_range_m, dir[2] * params.max_range_m};
+        const RayResult r = castStaticRay(cam.position, disp);
+        if (r.ok && r.hit && r.fraction > 0.f && r.fraction <= 1.f) {
+            for (int i = 0; i < 3; ++i) out.to[i] = cam.position[i] + dir[i] * (params.max_range_m * r.fraction);
+            // The Havok normal can point into the wall; orient it toward the shooter for the decal.
+            eldenring::cs::orientDecalNormal(r.normal, dir, out.normal);
+            out.wall_hit = true;
+            wall_hit = true;
+            if (shot_log) {
+                log("CS-SHOT: wall hit dist=%.1f m normal=(%.2f %.2f %.2f) decal=%d",
+                    params.max_range_m * r.fraction, out.normal[0], out.normal[1], out.normal[2],
+                    callbacks_.spawn_decal ? 1 : 0);
+            }
+        }
+    }
+
+    if (!out.hit) {
+        if (shot_log) log("CS-SHOT: miss cs=%.1f spread=%.2f dir=(%.3f %.3f %.3f)", params.damage, params.spread_deg, dir[0], dir[1], dir[2]);
+    }
+
+    // CS2 shows a tracer every N rounds (AK/M4: 3, AWP: 1), not on every bullet.
+    bool show_tracer = false;
+    if (params.tracer_frequency > 0u) {
+        static thread_local uint32_t s_shot_index[8]{};
+        const uint32_t index = s_shot_index[params.weapon_slot & 7u]++;
+        show_tracer = eldenring::cs::shouldSpawnTracer(index, params.tracer_frequency);
+    }
+    if (show_tracer && callbacks_.spawn_tracer) {
+        const float dx = out.to[0] - out.from[0];
+        const float dy = out.to[1] - out.from[1];
+        const float dz = out.to[2] - out.from[2];
+        const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        callbacks_.spawn_tracer(out.from, out.to, eldenring::cs::tracerLifetime(distance));
+    }
+    // Impact sparks: on the victim, or on the wall a miss stopped at.
+    if (callbacks_.spawn_fx && (out.hit || wall_hit)) {
+        callbacks_.spawn_fx(3 /* Spark */, out.to, 0);
+    }
+#if ENABLE_CS2_VIEWMODEL
+    // Static-geometry impacts leave a bullet hole. Enemy hits do not: a decal on a moving character would
+    // need bone attachment, and the field note's "holes on enemies" gotcha comes from exactly that.
+    if (out.wall_hit && callbacks_.spawn_decal) {
+        callbacks_.spawn_decal(out.to, out.normal);
+    }
+#endif
+    return out;
+}
+#endif
 
 void CombatService::aimCalStart(uint64_t manager, uint32_t handle, const float dir[3]) {
     if (!aimcal_enabled_.load(std::memory_order_relaxed)) {

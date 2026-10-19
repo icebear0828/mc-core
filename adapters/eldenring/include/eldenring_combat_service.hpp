@@ -24,6 +24,9 @@
 #include "eldenring_melee.hpp"
 #include "eldenring_los.hpp"
 #include "eldenring_entity_manager.hpp"
+#if ENABLE_CS2_VIEWMODEL
+#include "cs_ballistics.hpp"
+#endif
 #include "mc/combat.hpp"
 #include "mc/inventory.hpp"
 
@@ -102,6 +105,11 @@ struct CombatCallbacks {
     std::function<bool(uintptr_t dmg_module, uintptr_t attacker, void* ctx_ptr)> call_vfunc7;
     std::function<void(const char* sound, float vol)> play_sound;
     std::function<void(int fx_kind, const float pos[3], int count)> spawn_fx;
+    std::function<void(const float from[3], const float to[3], float life_s)> spawn_tracer;
+#if ENABLE_CS2_VIEWMODEL
+    // A bullet hole on static geometry: position and outward surface normal, both game metres.
+    std::function<void(const float pos[3], const float normal[3])> spawn_decal;
+#endif
     std::function<void(const std::string&)> log;
     const IMemoryReader* reader{nullptr};
     uintptr_t image_base{0};
@@ -111,6 +119,21 @@ struct CombatCallbacks {
     std::function<bool()> is_falling;
     std::function<bool(const std::string& path)> file_exists;
 };
+
+#if ENABLE_CS2_VIEWMODEL
+// One hitscan bullet: where it came from, where it stopped, what it hit and the ER damage queued.
+struct CsShotResult {
+    bool fired{false};
+    bool hit{false};
+    bool wall_hit{false};   // the bullet stopped on static geometry (floor/wall), not an enemy
+    uintptr_t victim_chr{0};
+    float distance{0.f};
+    int er_damage{0};
+    float from[3]{};
+    float to[3]{};
+    float normal[3]{0.f, 1.f, 0.f}; // outward surface normal at a wall hit, oriented toward the shooter
+};
+#endif
 
 class CombatService {
 public:
@@ -161,7 +184,7 @@ public:
     RayResult lastRay() const;
 
     // Melee attack
-    void clickAttack(float charged, MeleeController& melee, CombatEngine& engine, DamageQueue& queue, RuntimeContext& ctx);
+    bool clickAttack(float charged, MeleeController& melee, CombatEngine& engine, DamageQueue& queue, RuntimeContext& ctx);
     void enqueueNearestHostile(DamageQueue& queue, uint64_t tick, float max_dist = 25.0f);
 
     // Projectile hit handler
@@ -172,6 +195,11 @@ public:
     // Bullet firing & aim calibration
     void runBulletFire(RuntimeContext& ctx);
     bool queueBulletFire(float mc_damage, RuntimeContext& ctx);
+#if ENABLE_CS2_VIEWMODEL
+    // CS hitscan: spread -> torso ray -> LOS -> DamageQueue. Called on the input thread; the damage is
+    // applied by the existing drain on the game thread. Returns what the bullet did for logging/tracers.
+    CsShotResult fireCsShot(const eldenring::cs::CsShotParams& params, DamageQueue& queue, uint64_t tick, RuntimeContext& ctx);
+#endif
     void aimCalStart(uint64_t manager, uint32_t handle, const float dir[3]);
     void aimCalTick();
     const AimCalState& aimCalState() const { return aimcal_; }
@@ -189,6 +217,7 @@ public:
     void setArrowDamage(bool enabled) { arrow_damage_.store(enabled, std::memory_order_relaxed); }
     bool arrowDamage() const { return arrow_damage_.load(std::memory_order_relaxed); }
     void setBulletFireEnabled(bool enabled) { bullet_fire_enabled_.store(enabled, std::memory_order_relaxed); }
+    void setCsShotLogEnabled(bool enabled) { cs_shot_log_enabled_.store(enabled, std::memory_order_relaxed); }
     bool bulletFireEnabled() const { return bullet_fire_enabled_.load(std::memory_order_relaxed); }
     void setPdcHooked(bool hooked) { pdc_hooked_.store(hooked, std::memory_order_relaxed); }
     bool pdcHooked() const { return pdc_hooked_.load(std::memory_order_relaxed); }
@@ -225,6 +254,7 @@ private:
     std::atomic<bool> proj_log_{false};
     std::atomic<bool> arrow_damage_{false};
     std::atomic<bool> bullet_fire_enabled_{false};
+    std::atomic<bool> cs_shot_log_enabled_{false};
     std::atomic<bool> pdc_hooked_{false};
     std::atomic<int> bolt_attach_poly_{-1};
 

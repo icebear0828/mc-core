@@ -51,6 +51,8 @@ struct WeaponBallistics {
     uint32_t reserve_capacity{90};
     bool is_automatic{true};
     bool has_scope{false};
+    // Show a tracer every N rounds (CS2 m_nTracerFrequency: AK/M4 = 3, AWP = 1, 0 = never).
+    uint32_t tracer_frequency{1};
 };
 
 struct CSWeaponDefinition {

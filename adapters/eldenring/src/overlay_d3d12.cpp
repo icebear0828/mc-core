@@ -38,6 +38,7 @@
 #include "steve_renderer_d3d12.hpp"
 #if ENABLE_CS2_VIEWMODEL
 #include "cs_renderer_d3d12.hpp"
+#include "cs_impact_decals.hpp"
 #endif
 #include "eldenring_runtime_context.hpp"
 #include "eldenring_inventory_preview.hpp"
@@ -88,6 +89,18 @@ bool g_atlas_pending = false;
 D3D12_GPU_DESCRIPTOR_HANDLE g_atlas_gpu{};
 bool g_atlas_ready = false;
 void CreateAtlasTexture(UINT srv_inc); // defined with the HUD drawing below
+#if ENABLE_CS2_VIEWMODEL
+// Authentic CS2 bullet-hole decal (mods/mc_adapter/textures/cs/bullet_hole_concrete.png), heap slot 44.
+std::vector<uint8_t> g_decal_rgba;
+unsigned g_decal_w = 0, g_decal_h = 0;
+ID3D12Resource* g_decal_tex = nullptr;
+ID3D12Resource* g_decal_upload = nullptr;
+D3D12_PLACED_SUBRESOURCE_FOOTPRINT g_decal_footprint{};
+bool g_decal_pending = false;
+D3D12_GPU_DESCRIPTOR_HANDLE g_decal_gpu{};
+bool g_decal_ready = false;
+void CreateCsDecalTexture(UINT srv_inc);
+#endif
 // Combat particles: events queued by the loader, simulated and drawn here.
 struct FxEvent {
     FxKind kind;
@@ -101,6 +114,20 @@ eldenring::fx::Rng g_fx_rng{20251009u};
 mc::rig::Mat4 g_fx_vp{};
 float g_fx_fov = 0.8378f;
 bool g_fx_valid = false;
+// CS hitscan tracers: world-space segments queued by CombatService::fireCsShot.
+struct TracerEvent {
+    float from[3];
+    float to[3];
+    uint64_t start_ms;
+    float life_s;
+};
+std::mutex g_tracer_mutex;
+std::vector<TracerEvent> g_tracer_events;
+#if ENABLE_CS2_VIEWMODEL
+// CS bullet holes on static geometry. The ring is bounded and refreshes hits within 3 cm.
+std::mutex g_decal_mutex;
+eldenring::cs::ImpactDecalRing g_decal_ring;
+#endif
 eldenring::fp::HandAnimator g_hand;
 eldenring::fp::SwayFilter g_sway;
 float g_walk_dist = 0.f, g_walk_bob = 0.f;
@@ -115,11 +142,14 @@ CsRenderer g_cs;
 // CS arsenal runtime state: texture slots and the weapon currently loaded.
 D3D12_CPU_DESCRIPTOR_HANDLE g_cs_weapon_tex_cpu{};
 D3D12_CPU_DESCRIPTOR_HANDLE g_cs_glove_tex_cpu{};
+D3D12_CPU_DESCRIPTOR_HANDLE g_cs_knife_table_cpu{};
+D3D12_CPU_DESCRIPTOR_HANDLE g_cs_ak_table_cpu{};
+D3D12_GPU_DESCRIPTOR_HANDLE g_cs_knife_table_gpu{};
+D3D12_GPU_DESCRIPTOR_HANDLE g_cs_ak_table_gpu{};
 std::string g_cs_game_dir;
 std::string g_cs_knife_model_path;
-std::string g_cs_knife_png;
-std::string g_cs_glove_png;
 uint8_t g_cs_active_slot = 0;
+uint8_t g_cs_gun_table_slot = 0; // weapon slot whose maps are in g_cs_ak_table (0 = none)
 #endif
 mc::SteveAnimator g_anim;
 eldenring::render::SteveMotion g_motion;
@@ -209,6 +239,16 @@ void Logf(const char* msg) {
     if (g_log) g_log("%s", msg);
 }
 
+// Elden Ring can lose its DirectInput devices when it stops being the
+// foreground window. Skipping the CS viewmodel while unfocused avoids drawing
+// into a swap chain the game is throttling, and matches the hotkey gate.
+bool GameIsForeground() {
+    DWORD pid = 0;
+    HWND fg = GetForegroundWindow();
+    if (fg != nullptr) GetWindowThreadProcessId(fg, &pid);
+    return pid == GetCurrentProcessId();
+}
+
 #if ENABLE_CS2_VIEWMODEL
 std::string ResolveCsAssetPath(const std::string& path) {
     if (path.empty()) return path;
@@ -221,19 +261,18 @@ std::string ResolveCsAssetPath(const std::string& path) {
 // fallback: if a gun asset is missing we keep rendering the current weapon.
 void UpdateCsWeaponSlot(uint8_t want_slot) {
     if (want_slot == g_cs_active_slot) return;
+    Logf("overlay: CS weapon switch requested -> %u", static_cast<unsigned>(want_slot));
 
     bool loaded = false;
     if (want_slot == 0) {
         if (!g_cs_knife_model_path.empty() && std::filesystem::exists(g_cs_knife_model_path) &&
             g_cs.loadModel(g_s.device, g_cs_knife_model_path)) {
-            g_cs.loadTexturesFromFiles(g_s.device, g_cs_knife_png, g_cs_glove_png,
-                                       g_cs_weapon_tex_cpu, g_cs_glove_tex_cpu);
             loaded = true;
         }
     } else {
         const char* id = (want_slot == 1) ? "weapon_ak47"
                        : (want_slot == 2) ? "weapon_awp"
-                       : "weapon_m4a1_s";
+                       : "weapon_m4a1_silencer";
         if (const auto* found = eldenring::cs::CSWeaponRegistry::instance().findWeapon(id)) {
             auto def = *found;
             def.model_csvm_path = ResolveCsAssetPath(def.model_csvm_path);
@@ -241,7 +280,17 @@ void UpdateCsWeaponSlot(uint8_t want_slot) {
             def.normal_tex_path = ResolveCsAssetPath(def.normal_tex_path);
             def.pbr_tex_path = ResolveCsAssetPath(def.pbr_tex_path);
             if (std::filesystem::exists(def.model_csvm_path) && g_cs.loadWeapon(g_s.device, def)) {
-                g_cs.loadWeaponTextures(g_s.device, def, g_cs_weapon_tex_cpu);
+                // The gun table is shared by every gun: swap in this weapon's
+                // maps unless they are already there. The decoded PNGs stay
+                // cached, so a switch only pays the GPU upload.
+                if (g_cs_gun_table_slot != want_slot) {
+                    const bool any_real = g_cs.loadWeaponTextures(g_s.device, def, g_cs_ak_table_cpu);
+                    g_cs_gun_table_slot = want_slot;
+                    if (!any_real) {
+                        Logf("overlay: CS weapon %u has no texture maps, using fallbacks",
+                             static_cast<unsigned>(want_slot));
+                    }
+                }
                 loaded = true;
             }
         }
@@ -291,6 +340,11 @@ void Teardown() {
     SafeRelease(g_atlas_tex);
     SafeRelease(g_atlas_upload);
     g_atlas_ready = false;
+#if ENABLE_CS2_VIEWMODEL
+    SafeRelease(g_decal_tex);
+    SafeRelease(g_decal_upload);
+    g_decal_ready = false;
+#endif
     SafeRelease(g_s.fence);
     if (g_s.fence_event) {
         CloseHandle(g_s.fence_event);
@@ -349,7 +403,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
     rtv_desc.NumDescriptors = g_s.buffers;
     D3D12_DESCRIPTOR_HEAP_DESC srv_desc{};
     srv_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    srv_desc.NumDescriptors = 32; // 0: ImGui, 1-2: Steve, 3: HUD, 4-5: FP items, 6-7: Held, 8-9: Creeper, 10-11: Zombie, 12-13: Skeleton, 14-15: extra, 16-21: CS2 viewmodel PBR
+    srv_desc.NumDescriptors = 64; // 0: ImGui, 1-2: Steve, 3: HUD, 4-5: FP items, 6-7: Held, 8-9: Creeper, 10-11: Zombie, 12-13: Skeleton, 14-15: extra, 16-27: CS2 knife table, 32-43: CS2 gun table
     srv_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(g_s.device->CreateDescriptorHeap(&rtv_desc, IID_PPV_ARGS(&g_s.rtv_heap))) ||
         FAILED(g_s.device->CreateDescriptorHeap(&srv_desc, IID_PPV_ARGS(&g_s.srv_heap)))) {
@@ -492,6 +546,12 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
         g_depth_dirty.store(true); // bind the depth captured so far
         CreateAtlasTexture(srv_inc);
 #if ENABLE_CS2_VIEWMODEL
+        CreateCsDecalTexture(srv_inc);
+#endif
+#if ENABLE_CS2_VIEWMODEL
+        // The CS2 build is CS-only at runtime: never start in MC mode, even if
+        // a config file or a missing CS asset would otherwise fall back to it.
+        eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
         if (!g_cs.init(g_s.device, g_s.format, g_log)) {
             Logf("overlay: CS viewmodel renderer unavailable");
         } else {
@@ -499,8 +559,19 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             cs_table_cpu.ptr += static_cast<SIZE_T>(srv_inc) * 16;
             D3D12_CPU_DESCRIPTOR_HANDLE glove_cpu = cs_table_cpu;
             glove_cpu.ptr += srv_inc;
+            D3D12_CPU_DESCRIPTOR_HANDLE ak_table_cpu = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
+            ak_table_cpu.ptr += static_cast<SIZE_T>(srv_inc) * 32;
             g_cs_weapon_tex_cpu = cs_table_cpu;
             g_cs_glove_tex_cpu = glove_cpu;
+            g_cs_knife_table_cpu = cs_table_cpu;
+            g_cs_ak_table_cpu = ak_table_cpu;
+            g_cs_gun_table_slot = 0;
+
+            D3D12_GPU_DESCRIPTOR_HANDLE srv_gpu_base = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
+            g_cs_knife_table_gpu = srv_gpu_base;
+            g_cs_knife_table_gpu.ptr += static_cast<UINT64>(srv_inc) * 16;
+            g_cs_ak_table_gpu = srv_gpu_base;
+            g_cs_ak_table_gpu.ptr += static_cast<UINT64>(srv_inc) * 32;
 
             const std::string& game_dir = eldenring::diagnostics::GetGameDir();
             g_cs_game_dir = game_dir;
@@ -520,6 +591,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                     Logf(cs_msg);
                     g_cs_knife_model_path = p;
                     eldenring::RuntimeContext::Instance().mode().cs_mode.store(true);
+                    eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
                     eldenring::RuntimeContext::Instance().mode().first_person.store(true);
                     break;
                 }
@@ -553,9 +625,90 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             for (const auto& p : glove_tex_candidates) {
                 if (std::filesystem::exists(p)) { glove_png = p; break; }
             }
-            g_cs_knife_png = knife_png;
-            g_cs_glove_png = glove_png;
-            g_cs.loadTexturesFromFiles(g_s.device, knife_png, glove_png, cs_table_cpu, glove_cpu);
+
+            std::vector<std::string> bare_tex_candidates;
+            if (!game_dir.empty()) {
+                bare_tex_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "glove_hardknuckle" / "bare_arm_133_color_psd_5b76e0cf.png").string());
+                bare_tex_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "bare_arm_133_color_psd_5b76e0cf.png").string());
+            }
+            bare_tex_candidates.push_back("mods\\mc_adapter\\textures\\glove_hardknuckle\\bare_arm_133_color_psd_5b76e0cf.png");
+            bare_tex_candidates.push_back("bare_arm_133_color_psd_5b76e0cf.png");
+
+            std::vector<std::string> bare_norm_candidates;
+            if (!game_dir.empty()) {
+                bare_norm_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "glove_hardknuckle" / "bare_arm_normal_tga_c9fefc2d.png").string());
+                bare_norm_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "bare_arm_normal_tga_c9fefc2d.png").string());
+            }
+            bare_norm_candidates.push_back("mods\\mc_adapter\\textures\\glove_hardknuckle\\bare_arm_normal_tga_c9fefc2d.png");
+            bare_norm_candidates.push_back("bare_arm_normal_tga_c9fefc2d.png");
+
+            std::string bare_png;
+            for (const auto& p : bare_tex_candidates) {
+                if (std::filesystem::exists(p)) { bare_png = p; break; }
+            }
+            std::string bare_norm_png;
+            for (const auto& p : bare_norm_candidates) {
+                if (std::filesystem::exists(p)) { bare_norm_png = p; break; }
+            }
+
+            std::vector<std::string> sleeve_tex_candidates;
+            if (!game_dir.empty()) {
+                sleeve_tex_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "sleeves" / "sleeve_fbi_color.png").string());
+                sleeve_tex_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "sleeve_fbi_color.png").string());
+            }
+            sleeve_tex_candidates.push_back("mods\\mc_adapter\\textures\\sleeves\\sleeve_fbi_color.png");
+            sleeve_tex_candidates.push_back("sleeve_fbi_color.png");
+
+            std::vector<std::string> sleeve_norm_candidates;
+            if (!game_dir.empty()) {
+                sleeve_norm_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "sleeves" / "sleeve_fbi_normal.png").string());
+                sleeve_norm_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "sleeve_fbi_normal.png").string());
+            }
+            sleeve_norm_candidates.push_back("mods\\mc_adapter\\textures\\sleeves\\sleeve_fbi_normal.png");
+            sleeve_norm_candidates.push_back("sleeve_fbi_normal.png");
+
+            std::vector<std::string> sleeve_pbr_candidates;
+            if (!game_dir.empty()) {
+                sleeve_pbr_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "sleeves" / "sleeve_fbi_pbr.png").string());
+                sleeve_pbr_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "sleeve_fbi_pbr.png").string());
+            }
+            sleeve_pbr_candidates.push_back("mods\\mc_adapter\\textures\\sleeves\\sleeve_fbi_pbr.png");
+            sleeve_pbr_candidates.push_back("sleeve_fbi_pbr.png");
+
+            auto firstExisting = [](const std::vector<std::string>& candidates) {
+                for (const auto& p : candidates) {
+                    if (std::filesystem::exists(p)) return p;
+                }
+                return std::string();
+            };
+            const std::string sleeve_png = firstExisting(sleeve_tex_candidates);
+            const std::string sleeve_norm_png = firstExisting(sleeve_norm_candidates);
+            const std::string sleeve_pbr_png = firstExisting(sleeve_pbr_candidates);
+
+            g_cs.loadTexturesFromFiles(g_s.device, knife_png, glove_png, cs_table_cpu, glove_cpu,
+                                       "", "", "", "", bare_png, bare_norm_png, "",
+                                       sleeve_png, sleeve_norm_png, sleeve_pbr_png);
+            // The knife/glove/bare/sleeve maps are uploaded and never re-read;
+            // only gun maps are worth keeping decoded for later switches.
+            erov::ReleaseCsDecodeCache();
+
+            // Load the AK-47 weapon maps into the second table once. Switching
+            // then only swaps the table handle: no PNG decode, no 48 MB upload.
+            if (const auto* ak = eldenring::cs::CSWeaponRegistry::instance().findWeapon("weapon_ak47")) {
+                auto ak_def = *ak;
+                ak_def.albedo_tex_path = ResolveCsAssetPath(ak_def.albedo_tex_path);
+                ak_def.normal_tex_path = ResolveCsAssetPath(ak_def.normal_tex_path);
+                ak_def.pbr_tex_path = ResolveCsAssetPath(ak_def.pbr_tex_path);
+                g_cs.loadWeaponTextures(g_s.device, ak_def, ak_table_cpu);
+                g_cs_gun_table_slot = 1;
+            }
+            // Glove + bare-arm + sleeve descriptors are shared by both weapon tables.
+            const UINT shared_slots[] = {1, 3, 5, 6, 7, 8, 9, 10, 11};
+            for (UINT shared : shared_slots) {
+                D3D12_CPU_DESCRIPTOR_HANDLE src{cs_table_cpu.ptr + static_cast<SIZE_T>(srv_inc) * shared};
+                D3D12_CPU_DESCRIPTOR_HANDLE dst{ak_table_cpu.ptr + static_cast<SIZE_T>(srv_inc) * shared};
+                g_s.device->CopyDescriptorsSimple(1, dst, src, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            }
         }
 #endif
         {
@@ -587,6 +740,96 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
     if (g_steve_cfg.depth_probe) probe::Install(g_s.list, g_log);
     return true;
 }
+
+#if ENABLE_CS2_VIEWMODEL
+// The authentic CS2 concrete bullet-hole decal, extracted from the user's own VPK by
+// tools/cs2/impact_decals.py and deployed next to the CS textures. Slot 44 is free.
+void CreateCsDecalTexture(UINT srv_inc) {
+    g_decal_ready = false;
+    g_decal_rgba.clear();
+    g_decal_w = g_decal_h = 0;
+    const std::string& game_dir = eldenring::diagnostics::GetGameDir();
+    std::vector<std::string> candidates;
+    if (!game_dir.empty()) {
+        candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "cs" /
+                              "bullet_hole_concrete.png").string());
+        candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "bullet_hole_concrete.png").string());
+    }
+    candidates.push_back("mods\\mc_adapter\\textures\\cs\\bullet_hole_concrete.png");
+    candidates.push_back("mods\\mc_adapter\\bullet_hole_concrete.png");
+    std::string used;
+    for (const auto& p : candidates) {
+        if (!std::filesystem::exists(p)) continue;
+        if (DecodePngFile(p, g_decal_rgba, g_decal_w, g_decal_h)) {
+            used = p;
+            break;
+        }
+    }
+    if (g_decal_rgba.empty() || g_decal_w == 0 || g_decal_h == 0) {
+        Logf("overlay: CS decal: no bullet_hole_concrete.png, procedural fallback");
+        return;
+    }
+    D3D12_HEAP_PROPERTIES hd{};
+    hd.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC td{};
+    td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    td.Width = g_decal_w;
+    td.Height = g_decal_h;
+    td.DepthOrArraySize = 1;
+    td.MipLevels = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    if (FAILED(g_s.device->CreateCommittedResource(&hd, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                   nullptr, IID_PPV_ARGS(&g_decal_tex)))) {
+        Logf("overlay: CS decal: texture creation failed");
+        return;
+    }
+    UINT rows = 0;
+    UINT64 row_bytes = 0, total = 0;
+    g_s.device->GetCopyableFootprints(&td, 0, 1, 0, &g_decal_footprint, &rows, &row_bytes, &total);
+    (void)row_bytes;
+    D3D12_HEAP_PROPERTIES hu{};
+    hu.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC ud{};
+    ud.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    ud.Width = total;
+    ud.Height = 1;
+    ud.DepthOrArraySize = 1;
+    ud.MipLevels = 1;
+    ud.SampleDesc.Count = 1;
+    ud.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    void* mapped = nullptr;
+    D3D12_RANGE none{0, 0};
+    if (FAILED(g_s.device->CreateCommittedResource(&hu, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                   nullptr, IID_PPV_ARGS(&g_decal_upload))) ||
+        FAILED(g_decal_upload->Map(0, &none, &mapped))) {
+        SafeRelease(g_decal_tex);
+        SafeRelease(g_decal_upload);
+        Logf("overlay: CS decal: upload buffer failed");
+        return;
+    }
+    for (UINT y = 0; y < rows; ++y) {
+        std::memcpy(static_cast<uint8_t*>(mapped) + g_decal_footprint.Offset +
+                        static_cast<size_t>(y) * g_decal_footprint.Footprint.RowPitch,
+                    g_decal_rgba.data() + static_cast<size_t>(y) * g_decal_w * 4,
+                    static_cast<size_t>(g_decal_w) * 4);
+    }
+    g_decal_upload->Unmap(0, nullptr);
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
+    cpu.ptr += static_cast<SIZE_T>(srv_inc) * 44;
+    g_decal_gpu = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
+    g_decal_gpu.ptr += static_cast<UINT64>(srv_inc) * 44;
+    D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
+    sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    sd.Texture2D.MipLevels = 1;
+    g_s.device->CreateShaderResourceView(g_decal_tex, &sd, cpu);
+    g_decal_pending = true;
+    g_decal_ready = true;
+    Logf("overlay: CS decal: %ux%u from %s (slot 44)", g_decal_w, g_decal_h, used.c_str());
+}
+#endif
 
 void CreateAtlasTexture(UINT srv_inc) {
     g_atlas_ready = false;
@@ -679,24 +922,46 @@ void CreateAtlasTexture(UINT srv_inc) {
 
 // Recorded at the start of the frame's command list, before anything samples the atlas.
 void RecordAtlasUpload(ID3D12GraphicsCommandList* list) {
-    if (!g_atlas_pending || !g_atlas_tex || !g_atlas_upload) return;
-    D3D12_TEXTURE_COPY_LOCATION dst{};
-    dst.pResource = g_atlas_tex;
-    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    dst.SubresourceIndex = 0;
-    D3D12_TEXTURE_COPY_LOCATION src{};
-    src.pResource = g_atlas_upload;
-    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    src.PlacedFootprint = g_atlas_footprint;
-    list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-    D3D12_RESOURCE_BARRIER b{};
-    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b.Transition.pResource = g_atlas_tex;
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    list->ResourceBarrier(1, &b);
-    g_atlas_pending = false;
+    if (g_atlas_pending && g_atlas_tex && g_atlas_upload) {
+        D3D12_TEXTURE_COPY_LOCATION dst{};
+        dst.pResource = g_atlas_tex;
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dst.SubresourceIndex = 0;
+        D3D12_TEXTURE_COPY_LOCATION src{};
+        src.pResource = g_atlas_upload;
+        src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        src.PlacedFootprint = g_atlas_footprint;
+        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = g_atlas_tex;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        list->ResourceBarrier(1, &b);
+        g_atlas_pending = false;
+    }
+#if ENABLE_CS2_VIEWMODEL
+    if (g_decal_pending && g_decal_tex && g_decal_upload) {
+        D3D12_TEXTURE_COPY_LOCATION dst{};
+        dst.pResource = g_decal_tex;
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dst.SubresourceIndex = 0;
+        D3D12_TEXTURE_COPY_LOCATION src{};
+        src.pResource = g_decal_upload;
+        src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        src.PlacedFootprint = g_decal_footprint;
+        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = g_decal_tex;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        list->ResourceBarrier(1, &b);
+        g_decal_pending = false;
+    }
+#endif
 }
 
 // Clip-space position of a world point (row vector times the matrix); false when it is behind the camera.
@@ -711,6 +976,162 @@ bool ProjectToScreen(const mc::rig::Mat4& m, const float p[3], float w, float h,
     return true;
 }
 
+#if ENABLE_CS2_VIEWMODEL
+// The muzzle flash is drawn in screen space at the gun's muzzle track: the viewmodel has its own projection,
+// so projecting the track with the viewmodel matrix is the only position that stays on the barrel.
+void DrawCsMuzzleFlash(ImDrawList* dl, float w, float h) {
+    auto& mode = eldenring::RuntimeContext::Instance().mode();
+    if (!mode.cs_mode.load() || mode.cs_weapon_slot.load() == 0) return;
+    if (mode.cs_knife_state.load() != 2) return;
+    const float t = mode.cs_knife_anim_time.load();
+    if (t > 0.07f) return;
+
+    float x = 0.f, y = 0.f;
+    if (!g_cs.muzzleScreen(static_cast<unsigned>(w), static_cast<unsigned>(h), x, y)) return;
+    const float fade = std::max(0.f, 1.f - t / 0.07f);
+    const float r = 16.f * (0.55f + 0.45f * fade);
+    dl->AddCircleFilled({x, y}, r, IM_COL32(255, 200, 110, static_cast<int>(190.f * fade)));
+    dl->AddCircleFilled({x, y}, r * 0.45f, IM_COL32(255, 255, 235, static_cast<int>(235.f * fade)));
+    for (int i = 0; i < 4; ++i) {
+        const float a = 0.785398f * static_cast<float>(i) + 0.392699f;
+        dl->AddLine({x, y}, {x + std::cos(a) * r * 1.7f, y + std::sin(a) * r * 1.7f},
+                    IM_COL32(255, 210, 140, static_cast<int>(110.f * fade)), 2.f);
+    }
+}
+#endif
+
+// Tracers are 2D lines projected from world space: cheap, readable and independent of the scene depth buffer.
+void DrawTracers(ImDrawList* dl, float w, float h) {
+    if (!g_fx_valid) return;
+    const uint64_t now = GetTickCount64();
+    std::vector<TracerEvent> live;
+    {
+        std::lock_guard<std::mutex> g(g_tracer_mutex);
+        for (auto it = g_tracer_events.begin(); it != g_tracer_events.end();) {
+            const float age = static_cast<float>(now - it->start_ms) / 1000.f;
+            if (age >= it->life_s) {
+                it = g_tracer_events.erase(it);
+            } else {
+                live.push_back(*it);
+                ++it;
+            }
+        }
+    }
+    for (const TracerEvent& t : live) {
+        const float age = static_cast<float>(now - t.start_ms) / 1000.f;
+        const float travel = std::max(1e-4f, t.life_s * 0.7f);
+        const float u = std::clamp(age / travel, 0.f, 1.f);
+        const float fade = age < travel
+            ? 1.f
+            : std::max(0.f, 1.f - (age - travel) / std::max(1e-4f, t.life_s - travel));
+        if (fade <= 0.f) continue;
+
+        float d[3] = {t.to[0] - t.from[0], t.to[1] - t.from[1], t.to[2] - t.from[2]};
+        const float dist = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        if (!(dist > 1e-3f)) continue;
+        for (int i = 0; i < 3; ++i) d[i] /= dist;
+
+        // A short streak flies from the muzzle to the impact, not a line across the whole path. The tail is
+        // long enough to read at a distance, and the core is drawn over a soft glow.
+        const float head = u * dist;
+        const float tail = std::max(0.f, head - std::min(10.f, dist));
+        float hp[3], tp[3];
+        for (int i = 0; i < 3; ++i) {
+            hp[i] = t.from[i] + d[i] * head;
+            tp[i] = t.from[i] + d[i] * tail;
+        }
+        ImVec2 a, b;
+        float ppm = 0.f;
+        if (!ProjectToScreen(g_fx_vp, tp, w, h, g_fx_fov, a, ppm)) continue;
+        if (!ProjectToScreen(g_fx_vp, hp, w, h, g_fx_fov, b, ppm)) continue;
+        dl->AddLine(a, b, IM_COL32(255, 196, 96, static_cast<int>(70.f * fade)), 6.f);
+        dl->AddLine(a, b, IM_COL32(255, 238, 180, static_cast<int>(235.f * fade)), 2.5f);
+        dl->AddCircleFilled(b, 2.5f, IM_COL32(255, 250, 225, static_cast<int>(220.f * fade)), 8);
+    }
+}
+
+#if ENABLE_CS2_VIEWMODEL
+// Bullet holes on floors and walls. The quad lies in the surface plane (built from the Havok normal), so a
+// floor hit reads as a flat mark rather than a screen-facing sprite. The last fifth of the lifetime fades.
+void DrawDecals(ImDrawList* dl, float w, float h) {
+    if (!g_fx_valid) return;
+    const uint64_t now = GetTickCount64();
+    std::vector<eldenring::cs::ImpactDecal> live;
+    {
+        std::lock_guard<std::mutex> g(g_decal_mutex);
+        g_decal_ring.expire(now);
+        live.reserve(g_decal_ring.size());
+        for (size_t i = 0; i < g_decal_ring.size(); ++i) live.push_back(g_decal_ring.at(i));
+    }
+    for (const eldenring::cs::ImpactDecal& d : live) {
+        const float age = static_cast<float>(now - d.start_ms) / 1000.f;
+        const float fade = eldenring::cs::decalFade(age, d.life_s);
+        if (fade <= 0.f) continue;
+
+        float tangent[3], bitangent[3];
+        eldenring::cs::decalTangentBasis(d.normal, tangent, bitangent);
+        const float half = 0.08f; // 16 cm across; the authentic texture's hole fills most of it
+        const float lift = 0.015f;
+        const float center[3] = {d.pos[0] + d.normal[0] * lift, d.pos[1] + d.normal[1] * lift,
+                                 d.pos[2] + d.normal[2] * lift};
+        ImVec2 q[4];
+        float ppm = 0.f;
+        bool visible = true;
+        for (int i = 0; i < 4 && visible; ++i) {
+            const float sx = (i == 0 || i == 3) ? -1.f : 1.f;
+            const float sy = (i < 2) ? -1.f : 1.f;
+            const float p[3] = {
+                center[0] + tangent[0] * half * sx + bitangent[0] * half * sy,
+                center[1] + tangent[1] * half * sx + bitangent[1] * half * sy,
+                center[2] + tangent[2] * half * sx + bitangent[2] * half * sy,
+            };
+            visible = ProjectToScreen(g_fx_vp, p, w, h, g_fx_fov, q[i], ppm);
+        }
+        if (!visible) continue;
+
+        const ImVec2 c{(q[0].x + q[1].x + q[2].x + q[3].x) * 0.25f,
+                       (q[0].y + q[1].y + q[2].y + q[3].y) * 0.25f};
+        const float span = std::max(std::fabs(q[0].x - q[2].x), std::fabs(q[0].y - q[2].y));
+        if (g_decal_ready) {
+            // Authentic CS2 concrete bullet-hole decal, extracted from the user's own VPK.
+            const ImTextureID tex = reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(g_decal_gpu.ptr));
+            const ImU32 col = IM_COL32(225, 225, 225, static_cast<int>(255.f * fade));
+            if (span < 4.f) {
+                // Too far / too grazing to resolve the quad: draw the texture at a minimum readable size.
+                const float s = std::max(4.f, span * 1.5f);
+                dl->AddImage(tex, ImVec2{c.x - s, c.y - s}, ImVec2{c.x + s, c.y + s},
+                             ImVec2{0.f, 0.f}, ImVec2{1.f, 1.f}, col);
+            } else {
+                dl->AddImageQuad(tex, q[0], q[1], q[2], q[3], ImVec2{0.f, 0.f}, ImVec2{1.f, 0.f},
+                                 ImVec2{1.f, 1.f}, ImVec2{0.f, 1.f}, col);
+            }
+        } else if (span < 4.f) {
+            // Procedural fallback when the extracted CS2 texture is unavailable.
+            dl->AddCircleFilled(c, 4.f, IM_COL32(190, 178, 155, static_cast<int>(85.f * fade)), 8);
+            dl->AddCircleFilled(c, 2.5f, IM_COL32(12, 10, 9, static_cast<int>(235.f * fade)), 8);
+        } else {
+            const auto shrink = [&](float s, ImVec2 out[4]) {
+                for (int i = 0; i < 4; ++i) out[i] = ImVec2{c.x + (q[i].x - c.x) * s, c.y + (q[i].y - c.y) * s};
+            };
+            // Dust ring, scorch, then the dark hole.
+            dl->AddQuadFilled(q[0], q[1], q[2], q[3], IM_COL32(190, 178, 155, static_cast<int>(80.f * fade)));
+            ImVec2 scorch[4];
+            shrink(0.62f, scorch);
+            dl->AddQuadFilled(scorch[0], scorch[1], scorch[2], scorch[3],
+                              IM_COL32(48, 40, 32, static_cast<int>(150.f * fade)));
+            ImVec2 hole[4];
+            shrink(0.30f, hole);
+            dl->AddQuadFilled(hole[0], hole[1], hole[2], hole[3],
+                              IM_COL32(12, 10, 9, static_cast<int>(230.f * fade)));
+            for (int i = 0; i < 4; ++i) {
+                const ImVec2 e{c.x + (q[i].x - c.x) * 0.9f, c.y + (q[i].y - c.y) * 0.9f};
+                dl->AddLine(c, e, IM_COL32(32, 27, 22, static_cast<int>(95.f * fade)), 1.f);
+            }
+        }
+    }
+}
+#endif
+
 void DrawFx(ImDrawList* dl, ImTextureID atlas, float w, float h) {
     if (!g_fx_valid || !g_atlas_ready) return;
     for (const eldenring::fx::Particle& p : g_particles.alive()) {
@@ -719,6 +1140,15 @@ void DrawFx(ImDrawList* dl, ImTextureID atlas, float w, float h) {
         if (!ProjectToScreen(g_fx_vp, p.pos, w, h, g_fx_fov, s, ppm)) continue;
         const float half = std::max(2.f, p.size * ppm * 0.5f);
         const float fade = eldenring::fx::ParticleSystem::fade(p);
+        if (p.kind == eldenring::fx::Kind::Spark) {
+            dl->AddCircleFilled(s, std::max(1.f, half), IM_COL32(255, 220, 140, static_cast<int>(255 * fade)), 6);
+            continue;
+        }
+        if (p.kind == eldenring::fx::Kind::Dust) {
+            dl->AddCircleFilled(s, std::max(1.5f, half), IM_COL32(175, 165, 148, static_cast<int>(65 * fade)), 8);
+            dl->AddCircleFilled(s, std::max(1.f, half * 0.55f), IM_COL32(205, 195, 178, static_cast<int>(55 * fade)), 8);
+            continue;
+        }
         const mc::hud::HudUV* uv = nullptr;
         ImU32 col = IM_COL32(255, 255, 255, static_cast<int>(255 * std::min(1.f, fade * 1.5f)));
         switch (p.kind) {
@@ -1001,6 +1431,33 @@ void DrawHud(const HudState& hud, float w, float h) {
         line(cx, cy - gap - len, cx, cy - gap);
         line(cx, cy + gap, cx, cy + gap + len);
 
+        // Hit/kill feedback from the DamageQueue: four diagonal ticks, a red X on a kill.
+        const float hs = std::max(0.5f, h / 1080.f);
+        if (hud.hit > 0.f) {
+            const float a = std::clamp(hud.hit, 0.f, 1.f);
+            const float hit_gap = (hud.hit_crit ? 7.f : 5.f) * hs, hit_len = (hud.hit_crit ? 12.f : 8.f) * hs;
+            const ImU32 col = hud.hit_crit ? IM_COL32(255, 170, 0, static_cast<int>(255 * a)) : IM_COL32(255, 255, 255, static_cast<int>(255 * a));
+            const float s = 0.70710678f;
+            for (int sx = -1; sx <= 1; sx += 2) {
+                for (int sy = -1; sy <= 1; sy += 2) {
+                    dl->AddLine({cx + sx * hit_gap * s, cy + sy * hit_gap * s}, {cx + sx * (hit_gap + hit_len) * s, cy + sy * (hit_gap + hit_len) * s}, col,
+                                2.5f * hs);
+                }
+            }
+        }
+        if (hud.kill > 0.f) {
+            const float a = std::clamp(hud.kill, 0.f, 1.f);
+            const float kill_gap = 9.f * hs, kill_len = 16.f * hs;
+            const ImU32 col = IM_COL32(225, 40, 40, static_cast<int>(255 * a));
+            const float s = 0.70710678f;
+            for (int sx = -1; sx <= 1; sx += 2) {
+                for (int sy = -1; sy <= 1; sy += 2) {
+                    dl->AddLine({cx + sx * kill_gap * s, cy + sy * kill_gap * s}, {cx + sx * (kill_gap + kill_len) * s, cy + sy * (kill_gap + kill_len) * s}, col,
+                                3.5f * hs);
+                }
+            }
+        }
+
         // Weapon Card in bottom right
         const float card_w = 270.f, card_h = 105.f;
         const float x = w - card_w - 25.f, y = h - card_h - 25.f;
@@ -1016,10 +1473,11 @@ void DrawHud(const HudState& hud, float w, float h) {
                                 : (slot == 3) ? "M4A1-S (CS2)"
                                 : "BUTTERFLY KNIFE (CS2)";
         const char* status_str = (state == 1) ? "[INSPECTING...]" :
-                                 (state == 2) ? (is_gun ? "[FIRING...]" : "[SLASH ATTACK]") :
-                                 (state == 3) ? (is_gun ? "[AIMING...]" : "[BACKSTAB CRIT]") :
+                                 (state == 2) ? (is_gun ? "[FIRING...]" : "[LIGHT ATTACK]") :
+                                 (state == 3) ? (is_gun ? "[SECONDARY]" : "[HEAVY ATTACK]") :
                                  (state == 4) ? "[DEPLOYING...]" :
-                                 (state == 5) ? "[RELOADING...]" : "[READY]";
+                                 (state == 5) ? "[RELOADING...]" :
+                                 (state == 6) ? "[BACKSTAB]" : "[READY]";
         dl->AddText(ImGui::GetFont(), 19.f, {x + 14.f, y + 10.f}, IM_COL32(0, 255, 150, 255), weapon_name);
         dl->AddText(ImGui::GetFont(), 15.f, {x + 14.f, y + 36.f}, IM_COL32(255, 215, 0, 255), status_str);
         if (is_gun) {
@@ -1029,10 +1487,10 @@ void DrawHud(const HudState& hud, float w, float h) {
                      static_cast<unsigned>(r_mode.cs_reserve.load()));
             dl->AddText(ImGui::GetFont(), 22.f, {x + card_w - 96.f, y + 10.f}, IM_COL32(255, 255, 255, 245), ammo_str);
             dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 60.f}, IM_COL32(200, 210, 225, 230), "[F] Inspect | [LMB] Fire | [R] Reload");
-            dl->AddText(ImGui::GetFont(), 12.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[1] AK-47  [2] AWP  [3] Knife | [F1] Toggle");
+            dl->AddText(ImGui::GetFont(), 12.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[1]AK [2]AWP [3]Knife [4]M4 | [F1] Toggle");
         } else {
             dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 60.f}, IM_COL32(200, 210, 225, 230), "[F] Spin Inspect  |  [LMB] Slash");
-            dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[RMB] Backstab    |  [F1] Mode Toggle");
+            dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[RMB] Heavy Attack  |  [F1] Mode Toggle");
         }
         return;
     }
@@ -1317,6 +1775,23 @@ void RenderFrame(IDXGISwapChain* sc) {
     const float dt = std::max(1.f / 1000.f, std::chrono::duration<float>(now - g_s.last_frame).count());
     g_s.last_frame = now;
 
+    // Frame-time probe: opt in with mc_er_perflog.txt (a 5 s window makes sustained drops visible).
+    static const bool perf_log = [] {
+        const std::string& dir = eldenring::diagnostics::GetGameDir();
+        return !dir.empty() && std::filesystem::exists(std::filesystem::path(dir) / "mc_er_perflog.txt");
+    }();
+    static double perf_accum = 0.0;
+    static unsigned perf_frames = 0;
+    if (perf_log) {
+        perf_accum += dt;
+        ++perf_frames;
+        if (perf_accum >= 5.0) {
+            Logf("perf: %.1f fps (%.2f ms/frame)", perf_frames / perf_accum, 1000.0 * perf_accum / perf_frames);
+            perf_accum = 0.0;
+            perf_frames = 0;
+        }
+    }
+
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = {static_cast<float>(g_s.width), static_cast<float>(g_s.height)};
     io.DeltaTime = dt;
@@ -1339,9 +1814,18 @@ void RenderFrame(IDXGISwapChain* sc) {
                 case FxKind::Crit: g_particles.spawnCrit(e.pos, g_fx_rng); break;
                 case FxKind::Damage: g_particles.spawnDamage(e.pos, e.count, g_fx_rng); break;
                 case FxKind::Sweep: g_particles.spawnSweep(e.pos); break;
+                case FxKind::Spark: g_particles.spawnSpark(e.pos, g_fx_rng); break;
+                case FxKind::Dust: g_particles.spawnDust(e.pos, g_fx_rng); break;
             }
         }
         g_particles.update(dt);
+#if ENABLE_CS2_VIEWMODEL
+        DrawDecals(ImGui::GetBackgroundDrawList(), io.DisplaySize.x, io.DisplaySize.y);
+#endif
+        DrawTracers(ImGui::GetBackgroundDrawList(), io.DisplaySize.x, io.DisplaySize.y);
+#if ENABLE_CS2_VIEWMODEL
+        DrawCsMuzzleFlash(ImGui::GetBackgroundDrawList(), io.DisplaySize.x, io.DisplaySize.y);
+#endif
     }
     DrawHud(hud, io.DisplaySize.x, io.DisplaySize.y);
     ImGui::Render();
@@ -1576,26 +2060,38 @@ void RenderFrame(IDXGISwapChain* sc) {
 #if ENABLE_CS2_VIEWMODEL
     auto& r_mode = eldenring::RuntimeContext::Instance().mode();
     if (r_mode.cs_mode.load() && g_cs.ready()) {
+        // A weapon switch releases the old VB/IB and textures; wait for the
+        // GPU to finish the previous frame before replacing them.
+        if (r_mode.cs_weapon_slot.load() != g_cs_active_slot) {
+            WaitForGpu();
+        }
         UpdateCsWeaponSlot(r_mode.cs_weapon_slot.load());
     }
-    const bool cs_active = r_mode.cs_mode.load() && g_cs.ready();
+    const bool cs_mode_on = r_mode.cs_mode.load();
+    const bool cs_active = cs_mode_on && g_cs.ready() && GameIsForeground();
 #else
+    const bool cs_mode_on = false;
     const bool cs_active = false;
 #endif
-    const bool mc_fp_active = !cs_active && steve.first_person && !steve.dead && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
+    const bool mc_mode_on = eldenring::RuntimeContext::Instance().mode().mc_mode.load(std::memory_order_relaxed);
+    // Do not fall back to the MC first-person model while CS mode owns the view,
+    // or while MC mode is off.
+    const bool mc_fp_active = !cs_active && !cs_mode_on && mc_mode_on && steve.first_person && !steve.dead && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
         g_steve.ensureDepth(g_s.device, g_s.width, g_s.height);
 
 #if ENABLE_CS2_VIEWMODEL
     if (cs_active && !steve.dead) {
         const mc::rig::Mat4 proj = g_cs.computeViewmodelProjection(g_s.width, g_s.height);
-        const UINT srv_inc = g_s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        D3D12_GPU_DESCRIPTOR_HANDLE cs_tex_table = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
-        cs_tex_table.ptr += static_cast<UINT64>(srv_inc) * 16;
+        // The knife and the shared gun table have their own descriptors;
+        // switching is just a descriptor-handle swap.
+        D3D12_GPU_DESCRIPTOR_HANDLE cs_tex_table =
+            (r_mode.cs_weapon_slot.load() == 0) ? g_cs_knife_table_gpu : g_cs_ak_table_gpu;
         if (g_steve.ready()) {
             g_steve.ensureDepth(g_s.device, g_s.width, g_s.height);
         }
         const D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_steve.ready() ? g_steve.dsvHandle() : D3D12_CPU_DESCRIPTOR_HANDLE{};
-        g_cs.tick(dt, r_mode.cs_knife_state.load(), r_mode.cs_knife_anim_time.load());
+        g_cs.tick(dt, r_mode.cs_knife_state.load(), r_mode.cs_knife_anim_time.load(),
+                  r_mode.cs_action_variant.load(), r_mode.cs_action_hit.load());
         g_cs.draw(g_s.list, g_s.srv_heap, cs_tex_table, g_s.width, g_s.height, proj, f.rtv, dsv);
         g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
     } else
@@ -1929,6 +2425,20 @@ void SpawnFx(FxKind kind, const float world_pos[3], int count) {
     if (g_fx_events.size() < 64) g_fx_events.push_back(e);
 }
 
+void SpawnTracer(const float from[3], const float to[3], float life_s) {
+    TracerEvent t{{from[0], from[1], from[2]}, {to[0], to[1], to[2]}, GetTickCount64(), life_s > 0.01f ? life_s : 0.08f};
+    std::lock_guard<std::mutex> g(g_tracer_mutex);
+    if (g_tracer_events.size() < 64) g_tracer_events.push_back(t);
+}
+
+#if ENABLE_CS2_VIEWMODEL
+void SpawnDecal(const float pos[3], const float normal[3]) {
+    const uint64_t now = GetTickCount64();
+    std::lock_guard<std::mutex> g(g_decal_mutex);
+    g_decal_ring.addOrRefresh(pos, normal, now, eldenring::cs::kImpactDecalLifeS);
+}
+#endif
+
 void SetHudAtlas(const uint8_t* rgba, unsigned width, unsigned height) {
     g_atlas_rgba.assign(rgba, rgba + static_cast<size_t>(width) * height * 4);
     g_atlas_w = width;
@@ -1947,6 +2457,15 @@ void RequestScreenshot(const char* utf8_path) {
         g_shot_path = utf8_path != nullptr ? utf8_path : "";
     }
     g_shot_requested.store(true);
+}
+
+float CsClipDuration(const char* name) {
+#if ENABLE_CS2_VIEWMODEL
+    return g_cs.clipDuration(name);
+#else
+    (void)name;
+    return 0.f;
+#endif
 }
 
 void SetBlockMesh(const mc::rig::RigMesh& mesh) {

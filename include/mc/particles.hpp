@@ -7,7 +7,7 @@
 
 namespace mc {
 
-enum class ParticleKind : uint8_t { Crit, Damage, Sweep };
+enum class ParticleKind : uint8_t { Crit, Damage, Sweep, Spark, Dust };
 using Kind = ParticleKind;
 
 struct Particle {
@@ -74,6 +74,42 @@ public:
         }
     }
 
+    // A few bright fragments for a bullet impact (world space, game metres).
+    void spawnSpark(const float at[3], Rng& rng) {
+        for (int i = 0; i < 5 && particles_.size() < kMax; ++i) {
+            Particle p;
+            p.kind = ParticleKind::Spark;
+            std::copy(at, at + 3, p.pos);
+            const float yaw = rng.range(0.f, 6.2831853f), pitch = rng.range(-0.8f, 0.8f), speed = rng.range(1.0f, 2.8f);
+            p.vel[0] = std::cos(yaw) * std::cos(pitch) * speed;
+            p.vel[1] = std::sin(pitch) * speed;
+            p.vel[2] = std::sin(yaw) * std::cos(pitch) * speed;
+            p.life = rng.range(0.08f, 0.18f);
+            p.size = 0.05f;
+            particles_.push_back(p);
+        }
+    }
+
+    // A small grey dust puff for a bullet hitting a floor or wall. It drifts up and fades; no gravity.
+    void spawnDust(const float at[3], Rng& rng) {
+        for (int i = 0; i < 6 && particles_.size() < kMax; ++i) {
+            Particle p;
+            p.kind = ParticleKind::Dust;
+            std::copy(at, at + 3, p.pos);
+            p.pos[0] += rng.range(-0.06f, 0.06f);
+            p.pos[1] += rng.range(0.f, 0.04f);
+            p.pos[2] += rng.range(-0.06f, 0.06f);
+            const float yaw = rng.range(0.f, 6.2831853f);
+            const float speed = rng.range(0.15f, 0.45f);
+            p.vel[0] = std::cos(yaw) * speed;
+            p.vel[1] = rng.range(0.35f, 0.8f);
+            p.vel[2] = std::sin(yaw) * speed;
+            p.life = rng.range(0.35f, 0.7f);
+            p.size = rng.range(0.10f, 0.18f);
+            particles_.push_back(p);
+        }
+    }
+
     void spawnSweep(const float at[3]) {
         if (particles_.size() >= kMax) return;
         Particle p;
@@ -87,7 +123,7 @@ public:
     void update(float dt) {
         for (Particle& p : particles_) {
             p.age += dt;
-            if (p.kind == ParticleKind::Crit) p.vel[1] -= 5.f * dt; // crit stars fall a little
+            if (p.kind == ParticleKind::Crit || p.kind == ParticleKind::Spark) p.vel[1] -= 5.f * dt;
             for (int a = 0; a < 3; ++a) p.pos[a] += p.vel[a] * dt;
             if (p.kind == ParticleKind::Sweep) p.frame = std::min(7, static_cast<int>(8.f * p.age / p.life));
         }

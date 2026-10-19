@@ -6,6 +6,13 @@
 #include <vector>
 #include <string>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 #ifndef VK_SPACE
 #define VK_SPACE 0x20
 #endif
@@ -77,6 +84,19 @@ protected:
         };
         cb_.play_sound = [this](const char* snd, float) { played_sounds_.push_back(snd); };
         cb_.log = [this](const std::string& msg) { logged_messages_.push_back(msg); };
+        cb_.clip_duration = [](const char* name) -> float {
+            const std::string n = name != nullptr ? name : "";
+            if (n == "idle") return 2.0f;
+            if (n == "inspect") return 4.1f;
+            if (n == "inspect2") return 4.5f;
+            if (n == "inspect3") return 4.867f;
+            if (n == "deploy" || n == "deploy2" || n == "draw") return 1.0f;
+            if (n == "fire") return 0.767f;
+            if (n == "reload") return 2.433f;
+            if (n.rfind("light_", 0) == 0 || n.rfind("heavy_", 0) == 0 ||
+                n.rfind("backstab", 0) == 0) return 1.167f;
+            return 0.f;
+        };
 
         cb_.take_left_click = [this]() {
             bool r = left_click_edge_;
@@ -96,7 +116,8 @@ protected:
             return n;
         };
         cb_.set_suppress_mouse_buttons = [this](bool s) { suppressed_mouse_ = s; };
-        cb_.set_masked_keys = [this](const int*, size_t) {};
+        cb_.set_suppress_mouse_wheel = [this](bool s) { suppressed_wheel_ = s; };
+        cb_.set_masked_keys = [this](const int* keys, size_t n) { masked_keys_.assign(keys, keys + n); };
         cb_.take_keyboard_failures = [](long&) { return 0; };
 
         cb_.is_key_down = [this](int vk) {
@@ -121,9 +142,18 @@ protected:
             if (use_spawn_egg_success_) { spawn_egg_used_ = true; return true; }
             return false;
         };
-        cb_.click_attack = [this](float charged) { attack_charged_ = charged; attack_called_ = true; };
+        cb_.click_attack = [this](float charged) { attack_charged_ = charged; attack_called_ = true; return attack_hit_; };
         cb_.enqueue_nearest_hostile = [this]() { hostile_enqueued_ = true; };
         cb_.queue_bullet_fire = [this](float dmg) { bullet_queued_ = true; bullet_damage_ = dmg; return true; };
+        cb_.queue_cs_shot = [this](float damage, float spread, float range, uint32_t tracer, uint8_t slot) {
+            cs_shot_queued_ = true;
+            cs_shot_damage_ = damage;
+            cs_shot_spread_ = spread;
+            cs_shot_range_ = range;
+            cs_shot_tracer_ = tracer;
+            cs_shot_slot_ = slot;
+            return true;
+        };
         cb_.queue_summon = [this](const char*) { summon_queued_ = true; return true; };
         cb_.cycle_hidden_slot = [this](int& c) { ++c; };
         cb_.reset_slot_probe = [this](int& c) { c = -1; };
@@ -161,6 +191,8 @@ protected:
     bool right_held_{false};
     int wheel_notches_{0};
     bool suppressed_mouse_{false};
+    bool suppressed_wheel_{false};
+    std::vector<int> masked_keys_;
 
     bool mining_consumed_{false};
     bool ignite_tnt_success_{false};
@@ -172,10 +204,17 @@ protected:
     bool use_spawn_egg_success_{false};
     bool spawn_egg_used_{false};
     bool attack_called_{false};
+    bool attack_hit_{true};
     float attack_charged_{0.f};
     bool hostile_enqueued_{false};
     bool bullet_queued_{false};
     float bullet_damage_{0.f};
+    bool cs_shot_queued_{false};
+    float cs_shot_damage_{0.f};
+    float cs_shot_spread_{0.f};
+    float cs_shot_range_{0.f};
+    uint32_t cs_shot_tracer_{0u};
+    uint8_t cs_shot_slot_{0};
     bool summon_queued_{false};
     bool snapshot_taken_{false};
     int trace_frames_{0};
@@ -250,11 +289,16 @@ TEST_F(HotkeyDispatcherTest, ModeTogglesF5AndF6) {
     dispatcher_->tick(0.016f);
     EXPECT_EQ(ctx.currentGameMode(), creative::GameMode::Survival);
 
-    // Press F6 -> Toggle MC Mode
+    // Press F6 -> Toggle MC Mode (pure MC build only)
     EXPECT_TRUE(ctx.mode().mc_mode.load());
     setKey(VK_F6, true);
     dispatcher_->tick(0.016f);
+#if ENABLE_CS2_VIEWMODEL
+    // The CS2 build is CS-only at runtime: F6 must not enable MC mode.
+    EXPECT_TRUE(ctx.mode().mc_mode.load());
+#else
     EXPECT_FALSE(ctx.mode().mc_mode.load());
+#endif
 }
 
 TEST_F(HotkeyDispatcherTest, MiningConsumesLeftClickSoNoSwingAttack) {
@@ -372,8 +416,8 @@ TEST_F(HotkeyDispatcherTest, CsModeToggleAndKnifeInspectLifecycle) {
     EXPECT_FALSE(ctx.mode().cs_knife_inspect.load());
     EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "cs.knife.hit") != played_sounds_.end());
 
-    // Advance time past backstab duration (0.6s) -> knife returns to idle (0)
-    dispatcher_->tick(0.7f);
+    // Advance time past the heavy-attack clip (1.167 s) -> knife returns to idle (0)
+    dispatcher_->tick(1.2f);
     EXPECT_EQ(ctx.mode().cs_knife_state.load(), 0);
     EXPECT_FALSE(ctx.mode().cs_knife_inspect.load());
     EXPECT_FLOAT_EQ(ctx.mode().cs_knife_anim_time.load(), 0.f);
@@ -397,6 +441,89 @@ TEST_F(HotkeyDispatcherTest, CsModeToggleAndKnifeInspectLifecycle) {
     setKey(VK_F6, true);
     dispatcher_->tick(0.016f);
     EXPECT_FALSE(ctx.mode().cs_mode.load());
+    EXPECT_FALSE(ctx.mode().mc_mode.load()); // leaving CS mode does not silently re-enable MC
+}
+
+TEST_F(HotkeyDispatcherTest, CsModeTurnsOffMcMode) {
+    auto& ctx = RuntimeContext::Instance();
+    ASSERT_TRUE(ctx.mode().mc_mode.load());
+
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+
+    EXPECT_TRUE(ctx.mode().cs_mode.load());
+    EXPECT_FALSE(ctx.mode().mc_mode.load());
+}
+
+TEST_F(HotkeyDispatcherTest, CsBuildF6NeverEnablesMcMode) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+    ASSERT_FALSE(ctx.mode().mc_mode.load());
+
+    // F6 leaves CS mode...
+    setKey(VK_F6, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F6, false);
+    dispatcher_->tick(0.016f);
+    EXPECT_FALSE(ctx.mode().cs_mode.load());
+
+    // ...and a second F6 must not bring MC mode back.
+    setKey(VK_F6, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F6, false);
+    dispatcher_->tick(0.016f);
+    EXPECT_FALSE(ctx.mode().mc_mode.load());
+}
+
+TEST_F(HotkeyDispatcherTest, CsModeMasksItsVanillaKeys) {
+#ifdef _WIN32
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+
+    auto masked = [this](int vk) {
+        const int sc = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC));
+        return std::find(masked_keys_.begin(), masked_keys_.end(), sc) != masked_keys_.end();
+    };
+    EXPECT_TRUE(masked('R')); // reload must not also use a quick item
+    EXPECT_TRUE(masked('F')); // inspect must not also trigger the vanilla action
+    for (int d = '1'; d <= '4'; ++d) EXPECT_TRUE(masked(d)); // weapon slots must not select vanilla quick slots
+    EXPECT_TRUE(suppressed_wheel_);
+
+    // Leaving CS mode releases both.
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_FALSE(ctx.mode().cs_mode.load());
+    EXPECT_FALSE(masked('R'));
+    EXPECT_FALSE(suppressed_wheel_);
+#else
+    GTEST_SKIP() << "scan codes are Windows-only";
+#endif
+}
+
+TEST_F(HotkeyDispatcherTest, CsModeDoesNotScrollTheMcHotbar) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+
+    const int before = ctx.combat().melee.selectedSlot();
+    wheel_notches_ = 1;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.combat().melee.selectedSlot(), before);
 }
 
 TEST_F(HotkeyDispatcherTest, CsModeDigitKeysSelectWeaponSlotsAndRReloads) {
@@ -448,6 +575,200 @@ TEST_F(HotkeyDispatcherTest, CsModeDigitKeysSelectWeaponSlotsAndRReloads) {
     EXPECT_EQ(ctx.mode().cs_weapon_slot.load(), 0);
     EXPECT_EQ(ctx.mode().cs_ammo.load(), 0u);
 }
+
+TEST_F(HotkeyDispatcherTest, CsDigit4SelectsTheM4A1S) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+
+    setKey('4', true);
+    dispatcher_->tick(0.016f);
+    setKey('4', false);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_weapon_slot.load(), 3);
+    EXPECT_EQ(ctx.mode().cs_ammo.load(), 20u);
+    EXPECT_EQ(ctx.mode().cs_reserve.load(), 80u);
+}
+TEST_F(HotkeyDispatcherTest, CsGunFireQueuesHitscanShotWithWeaponBallistics) {
+    auto& ctx = RuntimeContext::Instance();
+
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+
+    // 1 = AK-47.
+    setKey('1', true);
+    dispatcher_->tick(0.016f);
+    setKey('1', false);
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 1);
+
+    cs_shot_queued_ = false;
+    left_held_ = true;
+    dispatcher_->tick(0.016f);
+    left_held_ = false;
+
+    EXPECT_TRUE(cs_shot_queued_);
+    EXPECT_FLOAT_EQ(cs_shot_damage_, 36.f);
+    EXPECT_FLOAT_EQ(cs_shot_spread_, 0.f); // first shot after a pause is accurate
+    EXPECT_FLOAT_EQ(cs_shot_range_, 300.f);
+    EXPECT_EQ(cs_shot_tracer_, 0u); // tracers are disabled by design
+    EXPECT_EQ(cs_shot_slot_, 1);
+    EXPECT_EQ(ctx.mode().cs_ammo.load(), 29u);
+
+    // The 600 RPM cooldown blocks a second round on the next tick.
+    cs_shot_queued_ = false;
+    left_held_ = true;
+    dispatcher_->tick(0.016f);
+    left_held_ = false;
+    EXPECT_FALSE(cs_shot_queued_);
+    EXPECT_EQ(ctx.mode().cs_ammo.load(), 29u);
+
+    // After 0.1 s the next round fires.
+    cs_shot_queued_ = false;
+    left_held_ = true;
+    dispatcher_->tick(0.11f);
+    left_held_ = false;
+    EXPECT_TRUE(cs_shot_queued_);
+    EXPECT_FLOAT_EQ(cs_shot_spread_, 0.45f); // sustained fire uses the weapon spread
+    EXPECT_EQ(ctx.mode().cs_ammo.load(), 28u);
+}
+
+TEST_F(HotkeyDispatcherTest, CsGunClickDoesNotSwingMelee) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    setKey('1', true);
+    dispatcher_->tick(0.016f);
+    setKey('1', false);
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 1);
+
+    attack_called_ = false;
+    cs_shot_queued_ = false;
+    left_click_edge_ = true;
+    left_held_ = true;
+    dispatcher_->tick(0.016f);
+    left_click_edge_ = false;
+    left_held_ = false;
+
+    EXPECT_TRUE(cs_shot_queued_);
+    EXPECT_FALSE(attack_called_); // a gun shot must not also swing the MC melee
+}
+
+TEST_F(HotkeyDispatcherTest, CsKnifeDoesNotQueueHitscanShots) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 0);
+
+    cs_shot_queued_ = false;
+    left_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_FALSE(cs_shot_queued_);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 2);
+    EXPECT_TRUE(attack_called_); // the knife still uses the MC melee path
+    EXPECT_TRUE(ctx.mode().cs_action_hit.load());
+}
+
+TEST_F(HotkeyDispatcherTest, CsKnifeMissSelectsTheMissTake) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 0);
+
+    attack_hit_ = false;
+    left_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 2);
+    EXPECT_FALSE(ctx.mode().cs_action_hit.load());
+
+    // The next swing connects: the hit take comes back.
+    attack_hit_ = true;
+    dispatcher_->tick(1.2f); // finish the 1.167 s light clip
+    left_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 2);
+    EXPECT_TRUE(ctx.mode().cs_action_hit.load());
+}
+
+TEST_F(HotkeyDispatcherTest, CsKnifeActionsUseAuthoredTakesAndClipDurations) {
+    auto& ctx = RuntimeContext::Instance();
+
+    // Enter CS mode with the knife active (slot 0).
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 0);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 4); // Deploy
+    EXPECT_EQ(ctx.mode().cs_action_variant.load(), 0);
+
+    // The deploy clip is 1.0 s; it must not be cut at the old 0.8 s constant.
+    dispatcher_->tick(1.05f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 0);
+
+    // LMB alternates the two authored light-attack takes.
+    left_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 2);
+    EXPECT_EQ(ctx.mode().cs_action_variant.load(), 1); // light_hit2
+    dispatcher_->tick(1.1f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 2); // 1.167 s clip not finished yet
+    dispatcher_->tick(0.1f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 0);
+
+    left_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_action_variant.load(), 0); // light_hit
+    dispatcher_->tick(1.2f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 0);
+
+    // RMB is the heavy attack, not the backstab clip.
+    right_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 3);
+    dispatcher_->tick(1.1f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 3);
+    dispatcher_->tick(0.1f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 0);
+
+    // Duration must come from the loaded clip, not a C++ constant: make
+    // heavy_hit 0.25 s and the state ends after 0.3 s.
+    cb_.clip_duration = [](const char* name) -> float {
+        return (name != nullptr && std::string(name) == "heavy_hit") ? 0.25f : 0.f;
+    };
+    dispatcher_->setCallbacks(cb_);
+    right_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 3);
+    dispatcher_->tick(0.3f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 0);
+
+    // Inspect cycles lookat01 -> lookat02 -> lookat03.
+    const uint8_t start = ctx.mode().cs_action_variant.load();
+    setKey('F', true);
+    dispatcher_->tick(0.016f);
+    setKey('F', false);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 1);
+    EXPECT_EQ(ctx.mode().cs_action_variant.load(), static_cast<uint8_t>((start + 1u) % 3u));
+    dispatcher_->tick(4.0f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 1); // 4.1/4.5/4.867 s take
+}
+
 #else
 TEST_F(HotkeyDispatcherTest, PureMcBuildDisablesCsHotkeysAndInteractions) {
     auto& ctx = RuntimeContext::Instance();

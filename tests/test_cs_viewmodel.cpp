@@ -25,7 +25,12 @@ SubmeshType ClassifySubmesh(const std::string& raw_name) {
         return SubmeshType::HandleRear;
     if (n.find("lock") != std::string::npos || n.find("latch") != std::string::npos)
         return SubmeshType::Lock;
-    if (n.find("arm") != std::string::npos || n.find("glove") != std::string::npos)
+    if (n.find("sleeve") != std::string::npos)
+        return SubmeshType::Sleeve;
+    if (n.find("arm_upper") != std::string::npos || n.find("arm_lower") != std::string::npos)
+        return SubmeshType::BareArm;
+    if (n.find("arm") != std::string::npos || n.find("glove") != std::string::npos ||
+        n.find("hand") != std::string::npos)
         return SubmeshType::Arms;
     return SubmeshType::Base;
 }
@@ -40,7 +45,14 @@ TEST(CSViewModelTest, SubmeshClassificationCoversAllPartsAndMultipleArms) {
         "lock",
         "arms_glove",
         "arms_glove",
-        "arms_glove"
+        "arms_glove",
+        "arm_upper_L",
+        "arm_lower_R",
+        "hand_L",
+        "sleeve_upper_L",
+        "sleeve_lower_L",
+        "sleeve_upper_R",
+        "sleeve_lower_R"
     };
 
     std::vector<SubmeshType> types;
@@ -48,7 +60,7 @@ TEST(CSViewModelTest, SubmeshClassificationCoversAllPartsAndMultipleArms) {
         types.push_back(ClassifySubmesh(name));
     }
 
-    ASSERT_EQ(types.size(), 8u);
+    ASSERT_EQ(types.size(), 15u);
     EXPECT_EQ(types[0], SubmeshType::HandleRear);
     EXPECT_EQ(types[1], SubmeshType::Base);
     EXPECT_EQ(types[2], SubmeshType::Blade);
@@ -58,6 +70,14 @@ TEST(CSViewModelTest, SubmeshClassificationCoversAllPartsAndMultipleArms) {
     EXPECT_EQ(types[5], SubmeshType::Arms);
     EXPECT_EQ(types[6], SubmeshType::Arms);
     EXPECT_EQ(types[7], SubmeshType::Arms);
+    EXPECT_EQ(types[8], SubmeshType::BareArm);
+    EXPECT_EQ(types[9], SubmeshType::BareArm);
+    EXPECT_EQ(types[10], SubmeshType::Arms);
+    // Agent sleeves are fabric, not bare skin.
+    EXPECT_EQ(types[11], SubmeshType::Sleeve);
+    EXPECT_EQ(types[12], SubmeshType::Sleeve);
+    EXPECT_EQ(types[13], SubmeshType::Sleeve);
+    EXPECT_EQ(types[14], SubmeshType::Sleeve);
 }
 
 TEST(CSViewModelTest, MemorySerializationRoundtrip) {
@@ -87,7 +107,7 @@ TEST(CSViewModelTest, MemorySerializationRoundtrip) {
     };
 
     append_submesh("blade", 0, 0, 0, 3);
-    append_submesh("arms_glove", 1, 3, 2, 3);
+    append_submesh("arms_glove", 1, 3, 0, 3);
 
     // 4 vertices
     CSVMVertex verts[4] = {
@@ -112,6 +132,62 @@ TEST(CSViewModelTest, MemorySerializationRoundtrip) {
     EXPECT_EQ(model.submeshes[1].bone_name, "arms_glove");
     EXPECT_EQ(model.vertices.size(), 4u);
     EXPECT_EQ(model.indices.size(), 6u);
+}
+
+TEST(CSViewModelTest, FailedLoadKeepsThePreviousModel) {
+    auto build = [](int32_t base_vertex) {
+        std::vector<uint8_t> buffer;
+
+        CSVMHeader hdr{};
+        std::memcpy(hdr.magic, "CSVM", 4);
+        hdr.version = 1;
+        hdr.num_submeshes = 1;
+        hdr.total_vertices = 4;
+        hdr.total_indices = 3;
+        buffer.resize(sizeof(CSVMHeader));
+        std::memcpy(buffer.data(), &hdr, sizeof(CSVMHeader));
+
+        const std::string name = "blade";
+        const uint32_t name_len = static_cast<uint32_t>(name.size());
+        const uint32_t bone_idx = 0, first_idx = 0, count = 3;
+        size_t off = buffer.size();
+        buffer.resize(off + 4 + name_len + 16);
+        std::memcpy(buffer.data() + off, &name_len, 4); off += 4;
+        std::memcpy(buffer.data() + off, name.data(), name_len); off += name_len;
+        std::memcpy(buffer.data() + off, &bone_idx, 4); off += 4;
+        std::memcpy(buffer.data() + off, &first_idx, 4); off += 4;
+        std::memcpy(buffer.data() + off, &base_vertex, 4); off += 4;
+        std::memcpy(buffer.data() + off, &count, 4);
+
+        CSVMVertex verts[4] = {};
+        off = buffer.size();
+        buffer.resize(off + sizeof(verts));
+        std::memcpy(buffer.data() + off, verts, sizeof(verts));
+
+        uint32_t indices[3] = {0, 1, 2};
+        off = buffer.size();
+        buffer.resize(off + sizeof(indices));
+        std::memcpy(buffer.data() + off, indices, sizeof(indices));
+        return buffer;
+    };
+
+    CSViewModel model;
+    const std::vector<uint8_t> good = build(0);
+    ASSERT_TRUE(model.loadFromMemory(good.data(), good.size()));
+    ASSERT_EQ(model.submeshes.size(), 1u);
+    ASSERT_EQ(model.vertices.size(), 4u);
+
+    // base_vertex 99 points past the four vertices: the validation must reject it.
+    const std::vector<uint8_t> bad = build(99);
+    EXPECT_FALSE(model.loadFromMemory(bad.data(), bad.size()));
+
+    // A rejected load must leave the model the renderer is drawing untouched.
+    ASSERT_EQ(model.submeshes.size(), 1u);
+    EXPECT_EQ(model.submeshes[0].bone_name, "blade");
+    EXPECT_EQ(model.submeshes[0].base_vertex, 0);
+    EXPECT_EQ(model.vertices.size(), 4u);
+    EXPECT_EQ(model.indices.size(), 3u);
+    EXPECT_TRUE(model.anim_clips.empty());
 }
 
 TEST(CSViewModelTest, ViewmodelScaleAndVisibilityAssertion) {
@@ -384,15 +460,19 @@ TEST(CSViewModelTest, Ak47CsvmV3NamedTracksAndParts) {
     EXPECT_NE(std::find(parts.begin(), parts.end(), "clip"), parts.end());
     EXPECT_NE(std::find(parts.begin(), parts.end(), "bolt"), parts.end());
     EXPECT_NE(std::find(parts.begin(), parts.end(), "trigger"), parts.end());
-    EXPECT_NE(std::find(parts.begin(), parts.end(), "arms_L"), parts.end());
-    EXPECT_NE(std::find(parts.begin(), parts.end(), "arms_R"), parts.end());
+    for (const char* part : {"arm_upper_L", "arm_lower_L", "hand_L",
+                             "arm_upper_R", "arm_lower_R", "hand_R"}) {
+        EXPECT_NE(std::find(parts.begin(), parts.end(), part), parts.end()) << part;
+    }
 
     for (const char* clip : {"idle", "draw", "fire", "reload", "inspect"}) {
         ASSERT_TRUE(vm.anim_clips.count(clip) > 0) << "missing clip " << clip;
         const auto& c = vm.anim_clips.at(clip);
         EXPECT_TRUE(c.tracks.count("weapon_offset") > 0) << clip;
-        EXPECT_TRUE(c.tracks.count("hand_L") > 0) << clip;
-        EXPECT_TRUE(c.tracks.count("hand_R") > 0) << clip;
+        for (const char* part : {"arm_upper_L", "arm_lower_L", "hand_L",
+                                 "arm_upper_R", "arm_lower_R", "hand_R"}) {
+            EXPECT_TRUE(c.tracks.count(part) > 0) << clip << " " << part;
+        }
     }
     EXPECT_EQ(vm.anim_clips.at("draw").frame_count, 31u);
     EXPECT_EQ(vm.anim_clips.at("fire").frame_count, 24u);
@@ -951,6 +1031,12 @@ TEST(CSViewModelTest, TddSubmeshDrawTintIsNeutralWhenTextured) {
     EXPECT_FLOAT_EQ(tint[2], 1.0f);
     EXPECT_FLOAT_EQ(tint[3], 1.0f);
 
+    getEffectiveSubmeshTint(SubmeshType::Sleeve, true /* has_texture */, tint);
+    EXPECT_FLOAT_EQ(tint[0], 1.0f);
+    EXPECT_FLOAT_EQ(tint[1], 1.0f);
+    EXPECT_FLOAT_EQ(tint[2], 1.0f);
+    EXPECT_FLOAT_EQ(tint[3], 1.0f);
+
     getEffectiveSubmeshTint(SubmeshType::Blade, false /* has_texture */, tint);
     EXPECT_FLOAT_EQ(tint[0], 0.95f); // Fallback blade steel tint
 }
@@ -1055,7 +1141,77 @@ TEST(CSViewModelTest, TddGloveTextureContrastAndNormalFidelity) {
     EXPECT_LT(out_detail[0], 0.95f);
 }
 
+TEST(CSViewModelTest, AuthenticKnifeActionClipsVariantsAndDurations) {
+    const std::vector<std::string> candidate_paths = {
+        "build/cs2assets/cs_butterfly_viewmodel.bin",
+        "../../build/cs2assets/cs_butterfly_viewmodel.bin",
+        "../build/cs2assets/cs_butterfly_viewmodel.bin",
+    };
+    std::string model_path;
+    for (const auto& p : candidate_paths) {
+        if (std::filesystem::exists(p)) {
+            model_path = p;
+            break;
+        }
+    }
+    if (model_path.empty()) {
+        GTEST_SKIP() << "cs_butterfly_viewmodel.bin not found in workspace candidate paths";
+    }
+
+    CSViewModel vm;
+    ASSERT_TRUE(vm.loadFromFile(model_path));
+    for (const char* clip : {"idle", "inspect", "inspect2", "inspect3", "deploy", "deploy2",
+                             "light_hit", "light_hit2", "light_miss", "light_miss2",
+                             "heavy_hit", "heavy_miss", "backstab"}) {
+        EXPECT_TRUE(vm.anim_clips.count(clip) > 0) << "missing clip " << clip;
+    }
+
+    CSViewModelAnimator anim;
+    anim.setModel(&vm);
+    EXPECT_NEAR(anim.clipDuration("idle"), 2.000f, 0.01f);
+    EXPECT_NEAR(anim.clipDuration("light_hit"), 35.f / 30.f, 0.01f);
+    EXPECT_NEAR(anim.clipDuration("heavy_hit"), 35.f / 30.f, 0.01f);
+    EXPECT_NEAR(anim.clipDuration("inspect"), 123.f / 30.f, 0.01f);
+    EXPECT_NEAR(anim.clipDuration("inspect2"), 135.f / 30.f, 0.01f);
+    EXPECT_NEAR(anim.clipDuration("inspect3"), 146.f / 30.f, 0.01f);
+
+    auto bladeAt = [&](uint8_t state, float t, uint8_t variant, bool hit) {
+        anim.tick(0.016f, state, t, variant, hit);
+        const auto* m = anim.currentPose().findTrack("blade");
+        EXPECT_NE(m, nullptr);
+        return m != nullptr ? *m : eldenring::fp::M4{};
+    };
+
+    // Idle loops: t=0 and t=idle duration sample the same frame.
+    const auto idle0 = bladeAt(0, 0.0f, 0, true);
+    const auto idleLoop = bladeAt(0, 2.0f, 0, true);
+    for (int i = 0; i < 16; ++i) {
+        EXPECT_NEAR(idle0.m[i], idleLoop.m[i], 5e-3f) << i;
+    }
+
+    // The two authored light takes differ.
+    const auto light1 = bladeAt(2, 0.3f, 0, true);
+    const auto light2 = bladeAt(2, 0.3f, 1, true);
+    bool light_diff = false;
+    for (int i = 0; i < 16; ++i) {
+        if (std::abs(light1.m[i] - light2.m[i]) > 1e-3f) light_diff = true;
+    }
+    EXPECT_TRUE(light_diff);
+
+    // CS2 ships identical viewmodel tracks for heavy hit and miss (verified in
+    // the source GLBs); the hit/miss distinction is gameplay-side. Assert that,
+    // then compare the heavy take with the light take, which must differ.
+    const auto heavyHit = bladeAt(3, 0.3f, 0, true);
+    const auto heavyMiss = bladeAt(3, 0.3f, 0, false);
+    for (int i = 0; i < 16; ++i) {
+        EXPECT_NEAR(heavyHit.m[i], heavyMiss.m[i], 1e-5f) << i;
+    }
+    const auto lightHit = bladeAt(2, 0.3f, 0, true);
+    bool heavy_diff = false;
+    for (int i = 0; i < 16; ++i) {
+        if (std::abs(heavyHit.m[i] - lightHit.m[i]) > 1e-3f) heavy_diff = true;
+    }
+    EXPECT_TRUE(heavy_diff);
+}
+
 } // namespace
-
-
-

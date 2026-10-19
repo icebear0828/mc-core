@@ -68,6 +68,81 @@
 #define VK_F12 0x7B
 #endif
 
+namespace {
+
+// Enumerate the CS2 clip ids for a state in priority order. CS2 ships two
+// takes for most actions and three inspect takes; the runtime alternates them.
+template <typename Fn>
+void forEachCsClip(uint8_t state, uint8_t variant, bool hit, bool knife, Fn&& fn) {
+    const bool alt = (variant & 1u) != 0u;
+    switch (state) {
+        case 1: { // Inspect: lookat01/02/03
+            const uint8_t take = static_cast<uint8_t>(variant % 3u);
+            if (take == 2) fn("inspect3");
+            else if (take == 1) fn("inspect2");
+            fn("inspect");
+            break;
+        }
+        case 2: // Primary: gun fire, or knife light hit/miss
+            if (knife) {
+                if (hit) {
+                    if (alt) fn("light_hit2");
+                    fn("light_hit");
+                } else {
+                    if (alt) fn("light_miss2");
+                    fn("light_miss");
+                    fn("light_hit");
+                }
+            } else {
+                fn("fire");
+            }
+            break;
+        case 3: // Secondary: knife heavy hit/miss (guns have no secondary clip)
+            if (knife) {
+                if (hit) {
+                    fn("heavy_hit");
+                    fn("backstab");
+                } else {
+                    fn("heavy_miss");
+                    fn("heavy_hit");
+                }
+            }
+            break;
+        case 4: // Deploy/draw
+            if (alt) fn("deploy2");
+            fn("deploy");
+            fn("draw");
+            break;
+        case 5: // Reload
+            fn("reload");
+            break;
+        case 6: // Backstab
+            if (alt) fn("backstab_light2");
+            fn("backstab_light");
+            fn("backstab");
+            break;
+        case 0:
+        default:
+            fn("idle");
+            break;
+    }
+}
+
+// Used when no clip-duration callback is wired (headless tests, asset missing).
+float fallbackCsDuration(uint8_t state, bool knife) {
+    switch (state) {
+        case 1: return 4.1f;   // lookat01
+        case 2: return knife ? 1.167f : 0.767f;
+        case 3: return 1.167f;
+        case 4: return 1.0f;
+        case 5: return 2.433f;
+        case 6: return 1.167f;
+        default: return 0.f;
+    }
+}
+
+} // namespace
+
 namespace eldenring::input {
 
 HotkeyDispatcher& HotkeyDispatcher::Instance() {
@@ -220,7 +295,7 @@ void HotkeyDispatcher::tick(float dt) {
 
     // Key masking
     if (cb_.set_masked_keys) {
-        int hidden[16];
+        int hidden[32];
         size_t n_hidden = 0;
 #ifdef _WIN32
         if (mode.mc_jump.load() && mc_on && fg && !inv_open) {
@@ -231,9 +306,20 @@ void HotkeyDispatcher::tick(float dt) {
             const auto roll_mask = roll::computeRollMask(true, true, mode.roll_vk.load());
             n_hidden = roll::mergeMaskedKeys(hidden, sizeof(hidden) / sizeof(hidden[0]), n_hidden, roll_mask.scancodes, roll_mask.count);
         }
-        if (mode.flying.load()) {
+        if (mode.flying.load() && mc_on) {
             n_hidden = roll::mergeMaskedKeys(hidden, sizeof(hidden) / sizeof(hidden[0]), n_hidden, flight::kHiddenKeys, sizeof(flight::kHiddenKeys) / sizeof(flight::kHiddenKeys[0]));
         }
+#if ENABLE_CS2_VIEWMODEL && defined(_WIN32)
+        // CS mode owns these keys. Hide them from the game, or R uses a quick
+        // item while reloading and 1-4 select vanilla quick slots.
+        if (mode.cs_mode.load() && fg && !inv_open) {
+            const int cs_keys[] = {'R', 'F', '1', '2', '3', '4'};
+            for (int vk : cs_keys) {
+                const int sc = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC));
+                if (sc > 0) hidden[n_hidden++] = sc;
+            }
+        }
+#endif
         cb_.set_masked_keys(hidden, n_hidden);
     }
 
@@ -242,10 +328,15 @@ void HotkeyDispatcher::tick(float dt) {
     const bool right_edge = !inv_open && input_enabled && cb_.take_right_click && cb_.take_right_click();
 #if ENABLE_CS2_VIEWMODEL
     if (mode.cs_mode.load() && fg && !is_dead && right_edge) {
-        mode.cs_knife_state.store(3); // Backstab
-        mode.cs_knife_inspect.store(false);
-        mode.cs_knife_anim_time.store(0.f);
-        if (cb_.play_sound) cb_.play_sound("cs.knife.hit", 1.0f);
+        // RMB is the knife's heavy attack. Guns consume the click but have no
+        // secondary action yet (AWP scope is a separate HUD feature).
+        if (mode.cs_weapon_slot.load() == 0) {
+            mode.cs_knife_state.store(3); // Heavy attack
+            mode.cs_knife_inspect.store(false);
+            mode.cs_action_hit.store(true);
+            mode.cs_knife_anim_time.store(0.f);
+            if (cb_.play_sound) cb_.play_sound("cs.knife.hit", 1.0f);
+        }
     } else
 #endif
     if (right_edge && fg && want_suppress && !is_dead) {
@@ -323,8 +414,8 @@ void HotkeyDispatcher::tick(float dt) {
         mode.shield_blocking.store(now_blocking, std::memory_order_relaxed);
     }
 
-    // Mouse wheel slot selection
-    if (input_enabled && cb_.take_wheel_notches) {
+    // Mouse wheel slot selection (MC hotbar only; CS mode suppresses the wheel).
+    if (input_enabled && mc_on && cb_.take_wheel_notches) {
         const int notches = cb_.take_wheel_notches();
         if (notches != 0 && fg && !inv_open && want_suppress) {
             std::lock_guard<std::mutex> g(combat.melee_mutex);
@@ -333,17 +424,28 @@ void HotkeyDispatcher::tick(float dt) {
     }
 
 #if ENABLE_CS2_VIEWMODEL
-    // CS Knife animation timer advance
+    // CS action timer advance. The end time comes from the loaded clip, so a
+    // new authored take never needs a matching C++ constant.
     if (mode.cs_mode.load()) {
         const uint8_t state = mode.cs_knife_state.load();
+        const uint8_t variant = mode.cs_action_variant.load();
+        const bool hit = mode.cs_action_hit.load();
         const float t = mode.cs_knife_anim_time.load() + dt;
-        float max_t = 0.5f;
-        if (state == 1) max_t = 3.0f;       // Inspect
-        else if (state == 2) max_t = 0.5f;  // Slash
-        else if (state == 3) max_t = 0.6f;  // Backstab
-        else if (state == 4) max_t = 0.8f;  // Deploy
-        else if (state == 5) max_t = 2.5f;  // Reload (74 frames @ 30 fps)
-        if (state != 0 && t >= max_t) {
+        auto durationFor = [this, &mode](uint8_t s, uint8_t v, bool h) -> float {
+            const bool is_knife = mode.cs_weapon_slot.load() == 0;
+            float duration = 0.f;
+            if (cb_.clip_duration) {
+                forEachCsClip(s, v, h, is_knife, [&](const char* name) {
+                    if (duration <= 0.f) {
+                        const float d = cb_.clip_duration(name);
+                        if (d > 0.f) duration = d;
+                    }
+                });
+            }
+            return duration > 0.f ? duration : fallbackCsDuration(s, is_knife);
+        };
+        const float max_t = (state != 0) ? durationFor(state, variant, hit) : 0.f;
+        if (state != 0 && max_t > 0.f && t >= max_t) {
             if (state == 5) { // Reload finished: move rounds from reserve to magazine
                 const uint32_t mag = mode.cs_mag_capacity.load();
                 const uint32_t ammo = mode.cs_ammo.load();
@@ -371,6 +473,8 @@ void HotkeyDispatcher::tick(float dt) {
         if (f_down && !prev_gameplay_f_) {
 #if ENABLE_CS2_VIEWMODEL
             if (mode.cs_mode.load()) {
+                const uint8_t take = static_cast<uint8_t>((mode.cs_action_variant.load() + 1u) % 3u);
+                mode.cs_action_variant.store(take);
                 mode.cs_knife_state.store(1); // Inspect!
                 mode.cs_knife_inspect.store(true);
                 mode.cs_knife_anim_time.store(0.f);
@@ -394,9 +498,9 @@ void HotkeyDispatcher::tick(float dt) {
             const bool d = queryKey('1' + i);
             if (d && !prev_digit_[i]) {
 #if ENABLE_CS2_VIEWMODEL
-                if (mode.cs_mode.load() && i < 3) {
-                    // CS arsenal slots: 1 = AK-47, 2 = AWP, 3 = butterfly knife
-                    const uint8_t slot = (i == 0) ? 1 : (i == 1) ? 2 : 0;
+                if (mode.cs_mode.load() && i < 4) {
+                    // CS arsenal slots: 1 = AK-47, 2 = AWP, 3 = butterfly knife, 4 = M4A1-S
+                    const uint8_t slot = (i == 0) ? 1 : (i == 1) ? 2 : (i == 2) ? 0 : 3;
                     mode.cs_weapon_slot.store(slot);
                     if (slot == 0) {
                         mode.cs_ammo.store(0);
@@ -405,7 +509,7 @@ void HotkeyDispatcher::tick(float dt) {
                     } else {
                         const char* id = (slot == 1) ? "weapon_ak47"
                                        : (slot == 2) ? "weapon_awp"
-                                       : "weapon_m4a1_s";
+                                       : "weapon_m4a1_silencer";
                         if (const auto* def = eldenring::cs::CSWeaponRegistry::instance().findWeapon(id)) {
                             mode.cs_ammo.store(def->ballistics.magazine_capacity);
                             mode.cs_reserve.store(def->ballistics.reserve_capacity);
@@ -414,13 +518,17 @@ void HotkeyDispatcher::tick(float dt) {
                     }
                     mode.cs_knife_state.store(4); // Deploy!
                     mode.cs_knife_inspect.store(false);
+                    mode.cs_action_variant.store(static_cast<uint8_t>((mode.cs_action_variant.load() + 1u) & 1u));
+                    mode.cs_action_hit.store(true);
                     mode.cs_knife_anim_time.store(0.f);
                     if (cb_.play_sound) cb_.play_sound(slot == 1 ? "cs.ak47.draw" : "cs.knife.deploy", 1.0f);
                 } else
 #endif
                 {
-                    std::lock_guard<std::mutex> g(combat.melee_mutex);
-                    combat.melee.select(i);
+                    if (mc_on) {
+                        std::lock_guard<std::mutex> g(combat.melee_mutex);
+                        combat.melee.select(i);
+                    }
                 }
             }
             prev_digit_[i] = d;
@@ -443,6 +551,9 @@ void HotkeyDispatcher::tick(float dt) {
     if (input_enabled && cb_.set_suppress_mouse_buttons) {
         cb_.set_suppress_mouse_buttons(fg && want_suppress);
     }
+    if (cb_.set_suppress_mouse_wheel) {
+        cb_.set_suppress_mouse_wheel(fg && mode.cs_mode.load());
+    }
 
     // Space key (Jump & Exhaustion)
     const bool space = fg && queryKey(VK_SPACE);
@@ -462,20 +573,23 @@ void HotkeyDispatcher::tick(float dt) {
 
 #if ENABLE_CS2_VIEWMODEL
     cs_fire_cooldown_ = std::max(0.f, cs_fire_cooldown_ - dt);
+    cs_since_shot_ += dt;
     // CS mode attack triggers: knife slash, or gun fire (automatic aware).
     if (mode.cs_mode.load() && fg && alive) {
         const uint8_t slot = mode.cs_weapon_slot.load();
         if (slot == 0) {
             if (click_edge) {
-                mode.cs_knife_state.store(2); // Slash
+                mode.cs_knife_state.store(2); // Primary light attack
                 mode.cs_knife_inspect.store(false);
+                mode.cs_action_variant.store(static_cast<uint8_t>((mode.cs_action_variant.load() + 1u) & 1u));
+                mode.cs_action_hit.store(true);
                 mode.cs_knife_anim_time.store(0.f);
                 if (cb_.play_sound) cb_.play_sound("cs.knife.slash", 1.0f);
             }
         } else {
             const char* id = (slot == 1) ? "weapon_ak47"
                            : (slot == 2) ? "weapon_awp"
-                           : "weapon_m4a1_s";
+                           : "weapon_m4a1_silencer";
             const auto* def = eldenring::cs::CSWeaponRegistry::instance().findWeapon(id);
             const float rpm = (def && def->ballistics.fire_rate_rpm > 1.f) ? def->ballistics.fire_rate_rpm : 600.f;
             const bool automatic = def ? def->ballistics.is_automatic : true;
@@ -487,7 +601,18 @@ void HotkeyDispatcher::tick(float dt) {
                     mode.cs_knife_inspect.store(false);
                     mode.cs_knife_anim_time.store(0.f);
                     cs_fire_cooldown_ = 60.f / rpm;
-                    if (cb_.play_sound) cb_.play_sound(slot == 1 ? "cs.ak47.fire" : "cs.knife.slash", 1.0f);
+                    if (cb_.queue_cs_shot) {
+                        const float damage = def ? def->ballistics.damage : 36.f;
+                        // CS: the first shot after a pause is perfectly accurate; sustained fire spreads.
+                        const float spread = (cs_since_shot_ > 0.25f)
+                            ? 0.f
+                            : (def ? def->ballistics.spread_deg : 0.45f);
+                        const float range = def ? def->ballistics.max_range_meters : 300.f;
+                        const uint32_t tracer = def ? def->ballistics.tracer_frequency : 3u;
+                        cb_.queue_cs_shot(damage, spread, range, tracer, slot);
+                        cs_since_shot_ = 0.f;
+                    }
+                    if (cb_.play_sound) cb_.play_sound("cs.ak47.fire", 1.0f); // placeholder until AWP/M4 fire sounds are extracted
                 } else if (click_edge && cb_.log) {
                     cb_.log("CS: empty magazine - press R to reload");
                 }
@@ -496,17 +621,29 @@ void HotkeyDispatcher::tick(float dt) {
     }
 #endif
 
+    // A CS gun owns the left click: the generic MC swing must not fire too.
+    bool cs_gun_equipped = false;
+#if ENABLE_CS2_VIEWMODEL
+    cs_gun_equipped = mode.cs_mode.load() && mode.cs_weapon_slot.load() != 0;
+#endif
     const bool mining_consumed = fg && mode.click_attack.load() && want_suppress_click && cb_.step_mining && cb_.step_mining(dt, left_held);
-    if (!mining_consumed && click_edge && fg && mode.click_attack.load() && want_suppress_click) {
+    if (!mining_consumed && !cs_gun_equipped && click_edge && fg && mode.click_attack.load() && want_suppress_click) {
         float charged = 1.0f;
         {
             std::lock_guard<std::mutex> g(combat.melee_mutex);
             charged = combat.melee.startSwing();
             player.hunger.addExhaustion(0.1f);
         }
+        bool hit = true;
         if (mode.damage_enabled.load() && cb_.click_attack) {
-            cb_.click_attack(charged);
+            hit = cb_.click_attack(charged);
         }
+#if ENABLE_CS2_VIEWMODEL
+        // The knife shares the MC melee path; use its result for the hit/miss take.
+        if (mode.cs_mode.load() && mode.cs_weapon_slot.load() == 0) {
+            mode.cs_action_hit.store(hit);
+        }
+#endif
     }
 
 #if ENABLE_CS2_VIEWMODEL
@@ -516,15 +653,21 @@ void HotkeyDispatcher::tick(float dt) {
         const bool new_cs = !mode.cs_mode.load();
         mode.cs_mode.store(new_cs);
         if (new_cs) {
+            // CS mode is standalone: stop every MC behaviour while it is active.
+            mode.mc_mode.store(false);
             mode.first_person.store(true);
             mode.cs_knife_state.store(4); // Deploy
             mode.cs_knife_inspect.store(false);
+            mode.cs_action_variant.store(0);
+            mode.cs_action_hit.store(true);
             mode.cs_knife_anim_time.store(0.f);
             if (cb_.play_sound) cb_.play_sound("cs.knife.deploy", 1.0f);
-            if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: ACTIVE (Butterfly Knife)");
+            if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: ACTIVE (MC mode off)");
         } else {
             mode.cs_knife_state.store(0);
             mode.cs_knife_inspect.store(false);
+            mode.cs_action_variant.store(0);
+            mode.cs_action_hit.store(true);
             mode.cs_knife_anim_time.store(0.f);
             if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: OFF");
         }
@@ -552,20 +695,25 @@ void HotkeyDispatcher::tick(float dt) {
     const bool d6 = fg && queryKey(VK_F6);
     if (d6 && !prev6_) {
 #if ENABLE_CS2_VIEWMODEL
+        // The CS2 build is CS-only at runtime: F6 can leave CS mode but never
+        // enables MC mode.
         if (mode.cs_mode.load()) {
             mode.cs_mode.store(false);
             mode.cs_knife_state.store(0);
             mode.cs_knife_inspect.store(false);
+            mode.cs_action_variant.store(0);
+            mode.cs_action_hit.store(true);
             mode.cs_knife_anim_time.store(0.f);
             if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: OFF (via F6)");
-        } else
-#endif
+        }
+#else
         {
             const bool new_mc = !mode.mc_mode.load();
             mode.mc_mode.store(new_mc);
             if (cb_.log) cb_.log(std::string("F6: MC mode ") + (new_mc ? "on" : "off"));
             if (cb_.reset_slot_probe) cb_.reset_slot_probe(slot_cursor_);
         }
+#endif
     }
     prev6_ = d6;
 

@@ -2,6 +2,8 @@
 
 #include <d3d12.h>
 #include <cstdint>
+#include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 #include "cs_viewmodel.hpp"
@@ -15,6 +17,10 @@ namespace fp = eldenring::fp;
 
 using ViewmodelProjectionConfig = eldenring::cs::ViewmodelProjectionConfig;
 using eldenring::cs::computeViewmodelProjection;
+
+// Frees the decoded-PNG cache. Called once the init uploads are done and on teardown;
+// weapon switches decode on demand and keep their maps cached for later switches.
+void ReleaseCsDecodeCache();
 
 class CsRenderer {
 public:
@@ -33,12 +39,24 @@ public:
     // t3: glove_normal
     // t4: knife_pbr (ORM: R=AO, G=Roughness, B=Metallic)
     // t5: glove_pbr
+    // t6: bare_arm_albedo
+    // t7: bare_arm_normal
+    // t8: bare_arm_pbr
+    // t9: sleeve_albedo
+    // t10: sleeve_normal
+    // t11: sleeve_pbr
     bool setKnifeTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
     bool setGloveTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
     bool setKnifeNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
     bool setGloveNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
     bool setKnifePbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
     bool setGlovePbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    bool setBareArmTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    bool setBareArmNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    bool setBareArmPbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    bool setSleeveTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    bool setSleeveNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    bool setSleevePbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
 
     bool loadTexturesFromFiles(ID3D12Device* device,
                                const std::string& knife_png,
@@ -48,7 +66,13 @@ public:
                                const std::string& knife_norm_png = "",
                                const std::string& glove_norm_png = "",
                                const std::string& knife_pbr_png = "",
-                               const std::string& glove_pbr_png = "");
+                               const std::string& glove_pbr_png = "",
+                               const std::string& bare_png = "",
+                               const std::string& bare_norm_png = "",
+                               const std::string& bare_pbr_png = "",
+                               const std::string& sleeve_png = "",
+                               const std::string& sleeve_norm_png = "",
+                               const std::string& sleeve_pbr_png = "");
 
     // Viewmodel projection & stance management
     void setViewmodelConfig(const ViewmodelProjectionConfig& cfg) { vm_config_ = cfg; }
@@ -73,6 +97,7 @@ public:
     bool loadWeaponTextures(ID3D12Device* device,
                             const eldenring::cs::CSWeaponDefinition& def,
                             D3D12_CPU_DESCRIPTOR_HANDLE weapon_slot);
+
     [[nodiscard]] const eldenring::cs::CSWeaponDefinition* activeWeapon() const {
         return has_active_weapon_ ? &active_weapon_def_ : nullptr;
     }
@@ -91,7 +116,15 @@ public:
         eldenring::cs::unpackDirectXNormal(r, g, b, out_n);
     }
 
-    void tick(float dt, uint8_t state, float anim_time);
+    void tick(float dt, uint8_t state, float anim_time, uint8_t variant = 0, bool hit = true);
+
+    // Duration (seconds) of a clip in the currently loaded CSVM, or 0.
+    // Thread safe: reads a snapshot published by loadModel.
+    [[nodiscard]] float clipDuration(const char* name) const;
+
+    // Screen-space position of the weapon's muzzle track under the viewmodel projection.
+    // False when the loaded model has no "muzzle" track (the knife).
+    bool muzzleScreen(unsigned width, unsigned height, float& out_x, float& out_y) const;
 
     void draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
               D3D12_GPU_DESCRIPTOR_HANDLE tex_table, unsigned width, unsigned height,
@@ -128,6 +161,12 @@ private:
     TextureGpu glove_normal_tex_;
     TextureGpu knife_pbr_tex_;
     TextureGpu glove_pbr_tex_;
+    TextureGpu bare_tex_;
+    TextureGpu bare_normal_tex_;
+    TextureGpu bare_pbr_tex_;
+    TextureGpu sleeve_tex_;
+    TextureGpu sleeve_normal_tex_;
+    TextureGpu sleeve_pbr_tex_;
 
     ViewmodelProjectionConfig vm_config_{};
     eldenring::cs::CSWeaponDefinition active_weapon_def_{};
@@ -135,6 +174,9 @@ private:
 
     eldenring::cs::CSViewModel model_;
     eldenring::cs::CSViewModelAnimator animator_;
+    // Published by loadModel, read by the input thread via CsClipDuration.
+    mutable std::mutex clip_durations_mutex_;
+    std::map<std::string, float> clip_durations_;
     LogFn log_{nullptr};
 
     using SubmeshType = eldenring::cs::SubmeshType;

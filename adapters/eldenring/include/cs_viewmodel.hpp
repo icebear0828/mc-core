@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <map>
 #include <string>
 #include <vector>
@@ -20,7 +21,9 @@ enum class SubmeshType {
     HandleFront,
     HandleRear,
     Lock,
-    Arms,
+    Arms,     // gloved hand
+    BareArm,  // bare forearm / upper-arm sleeve (skin material)
+    Sleeve,   // agent uniform sleeve (fabric material)
     Base
 };
 
@@ -80,17 +83,20 @@ public:
     bool loadFromMemory(const uint8_t* data, size_t size) {
         if (!data || size < sizeof(CSVMHeader)) return false;
 
-        std::memcpy(&header_, data, sizeof(CSVMHeader));
-        if (std::memcmp(header_.magic, "CSVM", 4) != 0 ||
-            (header_.version != 1 && header_.version != 2 && header_.version != 3)) {
+        // Parse into a scratch model: a rejected file must never leave the
+        // live model half-overwritten while the old GPU buffers stay bound.
+        CSViewModel parsed;
+        std::memcpy(&parsed.header_, data, sizeof(CSVMHeader));
+        if (std::memcmp(parsed.header_.magic, "CSVM", 4) != 0 ||
+            (parsed.header_.version != 1 && parsed.header_.version != 2 && parsed.header_.version != 3)) {
             return false;
         }
 
         size_t offset = sizeof(CSVMHeader);
-        submeshes.clear();
-        submeshes.reserve(header_.num_submeshes);
+        parsed.submeshes.clear();
+        parsed.submeshes.reserve(parsed.header_.num_submeshes);
 
-        for (uint32_t i = 0; i < header_.num_submeshes; ++i) {
+        for (uint32_t i = 0; i < parsed.header_.num_submeshes; ++i) {
             if (offset + sizeof(uint32_t) > size) return false;
             uint32_t name_len = 0;
             std::memcpy(&name_len, data + offset, sizeof(uint32_t));
@@ -107,24 +113,39 @@ public:
             std::memcpy(&sub.first_index, data + offset, sizeof(uint32_t)); offset += sizeof(uint32_t);
             std::memcpy(&sub.base_vertex, data + offset, sizeof(int32_t)); offset += sizeof(int32_t);
             std::memcpy(&sub.index_count, data + offset, sizeof(uint32_t)); offset += sizeof(uint32_t);
-            submeshes.push_back(std::move(sub));
+            parsed.submeshes.push_back(std::move(sub));
         }
 
-        const size_t vb_bytes = header_.total_vertices * sizeof(CSVMVertex);
+        const size_t vb_bytes = parsed.header_.total_vertices * sizeof(CSVMVertex);
         if (offset + vb_bytes > size) return false;
-        vertices.resize(header_.total_vertices);
-        std::memcpy(vertices.data(), data + offset, vb_bytes);
+        parsed.vertices.resize(parsed.header_.total_vertices);
+        std::memcpy(parsed.vertices.data(), data + offset, vb_bytes);
         offset += vb_bytes;
 
-        const size_t ib_bytes = header_.total_indices * sizeof(uint32_t);
+        const size_t ib_bytes = parsed.header_.total_indices * sizeof(uint32_t);
         if (offset + ib_bytes > size) return false;
-        indices.resize(header_.total_indices);
-        std::memcpy(indices.data(), data + offset, ib_bytes);
+        parsed.indices.resize(parsed.header_.total_indices);
+        std::memcpy(parsed.indices.data(), data + offset, ib_bytes);
         offset += ib_bytes;
 
+        // Validate every submesh range before the renderer trusts it. A bad
+        // CSVM must fail the load, never reach DrawIndexedInstanced.
+        for (const auto& sub : parsed.submeshes) {
+            if (sub.first_index > parsed.indices.size()) return false;
+            if (sub.index_count > parsed.indices.size() - sub.first_index) return false;
+            if (sub.base_vertex < 0) return false;
+            if (sub.index_count == 0) continue;
+            if (static_cast<size_t>(sub.base_vertex) >= parsed.vertices.size()) return false;
+            size_t max_index = 0;
+            for (uint32_t k = 0; k < sub.index_count; ++k) {
+                max_index = std::max<size_t>(max_index, parsed.indices[sub.first_index + k]);
+            }
+            if (static_cast<size_t>(sub.base_vertex) + max_index >= parsed.vertices.size()) return false;
+        }
+
         // Version 2: Read animation clips
-        anim_clips.clear();
-        if (header_.version >= 2 && offset + sizeof(uint32_t) <= size) {
+        parsed.anim_clips.clear();
+        if (parsed.header_.version >= 2 && offset + sizeof(uint32_t) <= size) {
             uint32_t num_clips = 0;
             std::memcpy(&num_clips, data + offset, sizeof(uint32_t));
             offset += sizeof(uint32_t);
@@ -147,7 +168,7 @@ public:
 
                 const size_t m4_size = sizeof(eldenring::fp::M4);
 
-                if (header_.version >= 3) {
+                if (parsed.header_.version >= 3) {
                     // CSVM v3: variable named tracks.
                     uint32_t num_tracks = 0;
                     if (offset + sizeof(uint32_t) > size) return false;
@@ -195,10 +216,11 @@ public:
                     clip.tracks["lock"] = clip.lock_frames;
                     clip.tracks["arms"] = clip.arms_frames;
                 }
-                anim_clips[clip_name] = std::move(clip);
+                parsed.anim_clips[clip_name] = std::move(clip);
             }
         }
 
+        *this = std::move(parsed);
         return true;
     }
 
@@ -446,6 +468,12 @@ inline void getEffectiveSubmeshTint(SubmeshType type, bool has_texture, float ou
         case SubmeshType::Arms:
             out_tint[0] = 0.20f; out_tint[1] = 0.22f; out_tint[2] = 0.24f; out_tint[3] = 1.0f;
             break;
+        case SubmeshType::BareArm:
+            out_tint[0] = 0.72f; out_tint[1] = 0.58f; out_tint[2] = 0.48f; out_tint[3] = 1.0f;
+            break;
+        case SubmeshType::Sleeve:
+            out_tint[0] = 0.30f; out_tint[1] = 0.32f; out_tint[2] = 0.30f; out_tint[3] = 1.0f;
+            break;
     }
 }
 
@@ -476,10 +504,11 @@ public:
         model_ = model;
     }
 
-    void tick(float dt, uint8_t state, float anim_time) {
+    void tick(float dt, uint8_t state, float anim_time, uint8_t variant = 0, bool hit = true) {
         (void)dt;
         current_state_ = state;
         anim_time_ = anim_time;
+        clip_duration_ = 0.f;
 
         const float bob = std::sin(anim_time * 2.5f) * 0.003f;
         const eldenring::fp::M4 base = eldenring::fp::translate(0.f, bob, 0.f);
@@ -493,30 +522,73 @@ public:
         pose_.base_pose = base;
         pose_.tracks.clear();
 
-        auto findClip = [this](const char* name) -> const CSVMAnimClip* {
+        auto findClip = [this](std::initializer_list<const char*> names) -> const CSVMAnimClip* {
             if (!model_) return nullptr;
-            const auto it = model_->anim_clips.find(name);
-            return (it != model_->anim_clips.end()) ? &it->second : nullptr;
+            for (const char* name : names) {
+                const auto it = model_->anim_clips.find(name);
+                if (it != model_->anim_clips.end() && !it->second.tracks.empty()) {
+                    return &it->second;
+                }
+            }
+            return nullptr;
         };
 
-        // Weapon-agnostic state -> clip mapping. A gun asset supplies
-        // idle/draw/fire/reload/inspect; the knife supplies inspect/deploy/backstab.
+        // Authentic CS2 state -> clip mapping. Variants alternate the two/three
+        // authored takes CS2 ships for the same action; `hit` selects the
+        // hit/miss take for melee attacks.
+        const bool alt = (variant & 1u) != 0u;
         const CSVMAnimClip* clip = nullptr;
         switch (state) {
-            case 1: clip = findClip("inspect"); break;
-            case 2: clip = findClip("fire"); break; // knife falls through to the procedural slash below
-            case 3: clip = findClip("backstab"); break;
-            case 4: clip = findClip("draw"); if (!clip) clip = findClip("deploy"); break;
-            case 5: clip = findClip("reload"); break;
+            case 1: { // Inspect: lookat01/02/03
+                const uint8_t take = static_cast<uint8_t>(variant % 3u);
+                clip = (take == 2) ? findClip({"inspect3", "inspect"})
+                     : (take == 1) ? findClip({"inspect2", "inspect"})
+                                   : findClip({"inspect"});
+                break;
+            }
+            case 2: // Primary attack: gun fire, or the knife light hit/miss take
+                if (hit) {
+                    clip = alt ? findClip({"light_hit2", "light_hit", "fire"})
+                               : findClip({"light_hit", "fire"});
+                } else {
+                    clip = alt ? findClip({"light_miss2", "light_miss", "light_hit"})
+                               : findClip({"light_miss", "light_hit"});
+                }
+                break;
+            case 3: // Secondary attack: knife heavy hit/miss (guns have no clip)
+                clip = hit ? findClip({"heavy_hit", "backstab"})
+                           : findClip({"heavy_miss", "heavy_hit"});
+                break;
+            case 4: // Deploy/draw
+                clip = alt ? findClip({"deploy2", "deploy", "draw"})
+                           : findClip({"deploy", "draw"});
+                break;
+            case 5: // Reload (guns only)
+                clip = findClip({"reload"});
+                break;
+            case 6: // Backstab (contextual)
+                clip = alt ? findClip({"backstab_light2", "backstab_light", "backstab"})
+                           : findClip({"backstab_light", "backstab"});
+                break;
             case 0:
-            default: clip = findClip("idle"); break;
+            default: // Idle/held pose
+                clip = findClip({"idle"});
+                break;
         }
 
         if (clip && !clip->tracks.empty()) {
+            clip_duration_ = (clip->frame_count > 1 && clip->fps > 0.f)
+                ? static_cast<float>(clip->frame_count - 1) / clip->fps
+                : 0.f;
+            // Idle is a looping take; one-shot actions clamp on their last frame.
+            float clip_time = anim_time;
+            if (state == 0 && clip_duration_ > 0.f) {
+                clip_time = std::fmod(anim_time, clip_duration_);
+            }
             for (const auto& entry : clip->tracks) {
                 if (entry.second.empty()) continue;
                 eldenring::fp::M4 sampled = eldenring::fp::M4{};
-                erov::cs_anims::SampleDynamicTrack(entry.second, clip->fps, anim_time, sampled);
+                erov::cs_anims::SampleDynamicTrack(entry.second, clip->fps, clip_time, sampled);
                 pose_.tracks[entry.first] = eldenring::fp::mul(base, sampled);
             }
 
@@ -562,12 +634,24 @@ public:
     [[nodiscard]] const eldenring::fp::M4& basePose() const { return pose_.base_pose; }
     [[nodiscard]] uint8_t currentState() const { return current_state_; }
     [[nodiscard]] float currentAnimTime() const { return anim_time_; }
+    [[nodiscard]] float currentClipDuration() const { return clip_duration_; }
+
+    // Duration of a clip in the loaded model, in seconds, measured to the last
+    // authored sample. Returns 0 when the clip is absent.
+    [[nodiscard]] float clipDuration(const char* name) const {
+        if (!model_ || name == nullptr) return 0.f;
+        const auto it = model_->anim_clips.find(name);
+        if (it == model_->anim_clips.end() || it->second.fps <= 0.f) return 0.f;
+        if (it->second.frame_count <= 1) return 0.f;
+        return static_cast<float>(it->second.frame_count - 1) / it->second.fps;
+    }
 
 private:
     const CSViewModel* model_{nullptr};
     CSViewModelPose pose_{};
     uint8_t current_state_{0};
     float anim_time_{0.0f};
+    float clip_duration_{0.0f};
 };
 
 } // namespace eldenring::cs
