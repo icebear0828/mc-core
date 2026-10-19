@@ -37,6 +37,7 @@ std::atomic<bool> g_right_prev{false};
 std::atomic<int> g_wheel{0};
 std::atomic<int> g_dx{0}, g_dy{0};
 std::atomic<bool> g_suppress_motion{false};
+std::atomic<bool> g_suppress_wheel{false};
 std::atomic<bool> g_suppress_keys{false};
 std::atomic<uint64_t> g_masked_bits[4]{}; // DIK scan codes the game must not see (bit n of the 256-bit set), all clear = none
 bool AnyMasked() {
@@ -118,6 +119,9 @@ HRESULT STDMETHODCALLTYPE GetStateDetour(void* self, DWORD cb, LPVOID data) {
             memset(data, 0, kMouseWheelOffset + sizeof(LONG)); // lX, lY, lZ: the game sees a mouse that does not move (read above)
             ++g_motion_zeroed;
         }
+        if (k == Kind::Mouse && g_suppress_wheel.load(std::memory_order_relaxed) && data != nullptr && cb >= kMouseWheelOffset + sizeof(LONG)) {
+            *reinterpret_cast<LONG*>(static_cast<BYTE*>(data) + kMouseWheelOffset) = 0; // lZ only: the game must not switch quick items
+        }
         if (k == Kind::Mouse && g_suppress.load(std::memory_order_relaxed) && data != nullptr && cb >= kMouseButtonsOffset + 2) {
             auto* buttons = static_cast<BYTE*>(data) + kMouseButtonsOffset;
             if (buttons[0] != 0 || buttons[1] != 0) ++g_cleared;
@@ -148,6 +152,7 @@ HRESULT STDMETHODCALLTYPE GetDataDetour(void* self, DWORD cb, LPDIDEVICEOBJECTDA
                 if (e->dwOfs == DIMOFS_X) g_dx.fetch_add(static_cast<int>(static_cast<LONG>(e->dwData)));
                 if (e->dwOfs == DIMOFS_Y) g_dy.fetch_add(static_cast<int>(static_cast<LONG>(e->dwData)));
                 if (g_suppress_motion.load(std::memory_order_relaxed) && (e->dwOfs == DIMOFS_X || e->dwOfs == DIMOFS_Y || e->dwOfs == DIMOFS_Z)) e->dwData = 0;
+                if (g_suppress_wheel.load(std::memory_order_relaxed) && e->dwOfs == DIMOFS_Z) e->dwData = 0;
             }
         }
         if (k == Kind::Mouse && g_suppress.load(std::memory_order_relaxed) && data != nullptr && count != nullptr &&
@@ -273,6 +278,7 @@ void TakeSuppressStats(unsigned& keys_zeroed, unsigned& motion_zeroed) {
 }
 
 void SetSuppressMouseButtons(bool on) { g_suppress.store(on, std::memory_order_relaxed); }
+void SetSuppressMouseWheel(bool on) { g_suppress_wheel.store(on, std::memory_order_relaxed); }
 
 Counters TakeCounters() {
     Counters c;

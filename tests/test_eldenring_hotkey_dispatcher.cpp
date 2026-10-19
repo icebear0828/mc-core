@@ -6,6 +6,13 @@
 #include <vector>
 #include <string>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 #ifndef VK_SPACE
 #define VK_SPACE 0x20
 #endif
@@ -109,7 +116,8 @@ protected:
             return n;
         };
         cb_.set_suppress_mouse_buttons = [this](bool s) { suppressed_mouse_ = s; };
-        cb_.set_masked_keys = [this](const int*, size_t) {};
+        cb_.set_suppress_mouse_wheel = [this](bool s) { suppressed_wheel_ = s; };
+        cb_.set_masked_keys = [this](const int* keys, size_t n) { masked_keys_.assign(keys, keys + n); };
         cb_.take_keyboard_failures = [](long&) { return 0; };
 
         cb_.is_key_down = [this](int vk) {
@@ -183,6 +191,8 @@ protected:
     bool right_held_{false};
     int wheel_notches_{0};
     bool suppressed_mouse_{false};
+    bool suppressed_wheel_{false};
+    std::vector<int> masked_keys_;
 
     bool mining_consumed_{false};
     bool ignite_tnt_success_{false};
@@ -426,6 +436,65 @@ TEST_F(HotkeyDispatcherTest, CsModeToggleAndKnifeInspectLifecycle) {
     setKey(VK_F6, true);
     dispatcher_->tick(0.016f);
     EXPECT_FALSE(ctx.mode().cs_mode.load());
+    EXPECT_FALSE(ctx.mode().mc_mode.load()); // leaving CS mode does not silently re-enable MC
+}
+
+TEST_F(HotkeyDispatcherTest, CsModeTurnsOffMcMode) {
+    auto& ctx = RuntimeContext::Instance();
+    ASSERT_TRUE(ctx.mode().mc_mode.load());
+
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+
+    EXPECT_TRUE(ctx.mode().cs_mode.load());
+    EXPECT_FALSE(ctx.mode().mc_mode.load());
+}
+
+TEST_F(HotkeyDispatcherTest, CsModeMasksItsVanillaKeys) {
+#ifdef _WIN32
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+
+    auto masked = [this](int vk) {
+        const int sc = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC));
+        return std::find(masked_keys_.begin(), masked_keys_.end(), sc) != masked_keys_.end();
+    };
+    EXPECT_TRUE(masked('R')); // reload must not also use a quick item
+    EXPECT_TRUE(masked('F')); // inspect must not also trigger the vanilla action
+    for (int d = '1'; d <= '4'; ++d) EXPECT_TRUE(masked(d)); // weapon slots must not select vanilla quick slots
+    EXPECT_TRUE(suppressed_wheel_);
+
+    // Leaving CS mode releases both.
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_FALSE(ctx.mode().cs_mode.load());
+    EXPECT_FALSE(masked('R'));
+    EXPECT_FALSE(suppressed_wheel_);
+#else
+    GTEST_SKIP() << "scan codes are Windows-only";
+#endif
+}
+
+TEST_F(HotkeyDispatcherTest, CsModeDoesNotScrollTheMcHotbar) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+
+    const int before = ctx.combat().melee.selectedSlot();
+    wheel_notches_ = 1;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.combat().melee.selectedSlot(), before);
 }
 
 TEST_F(HotkeyDispatcherTest, CsModeDigitKeysSelectWeaponSlotsAndRReloads) {

@@ -295,7 +295,7 @@ void HotkeyDispatcher::tick(float dt) {
 
     // Key masking
     if (cb_.set_masked_keys) {
-        int hidden[16];
+        int hidden[32];
         size_t n_hidden = 0;
 #ifdef _WIN32
         if (mode.mc_jump.load() && mc_on && fg && !inv_open) {
@@ -306,9 +306,20 @@ void HotkeyDispatcher::tick(float dt) {
             const auto roll_mask = roll::computeRollMask(true, true, mode.roll_vk.load());
             n_hidden = roll::mergeMaskedKeys(hidden, sizeof(hidden) / sizeof(hidden[0]), n_hidden, roll_mask.scancodes, roll_mask.count);
         }
-        if (mode.flying.load()) {
+        if (mode.flying.load() && mc_on) {
             n_hidden = roll::mergeMaskedKeys(hidden, sizeof(hidden) / sizeof(hidden[0]), n_hidden, flight::kHiddenKeys, sizeof(flight::kHiddenKeys) / sizeof(flight::kHiddenKeys[0]));
         }
+#if ENABLE_CS2_VIEWMODEL && defined(_WIN32)
+        // CS mode owns these keys. Hide them from the game, or R uses a quick
+        // item while reloading and 1-4 select vanilla quick slots.
+        if (mode.cs_mode.load() && fg && !inv_open) {
+            const int cs_keys[] = {'R', 'F', '1', '2', '3', '4'};
+            for (int vk : cs_keys) {
+                const int sc = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC));
+                if (sc > 0) hidden[n_hidden++] = sc;
+            }
+        }
+#endif
         cb_.set_masked_keys(hidden, n_hidden);
     }
 
@@ -403,8 +414,8 @@ void HotkeyDispatcher::tick(float dt) {
         mode.shield_blocking.store(now_blocking, std::memory_order_relaxed);
     }
 
-    // Mouse wheel slot selection
-    if (input_enabled && cb_.take_wheel_notches) {
+    // Mouse wheel slot selection (MC hotbar only; CS mode suppresses the wheel).
+    if (input_enabled && mc_on && cb_.take_wheel_notches) {
         const int notches = cb_.take_wheel_notches();
         if (notches != 0 && fg && !inv_open && want_suppress) {
             std::lock_guard<std::mutex> g(combat.melee_mutex);
@@ -514,8 +525,10 @@ void HotkeyDispatcher::tick(float dt) {
                 } else
 #endif
                 {
-                    std::lock_guard<std::mutex> g(combat.melee_mutex);
-                    combat.melee.select(i);
+                    if (mc_on) {
+                        std::lock_guard<std::mutex> g(combat.melee_mutex);
+                        combat.melee.select(i);
+                    }
                 }
             }
             prev_digit_[i] = d;
@@ -537,6 +550,9 @@ void HotkeyDispatcher::tick(float dt) {
 
     if (input_enabled && cb_.set_suppress_mouse_buttons) {
         cb_.set_suppress_mouse_buttons(fg && want_suppress);
+    }
+    if (cb_.set_suppress_mouse_wheel) {
+        cb_.set_suppress_mouse_wheel(fg && mode.cs_mode.load());
     }
 
     // Space key (Jump & Exhaustion)
@@ -637,6 +653,8 @@ void HotkeyDispatcher::tick(float dt) {
         const bool new_cs = !mode.cs_mode.load();
         mode.cs_mode.store(new_cs);
         if (new_cs) {
+            // CS mode is standalone: stop every MC behaviour while it is active.
+            mode.mc_mode.store(false);
             mode.first_person.store(true);
             mode.cs_knife_state.store(4); // Deploy
             mode.cs_knife_inspect.store(false);
@@ -644,7 +662,7 @@ void HotkeyDispatcher::tick(float dt) {
             mode.cs_action_hit.store(true);
             mode.cs_knife_anim_time.store(0.f);
             if (cb_.play_sound) cb_.play_sound("cs.knife.deploy", 1.0f);
-            if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: ACTIVE (Butterfly Knife)");
+            if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: ACTIVE (MC mode off)");
         } else {
             mode.cs_knife_state.store(0);
             mode.cs_knife_inspect.store(false);

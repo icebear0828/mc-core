@@ -2536,6 +2536,7 @@ void SetupInput() {
         cb.right_held = erin::RightHeld;
         cb.take_wheel_notches = erin::TakeWheelNotches;
         cb.set_suppress_mouse_buttons = erin::SetSuppressMouseButtons;
+        cb.set_suppress_mouse_wheel = erin::SetSuppressMouseWheel;
         cb.set_masked_keys = erin::SetMaskedKeys;
         cb.take_keyboard_failures = erin::TakeKeyboardFailures;
         cb.step_mining = [](float dt, bool left_held) { return StepMining(dt, left_held); };

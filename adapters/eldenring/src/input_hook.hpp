@@ -23,6 +23,7 @@ void SetLog(LogFn log);
 // Call right after the real DirectInput8Create succeeded; `iface` is the object it returned for `riid`.
 void OnDirectInputCreated(REFIID riid, void* iface);
 void SetSuppressMouseButtons(bool on);
+void SetSuppressMouseWheel(bool on);
 Counters TakeCounters(); // returns the counts since the last call and resets them
 // True once per left-button press seen at the DirectInput layer (read before any clearing). GetAsyncKeyState cannot be
 bool TakeLeftClick();

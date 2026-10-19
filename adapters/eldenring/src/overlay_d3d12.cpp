@@ -562,6 +562,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                     Logf(cs_msg);
                     g_cs_knife_model_path = p;
                     eldenring::RuntimeContext::Instance().mode().cs_mode.store(true);
+                    eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
                     eldenring::RuntimeContext::Instance().mode().first_person.store(true);
                     break;
                 }
@@ -1199,6 +1200,33 @@ void DrawHud(const HudState& hud, float w, float h) {
         line(cx, cy - gap - len, cx, cy - gap);
         line(cx, cy + gap, cx, cy + gap + len);
 
+        // Hit/kill feedback from the DamageQueue: four diagonal ticks, a red X on a kill.
+        const float hs = std::max(0.5f, h / 1080.f);
+        if (hud.hit > 0.f) {
+            const float a = std::clamp(hud.hit, 0.f, 1.f);
+            const float hit_gap = (hud.hit_crit ? 7.f : 5.f) * hs, hit_len = (hud.hit_crit ? 12.f : 8.f) * hs;
+            const ImU32 col = hud.hit_crit ? IM_COL32(255, 170, 0, static_cast<int>(255 * a)) : IM_COL32(255, 255, 255, static_cast<int>(255 * a));
+            const float s = 0.70710678f;
+            for (int sx = -1; sx <= 1; sx += 2) {
+                for (int sy = -1; sy <= 1; sy += 2) {
+                    dl->AddLine({cx + sx * hit_gap * s, cy + sy * hit_gap * s}, {cx + sx * (hit_gap + hit_len) * s, cy + sy * (hit_gap + hit_len) * s}, col,
+                                2.5f * hs);
+                }
+            }
+        }
+        if (hud.kill > 0.f) {
+            const float a = std::clamp(hud.kill, 0.f, 1.f);
+            const float kill_gap = 9.f * hs, kill_len = 16.f * hs;
+            const ImU32 col = IM_COL32(225, 40, 40, static_cast<int>(255 * a));
+            const float s = 0.70710678f;
+            for (int sx = -1; sx <= 1; sx += 2) {
+                for (int sy = -1; sy <= 1; sy += 2) {
+                    dl->AddLine({cx + sx * kill_gap * s, cy + sy * kill_gap * s}, {cx + sx * (kill_gap + kill_len) * s, cy + sy * (kill_gap + kill_len) * s}, col,
+                                3.5f * hs);
+                }
+            }
+        }
+
         // Weapon Card in bottom right
         const float card_w = 270.f, card_h = 105.f;
         const float x = w - card_w - 25.f, y = h - card_h - 25.f;
@@ -1810,9 +1838,10 @@ void RenderFrame(IDXGISwapChain* sc) {
     const bool cs_mode_on = false;
     const bool cs_active = false;
 #endif
+    const bool mc_mode_on = eldenring::RuntimeContext::Instance().mode().mc_mode.load(std::memory_order_relaxed);
     // Do not fall back to the MC first-person model while CS mode owns the view,
-    // even when the game is unfocused and the CS viewmodel is skipped.
-    const bool mc_fp_active = !cs_active && !cs_mode_on && steve.first_person && !steve.dead && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
+    // or while MC mode is off.
+    const bool mc_fp_active = !cs_active && !cs_mode_on && mc_mode_on && steve.first_person && !steve.dead && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
         g_steve.ensureDepth(g_s.device, g_s.width, g_s.height);
 
 #if ENABLE_CS2_VIEWMODEL
