@@ -418,6 +418,8 @@ uv run --with pillow python tools/extract_mc_assets.py --client-jar <client.jar>
 
 动作系统所需的宿主接口（输入吞掉、血量、敌人枚举、受击、伤害事件、第一人称、着地标志）已整理成清单：**[REVERSE_INTERFACES.md](REVERSE_INTERFACES.md)**，每项含解锁的行为、逆向方法、验证、风险、只狼状态；契约在 `include/mc/contracts/host_gameplay.hpp`，`Session::missingHostFeatures()` 报告缺哪些。
 
+模式对原生输入、相机、移动、跳跃的接管统一走 **[CONTROL_POLICY.md](CONTROL_POLICY.md)**：适配器写一个纯函数把模式表达成 `ControlRequest`，core 的 `ControlResolver` 仲裁出 `ControlPlan`，适配器再把 plan 翻译成宿主原语。接新游戏时不要复制旧适配器的 `if (mode)` 链；按 CONTROL_POLICY 的“接新游戏”一节实现。
+
 
 - **敌人枚举**：游戏里近战打不到东西，需要从游戏的实体列表读出敌人并 `RegisterEntity`。
 - **真实血量/饥饿**：HUD 显示的是预设值，未读游戏数据。

@@ -261,6 +261,16 @@
 - 关闭时光标上的物品放回背包。
 - 自动关闭：打开 ESC 菜单/读盘/F6 关 MC 模式时背包自动关。
 
+## F25 控制策略层（2026-10-19，纯 MC 构建，用户实机确认“都没有问题”）
+
+- 部署：`build_pure_mc`（`ENABLE_CS2_VIEWMODEL=OFF`）的 `dinput8.dll`，SHA256 `CDE7973F4957B6F25D971549B4156EC0537ED8E8831FE848BB97463A391708D5`。
+- **纯 MC 与 CS 是两个构建**：`build`（`ENABLE_CS2_VIEWMODEL=ON`）是 CS2 viewmodel 构建，运行时 MC 模式禁用，表现是纯 CS；部署 MC 前必须看 `CMakeCache.txt`，不能只看文件名。
+- 第一人称：F10 切换、相机/朝向、回第三人称正常。
+- MC 跳跃：空格立即起跳，无原生前摇；禁用翻滚（Shift）正常；创造飞行（双击空格）的 WASD/空格/Shift/Ctrl 屏蔽正常。
+- 鼠标/菜单/背包：MC 攻击、放方块、菜单/背包输入、Alt-Tab 后恢复均正常；纯 MC 构建没有 CS 刀/枪/武器槽行为。
+- 自动化：`build_pure_mc` 1129 tests passed；`build`（CS2）1186 tests passed；Python 54 passed。
+- 代码：`include/mc/control_policy.hpp` + `adapters/eldenring/include/eldenring_control_policy.hpp`；教程 `docs/CONTROL_POLICY.md`。
+
 - 实测日志：`inventory: open; blanked 60 keyboard / 60 mouse polls, input gate forced 0, camera freeze forced 120, player speed 0.00 m/s`。键盘/鼠标在 DirectInput 层清零有效；相机冻结钩子每秒被调用 120 次；**输入总闸门 `0x14067B020` 背包开着时从未被调用**（键盘清零后游戏无输入可处理），保留但不是必需。手柄未测（走 XInput，未处理）。
 - 历史教训：第一版把图集换成 512×512，但加载器还在检查 "必须 256×256"，导致整套 HUD 退回矩形；换图集尺寸要同时查加载器的尺寸检查。
 

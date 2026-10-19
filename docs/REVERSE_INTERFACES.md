@@ -21,6 +21,8 @@ Minecraft 动作（攻击、盾牌、弓箭、受伤、第一人称……）的�
 
 **推荐顺序**：`InputSuppression` → `PlayerVitals` → `EntityEnumeration` → 敌人受击（`ICombatAdapter::processHit`）→ `IncomingDamageEvents` → `FirstPersonCamera` → `GroundedFlag`。前两项不需要写游戏内存，先拿到收益。
 
+> **控制策略不在这张表里。** 本清单回答“宿主能提供什么数据和动作”；当前模式该不该让宿主行动，由 [CONTROL_POLICY.md](CONTROL_POLICY.md) 的 `ControlResolver` / `ControlPlan` 仲裁。接新游戏时两者都要做：先找到宿主接口，再把模式写成 `ControlRequest`。
+
 ---
 
 ## 1. InputSuppression —— 吞掉原生战斗输入

@@ -4,6 +4,11 @@
 最后更新：2026-10-12（PR#12~PR#28 完整通过真实游戏实机游玩验收；3D 盾牌透明度、方块锚定卡人、F 键探索换手全部修复；主干正式确立为 `fork/main`；精炼 PR `fix/shield-live-polish` 已推送至 Fork 准备提给 upstream；下一步聚焦 **PR#29 重构模块审查与集成**）。
 需要查证据时，权威文档是 `docs/ELDENRING_REVERSE.md`（逆向事实与审计）和 `docs/ELDENRING_VERIFY_CHECKLIST.md`（逐项验证状态，F1~F22 是近战/生存/视觉/音效）。
 
+> **改模式、输入、第一人称、相机、跳跃或移动前，先读 [CONTROL_POLICY.md](CONTROL_POLICY.md)。**
+> 这些判断已统一收口到 `include/mc/control_policy.hpp` 和
+> `adapters/eldenring/include/eldenring_control_policy.hpp`；不要再往
+> `hotkey_dispatcher.cpp` 加按键 if-chain，也不要在 `player_locomotion.cpp` 里直接判断 `first_person`。
+
 ---
 
 ## 0. 当前最新状态（2026-10-12，新开会话必读）
@@ -179,7 +184,7 @@
 | 目标机 | Windows，`ssh win`。仓库 `D:\game\mc\mc-core`（只此一份，别碰 `D:\game\mc-core`、`D:\game\sekiro`）。游戏目录 `C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game`。 |
 | 代码传输 | **只走 git**（push → win 上 pull）。win 访问不了 GitHub，要用代理：`git -c http.proxy=http://127.0.0.1:7897 pull`；TLS 经常断，**脚本里循环重试直到 `git rev-parse --short HEAD` 两边一致**，别信"没报错"。资产类文件（皮肤、声音）例外，用 scp。 |
 | 编译（win） | `cd /d D:\game\mc\mc-core && call "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 > build-env.log 2>&1 && cmake --build build-win --config Release --target eldenring_adapter > build-er.log 2>&1 & findstr /C:"error" /C:"warning" /C:"eldenring_adapter.vcxproj ->" build-er.log`。MSVC 是 **`/W4 /WX`**（警告即错误）。输出是 GBK，管道过 `iconv -f GBK -t UTF-8 -c`。 |
-| 部署 | 游戏**必须关着**，把 `build-win\bin\eldenring\dinput8.dll` 复制到游戏目录，再 `certutil -hashfile` 对比两边哈希。**游戏进程名是 `start_protected_game.exe`，不是 `eldenring.exe`**——用 `tasklist \| findstr /I "eldenring start_protected"` 判断是否在运行。DLL 被占用就是游戏（或启动器）还开着。 |
+| 部署 | 游戏**必须关着**，把 `build-win\bin\eldenring\dinput8.dll` 复制到游戏目录，再 `certutil -hashfile` 对比两边哈希。**游戏进程名是 `start_protected_game.exe`，不是 `eldenring.exe`**——用 `tasklist \| findstr /I "eldenring start_protected"` 判断是否在运行。DLL 被占用就是游戏（或启动器）还开着。**注意两个构建变体**：`ENABLE_CS2_VIEWMODEL=ON` 是 CS2 构建（运行时 MC 模式禁用，表现是纯 CS），`OFF` 是纯 MC 构建；部署 MC 前先在 `CMakeCache.txt` 里确认开关，别把 CS 的 `dinput8.dll` 当成 MC。 |
 | 日志 | 游戏目录 `mc_er.log`，**追加写入，多次运行首尾相连，时间戳每次从 0 重新开始**。分析时按"时间戳变小"切会话，只看最后一段。 |
 | Python | 一律 `uv run`（用户规定），例如 `uv run --with pillow --with pytest python -m pytest tests/test_extract_assets.py`。win 上：`uv run --python C:\Python313\python.exe --with pillow python ...`。 |
 | 测试 | mac：`./build/bin/mc_tests`（C++，gtest）；Python：`tests/test_*.py`。改了 `tools/extract_mc_assets.py` 的精灵表后要同时更新 `include/mc/hud_atlas.hpp`、`adapters/sekiro/include/sekiro_hud_atlas.hpp`、`assets/source/textures/mc_hud_atlas.png`（有测试逐字节比对，**不要手改生成物**）。 |
@@ -215,6 +220,7 @@
 | `eldenring_bow.hpp` | MC 拉弓：`BowController`（按住/松开状态机）、`powerForTicks`/`damageForPower`、`pullingStage`/`shownBow`（拉弓贴图阶段）、瞄准校准（`quatForward`、`aimError`）、`buildBasis`/`determinant` |
 | `eldenring_jump.hpp` | MC 起跳的数值与 `McJumpArc`（起跳实验已搁置，代码保留） |
 | `eldenring_fp.hpp` | 第一人称矩阵链（`itemPose`/`eatPose`/`bareArmPose`/`itemDisplay`/`walkBob`/`handSway`）、`HandAnimator`、`SwayFilter`、`toHost`（MC 右手系 → 渲染左手系） |
+| `eldenring_control_policy.hpp` | 模式 → `mc::ControlRequest` 的纯逻辑（第一人称、MC 战斗/跳跃/翻滚、飞行、CS）；`hotkey_dispatcher` 每 tick 构建 `ControlPlan`。教程见 [CONTROL_POLICY.md](CONTROL_POLICY.md) |
 | `eldenring_particles.hpp` | 粒子系统、受击镜头倾斜曲线 |
 | `eldenring_hudtex.hpp` / `eldenring_audio_data.hpp` | 物品→图集格、最近邻放大；声音清单/WAV 解析、脚步节拍 |
 | `eldenring_model.hpp` / `eldenring_pick.hpp` | 玩家部件槽（隐藏原模型）、准星选目标 |
@@ -309,6 +315,7 @@
 - **输入**：游戏用 DirectInput `GetDeviceState` 读键鼠（60 Hz）；手柄走 XInput（我们**只支持键鼠**，用户决定）。
 - **菜单标志**：`CSMenuMan+0x1C|+0x1D` 为菜单聚焦；`+0x1A` 是光标捕获，**不是**菜单标志。
 - **血液特效、战斗时的原生 HUD**：都用游戏自带设置关掉。
+- **控制策略层（2026-10-19，纯 MC 构建，用户实机确认“都没有问题”）**：第一人称、MC 跳跃/翻滚/飞行、鼠标/菜单/背包输入仲裁均正常；纯 MC 与 CS 是两个构建（`ENABLE_CS2_VIEWMODEL` OFF/ON），部署 MC 必须用 `build_pure_mc`。验证记录见 `ELDENRING_VERIFY_CHECKLIST.md` F25。
 
 ---
 

@@ -169,7 +169,7 @@ void PlayerLocomotion::driveVelocity(uintptr_t module, bool force_zero, RuntimeC
                 }
 
                 float target_yaw = std::atan2(dir[0], dir[1]);
-                if (ctx.mode().first_person.load(std::memory_order_relaxed)) {
+                if (ctx.mode().modOwns(mc::ControlDomain::Camera)) {
                     float fx = cam.forward[0], fz = cam.forward[2];
                     if (fx * fx + fz * fz > 1e-4f) target_yaw = std::atan2(fx, fz);
                 }
@@ -189,7 +189,7 @@ void PlayerLocomotion::driveVelocity(uintptr_t module, bool force_zero, RuntimeC
                 if (callbacks_.safe_write) {
                     callbacks_.safe_write(module + layout::kPhysicsOrientation, q_raw, sizeof(q_raw));
                 }
-            } else if (ctx.mode().first_person.load(std::memory_order_relaxed)) {
+            } else if (ctx.mode().modOwns(mc::ControlDomain::Camera)) {
                 float fx = cam.forward[0], fz = cam.forward[2];
                 if (fx * fx + fz * fz > 1e-4f) {
                     const float target_yaw = std::atan2(fx, fz);
@@ -434,7 +434,7 @@ void PlayerLocomotion::stepJump(float dt, uint64_t now_ms, RuntimeContext& ctx) 
 
         if (has_steer) {
             float target_yaw = std::atan2(dir[0], dir[1]);
-            if (ctx.mode().first_person.load(std::memory_order_relaxed)) {
+            if (ctx.mode().modOwns(mc::ControlDomain::Camera)) {
                 float fx = cam.forward[0], fz = cam.forward[2];
                 if (fx * fx + fz * fz > 1e-4f) target_yaw = std::atan2(fx, fz);
             }

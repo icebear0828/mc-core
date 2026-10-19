@@ -68,6 +68,21 @@
 
 DX12/Vulkan 游戏需要另写渲染器（几何与数学照用）；UE/Unity 类游戏应生成引擎原生网格组件，只复用 `buildPartMesh` 的几何。详见 [PORTING_PLAYBOOK.md](PORTING_PLAYBOOK.md) §6.0。
 
+### 2.8 控制策略层（`mc/control_policy.hpp`）
+
+模式对**原生输入、相机、移动、跳跃**的接管不再散落在各适配器的 `if` 里，而是统一仲裁：
+
+- **Feature**（MC 模式、CS 模式、第一人称、创造飞行、背包……）提交
+  `ControlRequest { domain, authority, priority, key }`。
+- **`ControlResolver`** 按 priority 合并（同优先级后注册者胜），产出
+  **`ControlPlan`**：每个 `ControlDomain` 的 authority + 要屏蔽的键。
+- 适配器只负责把 plan 翻译成宿主原语（DirectInput 屏蔽、相机写入、速度写入），
+  并把 `packedAuthorities()` 发布到跨线程 atomic 供游戏/渲染线程读取。
+- 第一人称因此是显式策略：`Camera = Mod`、`Movement = Shared`；
+  `mc_jump` 打开时 `Jump = None` 并屏蔽空格。新增模式只改策略纯函数和测试。
+
+完整教程、模式矩阵和反模式见 [CONTROL_POLICY.md](CONTROL_POLICY.md)。
+
 ## 3. 跨引擎接口契约清单
 
 | 接口类 | 核心方法 | 职责说明 |

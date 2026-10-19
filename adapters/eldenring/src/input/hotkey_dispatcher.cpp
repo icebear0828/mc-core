@@ -5,6 +5,7 @@
 #endif
 
 #include "eldenring_hotkey_dispatcher.hpp"
+#include "eldenring_control_policy.hpp"
 #include "eldenring_runtime_context.hpp"
 #include "eldenring_state.hpp"
 #include "eldenring_creative.hpp"
@@ -17,6 +18,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iterator>
+#include <span>
 #include <string>
 
 #ifndef VK_SPACE
@@ -293,34 +296,55 @@ void HotkeyDispatcher::tick(float dt) {
     if (cb_.blocks_tick) cb_.blocks_tick();
     if (cb_.mc_flags_step) cb_.mc_flags_step();
 
-    // Key masking
-    if (cb_.set_masked_keys) {
-        int hidden[32];
-        size_t n_hidden = 0;
+    // Control policy: one plan decides which native inputs the active modes own.
+    // Adding a mode means adding a request in eldenring_control_policy.hpp, not
+    // another branch here.
+    eldenring::control::ModeInputs control_inputs;
+    control_inputs.foreground = fg;
+    control_inputs.input_enabled = mode.input_enabled.load(std::memory_order_relaxed);
+    control_inputs.inventory_open = inv_open;
+    control_inputs.native_input_allowed = want_suppress;
+    control_inputs.mc_mode = mc_on;
+    control_inputs.cs_mode = mode.cs_mode.load(std::memory_order_relaxed);
+    control_inputs.first_person = mode.first_person.load(std::memory_order_relaxed);
+    control_inputs.mc_jump = mode.mc_jump.load(std::memory_order_relaxed);
+    control_inputs.disable_vanilla_roll = mode.disable_vanilla_roll.load(std::memory_order_relaxed);
+    control_inputs.flying = mode.flying.load(std::memory_order_relaxed);
+
+    roll::RollMaskResult roll_mask{};
+    if (control_inputs.disable_vanilla_roll && mc_on && fg && !inv_open) {
+        roll_mask = roll::computeRollMask(true, true, mode.roll_vk.load(std::memory_order_relaxed));
+    }
+    control_inputs.roll_keys = std::span<const int>(roll_mask.scancodes, roll_mask.count);
+    control_inputs.flight_keys = std::span<const int>(flight::kHiddenKeys, std::size(flight::kHiddenKeys));
+
 #ifdef _WIN32
-        if (mode.mc_jump.load() && mc_on && fg && !inv_open) {
-            hidden[n_hidden++] = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(mode.mc_jump_vk.load()), MAPVK_VK_TO_VSC));
-        }
+    if (control_inputs.mc_jump && mc_on && fg && !inv_open) {
+        control_inputs.mc_jump_scan = static_cast<int>(MapVirtualKeyW(
+            static_cast<UINT>(mode.mc_jump_vk.load(std::memory_order_relaxed)), MAPVK_VK_TO_VSC));
+    }
 #endif
-        if (mode.disable_vanilla_roll.load() && mc_on && fg && !inv_open) {
-            const auto roll_mask = roll::computeRollMask(true, true, mode.roll_vk.load());
-            n_hidden = roll::mergeMaskedKeys(hidden, sizeof(hidden) / sizeof(hidden[0]), n_hidden, roll_mask.scancodes, roll_mask.count);
-        }
-        if (mode.flying.load() && mc_on) {
-            n_hidden = roll::mergeMaskedKeys(hidden, sizeof(hidden) / sizeof(hidden[0]), n_hidden, flight::kHiddenKeys, sizeof(flight::kHiddenKeys) / sizeof(flight::kHiddenKeys[0]));
-        }
+
 #if ENABLE_CS2_VIEWMODEL && defined(_WIN32)
-        // CS mode owns these keys. Hide them from the game, or R uses a quick
-        // item while reloading and 1-4 select vanilla quick slots.
-        if (mode.cs_mode.load() && fg && !inv_open) {
-            const int cs_keys[] = {'R', 'F', '1', '2', '3', '4'};
-            for (int vk : cs_keys) {
-                const int sc = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC));
-                if (sc > 0) hidden[n_hidden++] = sc;
-            }
+    // CS mode owns these keys. Hide them from the game, or R uses a quick item
+    // while reloading and 1-4 select vanilla quick slots.
+    int cs_scans[6] = {};
+    size_t cs_scan_count = 0;
+    if (control_inputs.cs_mode && fg && !inv_open) {
+        const int cs_keys[] = {'R', 'F', '1', '2', '3', '4'};
+        for (const int vk : cs_keys) {
+            const int sc = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC));
+            if (sc > 0) cs_scans[cs_scan_count++] = sc;
         }
+    }
+    control_inputs.cs_keys = std::span<const int>(cs_scans, cs_scan_count);
 #endif
-        cb_.set_masked_keys(hidden, n_hidden);
+
+    const mc::ControlPlan control_plan = eldenring::control::buildControlPlan(control_inputs);
+    mode.control_authority_bits.store(control_plan.packedAuthorities(), std::memory_order_relaxed);
+
+    if (cb_.set_masked_keys) {
+        cb_.set_masked_keys(control_plan.masked_keys.data(), control_plan.masked_key_count);
     }
 
     // Right-click interaction cascade
@@ -549,10 +573,10 @@ void HotkeyDispatcher::tick(float dt) {
     }
 
     if (input_enabled && cb_.set_suppress_mouse_buttons) {
-        cb_.set_suppress_mouse_buttons(fg && want_suppress);
+        cb_.set_suppress_mouse_buttons(control_plan.blocksNative(mc::ControlDomain::MouseButtons));
     }
     if (cb_.set_suppress_mouse_wheel) {
-        cb_.set_suppress_mouse_wheel(fg && mode.cs_mode.load());
+        cb_.set_suppress_mouse_wheel(control_plan.blocksNative(mc::ControlDomain::MouseWheel));
     }
 
     // Space key (Jump & Exhaustion)
