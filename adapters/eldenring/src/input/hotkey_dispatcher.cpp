@@ -299,10 +299,13 @@ void HotkeyDispatcher::tick(float dt) {
     // Control policy: one plan decides which native inputs the active modes own.
     // Adding a mode means adding a request in eldenring_control_policy.hpp, not
     // another branch here.
+    // inventory_tick above may have just opened/closed the inventory, so read the
+    // state again instead of using the stale value captured at the top of the tick.
+    const bool inv_open_for_policy = ui.inv_open.load(std::memory_order_relaxed);
     eldenring::control::ModeInputs control_inputs;
     control_inputs.foreground = fg;
     control_inputs.input_enabled = mode.input_enabled.load(std::memory_order_relaxed);
-    control_inputs.inventory_open = inv_open;
+    control_inputs.inventory_open = inv_open_for_policy;
     control_inputs.native_input_allowed = want_suppress;
     control_inputs.mc_mode = mc_on;
     control_inputs.cs_mode = mode.cs_mode.load(std::memory_order_relaxed);
@@ -312,14 +315,14 @@ void HotkeyDispatcher::tick(float dt) {
     control_inputs.flying = mode.flying.load(std::memory_order_relaxed);
 
     roll::RollMaskResult roll_mask{};
-    if (control_inputs.disable_vanilla_roll && mc_on && fg && !inv_open) {
+    if (control_inputs.disable_vanilla_roll && mc_on && fg && !inv_open_for_policy) {
         roll_mask = roll::computeRollMask(true, true, mode.roll_vk.load(std::memory_order_relaxed));
     }
     control_inputs.roll_keys = std::span<const int>(roll_mask.scancodes, roll_mask.count);
     control_inputs.flight_keys = std::span<const int>(flight::kHiddenKeys, std::size(flight::kHiddenKeys));
 
 #ifdef _WIN32
-    if (control_inputs.mc_jump && mc_on && fg && !inv_open) {
+    if (control_inputs.mc_jump && mc_on && fg && !inv_open_for_policy) {
         control_inputs.mc_jump_scan = static_cast<int>(MapVirtualKeyW(
             static_cast<UINT>(mode.mc_jump_vk.load(std::memory_order_relaxed)), MAPVK_VK_TO_VSC));
     }
@@ -330,7 +333,7 @@ void HotkeyDispatcher::tick(float dt) {
     // while reloading and 1-4 select vanilla quick slots.
     int cs_scans[6] = {};
     size_t cs_scan_count = 0;
-    if (control_inputs.cs_mode && fg && !inv_open) {
+    if (control_inputs.cs_mode && fg && !inv_open_for_policy) {
         const int cs_keys[] = {'R', 'F', '1', '2', '3', '4'};
         for (const int vk : cs_keys) {
             const int sc = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC));
@@ -577,6 +580,12 @@ void HotkeyDispatcher::tick(float dt) {
     }
     if (cb_.set_suppress_mouse_wheel) {
         cb_.set_suppress_mouse_wheel(control_plan.blocksNative(mc::ControlDomain::MouseWheel));
+    }
+    if (cb_.set_suppress_mouse_motion) {
+        cb_.set_suppress_mouse_motion(control_plan.blocksNative(mc::ControlDomain::MouseMotion));
+    }
+    if (cb_.set_suppress_keyboard) {
+        cb_.set_suppress_keyboard(control_plan.blocksNative(mc::ControlDomain::Keyboard));
     }
 
     // Space key (Jump & Exhaustion)

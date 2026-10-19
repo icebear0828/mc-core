@@ -17,30 +17,13 @@ protected:
         controller_.resetForTesting();
         inv_ = mc::Inventory{};
 
-        suppress_mouse_called_ = false;
-        suppress_keyboard_called_ = false;
-        last_suppress_mouse_ = false;
-        last_suppress_keyboard_ = false;
-
         InventoryCallbacks cb;
-        cb.set_suppress_mouse_motion = [this](bool val) {
-            suppress_mouse_called_ = true;
-            last_suppress_mouse_ = val;
-        };
-        cb.set_suppress_keyboard = [this](bool val) {
-            suppress_keyboard_called_ = true;
-            last_suppress_keyboard_ = val;
-        };
         cb.log = [](const char*) {};
         controller_.setCallbacks(cb);
     }
 
     InventoryController& controller_{InventoryController::Instance()};
     mc::Inventory inv_;
-    bool suppress_mouse_called_{false};
-    bool suppress_keyboard_called_{false};
-    bool last_suppress_mouse_{false};
-    bool last_suppress_keyboard_{false};
 };
 
 TEST_F(InventoryControllerTest, OpenAndCloseViaToggleKey) {
@@ -61,8 +44,6 @@ TEST_F(InventoryControllerTest, OpenAndCloseViaToggleKey) {
     EXPECT_TRUE(controller_.isOpen(ctx));
     EXPECT_FLOAT_EQ(ctx.ui().inv_mx.load(), 960.f);
     EXPECT_FLOAT_EQ(ctx.ui().inv_my.load(), 540.f);
-    EXPECT_TRUE(last_suppress_mouse_);
-    EXPECT_TRUE(last_suppress_keyboard_);
 
     // Release key
     input.key_down = false;
@@ -74,8 +55,6 @@ TEST_F(InventoryControllerTest, OpenAndCloseViaToggleKey) {
     controller_.tickWithInput(input, inv_, ctx);
 
     EXPECT_FALSE(controller_.isOpen(ctx));
-    EXPECT_FALSE(last_suppress_mouse_);
-    EXPECT_FALSE(last_suppress_keyboard_);
 }
 
 TEST_F(InventoryControllerTest, CloseOnEscAndReturnCursor) {
@@ -103,7 +82,6 @@ TEST_F(InventoryControllerTest, CloseOnEscAndReturnCursor) {
     EXPECT_EQ(inv_.cursor().item, mc::ItemId::None);
     EXPECT_EQ(inv_.slot(0).item, mc::ItemId::BlockDirt);
     EXPECT_EQ(inv_.slot(0).count, 32u);
-    EXPECT_FALSE(last_suppress_mouse_);
 }
 
 TEST_F(InventoryControllerTest, MouseMotionClampingAndSens) {

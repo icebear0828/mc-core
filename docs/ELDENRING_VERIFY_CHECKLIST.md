@@ -360,3 +360,10 @@
 ## F35 修正（提交 `8ea53bb`）：不要每帧写坠落计时器
 - 实测：每帧把计时器写成常数 1.0，`fall_t_before=1.02 fall_t_now=1.00`，按住键 3 秒位置不变（键盘正常）；用户还反映"转镜头也变慢"。相机更新频率 57~60/s，帧率正常。结论：游戏看计时器的**变化**来结束"下落/落地"状态，每帧覆盖会让角色卡在受限的落地状态（移动和镜头都被压低）。
 - 现在：平时不写；我们的跳落地那一帧复位一次（和原生落地一样），站在方块上计时器超过 `fall_hold`（默认 2.0 s）才拉回 0。配置 `mc_jump=1`、`fall_reset=1`、`fall_hold=2.0`。
+
+## F36 背包输入抑制迁入 ControlPlan（2026-10-19，纯 MC 构建，用户实机确认“没问题了”）
+
+- `InventoryController` 不再直接调用 `SetSuppressMouseMotion` / `SetSuppressKeyboard`；它只维护 `inv_open` 和 UI 逻辑。
+- `mc::requestInventory` 在背包打开时请求 `MouseMotion` / `Keyboard` / `Cursor = Mod`，由 `HotkeyDispatcher` 每 tick 从 `ControlPlan` 统一应用。
+- 实测：背包开关、虚拟光标、拿放/Shift/数字键/F 换手正常；打开时 WASD/翻滚/跳跃/攻击/镜头无效，关闭后立即恢复；连续开关和 Alt-Tab 无输入粘连。
+- 自动化：CS2 构建 1188 tests passed，纯 MC 构建 1130 tests passed，Python 54 passed。

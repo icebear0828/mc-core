@@ -119,6 +119,8 @@ protected:
         };
         cb_.set_suppress_mouse_buttons = [this](bool s) { suppressed_mouse_ = s; };
         cb_.set_suppress_mouse_wheel = [this](bool s) { suppressed_wheel_ = s; };
+        cb_.set_suppress_mouse_motion = [this](bool s) { suppressed_motion_ = s; };
+        cb_.set_suppress_keyboard = [this](bool s) { suppressed_keyboard_ = s; };
         cb_.set_masked_keys = [this](const int* keys, size_t n) { masked_keys_.assign(keys, keys + n); };
         cb_.take_keyboard_failures = [](long&) { return 0; };
 
@@ -194,6 +196,8 @@ protected:
     int wheel_notches_{0};
     bool suppressed_mouse_{false};
     bool suppressed_wheel_{false};
+    bool suppressed_motion_{false};
+    bool suppressed_keyboard_{false};
     std::vector<int> masked_keys_;
 
     bool mining_consumed_{false};
@@ -517,6 +521,20 @@ TEST_F(HotkeyDispatcherTest, CreativeFlightMasksItsMovementKeys) {
     for (const int key : eldenring::flight::kHiddenKeys) {
         EXPECT_NE(std::find(masked_keys_.begin(), masked_keys_.end(), key), masked_keys_.end());
     }
+}
+
+TEST_F(HotkeyDispatcherTest, InventorySuppressesMotionAndKeyboard) {
+    auto& ctx = RuntimeContext::Instance();
+
+    ctx.ui().inv_open.store(true);
+    dispatcher_->tick(0.016f);
+    EXPECT_TRUE(suppressed_motion_);
+    EXPECT_TRUE(suppressed_keyboard_);
+
+    ctx.ui().inv_open.store(false);
+    dispatcher_->tick(0.016f);
+    EXPECT_FALSE(suppressed_motion_);
+    EXPECT_FALSE(suppressed_keyboard_);
 }
 
 TEST_F(HotkeyDispatcherTest, CsModeMasksItsVanillaKeys) {
