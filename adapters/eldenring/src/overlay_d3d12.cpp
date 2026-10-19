@@ -101,6 +101,15 @@ eldenring::fx::Rng g_fx_rng{20251009u};
 mc::rig::Mat4 g_fx_vp{};
 float g_fx_fov = 0.8378f;
 bool g_fx_valid = false;
+// CS hitscan tracers: world-space segments queued by CombatService::fireCsShot.
+struct TracerEvent {
+    float from[3];
+    float to[3];
+    uint64_t start_ms;
+    float life_s;
+};
+std::mutex g_tracer_mutex;
+std::vector<TracerEvent> g_tracer_events;
 eldenring::fp::HandAnimator g_hand;
 eldenring::fp::SwayFilter g_sway;
 float g_walk_dist = 0.f, g_walk_bob = 0.f;
@@ -115,10 +124,16 @@ CsRenderer g_cs;
 // CS arsenal runtime state: texture slots and the weapon currently loaded.
 D3D12_CPU_DESCRIPTOR_HANDLE g_cs_weapon_tex_cpu{};
 D3D12_CPU_DESCRIPTOR_HANDLE g_cs_glove_tex_cpu{};
+D3D12_CPU_DESCRIPTOR_HANDLE g_cs_knife_table_cpu{};
+D3D12_CPU_DESCRIPTOR_HANDLE g_cs_ak_table_cpu{};
+D3D12_GPU_DESCRIPTOR_HANDLE g_cs_knife_table_gpu{};
+D3D12_GPU_DESCRIPTOR_HANDLE g_cs_ak_table_gpu{};
 std::string g_cs_game_dir;
 std::string g_cs_knife_model_path;
 std::string g_cs_knife_png;
 std::string g_cs_glove_png;
+std::string g_cs_bare_png;
+std::string g_cs_bare_norm_png;
 uint8_t g_cs_active_slot = 0;
 #endif
 mc::SteveAnimator g_anim;
@@ -209,6 +224,16 @@ void Logf(const char* msg) {
     if (g_log) g_log("%s", msg);
 }
 
+// Elden Ring can lose its DirectInput devices when it stops being the
+// foreground window. Skipping the CS viewmodel while unfocused avoids drawing
+// into a swap chain the game is throttling, and matches the hotkey gate.
+bool GameIsForeground() {
+    DWORD pid = 0;
+    HWND fg = GetForegroundWindow();
+    if (fg != nullptr) GetWindowThreadProcessId(fg, &pid);
+    return pid == GetCurrentProcessId();
+}
+
 #if ENABLE_CS2_VIEWMODEL
 std::string ResolveCsAssetPath(const std::string& path) {
     if (path.empty()) return path;
@@ -221,19 +246,18 @@ std::string ResolveCsAssetPath(const std::string& path) {
 // fallback: if a gun asset is missing we keep rendering the current weapon.
 void UpdateCsWeaponSlot(uint8_t want_slot) {
     if (want_slot == g_cs_active_slot) return;
+    Logf("overlay: CS weapon switch requested -> %u", static_cast<unsigned>(want_slot));
 
     bool loaded = false;
     if (want_slot == 0) {
         if (!g_cs_knife_model_path.empty() && std::filesystem::exists(g_cs_knife_model_path) &&
             g_cs.loadModel(g_s.device, g_cs_knife_model_path)) {
-            g_cs.loadTexturesFromFiles(g_s.device, g_cs_knife_png, g_cs_glove_png,
-                                       g_cs_weapon_tex_cpu, g_cs_glove_tex_cpu);
             loaded = true;
         }
     } else {
         const char* id = (want_slot == 1) ? "weapon_ak47"
                        : (want_slot == 2) ? "weapon_awp"
-                       : "weapon_m4a1_s";
+                       : "weapon_m4a1_silencer";
         if (const auto* found = eldenring::cs::CSWeaponRegistry::instance().findWeapon(id)) {
             auto def = *found;
             def.model_csvm_path = ResolveCsAssetPath(def.model_csvm_path);
@@ -241,7 +265,6 @@ void UpdateCsWeaponSlot(uint8_t want_slot) {
             def.normal_tex_path = ResolveCsAssetPath(def.normal_tex_path);
             def.pbr_tex_path = ResolveCsAssetPath(def.pbr_tex_path);
             if (std::filesystem::exists(def.model_csvm_path) && g_cs.loadWeapon(g_s.device, def)) {
-                g_cs.loadWeaponTextures(g_s.device, def, g_cs_weapon_tex_cpu);
                 loaded = true;
             }
         }
@@ -349,7 +372,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
     rtv_desc.NumDescriptors = g_s.buffers;
     D3D12_DESCRIPTOR_HEAP_DESC srv_desc{};
     srv_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    srv_desc.NumDescriptors = 32; // 0: ImGui, 1-2: Steve, 3: HUD, 4-5: FP items, 6-7: Held, 8-9: Creeper, 10-11: Zombie, 12-13: Skeleton, 14-15: extra, 16-21: CS2 viewmodel PBR
+    srv_desc.NumDescriptors = 64; // 0: ImGui, 1-2: Steve, 3: HUD, 4-5: FP items, 6-7: Held, 8-9: Creeper, 10-11: Zombie, 12-13: Skeleton, 14-15: extra, 16-24: CS2 knife table, 32-40: CS2 AK table
     srv_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(g_s.device->CreateDescriptorHeap(&rtv_desc, IID_PPV_ARGS(&g_s.rtv_heap))) ||
         FAILED(g_s.device->CreateDescriptorHeap(&srv_desc, IID_PPV_ARGS(&g_s.srv_heap)))) {
@@ -499,8 +522,18 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             cs_table_cpu.ptr += static_cast<SIZE_T>(srv_inc) * 16;
             D3D12_CPU_DESCRIPTOR_HANDLE glove_cpu = cs_table_cpu;
             glove_cpu.ptr += srv_inc;
+            D3D12_CPU_DESCRIPTOR_HANDLE ak_table_cpu = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
+            ak_table_cpu.ptr += static_cast<SIZE_T>(srv_inc) * 32;
             g_cs_weapon_tex_cpu = cs_table_cpu;
             g_cs_glove_tex_cpu = glove_cpu;
+            g_cs_knife_table_cpu = cs_table_cpu;
+            g_cs_ak_table_cpu = ak_table_cpu;
+
+            D3D12_GPU_DESCRIPTOR_HANDLE srv_gpu_base = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
+            g_cs_knife_table_gpu = srv_gpu_base;
+            g_cs_knife_table_gpu.ptr += static_cast<UINT64>(srv_inc) * 16;
+            g_cs_ak_table_gpu = srv_gpu_base;
+            g_cs_ak_table_gpu.ptr += static_cast<UINT64>(srv_inc) * 32;
 
             const std::string& game_dir = eldenring::diagnostics::GetGameDir();
             g_cs_game_dir = game_dir;
@@ -553,9 +586,90 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             for (const auto& p : glove_tex_candidates) {
                 if (std::filesystem::exists(p)) { glove_png = p; break; }
             }
+
+            std::vector<std::string> bare_tex_candidates;
+            if (!game_dir.empty()) {
+                bare_tex_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "glove_hardknuckle" / "bare_arm_133_color_psd_5b76e0cf.png").string());
+                bare_tex_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "bare_arm_133_color_psd_5b76e0cf.png").string());
+            }
+            bare_tex_candidates.push_back("mods\\mc_adapter\\textures\\glove_hardknuckle\\bare_arm_133_color_psd_5b76e0cf.png");
+            bare_tex_candidates.push_back("bare_arm_133_color_psd_5b76e0cf.png");
+
+            std::vector<std::string> bare_norm_candidates;
+            if (!game_dir.empty()) {
+                bare_norm_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "glove_hardknuckle" / "bare_arm_normal_tga_c9fefc2d.png").string());
+                bare_norm_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "bare_arm_normal_tga_c9fefc2d.png").string());
+            }
+            bare_norm_candidates.push_back("mods\\mc_adapter\\textures\\glove_hardknuckle\\bare_arm_normal_tga_c9fefc2d.png");
+            bare_norm_candidates.push_back("bare_arm_normal_tga_c9fefc2d.png");
+
+            std::string bare_png;
+            for (const auto& p : bare_tex_candidates) {
+                if (std::filesystem::exists(p)) { bare_png = p; break; }
+            }
+            std::string bare_norm_png;
+            for (const auto& p : bare_norm_candidates) {
+                if (std::filesystem::exists(p)) { bare_norm_png = p; break; }
+            }
+
+            std::vector<std::string> sleeve_tex_candidates;
+            if (!game_dir.empty()) {
+                sleeve_tex_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "sleeves" / "sleeve_fbi_color.png").string());
+                sleeve_tex_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "sleeve_fbi_color.png").string());
+            }
+            sleeve_tex_candidates.push_back("mods\\mc_adapter\\textures\\sleeves\\sleeve_fbi_color.png");
+            sleeve_tex_candidates.push_back("sleeve_fbi_color.png");
+
+            std::vector<std::string> sleeve_norm_candidates;
+            if (!game_dir.empty()) {
+                sleeve_norm_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "sleeves" / "sleeve_fbi_normal.png").string());
+                sleeve_norm_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "sleeve_fbi_normal.png").string());
+            }
+            sleeve_norm_candidates.push_back("mods\\mc_adapter\\textures\\sleeves\\sleeve_fbi_normal.png");
+            sleeve_norm_candidates.push_back("sleeve_fbi_normal.png");
+
+            std::vector<std::string> sleeve_pbr_candidates;
+            if (!game_dir.empty()) {
+                sleeve_pbr_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "sleeves" / "sleeve_fbi_pbr.png").string());
+                sleeve_pbr_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "sleeve_fbi_pbr.png").string());
+            }
+            sleeve_pbr_candidates.push_back("mods\\mc_adapter\\textures\\sleeves\\sleeve_fbi_pbr.png");
+            sleeve_pbr_candidates.push_back("sleeve_fbi_pbr.png");
+
+            auto firstExisting = [](const std::vector<std::string>& candidates) {
+                for (const auto& p : candidates) {
+                    if (std::filesystem::exists(p)) return p;
+                }
+                return std::string();
+            };
+            const std::string sleeve_png = firstExisting(sleeve_tex_candidates);
+            const std::string sleeve_norm_png = firstExisting(sleeve_norm_candidates);
+            const std::string sleeve_pbr_png = firstExisting(sleeve_pbr_candidates);
+
             g_cs_knife_png = knife_png;
             g_cs_glove_png = glove_png;
-            g_cs.loadTexturesFromFiles(g_s.device, knife_png, glove_png, cs_table_cpu, glove_cpu);
+            g_cs_bare_png = bare_png;
+            g_cs_bare_norm_png = bare_norm_png;
+            g_cs.loadTexturesFromFiles(g_s.device, knife_png, glove_png, cs_table_cpu, glove_cpu,
+                                       "", "", "", "", bare_png, bare_norm_png, "",
+                                       sleeve_png, sleeve_norm_png, sleeve_pbr_png);
+
+            // Load the AK-47 weapon maps into the second table once. Switching
+            // then only swaps the table handle: no PNG decode, no 48 MB upload.
+            if (const auto* ak = eldenring::cs::CSWeaponRegistry::instance().findWeapon("weapon_ak47")) {
+                auto ak_def = *ak;
+                ak_def.albedo_tex_path = ResolveCsAssetPath(ak_def.albedo_tex_path);
+                ak_def.normal_tex_path = ResolveCsAssetPath(ak_def.normal_tex_path);
+                ak_def.pbr_tex_path = ResolveCsAssetPath(ak_def.pbr_tex_path);
+                g_cs.loadWeaponTextures(g_s.device, ak_def, ak_table_cpu);
+            }
+            // Glove + bare-arm + sleeve descriptors are shared by both weapon tables.
+            const UINT shared_slots[] = {1, 3, 5, 6, 7, 8, 9, 10, 11};
+            for (UINT shared : shared_slots) {
+                D3D12_CPU_DESCRIPTOR_HANDLE src{cs_table_cpu.ptr + static_cast<SIZE_T>(srv_inc) * shared};
+                D3D12_CPU_DESCRIPTOR_HANDLE dst{ak_table_cpu.ptr + static_cast<SIZE_T>(srv_inc) * shared};
+                g_s.device->CopyDescriptorsSimple(1, dst, src, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            }
         }
 #endif
         {
@@ -711,6 +825,77 @@ bool ProjectToScreen(const mc::rig::Mat4& m, const float p[3], float w, float h,
     return true;
 }
 
+#if ENABLE_CS2_VIEWMODEL
+// The muzzle flash is drawn in screen space at the gun's muzzle track: the viewmodel has its own projection,
+// so projecting the track with the viewmodel matrix is the only position that stays on the barrel.
+void DrawCsMuzzleFlash(ImDrawList* dl, float w, float h) {
+    auto& mode = eldenring::RuntimeContext::Instance().mode();
+    if (!mode.cs_mode.load() || mode.cs_weapon_slot.load() == 0) return;
+    if (mode.cs_knife_state.load() != 2) return;
+    const float t = mode.cs_knife_anim_time.load();
+    if (t > 0.07f) return;
+
+    float x = 0.f, y = 0.f;
+    if (!g_cs.muzzleScreen(static_cast<unsigned>(w), static_cast<unsigned>(h), x, y)) return;
+    const float fade = std::max(0.f, 1.f - t / 0.07f);
+    const float r = 16.f * (0.55f + 0.45f * fade);
+    dl->AddCircleFilled({x, y}, r, IM_COL32(255, 200, 110, static_cast<int>(190.f * fade)));
+    dl->AddCircleFilled({x, y}, r * 0.45f, IM_COL32(255, 255, 235, static_cast<int>(235.f * fade)));
+    for (int i = 0; i < 4; ++i) {
+        const float a = 0.785398f * static_cast<float>(i) + 0.392699f;
+        dl->AddLine({x, y}, {x + std::cos(a) * r * 1.7f, y + std::sin(a) * r * 1.7f},
+                    IM_COL32(255, 210, 140, static_cast<int>(110.f * fade)), 2.f);
+    }
+}
+#endif
+
+// Tracers are 2D lines projected from world space: cheap, readable and independent of the scene depth buffer.
+void DrawTracers(ImDrawList* dl, float w, float h) {
+    if (!g_fx_valid) return;
+    const uint64_t now = GetTickCount64();
+    std::vector<TracerEvent> live;
+    {
+        std::lock_guard<std::mutex> g(g_tracer_mutex);
+        for (auto it = g_tracer_events.begin(); it != g_tracer_events.end();) {
+            const float age = static_cast<float>(now - it->start_ms) / 1000.f;
+            if (age >= it->life_s) {
+                it = g_tracer_events.erase(it);
+            } else {
+                live.push_back(*it);
+                ++it;
+            }
+        }
+    }
+    for (const TracerEvent& t : live) {
+        const float age = static_cast<float>(now - t.start_ms) / 1000.f;
+        const float travel = std::max(1e-4f, t.life_s * 0.7f);
+        const float u = std::clamp(age / travel, 0.f, 1.f);
+        const float fade = age < travel
+            ? 1.f
+            : std::max(0.f, 1.f - (age - travel) / std::max(1e-4f, t.life_s - travel));
+        if (fade <= 0.f) continue;
+
+        float d[3] = {t.to[0] - t.from[0], t.to[1] - t.from[1], t.to[2] - t.from[2]};
+        const float dist = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        if (!(dist > 1e-3f)) continue;
+        for (int i = 0; i < 3; ++i) d[i] /= dist;
+
+        // A short streak flies from the muzzle to the impact, not a line across the whole path.
+        const float head = u * dist;
+        const float tail = std::max(0.f, head - std::min(4.f, dist));
+        float hp[3], tp[3];
+        for (int i = 0; i < 3; ++i) {
+            hp[i] = t.from[i] + d[i] * head;
+            tp[i] = t.from[i] + d[i] * tail;
+        }
+        ImVec2 a, b;
+        float ppm = 0.f;
+        if (!ProjectToScreen(g_fx_vp, tp, w, h, g_fx_fov, a, ppm)) continue;
+        if (!ProjectToScreen(g_fx_vp, hp, w, h, g_fx_fov, b, ppm)) continue;
+        dl->AddLine(a, b, IM_COL32(255, 226, 150, static_cast<int>(190.f * fade)), 1.5f);
+    }
+}
+
 void DrawFx(ImDrawList* dl, ImTextureID atlas, float w, float h) {
     if (!g_fx_valid || !g_atlas_ready) return;
     for (const eldenring::fx::Particle& p : g_particles.alive()) {
@@ -719,6 +904,10 @@ void DrawFx(ImDrawList* dl, ImTextureID atlas, float w, float h) {
         if (!ProjectToScreen(g_fx_vp, p.pos, w, h, g_fx_fov, s, ppm)) continue;
         const float half = std::max(2.f, p.size * ppm * 0.5f);
         const float fade = eldenring::fx::ParticleSystem::fade(p);
+        if (p.kind == eldenring::fx::Kind::Spark) {
+            dl->AddCircleFilled(s, std::max(1.f, half), IM_COL32(255, 220, 140, static_cast<int>(255 * fade)), 6);
+            continue;
+        }
         const mc::hud::HudUV* uv = nullptr;
         ImU32 col = IM_COL32(255, 255, 255, static_cast<int>(255 * std::min(1.f, fade * 1.5f)));
         switch (p.kind) {
@@ -1016,10 +1205,11 @@ void DrawHud(const HudState& hud, float w, float h) {
                                 : (slot == 3) ? "M4A1-S (CS2)"
                                 : "BUTTERFLY KNIFE (CS2)";
         const char* status_str = (state == 1) ? "[INSPECTING...]" :
-                                 (state == 2) ? (is_gun ? "[FIRING...]" : "[SLASH ATTACK]") :
-                                 (state == 3) ? (is_gun ? "[AIMING...]" : "[BACKSTAB CRIT]") :
+                                 (state == 2) ? (is_gun ? "[FIRING...]" : "[LIGHT ATTACK]") :
+                                 (state == 3) ? (is_gun ? "[SECONDARY]" : "[HEAVY ATTACK]") :
                                  (state == 4) ? "[DEPLOYING...]" :
-                                 (state == 5) ? "[RELOADING...]" : "[READY]";
+                                 (state == 5) ? "[RELOADING...]" :
+                                 (state == 6) ? "[BACKSTAB]" : "[READY]";
         dl->AddText(ImGui::GetFont(), 19.f, {x + 14.f, y + 10.f}, IM_COL32(0, 255, 150, 255), weapon_name);
         dl->AddText(ImGui::GetFont(), 15.f, {x + 14.f, y + 36.f}, IM_COL32(255, 215, 0, 255), status_str);
         if (is_gun) {
@@ -1032,7 +1222,7 @@ void DrawHud(const HudState& hud, float w, float h) {
             dl->AddText(ImGui::GetFont(), 12.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[1] AK-47  [2] AWP  [3] Knife | [F1] Toggle");
         } else {
             dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 60.f}, IM_COL32(200, 210, 225, 230), "[F] Spin Inspect  |  [LMB] Slash");
-            dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[RMB] Backstab    |  [F1] Mode Toggle");
+            dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[RMB] Heavy Attack  |  [F1] Mode Toggle");
         }
         return;
     }
@@ -1317,6 +1507,17 @@ void RenderFrame(IDXGISwapChain* sc) {
     const float dt = std::max(1.f / 1000.f, std::chrono::duration<float>(now - g_s.last_frame).count());
     g_s.last_frame = now;
 
+    // Frame-time probe: a 5 s window makes sustained drops visible in mc_er.log.
+    static double perf_accum = 0.0;
+    static unsigned perf_frames = 0;
+    perf_accum += dt;
+    ++perf_frames;
+    if (perf_accum >= 5.0) {
+        Logf("perf: %.1f fps (%.2f ms/frame)", perf_frames / perf_accum, 1000.0 * perf_accum / perf_frames);
+        perf_accum = 0.0;
+        perf_frames = 0;
+    }
+
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = {static_cast<float>(g_s.width), static_cast<float>(g_s.height)};
     io.DeltaTime = dt;
@@ -1339,9 +1540,14 @@ void RenderFrame(IDXGISwapChain* sc) {
                 case FxKind::Crit: g_particles.spawnCrit(e.pos, g_fx_rng); break;
                 case FxKind::Damage: g_particles.spawnDamage(e.pos, e.count, g_fx_rng); break;
                 case FxKind::Sweep: g_particles.spawnSweep(e.pos); break;
+                case FxKind::Spark: g_particles.spawnSpark(e.pos, g_fx_rng); break;
             }
         }
         g_particles.update(dt);
+        DrawTracers(ImGui::GetBackgroundDrawList(), io.DisplaySize.x, io.DisplaySize.y);
+#if ENABLE_CS2_VIEWMODEL
+        DrawCsMuzzleFlash(ImGui::GetBackgroundDrawList(), io.DisplaySize.x, io.DisplaySize.y);
+#endif
     }
     DrawHud(hud, io.DisplaySize.x, io.DisplaySize.y);
     ImGui::Render();
@@ -1576,9 +1782,14 @@ void RenderFrame(IDXGISwapChain* sc) {
 #if ENABLE_CS2_VIEWMODEL
     auto& r_mode = eldenring::RuntimeContext::Instance().mode();
     if (r_mode.cs_mode.load() && g_cs.ready()) {
+        // A weapon switch releases the old VB/IB and textures; wait for the
+        // GPU to finish the previous frame before replacing them.
+        if (r_mode.cs_weapon_slot.load() != g_cs_active_slot) {
+            WaitForGpu();
+        }
         UpdateCsWeaponSlot(r_mode.cs_weapon_slot.load());
     }
-    const bool cs_active = r_mode.cs_mode.load() && g_cs.ready();
+    const bool cs_active = r_mode.cs_mode.load() && g_cs.ready() && GameIsForeground();
 #else
     const bool cs_active = false;
 #endif
@@ -1588,14 +1799,16 @@ void RenderFrame(IDXGISwapChain* sc) {
 #if ENABLE_CS2_VIEWMODEL
     if (cs_active && !steve.dead) {
         const mc::rig::Mat4 proj = g_cs.computeViewmodelProjection(g_s.width, g_s.height);
-        const UINT srv_inc = g_s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        D3D12_GPU_DESCRIPTOR_HANDLE cs_tex_table = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
-        cs_tex_table.ptr += static_cast<UINT64>(srv_inc) * 16;
+        // The knife and AK have their own preloaded texture tables; switching
+        // is just a descriptor-handle swap.
+        D3D12_GPU_DESCRIPTOR_HANDLE cs_tex_table =
+            (r_mode.cs_weapon_slot.load() == 0) ? g_cs_knife_table_gpu : g_cs_ak_table_gpu;
         if (g_steve.ready()) {
             g_steve.ensureDepth(g_s.device, g_s.width, g_s.height);
         }
         const D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_steve.ready() ? g_steve.dsvHandle() : D3D12_CPU_DESCRIPTOR_HANDLE{};
-        g_cs.tick(dt, r_mode.cs_knife_state.load(), r_mode.cs_knife_anim_time.load());
+        g_cs.tick(dt, r_mode.cs_knife_state.load(), r_mode.cs_knife_anim_time.load(),
+                  r_mode.cs_action_variant.load(), r_mode.cs_action_hit.load());
         g_cs.draw(g_s.list, g_s.srv_heap, cs_tex_table, g_s.width, g_s.height, proj, f.rtv, dsv);
         g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
     } else
@@ -1929,6 +2142,12 @@ void SpawnFx(FxKind kind, const float world_pos[3], int count) {
     if (g_fx_events.size() < 64) g_fx_events.push_back(e);
 }
 
+void SpawnTracer(const float from[3], const float to[3], float life_s) {
+    TracerEvent t{{from[0], from[1], from[2]}, {to[0], to[1], to[2]}, GetTickCount64(), life_s > 0.01f ? life_s : 0.08f};
+    std::lock_guard<std::mutex> g(g_tracer_mutex);
+    if (g_tracer_events.size() < 64) g_tracer_events.push_back(t);
+}
+
 void SetHudAtlas(const uint8_t* rgba, unsigned width, unsigned height) {
     g_atlas_rgba.assign(rgba, rgba + static_cast<size_t>(width) * height * 4);
     g_atlas_w = width;
@@ -1947,6 +2166,15 @@ void RequestScreenshot(const char* utf8_path) {
         g_shot_path = utf8_path != nullptr ? utf8_path : "";
     }
     g_shot_requested.store(true);
+}
+
+float CsClipDuration(const char* name) {
+#if ENABLE_CS2_VIEWMODEL
+    return g_cs.clipDuration(name);
+#else
+    (void)name;
+    return 0.f;
+#endif
 }
 
 void SetBlockMesh(const mc::rig::RigMesh& mesh) {

@@ -65,6 +65,21 @@ TEST(EldenRingParticles, SweepRunsThroughEightFramesInFourTenthsOfASecond) {
     EXPECT_TRUE(ps.alive().empty());
 }
 
+TEST(EldenRingParticles, SparkBurstIsShortLivedAndFalls) {
+    ParticleSystem ps;
+    Rng rng(11);
+    const float at[3] = {4.f, 2.f, 1.f};
+    ps.spawnSpark(at, rng);
+    ASSERT_EQ(ps.alive().size(), 5u);
+    for (const Particle& p : ps.alive()) {
+        EXPECT_EQ(p.kind, Kind::Spark);
+        EXPECT_GE(p.life, 0.08f);
+        EXPECT_LE(p.life, 0.18f);
+    }
+    ps.update(0.19f);
+    EXPECT_TRUE(ps.alive().empty());
+}
+
 TEST(EldenRingParticles, ThePoolIsBounded) {
     ParticleSystem ps;
     Rng rng(1);

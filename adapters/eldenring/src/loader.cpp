@@ -1292,14 +1292,24 @@ void ProcessTntExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies) {
 }
 
 void EnemiesBlockCollisionStep(const float player_feet[3]) {
-    if (!g_mc_mode.load(std::memory_order_relaxed)) return;
+    const bool mc_on = g_mc_mode.load(std::memory_order_relaxed);
+#if ENABLE_CS2_VIEWMODEL
+    const bool cs_on = eldenring::RuntimeContext::Instance().mode().cs_mode.load(std::memory_order_relaxed);
+#else
+    const bool cs_on = false;
+#endif
+    if (!mc_on && !cs_on) return;
+
     std::vector<EnemyInfo> enemies;
     if (!enumerateEnemies(g_reader, g_img.base, enemies, 512)) {
         EntityManager::instance().clearCache();
         return;
     }
 
+    // The CS hitscan reads this cache on the input thread.
     EntityManager::instance().updateCacheFromGameThread(enemies);
+
+    if (!mc_on) return;
 
     // Process queued TNT explosion damage intents on game thread!
     ProcessTntExplosionsOnGameThread(enemies);
@@ -1604,6 +1614,29 @@ void RunBulletFire() {
 
 bool QueueBulletFire(float mc_damage) {
     return eldenring::combat::CombatService::Instance().queueBulletFire(mc_damage, g_ctx);
+}
+
+// CS hitscan: spread the shot, pick the hostile under the crosshair, check walls and enqueue the damage.
+// Runs on the input thread; the queue is drained on the game thread by DrainOnce.
+bool FireCsShot(float damage, float spread, float range, uint32_t tracer_frequency, uint8_t weapon_slot) {
+#if ENABLE_CS2_VIEWMODEL
+    eldenring::cs::CsShotParams params;
+    params.damage = damage;
+    params.spread_deg = spread;
+    params.max_range_m = range;
+    params.tracer_frequency = tracer_frequency;
+    params.weapon_slot = weapon_slot;
+    return eldenring::combat::CombatService::Instance()
+        .fireCsShot(params, g_queue, NowTick(), eldenring::RuntimeContext::Instance())
+        .fired;
+#else
+    (void)damage;
+    (void)spread;
+    (void)range;
+    (void)tracer_frequency;
+    (void)weapon_slot;
+    return false;
+#endif
 }
 
 void SetupBulletLog() {
@@ -2425,6 +2458,7 @@ void SetupCombat() {
     cb.call_vfunc7 = [](uintptr_t dmg_module, uintptr_t attacker, void* ctx_ptr) { return CallVfunc7(dmg_module, attacker, ctx_ptr); };
     cb.play_sound = [](const char* snd, float vol) { eraudio::Play(snd, vol); };
     cb.spawn_fx = [](int kind, const float pos[3], int count) { erov::SpawnFx(static_cast<erov::FxKind>(kind), pos, count); };
+    cb.spawn_tracer = [](const float from[3], const float to[3], float life) { erov::SpawnTracer(from, to, life); };
     cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
     cb.reader = &g_reader;
     cb.image_base = g_img.base;
@@ -2492,6 +2526,7 @@ void SetupInput() {
         };
         cb.play_sound = [](const char* s, float v) { eraudio::Play(s, v); };
         cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
+        cb.clip_duration = [](const char* n) { return erov::CsClipDuration(n); };
         cb.take_left_click = erin::TakeLeftClick;
         cb.take_right_click = erin::TakeRightClick;
         cb.left_held = erin::LeftHeld;
@@ -2508,6 +2543,7 @@ void SetupInput() {
         cb.click_attack = ClickAttack;
         cb.enqueue_nearest_hostile = EnqueueNearestHostile;
         cb.queue_bullet_fire = [](float dmg) { return QueueBulletFire(dmg); };
+        cb.queue_cs_shot = [](float damage, float spread, float range, uint32_t tracer, uint8_t slot) { return FireCsShot(damage, spread, range, tracer, slot); };
         cb.queue_summon = [](const char* src) { return QueueSummon(src); };
         cb.cycle_hidden_slot = [](int& cur) { CycleHiddenSlot(cur); };
         cb.reset_slot_probe = [](int& cur) { ResetSlotProbe(cur); };

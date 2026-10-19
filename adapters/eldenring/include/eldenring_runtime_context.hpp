@@ -98,9 +98,13 @@ private:
 struct ModeConfig {
     std::atomic<bool> mc_mode{true};
     std::atomic<bool> cs_mode{false};
-    std::atomic<uint8_t> cs_knife_state{0}; // 0: Idle, 1: Inspect, 2: Slash/Fire, 3: Backstab, 4: Deploy, 5: Reload
+    std::atomic<uint8_t> cs_knife_state{0}; // 0: Idle, 1: Inspect, 2: Primary, 3: Secondary, 4: Deploy, 5: Reload, 6: Backstab
     std::atomic<float> cs_knife_anim_time{0.f};
     std::atomic<bool> cs_knife_inspect{false};
+    // Alternating authored take (light_hit1/2, inspect1/2/3, draw/draw2).
+    std::atomic<uint8_t> cs_action_variant{0};
+    // Melee attacks have separate hit and miss takes in CS2.
+    std::atomic<bool> cs_action_hit{true};
     // CS arsenal slot: 0 butterfly knife, 1 AK-47, 2 AWP, 3 M4A1-S
     std::atomic<uint8_t> cs_weapon_slot{0};
     std::atomic<uint32_t> cs_ammo{30};
@@ -257,6 +261,8 @@ public:
         mode_.cs_knife_state.store(0);
         mode_.cs_knife_anim_time.store(0.f);
         mode_.cs_knife_inspect.store(false);
+        mode_.cs_action_variant.store(0);
+        mode_.cs_action_hit.store(true);
         mode_.cs_weapon_slot.store(0);
         mode_.cs_ammo.store(30);
         mode_.cs_reserve.store(90);

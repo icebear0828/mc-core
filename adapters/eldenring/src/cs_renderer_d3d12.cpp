@@ -8,6 +8,9 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 
 #include "cs_renderer_d3d12.hpp"
 #include "cs_animation_tracks.hpp"
@@ -16,6 +19,32 @@
 namespace erov {
 namespace fp = eldenring::fp;
 namespace {
+
+// Decoded-PNG cache. Switching weapons used to decode three 2048x2048 maps on
+// the render thread, which caused a visible hitch. Preload once (at overlay
+// init) and reuse the RGBA buffers for every later switch.
+struct CachedImage {
+    std::vector<uint8_t> rgba;
+    unsigned width{0};
+    unsigned height{0};
+};
+std::mutex g_decode_mutex;
+std::unordered_map<std::string, CachedImage> g_decode_cache;
+
+bool DecodePngCached(const std::string& path, const uint8_t*& rgba, unsigned& width, unsigned& height) {
+    if (path.empty()) return false;
+    std::lock_guard<std::mutex> lock(g_decode_mutex);
+    auto it = g_decode_cache.find(path);
+    if (it == g_decode_cache.end()) {
+        CachedImage image;
+        if (!DecodePngFile(path, image.rgba, image.width, image.height)) return false;
+        it = g_decode_cache.emplace(path, std::move(image)).first;
+    }
+    rgba = it->second.rgba.data();
+    width = it->second.width;
+    height = it->second.height;
+    return rgba != nullptr && width > 0 && height > 0;
+}
 
 constexpr char kCsShader[] = R"hlsl(
 cbuffer Root : register(b0) {
@@ -33,6 +62,12 @@ Texture2D knife_norm_tex  : register(t2);
 Texture2D glove_norm_tex  : register(t3);
 Texture2D knife_pbr_tex   : register(t4);
 Texture2D glove_pbr_tex   : register(t5);
+Texture2D bare_tex        : register(t6);
+Texture2D bare_norm_tex   : register(t7);
+Texture2D bare_pbr_tex    : register(t8);
+Texture2D sleeve_tex      : register(t9);
+Texture2D sleeve_norm_tex : register(t10);
+Texture2D sleeve_pbr_tex  : register(t11);
 SamplerState g_sampler    : register(s0);
 
 struct VSIn {
@@ -115,20 +150,32 @@ float4 PSMain(VSOut i) : SV_Target {
 
     // 1. Albedo & Base Color
     // Genuine CS2 textures: RGB holds diffuse color. Alpha is paint/wear mask (NOT transparency).
-    // Preserve authentic texture RGB at 100% fidelity with enhanced tactical glove micro-contrast.
-    float4 albedo_tex = (is_arm > 0.5) ? glove_tex.Sample(g_sampler, uv) : knife_tex.Sample(g_sampler, uv);
-    if (is_arm > 0.5) {
+    // is_arm: 0 = weapon, 1 = glove, 2 = bare arm skin, 3 = agent sleeve fabric.
+    float4 albedo_tex = (is_arm > 2.5) ? sleeve_tex.Sample(g_sampler, uv)
+                     : (is_arm > 1.5) ? bare_tex.Sample(g_sampler, uv)
+                     : (is_arm > 0.5) ? glove_tex.Sample(g_sampler, uv)
+                     : knife_tex.Sample(g_sampler, uv);
+    if (is_arm > 0.5 && is_arm < 1.5) {
         albedo_tex.rgb = saturate(0.30 + (albedo_tex.rgb - 0.30) * 2.2) * 1.30;
+    } else if (is_arm > 2.5 && is_arm < 3.5) {
+        // Fabric is mid-grey in the CS2 source; a gentle contrast keeps the
+        // weave readable without turning the sleeve into a flat grey tube.
+        albedo_tex.rgb = saturate(0.22 + (albedo_tex.rgb - 0.22) * 1.35) * 1.05;
     }
     albedo_tex.rgb *= tint.rgb;
 
     // 2. Normal Map aligned with DirectX tangent space
-    float4 norm_sample = (is_arm > 0.5) ? glove_norm_tex.Sample(g_sampler, uv) : knife_norm_tex.Sample(g_sampler, uv);
+    float4 norm_sample = (is_arm > 2.5) ? sleeve_norm_tex.Sample(g_sampler, uv)
+                       : (is_arm > 1.5) ? bare_norm_tex.Sample(g_sampler, uv)
+                       : (is_arm > 0.5) ? glove_norm_tex.Sample(g_sampler, uv)
+                       : knife_norm_tex.Sample(g_sampler, uv);
     float3 mapN;
     mapN.x = norm_sample.x * 2.0 - 1.0;
     mapN.y = norm_sample.y * 2.0 - 1.0;
-    if (is_arm > 0.5) {
+    if (is_arm > 0.5 && is_arm < 1.5) {
         mapN.xy *= 1.6;
+    } else if (is_arm > 2.5 && is_arm < 3.5) {
+        mapN.xy *= 1.25;
     }
     mapN.z = sqrt(saturate(1.0 - dot(mapN.xy, mapN.xy)));
 
@@ -136,7 +183,10 @@ float4 PSMain(VSOut i) : SV_Target {
     float3 N = PerturbNormal(N_geom, i.wpos, uv, mapN);
 
     // 3. PBR Maps (ORM: R=AO, G=Roughness, B=Metallic)
-    float4 pbr = (is_arm > 0.5) ? glove_pbr_tex.Sample(g_sampler, uv) : knife_pbr_tex.Sample(g_sampler, uv);
+    float4 pbr = (is_arm > 2.5) ? sleeve_pbr_tex.Sample(g_sampler, uv)
+               : (is_arm > 1.5) ? bare_pbr_tex.Sample(g_sampler, uv)
+               : (is_arm > 0.5) ? glove_pbr_tex.Sample(g_sampler, uv)
+               : knife_pbr_tex.Sample(g_sampler, uv);
     float ao = pbr.r;
     float roughness = clamp(pbr.g, 0.05, 0.98);
     float metallic = clamp(pbr.b, 0.0, 1.0);
@@ -248,10 +298,10 @@ bool CsRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     release();
     log_ = log;
 
-    // Root signature: 44 root constants (b0) + 1 descriptor table (t0..t5: 6 textures) + 1 static sampler (s0)
+    // Root signature: 44 root constants (b0) + 1 descriptor table (t0..t8: 9 textures) + 1 static sampler (s0)
     D3D12_DESCRIPTOR_RANGE range{};
     range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    range.NumDescriptors = 6; // t0: knife_albedo, t1: glove_albedo, t2: knife_norm, t3: glove_norm, t4: knife_pbr, t5: glove_pbr
+    range.NumDescriptors = 12; // t0..t5 knife/glove maps, t6..t8 bare-arm maps, t9..t11 sleeve maps
     range.BaseShaderRegister = 0;
     range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
@@ -353,6 +403,16 @@ void CsRenderer::release() {
     glove_normal_tex_.release();
     knife_pbr_tex_.release();
     glove_pbr_tex_.release();
+    bare_tex_.release();
+    bare_normal_tex_.release();
+    bare_pbr_tex_.release();
+    sleeve_tex_.release();
+    sleeve_normal_tex_.release();
+    sleeve_pbr_tex_.release();
+    {
+        std::lock_guard<std::mutex> lock(clip_durations_mutex_);
+        clip_durations_.clear();
+    }
 }
 
 bool CsRenderer::TextureGpu::create(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
@@ -462,6 +522,30 @@ bool CsRenderer::setGlovePbrTexture(ID3D12Device* device, const uint8_t* rgba, u
     return glove_pbr_tex_.create(device, rgba, width, height, slot);
 }
 
+bool CsRenderer::setBareArmTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    return bare_tex_.create(device, rgba, width, height, slot);
+}
+
+bool CsRenderer::setBareArmNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    return bare_normal_tex_.create(device, rgba, width, height, slot);
+}
+
+bool CsRenderer::setBareArmPbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    return bare_pbr_tex_.create(device, rgba, width, height, slot);
+}
+
+bool CsRenderer::setSleeveTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    return sleeve_tex_.create(device, rgba, width, height, slot);
+}
+
+bool CsRenderer::setSleeveNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    return sleeve_normal_tex_.create(device, rgba, width, height, slot);
+}
+
+bool CsRenderer::setSleevePbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    return sleeve_pbr_tex_.create(device, rgba, width, height, slot);
+}
+
 bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
                                       const std::string& knife_png,
                                       const std::string& glove_png,
@@ -470,7 +554,13 @@ bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
                                       const std::string& knife_norm_png,
                                       const std::string& glove_norm_png,
                                       const std::string& knife_pbr_png,
-                                      const std::string& glove_pbr_png) {
+                                      const std::string& glove_pbr_png,
+                                      const std::string& bare_png,
+                                      const std::string& bare_norm_png,
+                                      const std::string& bare_pbr_png,
+                                      const std::string& sleeve_png,
+                                      const std::string& sleeve_norm_png,
+                                      const std::string& sleeve_pbr_png) {
     if (!device) return false;
 
     const UINT srv_inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -480,12 +570,18 @@ bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
     D3D12_CPU_DESCRIPTOR_HANDLE slot3 = D3D12_CPU_DESCRIPTOR_HANDLE{slot0.ptr + 3 * srv_inc}; // glove_norm
     D3D12_CPU_DESCRIPTOR_HANDLE slot4 = D3D12_CPU_DESCRIPTOR_HANDLE{slot0.ptr + 4 * srv_inc}; // knife_pbr
     D3D12_CPU_DESCRIPTOR_HANDLE slot5 = D3D12_CPU_DESCRIPTOR_HANDLE{slot0.ptr + 5 * srv_inc}; // glove_pbr
+    D3D12_CPU_DESCRIPTOR_HANDLE slot6 = D3D12_CPU_DESCRIPTOR_HANDLE{slot0.ptr + 6 * srv_inc}; // bare albedo
+    D3D12_CPU_DESCRIPTOR_HANDLE slot7 = D3D12_CPU_DESCRIPTOR_HANDLE{slot0.ptr + 7 * srv_inc}; // bare normal
+    D3D12_CPU_DESCRIPTOR_HANDLE slot8 = D3D12_CPU_DESCRIPTOR_HANDLE{slot0.ptr + 8 * srv_inc}; // bare pbr
+    D3D12_CPU_DESCRIPTOR_HANDLE slot9 = D3D12_CPU_DESCRIPTOR_HANDLE{slot0.ptr + 9 * srv_inc}; // sleeve albedo
+    D3D12_CPU_DESCRIPTOR_HANDLE slot10 = D3D12_CPU_DESCRIPTOR_HANDLE{slot0.ptr + 10 * srv_inc}; // sleeve normal
+    D3D12_CPU_DESCRIPTOR_HANDLE slot11 = D3D12_CPU_DESCRIPTOR_HANDLE{slot0.ptr + 11 * srv_inc}; // sleeve pbr
 
     // 1. Knife Base Color (Albedo)
-    std::vector<uint8_t> knife_rgba;
+    const uint8_t* knife_rgba = nullptr;
     unsigned kw = 0, kh = 0;
-    if (!knife_png.empty() && DecodePngFile(knife_png, knife_rgba, kw, kh)) {
-        setKnifeTexture(device, knife_rgba.data(), kw, kh, slot0);
+    if (DecodePngCached(knife_png, knife_rgba, kw, kh)) {
+        setKnifeTexture(device, knife_rgba, kw, kh, slot0);
         if (log_) log_("cs_render: loaded knife texture %s (%ux%u)", knife_png.c_str(), kw, kh);
     } else {
         std::vector<uint8_t> fallback(16 * 16 * 4, 210);
@@ -495,10 +591,10 @@ bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
     }
 
     // 2. Glove Base Color (Albedo)
-    std::vector<uint8_t> glove_rgba;
+    const uint8_t* glove_rgba = nullptr;
     unsigned gw = 0, gh = 0;
-    if (!glove_png.empty() && DecodePngFile(glove_png, glove_rgba, gw, gh)) {
-        setGloveTexture(device, glove_rgba.data(), gw, gh, slot1);
+    if (DecodePngCached(glove_png, glove_rgba, gw, gh)) {
+        setGloveTexture(device, glove_rgba, gw, gh, slot1);
         if (log_) log_("cs_render: loaded glove texture %s (%ux%u)", glove_png.c_str(), gw, gh);
     } else {
         std::vector<uint8_t> fallback(16 * 16 * 4, 45);
@@ -509,6 +605,91 @@ bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
 
     std::filesystem::path kp(knife_png);
     std::filesystem::path gp(glove_png);
+
+    // 2.1 Bare-arm skin (forearm / upper-arm sleeve). Material 1 of the CS2
+    // glove model, not the glove material.
+    const uint8_t* bare_rgba = nullptr;
+    unsigned bw = 0, bh = 0;
+    if (DecodePngCached(bare_png, bare_rgba, bw, bh)) {
+        setBareArmTexture(device, bare_rgba, bw, bh, slot6);
+        if (log_) log_("cs_render: loaded bare-arm texture %s (%ux%u)", bare_png.c_str(), bw, bh);
+    } else {
+        std::vector<uint8_t> fallback(16 * 16 * 4);
+        for (size_t p = 0; p < fallback.size(); p += 4) {
+            fallback[p] = 178; fallback[p + 1] = 145; fallback[p + 2] = 124; fallback[p + 3] = 255;
+        }
+        setBareArmTexture(device, fallback.data(), 16, 16, slot6);
+        if (log_) log_("cs_render: bare-arm texture not found, using skin fallback");
+    }
+
+    const uint8_t* bare_norm_rgba = nullptr;
+    unsigned bnw = 0, bnh = 0;
+    if (DecodePngCached(bare_norm_png, bare_norm_rgba, bnw, bnh)) {
+        setBareArmNormalTexture(device, bare_norm_rgba, bnw, bnh, slot7);
+        if (log_) log_("cs_render: loaded bare-arm normal %s (%ux%u)", bare_norm_png.c_str(), bnw, bnh);
+    } else {
+        std::vector<uint8_t> flat_norm(16 * 16 * 4);
+        for (size_t p = 0; p < flat_norm.size(); p += 4) {
+            flat_norm[p] = 128; flat_norm[p + 1] = 128; flat_norm[p + 2] = 255; flat_norm[p + 3] = 255;
+        }
+        setBareArmNormalTexture(device, flat_norm.data(), 16, 16, slot7);
+    }
+
+    const uint8_t* bare_pbr_rgba = nullptr;
+    unsigned bpw = 0, bph = 0;
+    if (DecodePngCached(bare_pbr_png, bare_pbr_rgba, bpw, bph)) {
+        setBareArmPbrTexture(device, bare_pbr_rgba, bpw, bph, slot8);
+        if (log_) log_("cs_render: loaded bare-arm ORM %s (%ux%u)", bare_pbr_png.c_str(), bpw, bph);
+    } else {
+        std::vector<uint8_t> fallback(16 * 16 * 4);
+        for (size_t p = 0; p < fallback.size(); p += 4) {
+            fallback[p] = 255; fallback[p + 1] = 180; fallback[p + 2] = 0; fallback[p + 3] = 255;
+        }
+        setBareArmPbrTexture(device, fallback.data(), 16, 16, slot8);
+    }
+
+    // 2.2 Agent uniform sleeve (fabric). The sleeve is a distinct material
+    // from the bare-arm skin; binding it here keeps the upper arms from
+    // looking like a pale mannequin.
+    const uint8_t* sleeve_rgba = nullptr;
+    unsigned sw = 0, sh = 0;
+    if (DecodePngCached(sleeve_png, sleeve_rgba, sw, sh)) {
+        setSleeveTexture(device, sleeve_rgba, sw, sh, slot9);
+        if (log_) log_("cs_render: loaded sleeve texture %s (%ux%u)", sleeve_png.c_str(), sw, sh);
+    } else {
+        std::vector<uint8_t> fallback(16 * 16 * 4);
+        for (size_t p = 0; p < fallback.size(); p += 4) {
+            fallback[p] = 76; fallback[p + 1] = 82; fallback[p + 2] = 76; fallback[p + 3] = 255;
+        }
+        setSleeveTexture(device, fallback.data(), 16, 16, slot9);
+        if (log_) log_("cs_render: sleeve texture not found, using fabric fallback");
+    }
+
+    const uint8_t* sleeve_norm_rgba = nullptr;
+    unsigned snw = 0, snh = 0;
+    if (DecodePngCached(sleeve_norm_png, sleeve_norm_rgba, snw, snh)) {
+        setSleeveNormalTexture(device, sleeve_norm_rgba, snw, snh, slot10);
+        if (log_) log_("cs_render: loaded sleeve normal %s (%ux%u)", sleeve_norm_png.c_str(), snw, snh);
+    } else {
+        std::vector<uint8_t> flat_norm(16 * 16 * 4);
+        for (size_t p = 0; p < flat_norm.size(); p += 4) {
+            flat_norm[p] = 128; flat_norm[p + 1] = 128; flat_norm[p + 2] = 255; flat_norm[p + 3] = 255;
+        }
+        setSleeveNormalTexture(device, flat_norm.data(), 16, 16, slot10);
+    }
+
+    const uint8_t* sleeve_pbr_rgba = nullptr;
+    unsigned spw = 0, sph = 0;
+    if (DecodePngCached(sleeve_pbr_png, sleeve_pbr_rgba, spw, sph)) {
+        setSleevePbrTexture(device, sleeve_pbr_rgba, spw, sph, slot11);
+        if (log_) log_("cs_render: loaded sleeve ORM %s (%ux%u)", sleeve_pbr_png.c_str(), spw, sph);
+    } else {
+        std::vector<uint8_t> fallback(16 * 16 * 4);
+        for (size_t p = 0; p < fallback.size(); p += 4) {
+            fallback[p] = 255; fallback[p + 1] = 200; fallback[p + 2] = 0; fallback[p + 3] = 255;
+        }
+        setSleevePbrTexture(device, fallback.data(), 16, 16, slot11);
+    }
 
     auto findExistingFile = [](const std::filesystem::path& base_p, const std::string& explicit_override,
                                const std::string& subfolder, const std::string& filename) -> std::string {
@@ -538,10 +719,10 @@ bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
     bool knife_norm_loaded = false;
     std::string kn_path = findExistingFile(kp, knife_norm_png, "knife_butterfly", "default_normal_tga_4fc2d3dd.png");
     if (!kn_path.empty()) {
-        std::vector<uint8_t> kn_rgba;
+        const uint8_t* kn_rgba = nullptr;
         unsigned kn_w = 0, kn_h = 0;
-        if (DecodePngFile(kn_path, kn_rgba, kn_w, kn_h)) {
-            setKnifeNormalTexture(device, kn_rgba.data(), kn_w, kn_h, slot2);
+        if (DecodePngCached(kn_path, kn_rgba, kn_w, kn_h)) {
+            setKnifeNormalTexture(device, kn_rgba, kn_w, kn_h, slot2);
             knife_norm_loaded = true;
             if (log_) log_("cs_render: loaded knife normal map %s (%ux%u)", kn_path.c_str(), kn_w, kn_h);
         }
@@ -561,10 +742,10 @@ bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
     bool glove_norm_loaded = false;
     std::string gn_path = findExistingFile(gp, glove_norm_png, "glove_hardknuckle", "glove_hardknuckle_normal_tga_a8df881b.png");
     if (!gn_path.empty()) {
-        std::vector<uint8_t> gn_rgba;
+        const uint8_t* gn_rgba = nullptr;
         unsigned gn_w = 0, gn_h = 0;
-        if (DecodePngFile(gn_path, gn_rgba, gn_w, gn_h)) {
-            setGloveNormalTexture(device, gn_rgba.data(), gn_w, gn_h, slot3);
+        if (DecodePngCached(gn_path, gn_rgba, gn_w, gn_h)) {
+            setGloveNormalTexture(device, gn_rgba, gn_w, gn_h, slot3);
             glove_norm_loaded = true;
             if (log_) log_("cs_render: loaded glove normal map %s (%ux%u)", gn_path.c_str(), gn_w, gn_h);
         }
@@ -583,10 +764,10 @@ bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
     // 5. Knife PBR Map (ORM: R=AO, G=Roughness, B=Metallic)
     bool knife_pbr_loaded = false;
     if (!knife_pbr_png.empty() && std::filesystem::exists(knife_pbr_png)) {
-        std::vector<uint8_t> pbr_rgba;
+        const uint8_t* pbr_rgba = nullptr;
         unsigned pw = 0, ph = 0;
-        if (DecodePngFile(knife_pbr_png, pbr_rgba, pw, ph)) {
-            setKnifePbrTexture(device, pbr_rgba.data(), pw, ph, slot4);
+        if (DecodePngCached(knife_pbr_png, pbr_rgba, pw, ph)) {
+            setKnifePbrTexture(device, pbr_rgba, pw, ph, slot4);
             knife_pbr_loaded = true;
             if (log_) log_("cs_render: loaded knife PBR map %s (%ux%u)", knife_pbr_png.c_str(), pw, ph);
         }
@@ -594,15 +775,16 @@ bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
     if (!knife_pbr_loaded) {
         std::string kr_path = findExistingFile(kp, "", "knife_butterfly", "knife_butterfly_rough_psd_80f06397.png");
         std::string kao_path = findExistingFile(kp, "", "knife_butterfly", "knife_butterfly_ao_psd_496afc91.png");
-        std::vector<uint8_t> r_rgba, ao_rgba;
+        const uint8_t* r_rgba = nullptr;
+        const uint8_t* ao_rgba = nullptr;
         unsigned rw = 0, rh = 0, aow = 0, aoh = 0;
-        bool has_r = !kr_path.empty() && DecodePngFile(kr_path, r_rgba, rw, rh);
-        bool has_ao = !kao_path.empty() && DecodePngFile(kao_path, ao_rgba, aow, aoh);
+        bool has_r = DecodePngCached(kr_path, r_rgba, rw, rh);
+        bool has_ao = DecodePngCached(kao_path, ao_rgba, aow, aoh);
         if (has_r || has_ao) {
             std::vector<uint8_t> orm;
             unsigned orm_w = 0, orm_h = 0;
-            if (eldenring::cs::packOrmTexture(has_ao ? ao_rgba.data() : nullptr, aow, aoh,
-                                              has_r ? r_rgba.data() : nullptr, rw, rh,
+            if (eldenring::cs::packOrmTexture(has_ao ? ao_rgba : nullptr, aow, aoh,
+                                              has_r ? r_rgba : nullptr, rw, rh,
                                               216 /* metallic=0.85 */, orm, orm_w, orm_h)) {
                 setKnifePbrTexture(device, orm.data(), orm_w, orm_h, slot4);
                 knife_pbr_loaded = true;
@@ -625,22 +807,22 @@ bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
     // 6. Glove PBR Map (ORM)
     bool glove_pbr_loaded = false;
     if (!glove_pbr_png.empty() && std::filesystem::exists(glove_pbr_png)) {
-        std::vector<uint8_t> pbr_rgba;
+        const uint8_t* pbr_rgba = nullptr;
         unsigned pw = 0, ph = 0;
-        if (DecodePngFile(glove_pbr_png, pbr_rgba, pw, ph)) {
-            setGlovePbrTexture(device, pbr_rgba.data(), pw, ph, slot5);
+        if (DecodePngCached(glove_pbr_png, pbr_rgba, pw, ph)) {
+            setGlovePbrTexture(device, pbr_rgba, pw, ph, slot5);
             glove_pbr_loaded = true;
             if (log_) log_("cs_render: loaded glove PBR map %s (%ux%u)", glove_pbr_png.c_str(), pw, ph);
         }
     }
     if (!glove_pbr_loaded) {
         std::string gao_path = findExistingFile(gp, "", "glove_hardknuckle", "glove_hardknuckle_ao_psd_5be17a0d.png");
-        std::vector<uint8_t> ao_rgba;
+        const uint8_t* ao_rgba = nullptr;
         unsigned aow = 0, aoh = 0;
-        if (!gao_path.empty() && DecodePngFile(gao_path, ao_rgba, aow, aoh)) {
+        if (DecodePngCached(gao_path, ao_rgba, aow, aoh)) {
             std::vector<uint8_t> orm;
             unsigned orm_w = 0, orm_h = 0;
-            if (eldenring::cs::packOrmTexture(ao_rgba.data(), aow, aoh, nullptr, 0, 0,
+            if (eldenring::cs::packOrmTexture(ao_rgba, aow, aoh, nullptr, 0, 0,
                                               12 /* metallic=0.05 */, orm, orm_w, orm_h)) {
                 setGlovePbrTexture(device, orm.data(), orm_w, orm_h, slot5);
                 glove_pbr_loaded = true;
@@ -669,6 +851,9 @@ bool CsRenderer::loadModel(ID3D12Device* device, const std::string& path) {
         if (log_) log_("cs_render: failed to load CSVM file from %s", path.c_str());
         return false;
     }
+    if (log_) log_("cs_render: CSVM parsed from %s: %u verts, %u indices, %zu submeshes, %zu clips",
+                   path.c_str(), model_.header_.total_vertices, model_.header_.total_indices,
+                   model_.submeshes.size(), model_.anim_clips.size());
 
     Rel(vb_);
     Rel(ib_);
@@ -703,7 +888,12 @@ bool CsRenderer::loadModel(ID3D12Device* device, const std::string& path) {
             submesh_types_[i] = SubmeshType::HandleRear;
         } else if (n.find("lock") != std::string::npos || n.find("latch") != std::string::npos) {
             submesh_types_[i] = SubmeshType::Lock;
-        } else if (n.find("arm") != std::string::npos || n.find("glove") != std::string::npos) {
+        } else if (n.find("sleeve") != std::string::npos) {
+            submesh_types_[i] = SubmeshType::Sleeve;
+        } else if (n.find("arm_upper") != std::string::npos || n.find("arm_lower") != std::string::npos) {
+            submesh_types_[i] = SubmeshType::BareArm;
+        } else if (n.find("arm") != std::string::npos || n.find("glove") != std::string::npos ||
+                   n.find("hand") != std::string::npos) {
             submesh_types_[i] = SubmeshType::Arms;
         } else {
             submesh_types_[i] = SubmeshType::Base;
@@ -711,6 +901,19 @@ bool CsRenderer::loadModel(ID3D12Device* device, const std::string& path) {
     }
 
     animator_.setModel(&model_);
+    {
+        // Publish clip durations for the input thread. The render thread owns
+        // model_; the dispatcher must never walk anim_clips concurrently.
+        std::lock_guard<std::mutex> lock(clip_durations_mutex_);
+        clip_durations_.clear();
+        for (const auto& entry : model_.anim_clips) {
+            const auto& clip = entry.second;
+            if (clip.fps > 0.f && clip.frame_count > 1) {
+                clip_durations_[entry.first] =
+                    static_cast<float>(clip.frame_count - 1) / clip.fps;
+            }
+        }
+    }
     if (log_) log_("cs_render: CSVM model loaded: %u vertices, %u indices, %zu submeshes, %zu anim clips",
                    model_.header_.total_vertices, model_.header_.total_indices, model_.submeshes.size(), model_.anim_clips.size());
     return true;
@@ -719,11 +922,13 @@ bool CsRenderer::loadModel(ID3D12Device* device, const std::string& path) {
 bool CsRenderer::loadWeapon(ID3D12Device* device, const eldenring::cs::CSWeaponDefinition& def) {
     active_weapon_def_ = def;
     has_active_weapon_ = true;
+    bool ok = true;
     if (!def.model_csvm_path.empty()) {
-        loadModel(device, def.model_csvm_path);
+        ok = loadModel(device, def.model_csvm_path);
     }
-    if (log_) log_("cs_render: loaded weapon '%s' (%s, slot %d)", def.id.c_str(), def.display_name.c_str(), static_cast<int>(def.slot));
-    return true;
+    if (log_) log_("cs_render: loaded weapon '%s' (%s, slot %d) -> %s", def.id.c_str(), def.display_name.c_str(),
+                   static_cast<int>(def.slot), ok ? "ok" : "FAILED");
+    return ok;
 }
 
 bool CsRenderer::loadWeaponTextures(ID3D12Device* device,
@@ -736,29 +941,63 @@ bool CsRenderer::loadWeaponTextures(ID3D12Device* device,
     D3D12_CPU_DESCRIPTOR_HANDLE pbr_slot{weapon_slot.ptr + 4 * srv_inc};
 
     bool any_loaded = false;
-    std::vector<uint8_t> rgba;
+    const uint8_t* rgba = nullptr;
     unsigned width = 0, height = 0;
 
-    if (!def.albedo_tex_path.empty() && DecodePngFile(def.albedo_tex_path, rgba, width, height)) {
-        setKnifeTexture(device, rgba.data(), width, height, weapon_slot);
+    if (DecodePngCached(def.albedo_tex_path, rgba, width, height)) {
+        setKnifeTexture(device, rgba, width, height, weapon_slot);
         any_loaded = true;
         if (log_) log_("cs_render: weapon albedo %s (%ux%u)", def.albedo_tex_path.c_str(), width, height);
     }
-    if (!def.normal_tex_path.empty() && DecodePngFile(def.normal_tex_path, rgba, width, height)) {
-        setKnifeNormalTexture(device, rgba.data(), width, height, normal_slot);
+    if (DecodePngCached(def.normal_tex_path, rgba, width, height)) {
+        setKnifeNormalTexture(device, rgba, width, height, normal_slot);
         any_loaded = true;
         if (log_) log_("cs_render: weapon normal %s (%ux%u)", def.normal_tex_path.c_str(), width, height);
     }
-    if (!def.pbr_tex_path.empty() && DecodePngFile(def.pbr_tex_path, rgba, width, height)) {
-        setKnifePbrTexture(device, rgba.data(), width, height, pbr_slot);
+    if (DecodePngCached(def.pbr_tex_path, rgba, width, height)) {
+        setKnifePbrTexture(device, rgba, width, height, pbr_slot);
         any_loaded = true;
         if (log_) log_("cs_render: weapon ORM %s (%ux%u)", def.pbr_tex_path.c_str(), width, height);
     }
     return any_loaded;
 }
 
-void CsRenderer::tick(float dt, uint8_t state, float anim_time) {
-    animator_.tick(dt, state, anim_time);
+bool CsRenderer::preloadTexture(const std::string& path) {
+    const uint8_t* rgba = nullptr;
+    unsigned width = 0, height = 0;
+    const bool ok = DecodePngCached(path, rgba, width, height);
+    if (ok && log_) log_("cs_render: preloaded texture %s (%ux%u)", path.c_str(), width, height);
+    return ok;
+}
+
+float CsRenderer::clipDuration(const char* name) const {
+    if (name == nullptr) return 0.f;
+    std::lock_guard<std::mutex> lock(clip_durations_mutex_);
+    const auto it = clip_durations_.find(name);
+    return (it != clip_durations_.end()) ? it->second : 0.f;
+}
+
+void CsRenderer::tick(float dt, uint8_t state, float anim_time, uint8_t variant, bool hit) {
+    animator_.tick(dt, state, anim_time, variant, hit);
+}
+
+bool CsRenderer::muzzleScreen(unsigned width, unsigned height, float& out_x, float& out_y) const {
+    const eldenring::fp::M4* track = animator_.currentPose().findTrack("muzzle");
+    if (track == nullptr) return false;
+
+    // The muzzle track is a viewmodel-space transform; toHost gives the row-vector world matrix the
+    // renderer uses. Its translation is the muzzle position, then the viewmodel projection maps it.
+    const mc::rig::Mat4 world = eldenring::fp::toHost(*track);
+    const mc::rig::Mat4 proj = computeViewmodelProjection(width, height);
+    const float p[4] = {world.m[12], world.m[13], world.m[14], 1.f};
+    float clip[4];
+    for (int j = 0; j < 4; ++j) {
+        clip[j] = p[0] * proj.m[j] + p[1] * proj.m[4 + j] + p[2] * proj.m[8 + j] + p[3] * proj.m[12 + j];
+    }
+    if (!(clip[3] > 0.05f)) return false;
+    out_x = (clip[0] / clip[3] * 0.5f + 0.5f) * static_cast<float>(width);
+    out_y = (0.5f - clip[1] / clip[3] * 0.5f) * static_cast<float>(height);
+    return true;
 }
 
 void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
@@ -785,6 +1024,12 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
     glove_normal_tex_.recordUpload(list);
     knife_pbr_tex_.recordUpload(list);
     glove_pbr_tex_.recordUpload(list);
+    bare_tex_.recordUpload(list);
+    bare_normal_tex_.recordUpload(list);
+    bare_pbr_tex_.recordUpload(list);
+    sleeve_tex_.recordUpload(list);
+    sleeve_normal_tex_.recordUpload(list);
+    sleeve_pbr_tex_.recordUpload(list);
 
     list->SetPipelineState(pso_);
     list->SetGraphicsRootSignature(root_);
@@ -812,7 +1057,9 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
 
         fp::M4 pose = animator_.basePose();
         float tint[4] = {0.25f, 0.25f, 0.28f, 1.0f};
-        const float is_arm = (type == SubmeshType::Arms) ? 1.0f : 0.0f;
+        const float is_arm = (type == SubmeshType::Sleeve) ? 3.0f
+                           : (type == SubmeshType::BareArm) ? 2.0f
+                           : (type == SubmeshType::Arms) ? 1.0f : 0.0f;
 
         // CSVM v3: a submesh follows the animation track named after its bone.
         // Knife arms_glove maps to the legacy "arms" track; gun arms_L/arms_R
@@ -841,6 +1088,9 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
                 case SubmeshType::Arms:
                     pose = animator_.armsPose();
                     break;
+                case SubmeshType::Sleeve:
+                    pose = animator_.armsPose();
+                    break;
                 case SubmeshType::Base:
                 default:
                     pose = animator_.basePose();
@@ -848,7 +1098,10 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
             }
         }
 
-        const bool has_tex = (type == SubmeshType::Arms) ? (glove_tex_.tex != nullptr) : (knife_tex_.tex != nullptr);
+        const bool has_tex = (type == SubmeshType::Sleeve) ? (sleeve_tex_.tex != nullptr)
+                           : (type == SubmeshType::BareArm) ? (bare_tex_.tex != nullptr)
+                           : (type == SubmeshType::Arms) ? (glove_tex_.tex != nullptr)
+                           : (knife_tex_.tex != nullptr);
         eldenring::cs::getEffectiveSubmeshTint(type, has_tex, tint);
 
         const mc::rig::Mat4 world = fp::toHost(pose);

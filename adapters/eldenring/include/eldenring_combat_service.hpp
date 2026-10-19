@@ -24,6 +24,9 @@
 #include "eldenring_melee.hpp"
 #include "eldenring_los.hpp"
 #include "eldenring_entity_manager.hpp"
+#if ENABLE_CS2_VIEWMODEL
+#include "cs_ballistics.hpp"
+#endif
 #include "mc/combat.hpp"
 #include "mc/inventory.hpp"
 
@@ -102,6 +105,7 @@ struct CombatCallbacks {
     std::function<bool(uintptr_t dmg_module, uintptr_t attacker, void* ctx_ptr)> call_vfunc7;
     std::function<void(const char* sound, float vol)> play_sound;
     std::function<void(int fx_kind, const float pos[3], int count)> spawn_fx;
+    std::function<void(const float from[3], const float to[3], float life_s)> spawn_tracer;
     std::function<void(const std::string&)> log;
     const IMemoryReader* reader{nullptr};
     uintptr_t image_base{0};
@@ -111,6 +115,19 @@ struct CombatCallbacks {
     std::function<bool()> is_falling;
     std::function<bool(const std::string& path)> file_exists;
 };
+
+#if ENABLE_CS2_VIEWMODEL
+// One hitscan bullet: where it came from, where it stopped, what it hit and the ER damage queued.
+struct CsShotResult {
+    bool fired{false};
+    bool hit{false};
+    uintptr_t victim_chr{0};
+    float distance{0.f};
+    int er_damage{0};
+    float from[3]{};
+    float to[3]{};
+};
+#endif
 
 class CombatService {
 public:
@@ -172,6 +189,11 @@ public:
     // Bullet firing & aim calibration
     void runBulletFire(RuntimeContext& ctx);
     bool queueBulletFire(float mc_damage, RuntimeContext& ctx);
+#if ENABLE_CS2_VIEWMODEL
+    // CS hitscan: spread -> torso ray -> LOS -> DamageQueue. Called on the input thread; the damage is
+    // applied by the existing drain on the game thread. Returns what the bullet did for logging/tracers.
+    CsShotResult fireCsShot(const eldenring::cs::CsShotParams& params, DamageQueue& queue, uint64_t tick, RuntimeContext& ctx);
+#endif
     void aimCalStart(uint64_t manager, uint32_t handle, const float dir[3]);
     void aimCalTick();
     const AimCalState& aimCalState() const { return aimcal_; }

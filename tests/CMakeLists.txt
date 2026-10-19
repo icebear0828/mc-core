@@ -97,6 +97,7 @@ add_executable(mc_tests
 if(ENABLE_CS2_VIEWMODEL)
     target_sources(mc_tests PRIVATE
         test_cs_viewmodel.cpp
+        test_cs_ballistics.cpp
         ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/cs_weapon_registry.cpp
     )
 endif()

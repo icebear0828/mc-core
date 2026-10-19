@@ -17,6 +17,8 @@ struct HotkeyCallbacks {
     std::function<bool(uintptr_t, float[3])> read_physics_pos;
     std::function<void(const char*, float)> play_sound;
     std::function<void(const std::string&)> log;
+    // Duration (seconds) of a clip in the active CS viewmodel, or 0 when absent.
+    std::function<float(const char*)> clip_duration;
 
     // DirectInput / input hook wrappers
     std::function<bool()> take_left_click;
@@ -40,6 +42,8 @@ struct HotkeyCallbacks {
     std::function<void(float charged)> click_attack;
     std::function<void()> enqueue_nearest_hostile;
     std::function<bool(float damage)> queue_bullet_fire;
+    // CS hitscan: damage, cone spread (degrees), max range (metres), tracer every N rounds, weapon slot.
+    std::function<bool(float damage, float spread_deg, float max_range_m, uint32_t tracer_frequency, uint8_t weapon_slot)> queue_cs_shot;
     std::function<bool(const char* reason)> queue_summon;
     std::function<void(int& cursor)> cycle_hidden_slot;
     std::function<void(int& cursor)> reset_slot_probe;
@@ -108,6 +112,7 @@ private:
     bool prev_gameplay_f_{false};
     bool prev_reload_r_{false};
     float cs_fire_cooldown_{0.f};
+    float cs_since_shot_{10.f}; // seconds since the last CS round: the first shot is accurate
 };
 
 } // namespace eldenring::input

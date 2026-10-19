@@ -136,6 +136,7 @@ CSWeaponDefinition CSWeaponRegistry::createAK47Definition() {
     w.audio.inspect_sound = "sounds/weapons/ak47/ak47_inspect.wav";
 
     w.ballistics.damage = 36.0f;
+    w.ballistics.tracer_frequency = 3;
     w.ballistics.fire_rate_rpm = 600.0f;
     w.ballistics.max_range_meters = 300.0f;
     w.ballistics.spread_deg = 0.45f;
@@ -171,6 +172,7 @@ CSWeaponDefinition CSWeaponRegistry::createAWPDefinition() {
     w.audio.inspect_sound = "sounds/weapons/awp/awp_inspect.wav";
 
     w.ballistics.damage = 115.0f;
+    w.ballistics.tracer_frequency = 1;
     w.ballistics.fire_rate_rpm = 41.0f;
     w.ballistics.max_range_meters = 500.0f;
     w.ballistics.spread_deg = 0.05f;
@@ -206,6 +208,7 @@ CSWeaponDefinition CSWeaponRegistry::createM4A1SDefinition() {
     w.audio.inspect_sound = "sounds/weapons/m4a1_silencer/m4a1_inspect.wav";
 
     w.ballistics.damage = 38.0f;
+    w.ballistics.tracer_frequency = 3;
     w.ballistics.fire_rate_rpm = 600.0f;
     w.ballistics.max_range_meters = 350.0f;
     w.ballistics.spread_deg = 0.35f;

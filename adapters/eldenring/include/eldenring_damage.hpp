@@ -137,6 +137,7 @@ struct DamageRequest {
     int32_t base_damage{0};
     uint64_t enqueued_tick{0};
     uint32_t tag{0}; // caller's cookie, returned unchanged in the result (bit 0: the hit was an MC critical)
+    bool skip_line_of_sight{false}; // the caller already traced the actual shot ray (CS hitscan)
 };
 
 struct DamageResult {
@@ -172,10 +173,11 @@ class DamageQueue {
 public:
     static constexpr size_t kCapacity = 64;
 
-    bool enqueue(uintptr_t victim_chr, int32_t base_damage, uint64_t tick, uint32_t tag = 0) {
+    bool enqueue(uintptr_t victim_chr, int32_t base_damage, uint64_t tick, uint32_t tag = 0,
+                 bool skip_line_of_sight = false) {
         std::lock_guard<std::mutex> g(m_);
         if (q_.size() >= kCapacity) return false;
-        q_.push_back({victim_chr, base_damage, tick, tag});
+        q_.push_back({victim_chr, base_damage, tick, tag, skip_line_of_sight});
         return true;
     }
     [[nodiscard]] size_t pending() const {
@@ -295,7 +297,7 @@ private:
             return DamageOutcome::Deferred;
         }
 
-        if (ctx.line_of_sight) {
+        if (!r.skip_line_of_sight && ctx.line_of_sight) {
             float player_feet[3];
             if (detail::readPhysicsPosition(rd, base, player_chr, player_feet) && !ctx.line_of_sight(player_feet, pos)) {
                 return DamageOutcome::NoLineOfSight;
