@@ -25,7 +25,7 @@ inline constexpr uint32_t kCsShotTag = 8u;
 
 struct CsShotParams {
     float damage{36.f};          // CS damage of one bullet (AK-47 = 36)
-    float spread_deg{0.45f};     // full cone angle in degrees (WeaponBallistics::spread_deg)
+    float spread_deg{0.45f};     // cone half-angle in degrees (WeaponBallistics::spread_deg)
     float max_range_m{300.f};    // bullets stop here
     float falloff_start{0.5f};   // fraction of max_range where damage starts to drop
     float min_damage_scale{0.5f};// damage multiplier at max_range

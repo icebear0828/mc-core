@@ -812,8 +812,8 @@ void EnqueueNearestHostile() {
 }
 
 // MC left click: the hostile enemy under the crosshair, in melee reach.
-void ClickAttack(float charged) {
-    eldenring::combat::CombatService::Instance().clickAttack(
+bool ClickAttack(float charged) {
+    return eldenring::combat::CombatService::Instance().clickAttack(
         charged, g_melee, g_combat_engine, g_queue, eldenring::RuntimeContext::Instance());
 }
 
@@ -1643,12 +1643,15 @@ void SetupBulletLog() {
     const bool proj_log = FileExists(g_game_dir + "mc_er_bulletlog.txt");
     const bool arrow_dmg = FileExists(g_game_dir + "mc_er_arrowdmg.txt");
     const bool fire_enabled = FileExists(g_game_dir + "mc_er_bulletfire.txt");
+    const bool cs_shot_log = FileExists(g_game_dir + "mc_er_csshotlog.txt");
     g_proj_log.store(proj_log);
     g_arrow_damage.store(arrow_dmg);
     g_bullet_fire_enabled.store(fire_enabled);
     eldenring::combat::CombatService::Instance().setAimCalEnabled(FileExists(g_game_dir + "mc_er_aimcal.txt"));
     eldenring::combat::CombatService::Instance().setArrowDamage(arrow_dmg);
     eldenring::combat::CombatService::Instance().setBulletFireEnabled(fire_enabled);
+    eldenring::combat::CombatService::Instance().setCsShotLogEnabled(cs_shot_log);
+    if (cs_shot_log) Log("cs: mc_er_csshotlog.txt: every CS hitscan shot is logged");
     if (arrow_dmg) Log("bullet: mc_er_arrowdmg.txt: the player's bolts do MC bolt damage (9, balanced like the diamond sword)");
     if (fire_enabled) LoadBulletTemplate();
     if (!fire_enabled && !proj_log) return;

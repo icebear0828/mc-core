@@ -524,25 +524,25 @@ bool CombatService::playerCanSee(const float player_feet[3], const float victim_
     return visible;
 }
 
-void CombatService::clickAttack(float charged, MeleeController& melee, CombatEngine& engine, DamageQueue& queue, RuntimeContext& ctx) {
+bool CombatService::clickAttack(float charged, MeleeController& melee, CombatEngine& engine, DamageQueue& queue, RuntimeContext& ctx) {
     CameraPose cam;
     if (!callbacks_.read_camera || !callbacks_.read_camera(cam)) {
         log("click: no camera or player");
-        return;
+        return false;
     }
     const uintptr_t player = callbacks_.get_player_chr ? callbacks_.get_player_chr() : 0;
     if (player == 0 || !callbacks_.read_physics_pos) {
         log("click: no camera or player");
-        return;
+        return false;
     }
     float feet[3] = {};
     if (!callbacks_.read_physics_pos(player, feet)) {
         log("click: no camera or player");
-        return;
+        return false;
     }
 
     const float cam_rel[3] = {cam.position[0] - feet[0], cam.position[1] - feet[1], cam.position[2] - feet[2]};
-    if (!callbacks_.reader) return;
+    if (!callbacks_.reader) return false;
     const uint64_t now_tick = GetTickCount64();
     const auto pick_res = EntityManager::instance().pickTargetWithFallback(
         cam_rel, cam.forward, *callbacks_.reader, callbacks_.image_base, now_tick, feet);
@@ -567,7 +567,7 @@ void CombatService::clickAttack(float charged, MeleeController& melee, CombatEng
         snprintf(detail_buf + dn, sizeof(detail_buf) - static_cast<size_t>(dn), " ]");
         log("click: no target (cam_rel %.1f %.1f %.1f, fwd %.2f %.2f %.2f, entities<=8m: %s)",
             cam_rel[0], cam_rel[1], cam_rel[2], cam.forward[0], cam.forward[1], cam.forward[2], detail_buf);
-        return;
+        return false;
     }
 
     const EnemyInfo& e = list[static_cast<size_t>(idx)];
@@ -617,6 +617,7 @@ void CombatService::clickAttack(float charged, MeleeController& melee, CombatEng
             log("click: sweep splash hit %d secondary targets within %.1fm", sweep_count, r_max);
         }
     }
+    return dmg > 0;
 }
 
 void CombatService::enqueueNearestHostile(DamageQueue& queue, uint64_t tick, float max_dist) {
@@ -822,12 +823,13 @@ CsShotResult CombatService::fireCsShot(const eldenring::cs::CsShotParams& params
     CsShotResult out;
     if (!ctx.mode().cs_mode.load(std::memory_order_relaxed)) return out;
     if (!callbacks_.get_player_chr || !callbacks_.read_camera || !callbacks_.read_physics_pos) return out;
+    const bool shot_log = cs_shot_log_enabled_.load(std::memory_order_relaxed);
 
     const uintptr_t player = callbacks_.get_player_chr();
     CameraPose cam{};
     float feet[3]{};
     if (player == 0 || !callbacks_.read_camera(cam) || !callbacks_.read_physics_pos(player, feet)) {
-        log("CS-SHOT: camera or player unavailable");
+        if (shot_log) log("CS-SHOT: camera or player unavailable");
         return out;
     }
 
@@ -868,10 +870,10 @@ CsShotResult CombatService::fireCsShot(const eldenring::cs::CsShotParams& params
             out.distance = trace.distance;
             out.er_damage = er_damage;
             for (int i = 0; i < 3; ++i) out.to[i] = cam.position[i] + dir[i] * trace.distance;
-            log("CS-SHOT: hit chr=%p npc=%d dist=%.1f m cs=%.1f er=%d queued=%d",
+            if (shot_log) log("CS-SHOT: hit chr=%p npc=%d dist=%.1f m cs=%.1f er=%d queued=%d",
                 reinterpret_cast<void*>(victim.chr), victim.npc_id, trace.distance, params.damage, er_damage, queued ? 1 : 0);
         } else {
-            log("CS-SHOT: target chr=%p blocked by static geometry at %.1f m", reinterpret_cast<void*>(victim.chr), trace.distance);
+            if (shot_log) log("CS-SHOT: target chr=%p blocked by static geometry at %.1f m", reinterpret_cast<void*>(victim.chr), trace.distance);
         }
     }
 
@@ -887,7 +889,7 @@ CsShotResult CombatService::fireCsShot(const eldenring::cs::CsShotParams& params
     }
 
     if (!out.hit) {
-        log("CS-SHOT: miss cs=%.1f spread=%.2f dir=(%.3f %.3f %.3f)", params.damage, params.spread_deg, dir[0], dir[1], dir[2]);
+        if (shot_log) log("CS-SHOT: miss cs=%.1f spread=%.2f dir=(%.3f %.3f %.3f)", params.damage, params.spread_deg, dir[0], dir[1], dir[2]);
     }
 
     // CS2 shows a tracer every N rounds (AK/M4: 3, AWP: 1), not on every bullet.

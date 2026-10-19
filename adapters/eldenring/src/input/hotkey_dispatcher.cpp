@@ -487,9 +487,9 @@ void HotkeyDispatcher::tick(float dt) {
             const bool d = queryKey('1' + i);
             if (d && !prev_digit_[i]) {
 #if ENABLE_CS2_VIEWMODEL
-                if (mode.cs_mode.load() && i < 3) {
-                    // CS arsenal slots: 1 = AK-47, 2 = AWP, 3 = butterfly knife
-                    const uint8_t slot = (i == 0) ? 1 : (i == 1) ? 2 : 0;
+                if (mode.cs_mode.load() && i < 4) {
+                    // CS arsenal slots: 1 = AK-47, 2 = AWP, 3 = butterfly knife, 4 = M4A1-S
+                    const uint8_t slot = (i == 0) ? 1 : (i == 1) ? 2 : (i == 2) ? 0 : 3;
                     mode.cs_weapon_slot.store(slot);
                     if (slot == 0) {
                         mode.cs_ammo.store(0);
@@ -605,17 +605,29 @@ void HotkeyDispatcher::tick(float dt) {
     }
 #endif
 
+    // A CS gun owns the left click: the generic MC swing must not fire too.
+    bool cs_gun_equipped = false;
+#if ENABLE_CS2_VIEWMODEL
+    cs_gun_equipped = mode.cs_mode.load() && mode.cs_weapon_slot.load() != 0;
+#endif
     const bool mining_consumed = fg && mode.click_attack.load() && want_suppress_click && cb_.step_mining && cb_.step_mining(dt, left_held);
-    if (!mining_consumed && click_edge && fg && mode.click_attack.load() && want_suppress_click) {
+    if (!mining_consumed && !cs_gun_equipped && click_edge && fg && mode.click_attack.load() && want_suppress_click) {
         float charged = 1.0f;
         {
             std::lock_guard<std::mutex> g(combat.melee_mutex);
             charged = combat.melee.startSwing();
             player.hunger.addExhaustion(0.1f);
         }
+        bool hit = true;
         if (mode.damage_enabled.load() && cb_.click_attack) {
-            cb_.click_attack(charged);
+            hit = cb_.click_attack(charged);
         }
+#if ENABLE_CS2_VIEWMODEL
+        // The knife shares the MC melee path; use its result for the hit/miss take.
+        if (mode.cs_mode.load() && mode.cs_weapon_slot.load() == 0) {
+            mode.cs_action_hit.store(hit);
+        }
+#endif
     }
 
 #if ENABLE_CS2_VIEWMODEL

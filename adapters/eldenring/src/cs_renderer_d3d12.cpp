@@ -46,6 +46,11 @@ bool DecodePngCached(const std::string& path, const uint8_t*& rgba, unsigned& wi
     return rgba != nullptr && width > 0 && height > 0;
 }
 
+void ReleaseDecodeCache() {
+    std::lock_guard<std::mutex> lock(g_decode_mutex);
+    g_decode_cache.clear();
+}
+
 constexpr char kCsShader[] = R"hlsl(
 cbuffer Root : register(b0) {
     row_major float4x4 view_proj;
@@ -294,6 +299,10 @@ ID3D12Resource* UploadBuffer(ID3D12Device* device, const void* data, size_t size
 
 } // namespace
 
+void ReleaseCsDecodeCache() {
+    ReleaseDecodeCache();
+}
+
 bool CsRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     release();
     log_ = log;
@@ -413,6 +422,7 @@ void CsRenderer::release() {
         std::lock_guard<std::mutex> lock(clip_durations_mutex_);
         clip_durations_.clear();
     }
+    ReleaseDecodeCache();
 }
 
 bool CsRenderer::TextureGpu::create(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
@@ -948,26 +958,36 @@ bool CsRenderer::loadWeaponTextures(ID3D12Device* device,
         setKnifeTexture(device, rgba, width, height, weapon_slot);
         any_loaded = true;
         if (log_) log_("cs_render: weapon albedo %s (%ux%u)", def.albedo_tex_path.c_str(), width, height);
+    } else {
+        // A missing map must still leave a valid descriptor: the shader samples
+        // this slot on every weapon draw.
+        std::vector<uint8_t> fallback(16 * 16 * 4, 210);
+        setKnifeTexture(device, fallback.data(), 16, 16, weapon_slot);
+        if (log_) log_("cs_render: weapon albedo missing, using fallback");
     }
     if (DecodePngCached(def.normal_tex_path, rgba, width, height)) {
         setKnifeNormalTexture(device, rgba, width, height, normal_slot);
         any_loaded = true;
         if (log_) log_("cs_render: weapon normal %s (%ux%u)", def.normal_tex_path.c_str(), width, height);
+    } else {
+        std::vector<uint8_t> flat_norm(16 * 16 * 4);
+        for (size_t p = 0; p < flat_norm.size(); p += 4) {
+            flat_norm[p] = 128; flat_norm[p + 1] = 128; flat_norm[p + 2] = 255; flat_norm[p + 3] = 255;
+        }
+        setKnifeNormalTexture(device, flat_norm.data(), 16, 16, normal_slot);
     }
     if (DecodePngCached(def.pbr_tex_path, rgba, width, height)) {
         setKnifePbrTexture(device, rgba, width, height, pbr_slot);
         any_loaded = true;
         if (log_) log_("cs_render: weapon ORM %s (%ux%u)", def.pbr_tex_path.c_str(), width, height);
+    } else {
+        std::vector<uint8_t> fallback(16 * 16 * 4);
+        for (size_t p = 0; p < fallback.size(); p += 4) {
+            fallback[p] = 255; fallback[p + 1] = 200; fallback[p + 2] = 0; fallback[p + 3] = 255;
+        }
+        setKnifePbrTexture(device, fallback.data(), 16, 16, pbr_slot);
     }
     return any_loaded;
-}
-
-bool CsRenderer::preloadTexture(const std::string& path) {
-    const uint8_t* rgba = nullptr;
-    unsigned width = 0, height = 0;
-    const bool ok = DecodePngCached(path, rgba, width, height);
-    if (ok && log_) log_("cs_render: preloaded texture %s (%ux%u)", path.c_str(), width, height);
-    return ok;
 }
 
 float CsRenderer::clipDuration(const char* name) const {
@@ -1085,6 +1105,7 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
                 case SubmeshType::Lock:
                     pose = animator_.lockPose();
                     break;
+                case SubmeshType::BareArm:
                 case SubmeshType::Arms:
                     pose = animator_.armsPose();
                     break;

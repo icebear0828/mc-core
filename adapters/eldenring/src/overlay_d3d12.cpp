@@ -130,11 +130,8 @@ D3D12_GPU_DESCRIPTOR_HANDLE g_cs_knife_table_gpu{};
 D3D12_GPU_DESCRIPTOR_HANDLE g_cs_ak_table_gpu{};
 std::string g_cs_game_dir;
 std::string g_cs_knife_model_path;
-std::string g_cs_knife_png;
-std::string g_cs_glove_png;
-std::string g_cs_bare_png;
-std::string g_cs_bare_norm_png;
 uint8_t g_cs_active_slot = 0;
+uint8_t g_cs_gun_table_slot = 0; // weapon slot whose maps are in g_cs_ak_table (0 = none)
 #endif
 mc::SteveAnimator g_anim;
 eldenring::render::SteveMotion g_motion;
@@ -265,6 +262,17 @@ void UpdateCsWeaponSlot(uint8_t want_slot) {
             def.normal_tex_path = ResolveCsAssetPath(def.normal_tex_path);
             def.pbr_tex_path = ResolveCsAssetPath(def.pbr_tex_path);
             if (std::filesystem::exists(def.model_csvm_path) && g_cs.loadWeapon(g_s.device, def)) {
+                // The gun table is shared by every gun: swap in this weapon's
+                // maps unless they are already there. The decoded PNGs stay
+                // cached, so a switch only pays the GPU upload.
+                if (g_cs_gun_table_slot != want_slot) {
+                    const bool any_real = g_cs.loadWeaponTextures(g_s.device, def, g_cs_ak_table_cpu);
+                    g_cs_gun_table_slot = want_slot;
+                    if (!any_real) {
+                        Logf("overlay: CS weapon %u has no texture maps, using fallbacks",
+                             static_cast<unsigned>(want_slot));
+                    }
+                }
                 loaded = true;
             }
         }
@@ -372,7 +380,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
     rtv_desc.NumDescriptors = g_s.buffers;
     D3D12_DESCRIPTOR_HEAP_DESC srv_desc{};
     srv_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    srv_desc.NumDescriptors = 64; // 0: ImGui, 1-2: Steve, 3: HUD, 4-5: FP items, 6-7: Held, 8-9: Creeper, 10-11: Zombie, 12-13: Skeleton, 14-15: extra, 16-24: CS2 knife table, 32-40: CS2 AK table
+    srv_desc.NumDescriptors = 64; // 0: ImGui, 1-2: Steve, 3: HUD, 4-5: FP items, 6-7: Held, 8-9: Creeper, 10-11: Zombie, 12-13: Skeleton, 14-15: extra, 16-27: CS2 knife table, 32-43: CS2 gun table
     srv_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(g_s.device->CreateDescriptorHeap(&rtv_desc, IID_PPV_ARGS(&g_s.rtv_heap))) ||
         FAILED(g_s.device->CreateDescriptorHeap(&srv_desc, IID_PPV_ARGS(&g_s.srv_heap)))) {
@@ -528,6 +536,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             g_cs_glove_tex_cpu = glove_cpu;
             g_cs_knife_table_cpu = cs_table_cpu;
             g_cs_ak_table_cpu = ak_table_cpu;
+            g_cs_gun_table_slot = 0;
 
             D3D12_GPU_DESCRIPTOR_HANDLE srv_gpu_base = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
             g_cs_knife_table_gpu = srv_gpu_base;
@@ -646,13 +655,12 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             const std::string sleeve_norm_png = firstExisting(sleeve_norm_candidates);
             const std::string sleeve_pbr_png = firstExisting(sleeve_pbr_candidates);
 
-            g_cs_knife_png = knife_png;
-            g_cs_glove_png = glove_png;
-            g_cs_bare_png = bare_png;
-            g_cs_bare_norm_png = bare_norm_png;
             g_cs.loadTexturesFromFiles(g_s.device, knife_png, glove_png, cs_table_cpu, glove_cpu,
                                        "", "", "", "", bare_png, bare_norm_png, "",
                                        sleeve_png, sleeve_norm_png, sleeve_pbr_png);
+            // The knife/glove/bare/sleeve maps are uploaded and never re-read;
+            // only gun maps are worth keeping decoded for later switches.
+            erov::ReleaseCsDecodeCache();
 
             // Load the AK-47 weapon maps into the second table once. Switching
             // then only swaps the table handle: no PNG decode, no 48 MB upload.
@@ -662,6 +670,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                 ak_def.normal_tex_path = ResolveCsAssetPath(ak_def.normal_tex_path);
                 ak_def.pbr_tex_path = ResolveCsAssetPath(ak_def.pbr_tex_path);
                 g_cs.loadWeaponTextures(g_s.device, ak_def, ak_table_cpu);
+                g_cs_gun_table_slot = 1;
             }
             // Glove + bare-arm + sleeve descriptors are shared by both weapon tables.
             const UINT shared_slots[] = {1, 3, 5, 6, 7, 8, 9, 10, 11};
@@ -1219,7 +1228,7 @@ void DrawHud(const HudState& hud, float w, float h) {
                      static_cast<unsigned>(r_mode.cs_reserve.load()));
             dl->AddText(ImGui::GetFont(), 22.f, {x + card_w - 96.f, y + 10.f}, IM_COL32(255, 255, 255, 245), ammo_str);
             dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 60.f}, IM_COL32(200, 210, 225, 230), "[F] Inspect | [LMB] Fire | [R] Reload");
-            dl->AddText(ImGui::GetFont(), 12.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[1] AK-47  [2] AWP  [3] Knife | [F1] Toggle");
+            dl->AddText(ImGui::GetFont(), 12.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[1]AK [2]AWP [3]Knife [4]M4 | [F1] Toggle");
         } else {
             dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 60.f}, IM_COL32(200, 210, 225, 230), "[F] Spin Inspect  |  [LMB] Slash");
             dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[RMB] Heavy Attack  |  [F1] Mode Toggle");
@@ -1507,15 +1516,21 @@ void RenderFrame(IDXGISwapChain* sc) {
     const float dt = std::max(1.f / 1000.f, std::chrono::duration<float>(now - g_s.last_frame).count());
     g_s.last_frame = now;
 
-    // Frame-time probe: a 5 s window makes sustained drops visible in mc_er.log.
+    // Frame-time probe: opt in with mc_er_perflog.txt (a 5 s window makes sustained drops visible).
+    static const bool perf_log = [] {
+        const std::string& dir = eldenring::diagnostics::GetGameDir();
+        return !dir.empty() && std::filesystem::exists(std::filesystem::path(dir) / "mc_er_perflog.txt");
+    }();
     static double perf_accum = 0.0;
     static unsigned perf_frames = 0;
-    perf_accum += dt;
-    ++perf_frames;
-    if (perf_accum >= 5.0) {
-        Logf("perf: %.1f fps (%.2f ms/frame)", perf_frames / perf_accum, 1000.0 * perf_accum / perf_frames);
-        perf_accum = 0.0;
-        perf_frames = 0;
+    if (perf_log) {
+        perf_accum += dt;
+        ++perf_frames;
+        if (perf_accum >= 5.0) {
+            Logf("perf: %.1f fps (%.2f ms/frame)", perf_frames / perf_accum, 1000.0 * perf_accum / perf_frames);
+            perf_accum = 0.0;
+            perf_frames = 0;
+        }
     }
 
     ImGuiIO& io = ImGui::GetIO();
@@ -1789,18 +1804,22 @@ void RenderFrame(IDXGISwapChain* sc) {
         }
         UpdateCsWeaponSlot(r_mode.cs_weapon_slot.load());
     }
-    const bool cs_active = r_mode.cs_mode.load() && g_cs.ready() && GameIsForeground();
+    const bool cs_mode_on = r_mode.cs_mode.load();
+    const bool cs_active = cs_mode_on && g_cs.ready() && GameIsForeground();
 #else
+    const bool cs_mode_on = false;
     const bool cs_active = false;
 #endif
-    const bool mc_fp_active = !cs_active && steve.first_person && !steve.dead && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
+    // Do not fall back to the MC first-person model while CS mode owns the view,
+    // even when the game is unfocused and the CS viewmodel is skipped.
+    const bool mc_fp_active = !cs_active && !cs_mode_on && steve.first_person && !steve.dead && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
         g_steve.ensureDepth(g_s.device, g_s.width, g_s.height);
 
 #if ENABLE_CS2_VIEWMODEL
     if (cs_active && !steve.dead) {
         const mc::rig::Mat4 proj = g_cs.computeViewmodelProjection(g_s.width, g_s.height);
-        // The knife and AK have their own preloaded texture tables; switching
-        // is just a descriptor-handle swap.
+        // The knife and the shared gun table have their own descriptors;
+        // switching is just a descriptor-handle swap.
         D3D12_GPU_DESCRIPTOR_HANDLE cs_tex_table =
             (r_mode.cs_weapon_slot.load() == 0) ? g_cs_knife_table_gpu : g_cs_ak_table_gpu;
         if (g_steve.ready()) {

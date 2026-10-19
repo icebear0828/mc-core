@@ -83,17 +83,20 @@ public:
     bool loadFromMemory(const uint8_t* data, size_t size) {
         if (!data || size < sizeof(CSVMHeader)) return false;
 
-        std::memcpy(&header_, data, sizeof(CSVMHeader));
-        if (std::memcmp(header_.magic, "CSVM", 4) != 0 ||
-            (header_.version != 1 && header_.version != 2 && header_.version != 3)) {
+        // Parse into a scratch model: a rejected file must never leave the
+        // live model half-overwritten while the old GPU buffers stay bound.
+        CSViewModel parsed;
+        std::memcpy(&parsed.header_, data, sizeof(CSVMHeader));
+        if (std::memcmp(parsed.header_.magic, "CSVM", 4) != 0 ||
+            (parsed.header_.version != 1 && parsed.header_.version != 2 && parsed.header_.version != 3)) {
             return false;
         }
 
         size_t offset = sizeof(CSVMHeader);
-        submeshes.clear();
-        submeshes.reserve(header_.num_submeshes);
+        parsed.submeshes.clear();
+        parsed.submeshes.reserve(parsed.header_.num_submeshes);
 
-        for (uint32_t i = 0; i < header_.num_submeshes; ++i) {
+        for (uint32_t i = 0; i < parsed.header_.num_submeshes; ++i) {
             if (offset + sizeof(uint32_t) > size) return false;
             uint32_t name_len = 0;
             std::memcpy(&name_len, data + offset, sizeof(uint32_t));
@@ -110,39 +113,39 @@ public:
             std::memcpy(&sub.first_index, data + offset, sizeof(uint32_t)); offset += sizeof(uint32_t);
             std::memcpy(&sub.base_vertex, data + offset, sizeof(int32_t)); offset += sizeof(int32_t);
             std::memcpy(&sub.index_count, data + offset, sizeof(uint32_t)); offset += sizeof(uint32_t);
-            submeshes.push_back(std::move(sub));
+            parsed.submeshes.push_back(std::move(sub));
         }
 
-        const size_t vb_bytes = header_.total_vertices * sizeof(CSVMVertex);
+        const size_t vb_bytes = parsed.header_.total_vertices * sizeof(CSVMVertex);
         if (offset + vb_bytes > size) return false;
-        vertices.resize(header_.total_vertices);
-        std::memcpy(vertices.data(), data + offset, vb_bytes);
+        parsed.vertices.resize(parsed.header_.total_vertices);
+        std::memcpy(parsed.vertices.data(), data + offset, vb_bytes);
         offset += vb_bytes;
 
-        const size_t ib_bytes = header_.total_indices * sizeof(uint32_t);
+        const size_t ib_bytes = parsed.header_.total_indices * sizeof(uint32_t);
         if (offset + ib_bytes > size) return false;
-        indices.resize(header_.total_indices);
-        std::memcpy(indices.data(), data + offset, ib_bytes);
+        parsed.indices.resize(parsed.header_.total_indices);
+        std::memcpy(parsed.indices.data(), data + offset, ib_bytes);
         offset += ib_bytes;
 
         // Validate every submesh range before the renderer trusts it. A bad
         // CSVM must fail the load, never reach DrawIndexedInstanced.
-        for (const auto& sub : submeshes) {
-            if (sub.first_index > indices.size()) return false;
-            if (sub.index_count > indices.size() - sub.first_index) return false;
+        for (const auto& sub : parsed.submeshes) {
+            if (sub.first_index > parsed.indices.size()) return false;
+            if (sub.index_count > parsed.indices.size() - sub.first_index) return false;
             if (sub.base_vertex < 0) return false;
             if (sub.index_count == 0) continue;
-            if (static_cast<size_t>(sub.base_vertex) >= vertices.size()) return false;
+            if (static_cast<size_t>(sub.base_vertex) >= parsed.vertices.size()) return false;
             size_t max_index = 0;
             for (uint32_t k = 0; k < sub.index_count; ++k) {
-                max_index = std::max<size_t>(max_index, indices[sub.first_index + k]);
+                max_index = std::max<size_t>(max_index, parsed.indices[sub.first_index + k]);
             }
-            if (static_cast<size_t>(sub.base_vertex) + max_index >= vertices.size()) return false;
+            if (static_cast<size_t>(sub.base_vertex) + max_index >= parsed.vertices.size()) return false;
         }
 
         // Version 2: Read animation clips
-        anim_clips.clear();
-        if (header_.version >= 2 && offset + sizeof(uint32_t) <= size) {
+        parsed.anim_clips.clear();
+        if (parsed.header_.version >= 2 && offset + sizeof(uint32_t) <= size) {
             uint32_t num_clips = 0;
             std::memcpy(&num_clips, data + offset, sizeof(uint32_t));
             offset += sizeof(uint32_t);
@@ -165,7 +168,7 @@ public:
 
                 const size_t m4_size = sizeof(eldenring::fp::M4);
 
-                if (header_.version >= 3) {
+                if (parsed.header_.version >= 3) {
                     // CSVM v3: variable named tracks.
                     uint32_t num_tracks = 0;
                     if (offset + sizeof(uint32_t) > size) return false;
@@ -213,10 +216,11 @@ public:
                     clip.tracks["lock"] = clip.lock_frames;
                     clip.tracks["arms"] = clip.arms_frames;
                 }
-                anim_clips[clip_name] = std::move(clip);
+                parsed.anim_clips[clip_name] = std::move(clip);
             }
         }
 
+        *this = std::move(parsed);
         return true;
     }
 

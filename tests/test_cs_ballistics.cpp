@@ -92,7 +92,7 @@ TEST(CsBallisticsTest, TraceCoversTheHeadNotJustTheTorso) {
     eldenring::cs::normalize3(head);
     EXPECT_EQ(eldenring::cs::traceTargets(cam_rel, head, enemies, CsShotParams{}).index, 0);
 
-    // Well above the 2.2 m body top: still a miss.
+    // Well above the 2.6 m body top: still a miss.
     float high[3] = {0.f, 3.0f - 1.4f, 10.f};
     eldenring::cs::normalize3(high);
     EXPECT_EQ(eldenring::cs::traceTargets(cam_rel, high, enemies, CsShotParams{}).index, -1);
@@ -112,7 +112,7 @@ TEST(CsBallisticsTest, TraceIgnoresDeadOffRayAndOutOfRangeTargets) {
     EXPECT_EQ(t.index, -1);
 }
 
-TEST(CsBallisticsTest, TraceHonoursTheTorsoSphereRadius) {
+TEST(CsBallisticsTest, TraceHonoursTheBodyCylinderRadius) {
     std::vector<EnemyInfo> enemies = {MakeEnemy(0.9f, 0.f, 10.f)};
     const float cam_rel[3] = {0.f, 1.4f, 0.f};
     const float dir[3] = {0.f, 0.f, 1.f};

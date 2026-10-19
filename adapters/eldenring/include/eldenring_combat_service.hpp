@@ -178,7 +178,7 @@ public:
     RayResult lastRay() const;
 
     // Melee attack
-    void clickAttack(float charged, MeleeController& melee, CombatEngine& engine, DamageQueue& queue, RuntimeContext& ctx);
+    bool clickAttack(float charged, MeleeController& melee, CombatEngine& engine, DamageQueue& queue, RuntimeContext& ctx);
     void enqueueNearestHostile(DamageQueue& queue, uint64_t tick, float max_dist = 25.0f);
 
     // Projectile hit handler
@@ -211,6 +211,7 @@ public:
     void setArrowDamage(bool enabled) { arrow_damage_.store(enabled, std::memory_order_relaxed); }
     bool arrowDamage() const { return arrow_damage_.load(std::memory_order_relaxed); }
     void setBulletFireEnabled(bool enabled) { bullet_fire_enabled_.store(enabled, std::memory_order_relaxed); }
+    void setCsShotLogEnabled(bool enabled) { cs_shot_log_enabled_.store(enabled, std::memory_order_relaxed); }
     bool bulletFireEnabled() const { return bullet_fire_enabled_.load(std::memory_order_relaxed); }
     void setPdcHooked(bool hooked) { pdc_hooked_.store(hooked, std::memory_order_relaxed); }
     bool pdcHooked() const { return pdc_hooked_.load(std::memory_order_relaxed); }
@@ -247,6 +248,7 @@ private:
     std::atomic<bool> proj_log_{false};
     std::atomic<bool> arrow_damage_{false};
     std::atomic<bool> bullet_fire_enabled_{false};
+    std::atomic<bool> cs_shot_log_enabled_{false};
     std::atomic<bool> pdc_hooked_{false};
     std::atomic<int> bolt_attach_poly_{-1};
 

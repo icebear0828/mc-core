@@ -134,6 +134,62 @@ TEST(CSViewModelTest, MemorySerializationRoundtrip) {
     EXPECT_EQ(model.indices.size(), 6u);
 }
 
+TEST(CSViewModelTest, FailedLoadKeepsThePreviousModel) {
+    auto build = [](int32_t base_vertex) {
+        std::vector<uint8_t> buffer;
+
+        CSVMHeader hdr{};
+        std::memcpy(hdr.magic, "CSVM", 4);
+        hdr.version = 1;
+        hdr.num_submeshes = 1;
+        hdr.total_vertices = 4;
+        hdr.total_indices = 3;
+        buffer.resize(sizeof(CSVMHeader));
+        std::memcpy(buffer.data(), &hdr, sizeof(CSVMHeader));
+
+        const std::string name = "blade";
+        const uint32_t name_len = static_cast<uint32_t>(name.size());
+        const uint32_t bone_idx = 0, first_idx = 0, count = 3;
+        size_t off = buffer.size();
+        buffer.resize(off + 4 + name_len + 16);
+        std::memcpy(buffer.data() + off, &name_len, 4); off += 4;
+        std::memcpy(buffer.data() + off, name.data(), name_len); off += name_len;
+        std::memcpy(buffer.data() + off, &bone_idx, 4); off += 4;
+        std::memcpy(buffer.data() + off, &first_idx, 4); off += 4;
+        std::memcpy(buffer.data() + off, &base_vertex, 4); off += 4;
+        std::memcpy(buffer.data() + off, &count, 4);
+
+        CSVMVertex verts[4] = {};
+        off = buffer.size();
+        buffer.resize(off + sizeof(verts));
+        std::memcpy(buffer.data() + off, verts, sizeof(verts));
+
+        uint32_t indices[3] = {0, 1, 2};
+        off = buffer.size();
+        buffer.resize(off + sizeof(indices));
+        std::memcpy(buffer.data() + off, indices, sizeof(indices));
+        return buffer;
+    };
+
+    CSViewModel model;
+    const std::vector<uint8_t> good = build(0);
+    ASSERT_TRUE(model.loadFromMemory(good.data(), good.size()));
+    ASSERT_EQ(model.submeshes.size(), 1u);
+    ASSERT_EQ(model.vertices.size(), 4u);
+
+    // base_vertex 99 points past the four vertices: the validation must reject it.
+    const std::vector<uint8_t> bad = build(99);
+    EXPECT_FALSE(model.loadFromMemory(bad.data(), bad.size()));
+
+    // A rejected load must leave the model the renderer is drawing untouched.
+    ASSERT_EQ(model.submeshes.size(), 1u);
+    EXPECT_EQ(model.submeshes[0].bone_name, "blade");
+    EXPECT_EQ(model.submeshes[0].base_vertex, 0);
+    EXPECT_EQ(model.vertices.size(), 4u);
+    EXPECT_EQ(model.indices.size(), 3u);
+    EXPECT_TRUE(model.anim_clips.empty());
+}
+
 TEST(CSViewModelTest, ViewmodelScaleAndVisibilityAssertion) {
     // CS2 arms bounds: width is ~0.308m (+/- 0.154m), height is ~0.34m
     const mc::Vec3 arm_left{-0.154f, -0.083f, 0.0f};

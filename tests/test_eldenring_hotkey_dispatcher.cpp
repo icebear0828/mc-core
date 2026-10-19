@@ -134,7 +134,7 @@ protected:
             if (use_spawn_egg_success_) { spawn_egg_used_ = true; return true; }
             return false;
         };
-        cb_.click_attack = [this](float charged) { attack_charged_ = charged; attack_called_ = true; };
+        cb_.click_attack = [this](float charged) { attack_charged_ = charged; attack_called_ = true; return attack_hit_; };
         cb_.enqueue_nearest_hostile = [this]() { hostile_enqueued_ = true; };
         cb_.queue_bullet_fire = [this](float dmg) { bullet_queued_ = true; bullet_damage_ = dmg; return true; };
         cb_.queue_cs_shot = [this](float damage, float spread, float range, uint32_t tracer, uint8_t slot) {
@@ -194,6 +194,7 @@ protected:
     bool use_spawn_egg_success_{false};
     bool spawn_egg_used_{false};
     bool attack_called_{false};
+    bool attack_hit_{true};
     float attack_charged_{0.f};
     bool hostile_enqueued_{false};
     bool bullet_queued_{false};
@@ -476,6 +477,23 @@ TEST_F(HotkeyDispatcherTest, CsModeDigitKeysSelectWeaponSlotsAndRReloads) {
     EXPECT_EQ(ctx.mode().cs_weapon_slot.load(), 0);
     EXPECT_EQ(ctx.mode().cs_ammo.load(), 0u);
 }
+
+TEST_F(HotkeyDispatcherTest, CsDigit4SelectsTheM4A1S) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+
+    setKey('4', true);
+    dispatcher_->tick(0.016f);
+    setKey('4', false);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_weapon_slot.load(), 3);
+    EXPECT_EQ(ctx.mode().cs_ammo.load(), 20u);
+    EXPECT_EQ(ctx.mode().cs_reserve.load(), 80u);
+}
 TEST_F(HotkeyDispatcherTest, CsGunFireQueuesHitscanShotWithWeaponBallistics) {
     auto& ctx = RuntimeContext::Instance();
 
@@ -523,6 +541,30 @@ TEST_F(HotkeyDispatcherTest, CsGunFireQueuesHitscanShotWithWeaponBallistics) {
     EXPECT_EQ(ctx.mode().cs_ammo.load(), 28u);
 }
 
+TEST_F(HotkeyDispatcherTest, CsGunClickDoesNotSwingMelee) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    setKey('1', true);
+    dispatcher_->tick(0.016f);
+    setKey('1', false);
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 1);
+
+    attack_called_ = false;
+    cs_shot_queued_ = false;
+    left_click_edge_ = true;
+    left_held_ = true;
+    dispatcher_->tick(0.016f);
+    left_click_edge_ = false;
+    left_held_ = false;
+
+    EXPECT_TRUE(cs_shot_queued_);
+    EXPECT_FALSE(attack_called_); // a gun shot must not also swing the MC melee
+}
+
 TEST_F(HotkeyDispatcherTest, CsKnifeDoesNotQueueHitscanShots) {
     auto& ctx = RuntimeContext::Instance();
     setKey(VK_F1, true);
@@ -536,6 +578,31 @@ TEST_F(HotkeyDispatcherTest, CsKnifeDoesNotQueueHitscanShots) {
     dispatcher_->tick(0.016f);
     EXPECT_FALSE(cs_shot_queued_);
     EXPECT_EQ(ctx.mode().cs_knife_state.load(), 2);
+    EXPECT_TRUE(attack_called_); // the knife still uses the MC melee path
+    EXPECT_TRUE(ctx.mode().cs_action_hit.load());
+}
+
+TEST_F(HotkeyDispatcherTest, CsKnifeMissSelectsTheMissTake) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 0);
+
+    attack_hit_ = false;
+    left_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 2);
+    EXPECT_FALSE(ctx.mode().cs_action_hit.load());
+
+    // The next swing connects: the hit take comes back.
+    attack_hit_ = true;
+    dispatcher_->tick(1.2f); // finish the 1.167 s light clip
+    left_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 2);
+    EXPECT_TRUE(ctx.mode().cs_action_hit.load());
 }
 
 TEST_F(HotkeyDispatcherTest, CsKnifeActionsUseAuthoredTakesAndClipDurations) {

@@ -18,6 +18,10 @@ namespace fp = eldenring::fp;
 using ViewmodelProjectionConfig = eldenring::cs::ViewmodelProjectionConfig;
 using eldenring::cs::computeViewmodelProjection;
 
+// Frees the decoded-PNG cache. Called once the init uploads are done and on teardown;
+// weapon switches decode on demand and keep their maps cached for later switches.
+void ReleaseCsDecodeCache();
+
 class CsRenderer {
 public:
     using LogFn = void (*)(const char* fmt, ...);
@@ -94,9 +98,6 @@ public:
                             const eldenring::cs::CSWeaponDefinition& def,
                             D3D12_CPU_DESCRIPTOR_HANDLE weapon_slot);
 
-    // Decode a PNG into the shared cache without uploading it. Call once at
-    // overlay init so the first weapon switch does not hitch on PNG decode.
-    bool preloadTexture(const std::string& path);
     [[nodiscard]] const eldenring::cs::CSWeaponDefinition* activeWeapon() const {
         return has_active_weapon_ ? &active_weapon_def_ : nullptr;
     }
