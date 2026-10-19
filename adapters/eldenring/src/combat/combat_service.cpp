@@ -886,15 +886,26 @@ CsShotResult CombatService::fireCsShot(const eldenring::cs::CsShotParams& params
         const float disp[3] = {dir[0] * params.max_range_m, dir[1] * params.max_range_m, dir[2] * params.max_range_m};
         const RayResult r = castStaticRay(cam.position, disp);
         if (r.ok && r.hit && r.fraction > 0.f && r.fraction <= 1.f) {
-            for (int i = 0; i < 3; ++i) out.to[i] = cam.position[i] + dir[i] * (params.max_range_m * r.fraction);
-            // The Havok normal can point into the wall; orient it toward the shooter for the decal.
-            eldenring::cs::orientDecalNormal(r.normal, dir, out.normal);
-            out.wall_hit = true;
-            wall_hit = true;
-            if (shot_log) {
-                log("CS-SHOT: wall hit dist=%.1f m normal=(%.2f %.2f %.2f) decal=%d",
-                    params.max_range_m * r.fraction, out.normal[0], out.normal[1], out.normal[2],
-                    callbacks_.spawn_decal ? 1 : 0);
+            const float hit_dist = params.max_range_m * r.fraction;
+            // Tall-grass/bush collision proxies surround the player's camera and
+            // sit inside the view. A static hit this close is the player's own
+            // surroundings, not a surface: a decal there is a hole in mid-air.
+            constexpr float kMinImpactDistanceM = 1.5f;
+            if (hit_dist < kMinImpactDistanceM) {
+                if (shot_log) {
+                    log("CS-SHOT: ignored near static hit at %.1f m (foliage/player surroundings)", hit_dist);
+                }
+            } else {
+                for (int i = 0; i < 3; ++i) out.to[i] = cam.position[i] + dir[i] * hit_dist;
+                // The Havok normal can point into the wall; orient it toward the shooter for the decal.
+                eldenring::cs::orientDecalNormal(r.normal, dir, out.normal);
+                out.wall_hit = true;
+                wall_hit = true;
+                if (shot_log) {
+                    log("CS-SHOT: wall hit dist=%.1f m normal=(%.2f %.2f %.2f) decal=%d",
+                        hit_dist, out.normal[0], out.normal[1], out.normal[2],
+                        callbacks_.spawn_decal ? 1 : 0);
+                }
             }
         }
     }

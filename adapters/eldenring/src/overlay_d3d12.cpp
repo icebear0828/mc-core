@@ -607,6 +607,22 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             knife_tex_candidates.push_back("mods\\mc_adapter\\textures\\knife_butterfly\\knife_butterfly_color_psd_5a5a48d7.png");
             knife_tex_candidates.push_back("knife_butterfly.png");
 
+            // The packed ORM map is produced by tools/cs2/texture_packer.py:
+            // R=AO, G=roughness, B=metallic. The raw CS2 `*_rough_psd` map is
+            // not an ORM map, so it must never be used as a fallback here.
+            std::vector<std::string> knife_norm_candidates;
+            std::vector<std::string> knife_pbr_candidates;
+            if (!game_dir.empty()) {
+                knife_norm_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "knife_butterfly_normal.png").string());
+                knife_norm_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "knife_butterfly" / "default_normal_tga_4fc2d3dd.png").string());
+                knife_pbr_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "knife_butterfly_pbr.png").string());
+            }
+            knife_norm_candidates.push_back("mods\\mc_adapter\\knife_butterfly_normal.png");
+            knife_norm_candidates.push_back("mods\\mc_adapter\\textures\\knife_butterfly\\default_normal_tga_4fc2d3dd.png");
+            knife_norm_candidates.push_back("knife_butterfly_normal.png");
+            knife_pbr_candidates.push_back("mods\\mc_adapter\\knife_butterfly_pbr.png");
+            knife_pbr_candidates.push_back("knife_butterfly_pbr.png");
+
             std::vector<std::string> glove_tex_candidates;
             if (!game_dir.empty()) {
                 glove_tex_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "glove_hardknuckle.png").string());
@@ -616,6 +632,19 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             glove_tex_candidates.push_back("mods\\mc_adapter\\glove_hardknuckle.png");
             glove_tex_candidates.push_back("mods\\mc_adapter\\textures\\glove_hardknuckle\\glove_hardknuckle_black_color_psd_8f00aa00.png");
             glove_tex_candidates.push_back("glove_hardknuckle.png");
+
+            std::vector<std::string> glove_norm_candidates;
+            std::vector<std::string> glove_pbr_candidates;
+            if (!game_dir.empty()) {
+                glove_norm_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "glove_hardknuckle_normal.png").string());
+                glove_norm_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "glove_hardknuckle" / "glove_hardknuckle_normal_tga_a8df881b.png").string());
+                glove_pbr_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "glove_hardknuckle_pbr.png").string());
+            }
+            glove_norm_candidates.push_back("mods\\mc_adapter\\glove_hardknuckle_normal.png");
+            glove_norm_candidates.push_back("mods\\mc_adapter\\textures\\glove_hardknuckle\\glove_hardknuckle_normal_tga_a8df881b.png");
+            glove_norm_candidates.push_back("glove_hardknuckle_normal.png");
+            glove_pbr_candidates.push_back("mods\\mc_adapter\\glove_hardknuckle_pbr.png");
+            glove_pbr_candidates.push_back("glove_hardknuckle_pbr.png");
 
             std::string knife_png;
             for (const auto& p : knife_tex_candidates) {
@@ -628,19 +657,30 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
 
             std::vector<std::string> bare_tex_candidates;
             if (!game_dir.empty()) {
+                bare_tex_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "bare_arm.png").string());
                 bare_tex_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "glove_hardknuckle" / "bare_arm_133_color_psd_5b76e0cf.png").string());
                 bare_tex_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "bare_arm_133_color_psd_5b76e0cf.png").string());
             }
+            bare_tex_candidates.push_back("mods\\mc_adapter\\bare_arm.png");
             bare_tex_candidates.push_back("mods\\mc_adapter\\textures\\glove_hardknuckle\\bare_arm_133_color_psd_5b76e0cf.png");
             bare_tex_candidates.push_back("bare_arm_133_color_psd_5b76e0cf.png");
 
             std::vector<std::string> bare_norm_candidates;
             if (!game_dir.empty()) {
+                bare_norm_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "bare_arm_normal.png").string());
                 bare_norm_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "glove_hardknuckle" / "bare_arm_normal_tga_c9fefc2d.png").string());
                 bare_norm_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "bare_arm_normal_tga_c9fefc2d.png").string());
             }
+            bare_norm_candidates.push_back("mods\\mc_adapter\\bare_arm_normal.png");
             bare_norm_candidates.push_back("mods\\mc_adapter\\textures\\glove_hardknuckle\\bare_arm_normal_tga_c9fefc2d.png");
             bare_norm_candidates.push_back("bare_arm_normal_tga_c9fefc2d.png");
+
+            std::vector<std::string> bare_pbr_candidates;
+            if (!game_dir.empty()) {
+                bare_pbr_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "bare_arm_pbr.png").string());
+            }
+            bare_pbr_candidates.push_back("mods\\mc_adapter\\bare_arm_pbr.png");
+            bare_pbr_candidates.push_back("bare_arm_pbr.png");
 
             std::string bare_png;
             for (const auto& p : bare_tex_candidates) {
@@ -649,6 +689,27 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             std::string bare_norm_png;
             for (const auto& p : bare_norm_candidates) {
                 if (std::filesystem::exists(p)) { bare_norm_png = p; break; }
+            }
+            std::string bare_pbr_png;
+            for (const auto& p : bare_pbr_candidates) {
+                if (std::filesystem::exists(p)) { bare_pbr_png = p; break; }
+            }
+
+            std::string knife_norm_png;
+            for (const auto& p : knife_norm_candidates) {
+                if (std::filesystem::exists(p)) { knife_norm_png = p; break; }
+            }
+            std::string knife_pbr_png;
+            for (const auto& p : knife_pbr_candidates) {
+                if (std::filesystem::exists(p)) { knife_pbr_png = p; break; }
+            }
+            std::string glove_norm_png;
+            for (const auto& p : glove_norm_candidates) {
+                if (std::filesystem::exists(p)) { glove_norm_png = p; break; }
+            }
+            std::string glove_pbr_png;
+            for (const auto& p : glove_pbr_candidates) {
+                if (std::filesystem::exists(p)) { glove_pbr_png = p; break; }
             }
 
             std::vector<std::string> sleeve_tex_candidates;
@@ -686,7 +747,8 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             const std::string sleeve_pbr_png = firstExisting(sleeve_pbr_candidates);
 
             g_cs.loadTexturesFromFiles(g_s.device, knife_png, glove_png, cs_table_cpu, glove_cpu,
-                                       "", "", "", "", bare_png, bare_norm_png, "",
+                                       knife_norm_png, glove_norm_png, knife_pbr_png, glove_pbr_png,
+                                       bare_png, bare_norm_png, bare_pbr_png,
                                        sleeve_png, sleeve_norm_png, sleeve_pbr_png);
             // The knife/glove/bare/sleeve maps are uploaded and never re-read;
             // only gun maps are worth keeping decoded for later switches.
@@ -2452,9 +2514,21 @@ void SetSteveSkin(const uint8_t* rgba, unsigned width, unsigned height) {
 }
 
 void RequestScreenshot(const char* utf8_path) {
+    std::string path = utf8_path != nullptr ? utf8_path : "";
+    // F4 passes a bare filename; the game's working directory is not the game
+    // folder, so WIC cannot create the file. Resolve it next to the game exe.
+    if (!path.empty()) {
+        const std::filesystem::path p(path);
+        if (p.is_relative()) {
+            wchar_t exe[MAX_PATH]{};
+            if (GetModuleFileNameW(nullptr, exe, MAX_PATH) > 0) {
+                path = (std::filesystem::path(exe).parent_path() / p).string();
+            }
+        }
+    }
     {
         std::lock_guard<std::mutex> g(g_shot_mutex);
-        g_shot_path = utf8_path != nullptr ? utf8_path : "";
+        g_shot_path = path;
     }
     g_shot_requested.store(true);
 }

@@ -144,7 +144,7 @@ private:
             pending = false;
         }
 
-        bool create(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+        bool create(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot, bool srgb = false);
         void recordUpload(ID3D12GraphicsCommandList* list);
     };
 
