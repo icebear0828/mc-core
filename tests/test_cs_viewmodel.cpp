@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -1212,6 +1213,55 @@ TEST(CSViewModelTest, AuthenticKnifeActionClipsVariantsAndDurations) {
         if (std::abs(heavyHit.m[i] - lightHit.m[i]) > 1e-3f) heavy_diff = true;
     }
     EXPECT_TRUE(heavy_diff);
+}
+
+TEST(CSViewModelTest, AnimationSamplingUsesRigidSlerpNotMatrixLerp) {
+    // A raw 16-float lerp between two rotations shrinks the basis (0.707 at
+    // 45 deg), which is the "wind-blown" few-frame artifact during reloads.
+    const fp::M4 a = fp::rotY(0.f);
+    const fp::M4 b = fp::rotY(90.f);
+    const fp::M4 mid = erov::cs_anims::LerpRigidM4(a, b, 0.5f);
+
+    const float c45 = std::cos(45.f * fp::kDeg);
+    const float s45 = std::sin(45.f * fp::kDeg);
+    EXPECT_NEAR(mid.m[0], c45, 1e-4f);
+    EXPECT_NEAR(mid.m[2], s45, 1e-4f);
+    EXPECT_NEAR(mid.m[8], -s45, 1e-4f);
+    EXPECT_NEAR(mid.m[10], c45, 1e-4f);
+
+    // Every basis column must stay unit length.
+    for (int col = 0; col < 3; ++col) {
+        const float x = mid.m[col], y = mid.m[4 + col], z = mid.m[8 + col];
+        EXPECT_NEAR(std::sqrt(x * x + y * y + z * z), 1.f, 1e-4f) << col;
+    }
+
+    // Shortest path: 0 -> 350 deg must pass through -5 deg, not +175 deg.
+    const fp::M4 c350 = fp::rotY(350.f);
+    const fp::M4 mid2 = erov::cs_anims::LerpRigidM4(a, c350, 0.5f);
+    const fp::M4 expect = fp::rotY(-5.f);
+    EXPECT_NEAR(mid2.m[0], expect.m[0], 1e-4f);
+    EXPECT_NEAR(mid2.m[2], expect.m[2], 1e-4f);
+
+    // Translation still lerps linearly.
+    const fp::M4 ta = fp::translate(0.f, 0.f, 0.f);
+    const fp::M4 tb = fp::translate(10.f, 20.f, 30.f);
+    const fp::M4 tm = erov::cs_anims::LerpRigidM4(ta, tb, 0.25f);
+    EXPECT_NEAR(tm.m[3], 2.5f, 1e-5f);
+    EXPECT_NEAR(tm.m[7], 5.f, 1e-5f);
+    EXPECT_NEAR(tm.m[11], 7.5f, 1e-5f);
+}
+
+TEST(CSViewModelTest, AnimationSamplingRejectsNonFiniteFrames) {
+    fp::M4 bad = fp::rotY(10.f);
+    bad.m[0] = std::numeric_limits<float>::quiet_NaN();
+    const fp::M4 good = fp::rotY(30.f);
+
+    const fp::M4 out = erov::cs_anims::LerpRigidM4(bad, good, 0.5f);
+    for (float v : out.m) {
+        EXPECT_TRUE(std::isfinite(v));
+    }
+    // The valid frame is used when the other one is corrupt.
+    EXPECT_NEAR(out.m[0], good.m[0], 1e-4f);
 }
 
 } // namespace

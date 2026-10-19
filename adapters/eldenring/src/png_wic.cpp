@@ -3,6 +3,8 @@
 #include <windows.h>
 #include <wincodec.h>
 
+#include <vector>
+
 #include "png_wic.hpp"
 
 namespace erov {
@@ -66,6 +68,15 @@ bool EncodePngFile(const std::string& path, const uint8_t* rgba, unsigned width,
     const HRESULT init = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool uninit = SUCCEEDED(init);
     bool ok = false;
+    // WIC's PNG encoder expects 32bppBGRA; feeding it 32bppRGBA makes
+    // SetPixelFormat fail and leaves a 0-byte file.
+    std::vector<uint8_t> bgra(static_cast<size_t>(pitch) * height);
+    for (size_t i = 0; i + 3 < bgra.size(); i += 4) {
+        bgra[i + 0] = rgba[i + 2];
+        bgra[i + 1] = rgba[i + 1];
+        bgra[i + 2] = rgba[i + 0];
+        bgra[i + 3] = rgba[i + 3];
+    }
     {
         Com<IWICImagingFactory> factory;
         Com<IWICStream> stream;
@@ -77,9 +88,9 @@ bool EncodePngFile(const std::string& path, const uint8_t* rgba, unsigned width,
             SUCCEEDED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, encoder.put())) &&
             SUCCEEDED(encoder->Initialize(stream.p, WICBitmapEncoderNoCache)) && SUCCEEDED(encoder->CreateNewFrame(frame.put(), nullptr)) &&
             SUCCEEDED(frame->Initialize(nullptr)) && SUCCEEDED(frame->SetSize(width, height))) {
-            WICPixelFormatGUID format = GUID_WICPixelFormat32bppRGBA;
-            if (SUCCEEDED(frame->SetPixelFormat(&format)) && IsEqualGUID(format, GUID_WICPixelFormat32bppRGBA) &&
-                SUCCEEDED(frame->WritePixels(height, pitch, pitch * height, const_cast<BYTE*>(rgba))) && SUCCEEDED(frame->Commit()) &&
+            WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
+            if (SUCCEEDED(frame->SetPixelFormat(&format)) && IsEqualGUID(format, GUID_WICPixelFormat32bppBGRA) &&
+                SUCCEEDED(frame->WritePixels(height, pitch, pitch * height, bgra.data())) && SUCCEEDED(frame->Commit()) &&
                 SUCCEEDED(encoder->Commit())) {
                 ok = true;
             }

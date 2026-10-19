@@ -86,8 +86,8 @@ CSWeaponDefinition CSWeaponRegistry::createButterflyKnifeDefinition() {
     w.slot = WeaponSlot::Melee;
     w.model_csvm_path = "mods/mc_adapter/cs_butterfly_viewmodel.bin";
     w.albedo_tex_path = "mods/mc_adapter/knife_butterfly.png";
-    w.normal_tex_path = "mods/mc_adapter/textures/knife_butterfly/default_normal_tga_4fc2d3dd.png";
-    w.pbr_tex_path = "mods/mc_adapter/textures/knife_butterfly/knife_butterfly_rough_psd_80f06397.png";
+    w.normal_tex_path = "mods/mc_adapter/knife_butterfly_normal.png";
+    w.pbr_tex_path = "mods/mc_adapter/knife_butterfly_pbr.png";
 
     // Sockets
     w.sockets = {

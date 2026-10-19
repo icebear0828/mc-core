@@ -150,6 +150,17 @@ float3 FresnelSchlick(float cosTheta, float3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+// ACES filmic approximation (Narkowicz). Reinhard desaturates highlights and
+// makes the viewmodel look flat/washed out compared with CS2.
+float3 AcesFilm(float3 x) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
+}
+
 float4 PSMain(VSOut i) : SV_Target {
     float2 uv = i.uv;
 
@@ -160,13 +171,9 @@ float4 PSMain(VSOut i) : SV_Target {
                      : (is_arm > 1.5) ? bare_tex.Sample(g_sampler, uv)
                      : (is_arm > 0.5) ? glove_tex.Sample(g_sampler, uv)
                      : knife_tex.Sample(g_sampler, uv);
-    if (is_arm > 0.5 && is_arm < 1.5) {
-        albedo_tex.rgb = saturate(0.30 + (albedo_tex.rgb - 0.30) * 2.2) * 1.30;
-    } else if (is_arm > 2.5 && is_arm < 3.5) {
-        // Fabric is mid-grey in the CS2 source; a gentle contrast keeps the
-        // weave readable without turning the sleeve into a flat grey tube.
-        albedo_tex.rgb = saturate(0.22 + (albedo_tex.rgb - 0.22) * 1.35) * 1.05;
-    }
+    // The CS2 maps are used 1:1: no contrast/brightness boost on gloves or
+    // sleeves. Any stylisation here makes the default agent look like a
+    // custom skin.
     albedo_tex.rgb *= tint.rgb;
 
     // 2. Normal Map aligned with DirectX tangent space
@@ -177,11 +184,6 @@ float4 PSMain(VSOut i) : SV_Target {
     float3 mapN;
     mapN.x = norm_sample.x * 2.0 - 1.0;
     mapN.y = norm_sample.y * 2.0 - 1.0;
-    if (is_arm > 0.5 && is_arm < 1.5) {
-        mapN.xy *= 1.6;
-    } else if (is_arm > 2.5 && is_arm < 3.5) {
-        mapN.xy *= 1.25;
-    }
     mapN.z = sqrt(saturate(1.0 - dot(mapN.xy, mapN.xy)));
 
     float3 N_geom = normalize(i.normal);
@@ -215,7 +217,7 @@ float4 PSMain(VSOut i) : SV_Target {
     float3 specular = clamp(numerator / denominator, 0.0, 4.0);
 
     float3 kS = F;
-    float3 kD = (float3(1.0, 1.0, 1.0) - kS) * (1.0 - metallic * 0.75); // Preserve albedo details on metallic weapons
+    float3 kD = (float3(1.0, 1.0, 1.0) - kS) * (1.0 - metallic); // Metals have no diffuse lobe
     float NdotL = max(dot(N, L), 0.0);
 
     // Key light + Viewmodel camera fill light
@@ -234,18 +236,28 @@ float4 PSMain(VSOut i) : SV_Target {
     float3 ground_color = float3(0.18, 0.18, 0.20);
     float3 ambient_irradiance = lerp(ground_color, sky_color, N.y * 0.5 + 0.5);
 
-    // Specular environment reflection with roughness dissipation
     float3 env_spec = lerp(ground_color, sky_color, R.y * 0.5 + 0.5);
     float3 env_F = F0 + (max(float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness), F0) - F0) * pow(clamp(1.0 - max(dot(N, V), 0.0), 0.0, 1.0), 5.0);
-    float3 env_reflection = env_spec * env_F * (1.0 - roughness * 0.45);
 
-    // Direct albedo baseline to guarantee weapon skin/texture visibility under all angles
+    // Environment reflection: metals get the full studio reflection; skin and
+    // fabric are mostly dielectric and must not pick up a white grazing-angle
+    // sheen (that is what flattened the glove/arms into the background).
+    float env_scale = (is_arm > 0.5) ? 0.55 : 1.35;
+    float3 env_reflection = env_spec * env_F * (1.0 - roughness * 0.55) * env_scale;
+
+    // Direct albedo baseline keeps the texture readable in deep shadow without
+    // washing out the PBR response.
     float3 ambient = (kD * albedo_tex.rgb * ambient_irradiance + env_reflection) * ao;
-    float3 color = Lo + ambient + albedo_tex.rgb * 0.25;
+    float3 color = Lo + ambient + albedo_tex.rgb * 0.08;
 
-    // Tone mapping & saturation
-    color = color / (color + 1.0);
-    return float4(saturate(color), 1.0);
+    // Rim light: keep it on the weapon. Arms/gloves sit nearly edge-on to the
+    // camera, where a strong rim turns the whole forearm white.
+    float rim = pow(1.0 - saturate(dot(N, V)), 3.0) * 0.22 * ((is_arm < 0.5) ? 1.0 : 0.25);
+    color += rim * float3(0.55, 0.62, 0.72);
+
+    // Filmic tone mapping and a slight exposure lift.
+    color = AcesFilm(color * 1.15);
+    return float4(color, 1.0);
 }
 )hlsl";
 
@@ -425,9 +437,13 @@ void CsRenderer::release() {
     ReleaseDecodeCache();
 }
 
-bool CsRenderer::TextureGpu::create(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+bool CsRenderer::TextureGpu::create(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot, bool srgb) {
     release();
     if (!device || !rgba || width == 0 || height == 0 || slot.ptr == 0) return false;
+
+    // Albedo PNGs are sRGB-encoded; normal/ORM maps are linear data. Sampling
+    // an sRGB albedo as UNORM makes every material look washed out.
+    const DXGI_FORMAT format = srgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
 
     D3D12_HEAP_PROPERTIES hd{};
     hd.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -437,7 +453,7 @@ bool CsRenderer::TextureGpu::create(ID3D12Device* device, const uint8_t* rgba, u
     td.Height = height;
     td.DepthOrArraySize = 1;
     td.MipLevels = 1;
-    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.Format = format;
     td.SampleDesc.Count = 1;
     td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 
@@ -475,7 +491,7 @@ bool CsRenderer::TextureGpu::create(ID3D12Device* device, const uint8_t* rgba, u
     upload->Unmap(0, nullptr);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
-    sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.Format = format;
     sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     sd.Texture2D.MipLevels = 1;
@@ -509,11 +525,11 @@ void CsRenderer::TextureGpu::recordUpload(ID3D12GraphicsCommandList* list) {
 }
 
 bool CsRenderer::setKnifeTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
-    return knife_tex_.create(device, rgba, width, height, slot);
+    return knife_tex_.create(device, rgba, width, height, slot, /*srgb=*/true);
 }
 
 bool CsRenderer::setGloveTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
-    return glove_tex_.create(device, rgba, width, height, slot);
+    return glove_tex_.create(device, rgba, width, height, slot, /*srgb=*/true);
 }
 
 bool CsRenderer::setKnifeNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
@@ -533,7 +549,7 @@ bool CsRenderer::setGlovePbrTexture(ID3D12Device* device, const uint8_t* rgba, u
 }
 
 bool CsRenderer::setBareArmTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
-    return bare_tex_.create(device, rgba, width, height, slot);
+    return bare_tex_.create(device, rgba, width, height, slot, /*srgb=*/true);
 }
 
 bool CsRenderer::setBareArmNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
@@ -545,7 +561,7 @@ bool CsRenderer::setBareArmPbrTexture(ID3D12Device* device, const uint8_t* rgba,
 }
 
 bool CsRenderer::setSleeveTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
-    return sleeve_tex_.create(device, rgba, width, height, slot);
+    return sleeve_tex_.create(device, rgba, width, height, slot, /*srgb=*/true);
 }
 
 bool CsRenderer::setSleeveNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
@@ -864,6 +880,14 @@ bool CsRenderer::loadModel(ID3D12Device* device, const std::string& path) {
     if (log_) log_("cs_render: CSVM parsed from %s: %u verts, %u indices, %zu submeshes, %zu clips",
                    path.c_str(), model_.header_.total_vertices, model_.header_.total_indices,
                    model_.submeshes.size(), model_.anim_clips.size());
+    if (log_) {
+        std::string names;
+        for (const auto& sub : model_.submeshes) {
+            if (!names.empty()) names += ", ";
+            names += sub.bone_name;
+        }
+        log_("cs_render: CSVM submeshes: %s", names.c_str());
+    }
 
     Rel(vb_);
     Rel(ib_);
