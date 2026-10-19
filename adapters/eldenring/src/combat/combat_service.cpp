@@ -8,6 +8,9 @@
 
 #include "eldenring_steve.hpp"
 #include "mc/consumables.hpp"
+#if ENABLE_CS2_VIEWMODEL
+#include "cs_impact_decals.hpp"
+#endif
 
 namespace eldenring::combat {
 
@@ -884,7 +887,15 @@ CsShotResult CombatService::fireCsShot(const eldenring::cs::CsShotParams& params
         const RayResult r = castStaticRay(cam.position, disp);
         if (r.ok && r.hit && r.fraction > 0.f && r.fraction <= 1.f) {
             for (int i = 0; i < 3; ++i) out.to[i] = cam.position[i] + dir[i] * (params.max_range_m * r.fraction);
+            // The Havok normal can point into the wall; orient it toward the shooter for the decal.
+            eldenring::cs::orientDecalNormal(r.normal, dir, out.normal);
+            out.wall_hit = true;
             wall_hit = true;
+            if (shot_log) {
+                log("CS-SHOT: wall hit dist=%.1f m normal=(%.2f %.2f %.2f) decal=%d",
+                    params.max_range_m * r.fraction, out.normal[0], out.normal[1], out.normal[2],
+                    callbacks_.spawn_decal ? 1 : 0);
+            }
         }
     }
 
@@ -910,6 +921,13 @@ CsShotResult CombatService::fireCsShot(const eldenring::cs::CsShotParams& params
     if (callbacks_.spawn_fx && (out.hit || wall_hit)) {
         callbacks_.spawn_fx(3 /* Spark */, out.to, 0);
     }
+#if ENABLE_CS2_VIEWMODEL
+    // Static-geometry impacts leave a bullet hole. Enemy hits do not: a decal on a moving character would
+    // need bone attachment, and the field note's "holes on enemies" gotcha comes from exactly that.
+    if (out.wall_hit && callbacks_.spawn_decal) {
+        callbacks_.spawn_decal(out.to, out.normal);
+    }
+#endif
     return out;
 }
 #endif

@@ -1624,7 +1624,9 @@ bool FireCsShot(float damage, float spread, float range, uint32_t tracer_frequen
     params.damage = damage;
     params.spread_deg = spread;
     params.max_range_m = range;
-    params.tracer_frequency = tracer_frequency;
+    // Tracers are disabled by design; the weapon registry also keeps tracer_frequency at 0.
+    (void)tracer_frequency;
+    params.tracer_frequency = 0;
     params.weapon_slot = weapon_slot;
     return eldenring::combat::CombatService::Instance()
         .fireCsShot(params, g_queue, NowTick(), eldenring::RuntimeContext::Instance())
@@ -2468,6 +2470,9 @@ void SetupCombat() {
     cb.play_sound = [](const char* snd, float vol) { eraudio::Play(snd, vol); };
     cb.spawn_fx = [](int kind, const float pos[3], int count) { erov::SpawnFx(static_cast<erov::FxKind>(kind), pos, count); };
     cb.spawn_tracer = [](const float from[3], const float to[3], float life) { erov::SpawnTracer(from, to, life); };
+#if ENABLE_CS2_VIEWMODEL
+    cb.spawn_decal = [](const float pos[3], const float normal[3]) { erov::SpawnDecal(pos, normal); };
+#endif
     cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
     cb.reader = &g_reader;
     cb.image_base = g_img.base;

@@ -170,9 +170,19 @@ TEST(CsBallisticsTest, TracerFrequencyMatchesTheCs2WeaponData) {
 
 TEST(CsBallisticsTest, TracerLifetimeScalesWithDistanceAndIsClamped) {
     EXPECT_FLOAT_EQ(eldenring::cs::tracerLifetime(0.f), eldenring::cs::kCsTracerMinLifeS);
-    EXPECT_FLOAT_EQ(eldenring::cs::tracerLifetime(8.f), 0.02f);   // 8 m / 400 m/s
-    EXPECT_FLOAT_EQ(eldenring::cs::tracerLifetime(40.f), 0.10f);  // 40 m / 400 m/s
+    EXPECT_FLOAT_EQ(eldenring::cs::tracerLifetime(8.f), eldenring::cs::kCsTracerMinLifeS);
+    EXPECT_FLOAT_EQ(eldenring::cs::tracerLifetime(40.f), eldenring::cs::kCsTracerMinLifeS); // 40 m / 400 m/s = 0.10 s
+    EXPECT_FLOAT_EQ(eldenring::cs::tracerLifetime(80.f), 0.20f);  // 80 m / 400 m/s
     EXPECT_FLOAT_EQ(eldenring::cs::tracerLifetime(1000.f), eldenring::cs::kCsTracerMaxLifeS);
+}
+
+TEST(CsBallisticsTest, TracerLifetimeSurvivesAtLeastThreeFramesAtThirtyFps) {
+    // 30 fps = 33.3 ms per frame. The old 20 ms floor let close-range tracers expire before the overlay
+    // ever drew them; every range must now last at least three frames.
+    constexpr float kThreeFramesAt30Fps = 0.1f;
+    for (float distance : {2.f, 5.f, 10.f, 20.f, 40.f}) {
+        EXPECT_GE(eldenring::cs::tracerLifetime(distance), kThreeFramesAt30Fps);
+    }
 }
 
 TEST(CsBallisticsTest, DamageToErRejectsInvalidInput) {

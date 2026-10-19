@@ -41,9 +41,13 @@ struct CsShotParams {
 
 // CS2 tracers are short streaks, not a laser from muzzle to target. The head travels at this speed;
 // the overlay draws a few metres of tail behind it.
+//
+// The lifetime is a *visual* floor, not just distance / speed. A 10 m shot at 400 m/s is 25 ms, which is
+// shorter than one frame at 30 fps, so the overlay can erase the event before it is ever drawn. Keep every
+// tracer alive for at least 120 ms (about four frames at 30 fps) so close-range shots read on screen.
 inline constexpr float kCsTracerSpeedMps = 400.f;
-inline constexpr float kCsTracerMinLifeS = 0.02f;
-inline constexpr float kCsTracerMaxLifeS = 0.12f;
+inline constexpr float kCsTracerMinLifeS = 0.12f;
+inline constexpr float kCsTracerMaxLifeS = 0.30f;
 
 // True when round `shot_index` (0-based, per weapon) should show a tracer. Frequency 3 means the
 // 3rd, 6th, 9th... round, matching CS2's "one tracer every N rounds".

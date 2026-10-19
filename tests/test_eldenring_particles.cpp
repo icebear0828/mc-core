@@ -80,6 +80,25 @@ TEST(EldenRingParticles, SparkBurstIsShortLivedAndFalls) {
     EXPECT_TRUE(ps.alive().empty());
 }
 
+TEST(EldenRingParticles, DustBurstDriftsUpAndFades) {
+    ParticleSystem ps;
+    Rng rng(13);
+    const float at[3] = {1.f, 0.f, 1.f};
+    ps.spawnDust(at, rng);
+    ASSERT_EQ(ps.alive().size(), 6u);
+    for (const Particle& p : ps.alive()) {
+        EXPECT_EQ(p.kind, Kind::Dust);
+        EXPECT_GE(p.life, 0.35f);
+        EXPECT_LE(p.life, 0.7f);
+    }
+    const float y0 = ps.alive()[0].pos[1];
+    ps.update(0.2f);
+    EXPECT_GT(ps.alive()[0].pos[1], y0 + 0.02f);
+    EXPECT_LT(ParticleSystem::fade(ps.alive()[0]), 1.f);
+    ps.update(1.0f);
+    EXPECT_TRUE(ps.alive().empty());
+}
+
 TEST(EldenRingParticles, ThePoolIsBounded) {
     ParticleSystem ps;
     Rng rng(1);

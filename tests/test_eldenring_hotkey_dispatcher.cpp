@@ -617,7 +617,7 @@ TEST_F(HotkeyDispatcherTest, CsGunFireQueuesHitscanShotWithWeaponBallistics) {
     EXPECT_FLOAT_EQ(cs_shot_damage_, 36.f);
     EXPECT_FLOAT_EQ(cs_shot_spread_, 0.f); // first shot after a pause is accurate
     EXPECT_FLOAT_EQ(cs_shot_range_, 300.f);
-    EXPECT_EQ(cs_shot_tracer_, 3u); // CS2 AK-47 m_nTracerFrequency
+    EXPECT_EQ(cs_shot_tracer_, 0u); // tracers are disabled by design
     EXPECT_EQ(cs_shot_slot_, 1);
     EXPECT_EQ(ctx.mode().cs_ammo.load(), 29u);
 

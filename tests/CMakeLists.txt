@@ -98,6 +98,7 @@ if(ENABLE_CS2_VIEWMODEL)
     target_sources(mc_tests PRIVATE
         test_cs_viewmodel.cpp
         test_cs_ballistics.cpp
+        test_cs_impact_decals.cpp
         ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/cs_weapon_registry.cpp
     )
 endif()

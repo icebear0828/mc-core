@@ -7,7 +7,7 @@
 
 namespace mc {
 
-enum class ParticleKind : uint8_t { Crit, Damage, Sweep, Spark };
+enum class ParticleKind : uint8_t { Crit, Damage, Sweep, Spark, Dust };
 using Kind = ParticleKind;
 
 struct Particle {
@@ -86,6 +86,26 @@ public:
             p.vel[2] = std::sin(yaw) * std::cos(pitch) * speed;
             p.life = rng.range(0.08f, 0.18f);
             p.size = 0.05f;
+            particles_.push_back(p);
+        }
+    }
+
+    // A small grey dust puff for a bullet hitting a floor or wall. It drifts up and fades; no gravity.
+    void spawnDust(const float at[3], Rng& rng) {
+        for (int i = 0; i < 6 && particles_.size() < kMax; ++i) {
+            Particle p;
+            p.kind = ParticleKind::Dust;
+            std::copy(at, at + 3, p.pos);
+            p.pos[0] += rng.range(-0.06f, 0.06f);
+            p.pos[1] += rng.range(0.f, 0.04f);
+            p.pos[2] += rng.range(-0.06f, 0.06f);
+            const float yaw = rng.range(0.f, 6.2831853f);
+            const float speed = rng.range(0.15f, 0.45f);
+            p.vel[0] = std::cos(yaw) * speed;
+            p.vel[1] = rng.range(0.35f, 0.8f);
+            p.vel[2] = std::sin(yaw) * speed;
+            p.life = rng.range(0.35f, 0.7f);
+            p.size = rng.range(0.10f, 0.18f);
             particles_.push_back(p);
         }
     }

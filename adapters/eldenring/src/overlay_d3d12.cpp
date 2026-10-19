@@ -38,6 +38,7 @@
 #include "steve_renderer_d3d12.hpp"
 #if ENABLE_CS2_VIEWMODEL
 #include "cs_renderer_d3d12.hpp"
+#include "cs_impact_decals.hpp"
 #endif
 #include "eldenring_runtime_context.hpp"
 #include "eldenring_inventory_preview.hpp"
@@ -88,6 +89,18 @@ bool g_atlas_pending = false;
 D3D12_GPU_DESCRIPTOR_HANDLE g_atlas_gpu{};
 bool g_atlas_ready = false;
 void CreateAtlasTexture(UINT srv_inc); // defined with the HUD drawing below
+#if ENABLE_CS2_VIEWMODEL
+// Authentic CS2 bullet-hole decal (mods/mc_adapter/textures/cs/bullet_hole_concrete.png), heap slot 44.
+std::vector<uint8_t> g_decal_rgba;
+unsigned g_decal_w = 0, g_decal_h = 0;
+ID3D12Resource* g_decal_tex = nullptr;
+ID3D12Resource* g_decal_upload = nullptr;
+D3D12_PLACED_SUBRESOURCE_FOOTPRINT g_decal_footprint{};
+bool g_decal_pending = false;
+D3D12_GPU_DESCRIPTOR_HANDLE g_decal_gpu{};
+bool g_decal_ready = false;
+void CreateCsDecalTexture(UINT srv_inc);
+#endif
 // Combat particles: events queued by the loader, simulated and drawn here.
 struct FxEvent {
     FxKind kind;
@@ -110,6 +123,11 @@ struct TracerEvent {
 };
 std::mutex g_tracer_mutex;
 std::vector<TracerEvent> g_tracer_events;
+#if ENABLE_CS2_VIEWMODEL
+// CS bullet holes on static geometry. The ring is bounded and refreshes hits within 3 cm.
+std::mutex g_decal_mutex;
+eldenring::cs::ImpactDecalRing g_decal_ring;
+#endif
 eldenring::fp::HandAnimator g_hand;
 eldenring::fp::SwayFilter g_sway;
 float g_walk_dist = 0.f, g_walk_bob = 0.f;
@@ -322,6 +340,11 @@ void Teardown() {
     SafeRelease(g_atlas_tex);
     SafeRelease(g_atlas_upload);
     g_atlas_ready = false;
+#if ENABLE_CS2_VIEWMODEL
+    SafeRelease(g_decal_tex);
+    SafeRelease(g_decal_upload);
+    g_decal_ready = false;
+#endif
     SafeRelease(g_s.fence);
     if (g_s.fence_event) {
         CloseHandle(g_s.fence_event);
@@ -523,6 +546,9 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
         g_depth_dirty.store(true); // bind the depth captured so far
         CreateAtlasTexture(srv_inc);
 #if ENABLE_CS2_VIEWMODEL
+        CreateCsDecalTexture(srv_inc);
+#endif
+#if ENABLE_CS2_VIEWMODEL
         // The CS2 build is CS-only at runtime: never start in MC mode, even if
         // a config file or a missing CS asset would otherwise fall back to it.
         eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
@@ -715,6 +741,96 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
     return true;
 }
 
+#if ENABLE_CS2_VIEWMODEL
+// The authentic CS2 concrete bullet-hole decal, extracted from the user's own VPK by
+// tools/cs2/impact_decals.py and deployed next to the CS textures. Slot 44 is free.
+void CreateCsDecalTexture(UINT srv_inc) {
+    g_decal_ready = false;
+    g_decal_rgba.clear();
+    g_decal_w = g_decal_h = 0;
+    const std::string& game_dir = eldenring::diagnostics::GetGameDir();
+    std::vector<std::string> candidates;
+    if (!game_dir.empty()) {
+        candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "cs" /
+                              "bullet_hole_concrete.png").string());
+        candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "bullet_hole_concrete.png").string());
+    }
+    candidates.push_back("mods\\mc_adapter\\textures\\cs\\bullet_hole_concrete.png");
+    candidates.push_back("mods\\mc_adapter\\bullet_hole_concrete.png");
+    std::string used;
+    for (const auto& p : candidates) {
+        if (!std::filesystem::exists(p)) continue;
+        if (DecodePngFile(p, g_decal_rgba, g_decal_w, g_decal_h)) {
+            used = p;
+            break;
+        }
+    }
+    if (g_decal_rgba.empty() || g_decal_w == 0 || g_decal_h == 0) {
+        Logf("overlay: CS decal: no bullet_hole_concrete.png, procedural fallback");
+        return;
+    }
+    D3D12_HEAP_PROPERTIES hd{};
+    hd.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC td{};
+    td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    td.Width = g_decal_w;
+    td.Height = g_decal_h;
+    td.DepthOrArraySize = 1;
+    td.MipLevels = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    if (FAILED(g_s.device->CreateCommittedResource(&hd, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                   nullptr, IID_PPV_ARGS(&g_decal_tex)))) {
+        Logf("overlay: CS decal: texture creation failed");
+        return;
+    }
+    UINT rows = 0;
+    UINT64 row_bytes = 0, total = 0;
+    g_s.device->GetCopyableFootprints(&td, 0, 1, 0, &g_decal_footprint, &rows, &row_bytes, &total);
+    (void)row_bytes;
+    D3D12_HEAP_PROPERTIES hu{};
+    hu.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC ud{};
+    ud.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    ud.Width = total;
+    ud.Height = 1;
+    ud.DepthOrArraySize = 1;
+    ud.MipLevels = 1;
+    ud.SampleDesc.Count = 1;
+    ud.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    void* mapped = nullptr;
+    D3D12_RANGE none{0, 0};
+    if (FAILED(g_s.device->CreateCommittedResource(&hu, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                   nullptr, IID_PPV_ARGS(&g_decal_upload))) ||
+        FAILED(g_decal_upload->Map(0, &none, &mapped))) {
+        SafeRelease(g_decal_tex);
+        SafeRelease(g_decal_upload);
+        Logf("overlay: CS decal: upload buffer failed");
+        return;
+    }
+    for (UINT y = 0; y < rows; ++y) {
+        std::memcpy(static_cast<uint8_t*>(mapped) + g_decal_footprint.Offset +
+                        static_cast<size_t>(y) * g_decal_footprint.Footprint.RowPitch,
+                    g_decal_rgba.data() + static_cast<size_t>(y) * g_decal_w * 4,
+                    static_cast<size_t>(g_decal_w) * 4);
+    }
+    g_decal_upload->Unmap(0, nullptr);
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
+    cpu.ptr += static_cast<SIZE_T>(srv_inc) * 44;
+    g_decal_gpu = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
+    g_decal_gpu.ptr += static_cast<UINT64>(srv_inc) * 44;
+    D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
+    sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    sd.Texture2D.MipLevels = 1;
+    g_s.device->CreateShaderResourceView(g_decal_tex, &sd, cpu);
+    g_decal_pending = true;
+    g_decal_ready = true;
+    Logf("overlay: CS decal: %ux%u from %s (slot 44)", g_decal_w, g_decal_h, used.c_str());
+}
+#endif
+
 void CreateAtlasTexture(UINT srv_inc) {
     g_atlas_ready = false;
     if (g_atlas_rgba.empty() || g_atlas_w == 0 || g_atlas_h == 0) {
@@ -806,24 +922,46 @@ void CreateAtlasTexture(UINT srv_inc) {
 
 // Recorded at the start of the frame's command list, before anything samples the atlas.
 void RecordAtlasUpload(ID3D12GraphicsCommandList* list) {
-    if (!g_atlas_pending || !g_atlas_tex || !g_atlas_upload) return;
-    D3D12_TEXTURE_COPY_LOCATION dst{};
-    dst.pResource = g_atlas_tex;
-    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    dst.SubresourceIndex = 0;
-    D3D12_TEXTURE_COPY_LOCATION src{};
-    src.pResource = g_atlas_upload;
-    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    src.PlacedFootprint = g_atlas_footprint;
-    list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-    D3D12_RESOURCE_BARRIER b{};
-    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b.Transition.pResource = g_atlas_tex;
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    list->ResourceBarrier(1, &b);
-    g_atlas_pending = false;
+    if (g_atlas_pending && g_atlas_tex && g_atlas_upload) {
+        D3D12_TEXTURE_COPY_LOCATION dst{};
+        dst.pResource = g_atlas_tex;
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dst.SubresourceIndex = 0;
+        D3D12_TEXTURE_COPY_LOCATION src{};
+        src.pResource = g_atlas_upload;
+        src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        src.PlacedFootprint = g_atlas_footprint;
+        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = g_atlas_tex;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        list->ResourceBarrier(1, &b);
+        g_atlas_pending = false;
+    }
+#if ENABLE_CS2_VIEWMODEL
+    if (g_decal_pending && g_decal_tex && g_decal_upload) {
+        D3D12_TEXTURE_COPY_LOCATION dst{};
+        dst.pResource = g_decal_tex;
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dst.SubresourceIndex = 0;
+        D3D12_TEXTURE_COPY_LOCATION src{};
+        src.pResource = g_decal_upload;
+        src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        src.PlacedFootprint = g_decal_footprint;
+        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = g_decal_tex;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        list->ResourceBarrier(1, &b);
+        g_decal_pending = false;
+    }
+#endif
 }
 
 // Clip-space position of a world point (row vector times the matrix); false when it is behind the camera.
@@ -893,9 +1031,10 @@ void DrawTracers(ImDrawList* dl, float w, float h) {
         if (!(dist > 1e-3f)) continue;
         for (int i = 0; i < 3; ++i) d[i] /= dist;
 
-        // A short streak flies from the muzzle to the impact, not a line across the whole path.
+        // A short streak flies from the muzzle to the impact, not a line across the whole path. The tail is
+        // long enough to read at a distance, and the core is drawn over a soft glow.
         const float head = u * dist;
-        const float tail = std::max(0.f, head - std::min(4.f, dist));
+        const float tail = std::max(0.f, head - std::min(10.f, dist));
         float hp[3], tp[3];
         for (int i = 0; i < 3; ++i) {
             hp[i] = t.from[i] + d[i] * head;
@@ -905,9 +1044,93 @@ void DrawTracers(ImDrawList* dl, float w, float h) {
         float ppm = 0.f;
         if (!ProjectToScreen(g_fx_vp, tp, w, h, g_fx_fov, a, ppm)) continue;
         if (!ProjectToScreen(g_fx_vp, hp, w, h, g_fx_fov, b, ppm)) continue;
-        dl->AddLine(a, b, IM_COL32(255, 226, 150, static_cast<int>(190.f * fade)), 1.5f);
+        dl->AddLine(a, b, IM_COL32(255, 196, 96, static_cast<int>(70.f * fade)), 6.f);
+        dl->AddLine(a, b, IM_COL32(255, 238, 180, static_cast<int>(235.f * fade)), 2.5f);
+        dl->AddCircleFilled(b, 2.5f, IM_COL32(255, 250, 225, static_cast<int>(220.f * fade)), 8);
     }
 }
+
+#if ENABLE_CS2_VIEWMODEL
+// Bullet holes on floors and walls. The quad lies in the surface plane (built from the Havok normal), so a
+// floor hit reads as a flat mark rather than a screen-facing sprite. The last fifth of the lifetime fades.
+void DrawDecals(ImDrawList* dl, float w, float h) {
+    if (!g_fx_valid) return;
+    const uint64_t now = GetTickCount64();
+    std::vector<eldenring::cs::ImpactDecal> live;
+    {
+        std::lock_guard<std::mutex> g(g_decal_mutex);
+        g_decal_ring.expire(now);
+        live.reserve(g_decal_ring.size());
+        for (size_t i = 0; i < g_decal_ring.size(); ++i) live.push_back(g_decal_ring.at(i));
+    }
+    for (const eldenring::cs::ImpactDecal& d : live) {
+        const float age = static_cast<float>(now - d.start_ms) / 1000.f;
+        const float fade = eldenring::cs::decalFade(age, d.life_s);
+        if (fade <= 0.f) continue;
+
+        float tangent[3], bitangent[3];
+        eldenring::cs::decalTangentBasis(d.normal, tangent, bitangent);
+        const float half = 0.08f; // 16 cm across; the authentic texture's hole fills most of it
+        const float lift = 0.015f;
+        const float center[3] = {d.pos[0] + d.normal[0] * lift, d.pos[1] + d.normal[1] * lift,
+                                 d.pos[2] + d.normal[2] * lift};
+        ImVec2 q[4];
+        float ppm = 0.f;
+        bool visible = true;
+        for (int i = 0; i < 4 && visible; ++i) {
+            const float sx = (i == 0 || i == 3) ? -1.f : 1.f;
+            const float sy = (i < 2) ? -1.f : 1.f;
+            const float p[3] = {
+                center[0] + tangent[0] * half * sx + bitangent[0] * half * sy,
+                center[1] + tangent[1] * half * sx + bitangent[1] * half * sy,
+                center[2] + tangent[2] * half * sx + bitangent[2] * half * sy,
+            };
+            visible = ProjectToScreen(g_fx_vp, p, w, h, g_fx_fov, q[i], ppm);
+        }
+        if (!visible) continue;
+
+        const ImVec2 c{(q[0].x + q[1].x + q[2].x + q[3].x) * 0.25f,
+                       (q[0].y + q[1].y + q[2].y + q[3].y) * 0.25f};
+        const float span = std::max(std::fabs(q[0].x - q[2].x), std::fabs(q[0].y - q[2].y));
+        if (g_decal_ready) {
+            // Authentic CS2 concrete bullet-hole decal, extracted from the user's own VPK.
+            const ImTextureID tex = reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(g_decal_gpu.ptr));
+            const ImU32 col = IM_COL32(225, 225, 225, static_cast<int>(255.f * fade));
+            if (span < 4.f) {
+                // Too far / too grazing to resolve the quad: draw the texture at a minimum readable size.
+                const float s = std::max(4.f, span * 1.5f);
+                dl->AddImage(tex, ImVec2{c.x - s, c.y - s}, ImVec2{c.x + s, c.y + s},
+                             ImVec2{0.f, 0.f}, ImVec2{1.f, 1.f}, col);
+            } else {
+                dl->AddImageQuad(tex, q[0], q[1], q[2], q[3], ImVec2{0.f, 0.f}, ImVec2{1.f, 0.f},
+                                 ImVec2{1.f, 1.f}, ImVec2{0.f, 1.f}, col);
+            }
+        } else if (span < 4.f) {
+            // Procedural fallback when the extracted CS2 texture is unavailable.
+            dl->AddCircleFilled(c, 4.f, IM_COL32(190, 178, 155, static_cast<int>(85.f * fade)), 8);
+            dl->AddCircleFilled(c, 2.5f, IM_COL32(12, 10, 9, static_cast<int>(235.f * fade)), 8);
+        } else {
+            const auto shrink = [&](float s, ImVec2 out[4]) {
+                for (int i = 0; i < 4; ++i) out[i] = ImVec2{c.x + (q[i].x - c.x) * s, c.y + (q[i].y - c.y) * s};
+            };
+            // Dust ring, scorch, then the dark hole.
+            dl->AddQuadFilled(q[0], q[1], q[2], q[3], IM_COL32(190, 178, 155, static_cast<int>(80.f * fade)));
+            ImVec2 scorch[4];
+            shrink(0.62f, scorch);
+            dl->AddQuadFilled(scorch[0], scorch[1], scorch[2], scorch[3],
+                              IM_COL32(48, 40, 32, static_cast<int>(150.f * fade)));
+            ImVec2 hole[4];
+            shrink(0.30f, hole);
+            dl->AddQuadFilled(hole[0], hole[1], hole[2], hole[3],
+                              IM_COL32(12, 10, 9, static_cast<int>(230.f * fade)));
+            for (int i = 0; i < 4; ++i) {
+                const ImVec2 e{c.x + (q[i].x - c.x) * 0.9f, c.y + (q[i].y - c.y) * 0.9f};
+                dl->AddLine(c, e, IM_COL32(32, 27, 22, static_cast<int>(95.f * fade)), 1.f);
+            }
+        }
+    }
+}
+#endif
 
 void DrawFx(ImDrawList* dl, ImTextureID atlas, float w, float h) {
     if (!g_fx_valid || !g_atlas_ready) return;
@@ -919,6 +1142,11 @@ void DrawFx(ImDrawList* dl, ImTextureID atlas, float w, float h) {
         const float fade = eldenring::fx::ParticleSystem::fade(p);
         if (p.kind == eldenring::fx::Kind::Spark) {
             dl->AddCircleFilled(s, std::max(1.f, half), IM_COL32(255, 220, 140, static_cast<int>(255 * fade)), 6);
+            continue;
+        }
+        if (p.kind == eldenring::fx::Kind::Dust) {
+            dl->AddCircleFilled(s, std::max(1.5f, half), IM_COL32(175, 165, 148, static_cast<int>(65 * fade)), 8);
+            dl->AddCircleFilled(s, std::max(1.f, half * 0.55f), IM_COL32(205, 195, 178, static_cast<int>(55 * fade)), 8);
             continue;
         }
         const mc::hud::HudUV* uv = nullptr;
@@ -1587,9 +1815,13 @@ void RenderFrame(IDXGISwapChain* sc) {
                 case FxKind::Damage: g_particles.spawnDamage(e.pos, e.count, g_fx_rng); break;
                 case FxKind::Sweep: g_particles.spawnSweep(e.pos); break;
                 case FxKind::Spark: g_particles.spawnSpark(e.pos, g_fx_rng); break;
+                case FxKind::Dust: g_particles.spawnDust(e.pos, g_fx_rng); break;
             }
         }
         g_particles.update(dt);
+#if ENABLE_CS2_VIEWMODEL
+        DrawDecals(ImGui::GetBackgroundDrawList(), io.DisplaySize.x, io.DisplaySize.y);
+#endif
         DrawTracers(ImGui::GetBackgroundDrawList(), io.DisplaySize.x, io.DisplaySize.y);
 #if ENABLE_CS2_VIEWMODEL
         DrawCsMuzzleFlash(ImGui::GetBackgroundDrawList(), io.DisplaySize.x, io.DisplaySize.y);
@@ -2198,6 +2430,14 @@ void SpawnTracer(const float from[3], const float to[3], float life_s) {
     std::lock_guard<std::mutex> g(g_tracer_mutex);
     if (g_tracer_events.size() < 64) g_tracer_events.push_back(t);
 }
+
+#if ENABLE_CS2_VIEWMODEL
+void SpawnDecal(const float pos[3], const float normal[3]) {
+    const uint64_t now = GetTickCount64();
+    std::lock_guard<std::mutex> g(g_decal_mutex);
+    g_decal_ring.addOrRefresh(pos, normal, now, eldenring::cs::kImpactDecalLifeS);
+}
+#endif
 
 void SetHudAtlas(const uint8_t* rgba, unsigned width, unsigned height) {
     g_atlas_rgba.assign(rgba, rgba + static_cast<size_t>(width) * height * 4);

@@ -106,6 +106,10 @@ struct CombatCallbacks {
     std::function<void(const char* sound, float vol)> play_sound;
     std::function<void(int fx_kind, const float pos[3], int count)> spawn_fx;
     std::function<void(const float from[3], const float to[3], float life_s)> spawn_tracer;
+#if ENABLE_CS2_VIEWMODEL
+    // A bullet hole on static geometry: position and outward surface normal, both game metres.
+    std::function<void(const float pos[3], const float normal[3])> spawn_decal;
+#endif
     std::function<void(const std::string&)> log;
     const IMemoryReader* reader{nullptr};
     uintptr_t image_base{0};
@@ -121,11 +125,13 @@ struct CombatCallbacks {
 struct CsShotResult {
     bool fired{false};
     bool hit{false};
+    bool wall_hit{false};   // the bullet stopped on static geometry (floor/wall), not an enemy
     uintptr_t victim_chr{0};
     float distance{0.f};
     int er_damage{0};
     float from[3]{};
     float to[3]{};
+    float normal[3]{0.f, 1.f, 0.f}; // outward surface normal at a wall hit, oriented toward the shooter
 };
 #endif
 

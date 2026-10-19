@@ -124,10 +124,15 @@ void SetArrows(const std::vector<eldenring::summon::ArrowDraw>& arrows);
 
 // Combat particles (Minecraft's critical hit stars, damage hearts, sweep arc) at a world position (game metres); `count` is the
 // number of hearts for Damage. Thread safe; the overlay projects and draws them.
-enum class FxKind { Crit, Damage, Sweep, Spark };
+enum class FxKind { Crit, Damage, Sweep, Spark, Dust };
 void SpawnFx(FxKind kind, const float world_pos[3], int count);
 // A CS hitscan tracer: a world-space segment (game metres) that fades out over `life_s`. Thread safe.
 void SpawnTracer(const float from[3], const float to[3], float life_s = 0.08f);
+#if ENABLE_CS2_VIEWMODEL
+// A bullet hole on static geometry (floor, wall, rock): the surface position and the outward normal, in game
+// metres. Thread safe; the overlay keeps a bounded list and fades them out.
+void SpawnDecal(const float pos[3], const float normal[3]);
+#endif
 // The back buffer size of the last frame (0 before the first one); the inventory screen needs it to lay itself out.
 void ScreenSize(float& width, float& height);
 // The mesh of the placed blocks (world space, game metres; see eldenring_blockmesh.hpp). Thread safe; the overlay uploads and draws it.
