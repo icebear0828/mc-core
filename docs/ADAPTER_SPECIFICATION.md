@@ -162,8 +162,18 @@ draw_list->AddImage(
 - [ ] **[C13] 真实素材不入库**：`git status` 无 Mojang 素材；日志写明贴图来源（`external file` / `EMBEDDED PLACEHOLDER`）。
 - [ ] **[C14] 不 cast 游戏内存**：适配器只操作镜像结构；对游戏内存只经 `IMemoryReader/IMemoryWriter`。
 - [ ] **[C15] 干净退出**：DLL 卸载/退出 Steve 模式时原角色恢复，不残留写入的状态。
+- [ ] **[C17] 控制策略收口**：模式对输入/相机/移动/跳跃的接管写成 `ControlRequest`，由 `ControlResolver` 仲裁；`hotkey_dispatcher` 不再新增按键 if-chain，`player_locomotion` 不再直接判断 `first_person`。
 
 
 ## 宿主玩法接口（C16）
 
 动作系统依赖的、需要逆向或查引擎 API 才能得到的宿主数据（输入吞掉、血量、敌人枚举、伤害事件、第一人称、着地标志）通过可选端口 `IHostGameplay`（`include/mc/contracts/host_gameplay.hpp`）接入，通过 `Ports::gameplay` 传给 `Session`。**每个特性只有在真实游戏里验证过才能在 `supportedFeatures()` 里声明**；`Session::missingHostFeatures()` 报告还缺什么。逐项的逆向方法、验证和风险见 [REVERSE_INTERFACES.md](REVERSE_INTERFACES.md)。
+
+## 控制策略接口（C17）
+
+模式对原生输入、相机、移动和跳跃的接管统一走 [CONTROL_POLICY.md](CONTROL_POLICY.md)：
+
+- core 提供 `mc::ControlResolver` / `ControlPlan` / `ControlAuthority`（`include/mc/control_policy.hpp`）。
+- 适配器提供自己的模式 → `ControlRequest` 纯函数（Elden Ring 是 `adapters/eldenring/include/eldenring_control_policy.hpp`）。
+- 每 tick 把 `ControlPlan::packedAuthorities()` 发布到跨线程 atomic；游戏/渲染线程只读。
+- 新增模式只改策略纯函数和测试，不在 dispatcher / locomotion / loader 里加新的模式分支。

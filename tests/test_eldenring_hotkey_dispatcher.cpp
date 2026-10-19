@@ -2,6 +2,8 @@
 
 #include "eldenring_hotkey_dispatcher.hpp"
 #include "eldenring_runtime_context.hpp"
+#include "eldenring_flight.hpp"
+#include "eldenring_roll.hpp"
 #include <map>
 #include <vector>
 #include <string>
@@ -479,6 +481,42 @@ TEST_F(HotkeyDispatcherTest, CsBuildF6NeverEnablesMcMode) {
     setKey(VK_F6, false);
     dispatcher_->tick(0.016f);
     EXPECT_FALSE(ctx.mode().mc_mode.load());
+}
+
+TEST_F(HotkeyDispatcherTest, McJumpMasksSpace) {
+#ifdef _WIN32
+    auto& ctx = RuntimeContext::Instance();
+    ctx.mode().mc_jump.store(true);
+    dispatcher_->tick(0.016f);
+
+    const int sc = static_cast<int>(MapVirtualKeyW(VK_SPACE, MAPVK_VK_TO_VSC));
+    EXPECT_NE(std::find(masked_keys_.begin(), masked_keys_.end(), sc), masked_keys_.end());
+#else
+    GTEST_SKIP() << "scan codes are Windows-only";
+#endif
+}
+
+TEST_F(HotkeyDispatcherTest, VanillaRollMasksShift) {
+#ifdef _WIN32
+    auto& ctx = RuntimeContext::Instance();
+    ctx.mode().disable_vanilla_roll.store(true);
+    dispatcher_->tick(0.016f);
+
+    EXPECT_NE(std::find(masked_keys_.begin(), masked_keys_.end(), eldenring::roll::kDikLShift), masked_keys_.end());
+    EXPECT_NE(std::find(masked_keys_.begin(), masked_keys_.end(), eldenring::roll::kDikRShift), masked_keys_.end());
+#else
+    GTEST_SKIP() << "scan codes are Windows-only";
+#endif
+}
+
+TEST_F(HotkeyDispatcherTest, CreativeFlightMasksItsMovementKeys) {
+    auto& ctx = RuntimeContext::Instance();
+    ctx.mode().flying.store(true);
+    dispatcher_->tick(0.016f);
+
+    for (const int key : eldenring::flight::kHiddenKeys) {
+        EXPECT_NE(std::find(masked_keys_.begin(), masked_keys_.end(), key), masked_keys_.end());
+    }
 }
 
 TEST_F(HotkeyDispatcherTest, CsModeMasksItsVanillaKeys) {

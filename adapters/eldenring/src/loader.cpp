@@ -604,7 +604,7 @@ void AfterCameraStep(bool have_before, uintptr_t addr, const float before[3]) {
     if (changed) ++g_camstep_changed;
     float eye[3] = {};
     bool wrote = false;
-    if (g_first_person.load(std::memory_order_relaxed) && g_fp_persist.load(std::memory_order_relaxed)) {
+    if (g_mode.modOwns(mc::ControlDomain::Camera) && g_fp_persist.load(std::memory_order_relaxed)) {
         const uintptr_t player = PlayerChrPtr();
         float feet[3];
         if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) {

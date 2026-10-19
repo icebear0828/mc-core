@@ -39,6 +39,7 @@ This skill guides the end-to-end integration of `mc-core` into any game. It hand
 6. **Never guess host memory.** Signatures are found in the *running, decrypted* image, must match exactly once and pass structural validation; there is no fallback object. Write only fields justified by RTTI / setter disassembly / current value, remember the original, and never batch-write unknown fields (it crashed the game twice).
 7. **Never `reinterpret_cast` game memory to your own struct.** Work on mirror structs and move validated readings across.
 8. **Real Mojang assets stay local** (generated from the user's jar, never committed).
+9. **Mode gating goes through the control policy.** Read `docs/CONTROL_POLICY.md`. Add a `ControlRequest` to the adapter's `*_control_policy.hpp`; never add another key-masking `if` chain to `hotkey_dispatcher`, and never branch on `first_person` in locomotion/camera code.
 
 ## Key Workflows
 
@@ -125,3 +126,18 @@ Write the adapter against mirror structs and unit tests on macOS/Linux first (mo
 ## 动作系统的宿主接口
 
 要让攻击、盾牌、弓箭、受伤、第一人称在新游戏里工作，需要逆向的宿主接口已整理在 `docs/REVERSE_INTERFACES.md`（每项：契约、解锁的行为、怎么找、怎么验证、风险）。实现 `IHostGameplay` 里已经找到的部分，`supportedFeatures()` 只声明真实游戏里验证过的特性。
+
+## 控制策略（输入 / 相机 / 移动 / 跳跃）
+
+模式之间抢输入是适配器最容易复制粘贴出 bug 的地方。统一走
+`docs/CONTROL_POLICY.md` 描述的三层：
+
+1. 适配器写一个纯函数 `buildControlPlan(ModeInputs) -> mc::ControlPlan`，
+   把每个模式表达成 `ControlRequest`（domain + authority + priority）。
+2. 每 tick 在 dispatcher 里构建 plan，应用 `masked_keys` /
+   `blocksNative(MouseButtons)` / `blocksNative(MouseWheel)`。
+3. 游戏/渲染线程通过 `RuntimeContext::mode().modOwns(...)` /
+   `blocksNative(...)` 读取 authority，不要直接判断 `first_person`。
+
+新增模式只改纯函数和 `tests/test_*_control_policy.cpp`；不要在
+`hotkey_dispatcher.cpp`、`player_locomotion.cpp`、`loader.cpp` 里各加一个模式分支。

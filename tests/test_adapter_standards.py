@@ -97,6 +97,27 @@ def test_docs_point_new_games_at_the_playbook():
         assert "PORTING_PLAYBOOK" in doc.read_text(encoding="utf-8"), f"{doc.name} should link the playbook"
 
 
+def test_docs_point_at_the_control_policy():
+    policy = REPO_ROOT / "docs" / "CONTROL_POLICY.md"
+    assert policy.exists()
+    for doc in (REPO_ROOT / "docs" / "ARCHITECTURE.md",
+                REPO_ROOT / "docs" / "ADAPTER_SPECIFICATION.md",
+                REPO_ROOT / "docs" / "PORTING_PLAYBOOK.md",
+                REPO_ROOT / "docs" / "REVERSE_INTERFACES.md",
+                REPO_ROOT / "docs" / "ELDENRING_HANDOFF.md",
+                REPO_ROOT / "CLAUDE.md",
+                REPO_ROOT / "skills" / "mc-game-adapter" / "SKILL.md"):
+        assert "CONTROL_POLICY" in doc.read_text(encoding="utf-8"), f"{doc.name} should link CONTROL_POLICY.md"
+
+
+def test_control_policy_references_only_files_that_exist():
+    text = (REPO_ROOT / "docs" / "CONTROL_POLICY.md").read_text(encoding="utf-8")
+    for ref in sorted(set(re.findall(r"`((?:docs|tools|include|src|tests|skills|adapters)/[A-Za-z0-9_./-]+)`", text))):
+        if "*" in ref or ref.endswith("/"):
+            continue
+        assert (REPO_ROOT / ref).exists(), f"CONTROL_POLICY.md mentions a path that does not exist: {ref}"
+
+
 def test_playbook_references_only_files_that_exist():
     text = (REPO_ROOT / "docs" / "PORTING_PLAYBOOK.md").read_text(encoding="utf-8")
     for ref in sorted(set(re.findall(r"`((?:docs|tools|include|src|tests|skills|adapters)/[A-Za-z0-9_./-]+)`", text))):

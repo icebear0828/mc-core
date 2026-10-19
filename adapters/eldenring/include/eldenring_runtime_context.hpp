@@ -21,6 +21,7 @@
 #include "eldenring_xp.hpp"
 #include "mc/consumables.hpp"
 #include "mc/contracts/mod_manager.hpp"
+#include "mc/control_policy.hpp"
 
 namespace eldenring {
 
@@ -163,6 +164,24 @@ struct ModeConfig {
     std::atomic<bool> bow_offhand{false};
     std::atomic<float> bow_power{0.f};
     std::atomic<float> bow_ticks{0.f};
+
+    // Packed mc::ControlAuthority values, two bits per mc::ControlDomain. Written by
+    // the key thread once per tick from the control policy; read lock-free by the
+    // game and render threads. 0 = every domain is Native.
+    std::atomic<uint64_t> control_authority_bits{0};
+
+    [[nodiscard]] mc::ControlAuthority controlAuthority(mc::ControlDomain domain) const {
+        return mc::controlAuthorityFromPacked(control_authority_bits.load(std::memory_order_relaxed), domain);
+    }
+
+    [[nodiscard]] bool blocksNative(mc::ControlDomain domain) const {
+        const mc::ControlAuthority authority = controlAuthority(domain);
+        return authority == mc::ControlAuthority::Mod || authority == mc::ControlAuthority::None;
+    }
+
+    [[nodiscard]] bool modOwns(mc::ControlDomain domain) const {
+        return controlAuthority(domain) == mc::ControlAuthority::Mod;
+    }
 };
 using ModeFlags = ModeConfig;
 
@@ -320,6 +339,7 @@ public:
         mode_.bow_offhand.store(false);
         mode_.bow_power.store(0.f);
         mode_.bow_ticks.store(0.f);
+        mode_.control_authority_bits.store(0);
 
         // Reset Player
         player_.survival = live::SurvivalState{};
