@@ -686,11 +686,6 @@ public:
             float clip_time = anim_time;
             if (state == 0 && clip_duration_ > 0.f) {
                 clip_time = std::fmod(anim_time, clip_duration_);
-            } else if (state == 4 && clip->fps > 0.f && clip->tracks.count("blade") != 0) {
-                // The knife deploy take starts with the right forearm behind the
-                // camera; skip its first two frames so the near-plane clip does
-                // not flash through the sleeve.
-                clip_time = std::min(anim_time + 2.0f / clip->fps, clip_duration_);
             }
             for (const auto& entry : clip->tracks) {
                 if (entry.second.empty()) continue;

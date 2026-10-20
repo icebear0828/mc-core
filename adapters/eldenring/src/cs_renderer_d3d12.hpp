@@ -155,7 +155,6 @@ private:
 
     ID3D12RootSignature* root_{nullptr};
     ID3D12PipelineState* pso_{nullptr};
-    ID3D12PipelineState* pso_front_{nullptr}; // lower sleeves: opposite winding
     ID3D12PipelineState* pso_depth_flip_{nullptr}; // debug: reverse comparison
     ID3D12Resource* vb_{nullptr};
     ID3D12Resource* ib_{nullptr};

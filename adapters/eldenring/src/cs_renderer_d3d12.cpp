@@ -187,7 +187,7 @@ float3 AcesFilm(float3 x) {
     return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
 }
 
-float4 PSMain(VSOut i, bool is_front : SV_IsFrontFace) : SV_Target {
+float4 PSMain(VSOut i) : SV_Target {
     float2 uv = i.uv;
 
     // 1. Albedo & Base Color
@@ -215,10 +215,6 @@ float4 PSMain(VSOut i, bool is_front : SV_IsFrontFace) : SV_Target {
     mapN.z = sqrt(saturate(1.0 - dot(mapN.xy, mapN.xy)));
 
     float3 N_geom = normalize(i.normal);
-    // The lower sleeve submeshes are exported with the opposite winding from
-    // the weapon/glove meshes, so they are drawn with front-face culling.
-    // SV_IsFrontFace lets the same shader light those back faces correctly.
-    if (!is_front) N_geom = -N_geom;
     float3 N = PerturbNormal(N_geom, i.wpos, uv, mapN);
 
     // 3. PBR Maps (ORM: R=AO, G=Roughness, B=Metallic)
@@ -468,12 +464,13 @@ bool CsRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     pd.SampleMask = UINT_MAX;
     pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    // The CSVM pose matrices go through fp::toHost(), which mirrors Z. That
-    // reflection turns the GLTF counter-clockwise triangles into clockwise
-    // view-space triangles, so D3D12's default clockwise front face is
-    // correct here. The lower sleeve is reversed relative to the other
-    // meshes, so it gets a separate front-culling PSO below.
-    pd.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+    // The weapon meshes and the VRF-exported agent glove/sleeve meshes use
+    // opposite winding conventions. Back-face culling therefore drops the near
+    // glove/sleeve surface and leaves the far (inner) surface visible, which is
+    // exactly the "arm shows through the sleeve / knife handle shows through
+    // the glove" symptom. Draw both faces and let the depth test pick the
+    // nearest one; the viewmodel is small enough that the extra fill is cheap.
+    pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     pd.RasterizerState.DepthClipEnable = TRUE;
     pd.DepthStencilState.DepthEnable = TRUE;
     pd.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
@@ -485,13 +482,6 @@ bool CsRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     pd.SampleDesc.Count = 1;
 
     const HRESULT hr = device->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso_));
-    // Lower-sleeve PSO: the exported mesh has the opposite winding, so cull
-    // front faces to keep the outer surface (and drop the inner one).
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pd_front = pd;
-    pd_front.RasterizerState.CullMode = D3D12_CULL_MODE_FRONT;
-    if (FAILED(device->CreateGraphicsPipelineState(&pd_front, IID_PPV_ARGS(&pso_front_)))) {
-        if (log_) log_("cs_render: front-cull PSO creation failed");
-    }
     // Debug-only reverse comparison PSO (mc_er_csdepthflip.txt).
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pd_flip = pd;
     pd_flip.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
@@ -561,7 +551,6 @@ bool CsRenderer::ensureDepth(ID3D12Device* device, unsigned width, unsigned heig
 
 void CsRenderer::release() {
     Rel(pso_);
-    Rel(pso_front_);
     Rel(pso_depth_flip_);
     Rel(root_);
     Rel(vb_);
@@ -1321,16 +1310,6 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
         const float is_arm = (type == SubmeshType::Sleeve) ? 3.0f
                            : (type == SubmeshType::BareArm) ? 2.0f
                            : (type == SubmeshType::Arms) ? 1.0f : 0.0f;
-
-        // The lower sleeve submeshes are exported with the opposite winding.
-        // Draw their outer (back) faces only; the shader flips the normal via
-        // SV_IsFrontFace so the lighting stays correct.
-        const bool front_cull = sub.bone_name.rfind("sleeve_lower", 0) == 0;
-        if (front_cull && pso_front_ != nullptr && !use_depth_flip) {
-            list->SetPipelineState(pso_front_);
-        } else {
-            list->SetPipelineState(use_depth_flip ? pso_depth_flip_ : pso_);
-        }
 
         // CSVM v3: a submesh follows the animation track named after its bone.
         // Knife arms_glove maps to the legacy "arms" track; gun arms_L/arms_R
