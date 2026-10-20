@@ -160,3 +160,16 @@ TEST(BlockMesh, TerrainMiningCrackLiftAndSizeAreConfigurable) {
         EXPECT_NEAR(v.z, 3.f, 0.21f);
     }
 }
+
+TEST(BlockMesh, TerrainCrackMeshIsSeparateAndUsesTheSameQuad) {
+    TerrainMiningOverlay o{};
+    o.pos[0] = 1.f; o.pos[1] = 2.f; o.pos[2] = 3.f;
+    o.stage = 4;
+    const mc::rig::RigMesh m = buildTerrainCrackMesh(o);
+    ASSERT_EQ(m.vertices.size(), 4u);
+    ASSERT_EQ(m.indices.size(), 6u);
+    for (const mc::rig::RigVertex& v : m.vertices) {
+        EXPECT_NEAR(v.y, 2.01f, 1e-3f);
+        EXPECT_TRUE(inside(mc::hud::kUV_DESTROY_STAGE_4, v));
+    }
+}

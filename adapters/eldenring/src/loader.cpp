@@ -1023,7 +1023,8 @@ void SendBlockMesh(const std::optional<blocks::MiningOverlay>& mining = std::nul
     g_prev_mining_stage = stage;
     g_prev_mining_cell = cell;
     g_prev_terrain_mining = terrain;
-    erov::SetBlockMesh(blocks::buildBlockMesh(g_blocks, g_tnt_mgr.activePositions(), mining, terrain_mining));
+    erov::SetBlockMesh(blocks::buildBlockMesh(g_blocks, g_tnt_mgr.activePositions(), mining));
+    erov::SetTerrainCrackMesh(terrain_mining.has_value() ? blocks::buildTerrainCrackMesh(*terrain_mining) : mc::rig::RigMesh{});
 }
 
 

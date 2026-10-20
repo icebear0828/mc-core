@@ -11,6 +11,7 @@ using mc::MiningOverlay;
 using mc::TerrainMiningOverlay;
 using mc::crackUVForStage;
 using mc::buildBlockMesh;
+using mc::buildTerrainCrackMesh;
 using mc::buildCubeMesh;
 using mc::buildHeldCubeMesh;
 

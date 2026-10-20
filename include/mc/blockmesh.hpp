@@ -182,6 +182,43 @@ inline mc::rig::RigMesh buildBlockMesh(const BlockGrid& grid,
     return mesh;
 }
 
+// The ground crack as its own mesh so the overlay can draw it with a much smaller occlusion bias than
+// the placed blocks: the block bias (8% + 5 cm) forces a floor decal to float to stay visible.
+inline mc::rig::RigMesh buildTerrainCrackMesh(const TerrainMiningOverlay& o) {
+    mc::rig::RigMesh mesh;
+    const float inset = 0.25f / static_cast<float>(mc::hud::kHudAtlasWidth);
+    const mc::hud::HudUV* crack_uv = (o.stage >= 0 && o.stage <= 9) ? crackUVForStage(o.stage) : nullptr;
+    if (crack_uv == nullptr) return mesh;
+    float n[3] = {o.normal[0], o.normal[1], o.normal[2]};
+    float len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    if (!(len > 1e-4f)) {
+        n[0] = 0.f; n[1] = 1.f; n[2] = 0.f; len = 1.f;
+    }
+    for (float& v : n) v /= len;
+    const bool up = std::abs(n[1]) > 0.9f;
+    const float ref[3] = {0.f, up ? 0.f : 1.f, up ? 1.f : 0.f};
+    float t[3] = {ref[1] * n[2] - ref[2] * n[1], ref[2] * n[0] - ref[0] * n[2], ref[0] * n[1] - ref[1] * n[0]};
+    len = std::sqrt(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+    if (!(len > 1e-4f)) return mesh;
+    for (float& v : t) v /= len;
+    const float b[3] = {n[1] * t[2] - n[2] * t[1], n[2] * t[0] - n[0] * t[2], n[0] * t[1] - n[1] * t[0]};
+    const float half = o.half_size;
+    const float lift = o.lift;
+    const float c[3] = {o.pos[0] + n[0] * lift, o.pos[1] + n[1] * lift, o.pos[2] + n[2] * lift};
+    const float corners[4][3] = {
+        {c[0] - t[0] * half - b[0] * half, c[1] - t[1] * half - b[1] * half, c[2] - t[2] * half - b[2] * half},
+        {c[0] + t[0] * half - b[0] * half, c[1] + t[1] * half - b[1] * half, c[2] + t[2] * half - b[2] * half},
+        {c[0] + t[0] * half + b[0] * half, c[1] + t[1] * half + b[1] * half, c[2] + t[2] * half + b[2] * half},
+        {c[0] - t[0] * half + b[0] * half, c[1] - t[1] * half + b[1] * half, c[2] - t[2] * half + b[2] * half},
+    };
+    const float us[4] = {crack_uv->u0 + inset, crack_uv->u1 - inset, crack_uv->u1 - inset, crack_uv->u0 + inset};
+    const float vs[4] = {crack_uv->v0 + inset, crack_uv->v0 + inset, crack_uv->v1 - inset, crack_uv->v1 - inset};
+    for (int k = 0; k < 4; ++k) mesh.vertices.push_back({corners[k][0], corners[k][1], corners[k][2], us[k], vs[k]});
+    static constexpr uint16_t kQuad[6] = {0, 1, 2, 0, 2, 3};
+    for (uint16_t i : kQuad) mesh.indices.push_back(i);
+    return mesh;
+}
+
 // A block as an item in the hand: the unit cube centred on the origin (first person; 1 unit = 1 block, y up, +z towards the viewer).
 inline mc::rig::RigMesh buildCubeMesh(mc::BlockId id) {
     BlockGrid g;
