@@ -1886,6 +1886,19 @@ void RenderFrame(IDXGISwapChain* sc) {
         cp.abs_bias = 0.001f;
         cp.keep_depth = blocks_drawn;
         const bool crack_drawn = g_steve.drawTerrainCrack(g_s.device, g_s.list, g_s.srv_heap, g_held_table_gpu, g_s.width, g_s.height, vp, cp, f.rtv, idx);
+        static uint64_t last_crack_log = 0;
+        const uint64_t now_crack = GetTickCount64();
+        if (g_log && now_crack - last_crack_log > 1000) {
+            last_crack_log = now_crack;
+            size_t cv = 0, ci = 0;
+            {
+                std::lock_guard<std::mutex> g(g_crack_mutex);
+                cv = g_crack_mesh.vertices.size();
+                ci = g_crack_mesh.indices.size();
+            }
+            g_log("crackdraw: mesh=%zu/%zu drawn=%d mode=%.2f rel=%.3f abs=%.3f", cv, ci, crack_drawn ? 1 : 0,
+                  cp.mode, cp.rel_bias, cp.abs_bias);
+        }
         if (blocks_drawn || crack_drawn) g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
     }
     g_death_tracker.update(dt, steve.dead);
