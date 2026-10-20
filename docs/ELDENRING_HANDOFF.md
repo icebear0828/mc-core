@@ -11,6 +11,23 @@
 
 ---
 
+## 0.0 2026-10-20：地面采掘与数据驱动掉落表（issue #66 / #81）
+
+分支：`feat/mining-loot-tables`（基于 `main` `5fe648d`）。完整说明见
+[ELDENRING_MINING_LOOT.md](ELDENRING_MINING_LOOT.md)。
+
+- 新增 `include/mc/loot_table.hpp`（6 区域 × 12 条目权重、工具门槛、保底、矿脉连击、确定性 RNG）
+  与 `include/mc/ground_mining.hpp`（60° 俯仰角门槛、空手/镐过滤、0~9 裂纹、区域硬度）。
+- `StepMining` 接入宿主静态地形：命中地形时走地面采掘，命中放置方块仍走原渐进破坏；
+  破坏后掉落自动进背包。`FindBlockTarget` 现在会带回地形命中点、法线、相机俯仰角。
+- `mc_er_steve.txt` 新增 `ground_mining=1`、`loot_zone=0..5`；`blocks=1` 仍是前提。
+- 新增 11 个物品 ID 与图集格子；木/石/铁/金/下界合金镐暂时复用钻石镐图标。
+- 测试：`build_pure_mc` Release **1149/1149**，`tests/test_mining_assets.py` **6/6**。
+- **未部署、未实机验收。** 下一步：区域自动识别、地面裂纹/碎屑粒子、移动打断、实机 E2E。
+- 数据注意：issue #81 火山列合计 **80.5**，当前按列归一化；缺失的 19.5 需要确认归属。
+
+---
+
 ## 0. 当前最新状态（2026-10-12，新开会话必读）
 
 ### 0.1 核心成果与分支拓扑

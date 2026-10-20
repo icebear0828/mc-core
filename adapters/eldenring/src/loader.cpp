@@ -39,6 +39,7 @@
 #include "eldenring_blockmesh.hpp"
 #include "eldenring_blocks.hpp"
 #include "eldenring_mining.hpp"
+#include "mc/ground_mining.hpp"
 #include "eldenring_tnt.hpp"
 #include "eldenring_creeper.hpp"
 
@@ -637,6 +638,10 @@ std::atomic<unsigned> g_hitvfx_skipped{0};
 std::atomic<bool> g_los_enabled{false};
 std::atomic<unsigned> g_los_blocked{0};
 
+// ---- ground mining (issues #66/#81) ---------------------------------------------------------------------------
+std::atomic<bool> g_ground_mining_enabled{true};
+std::atomic<int> g_loot_zone{0}; // mc_er_steve.txt: loot_zone=0..5 (grassland, stone, cave, crystal, volcano, deeproot)
+
 RayResult CastStaticRay(const float from[3], const float disp[3]) {
     return eldenring::combat::CombatService::Instance().castStaticRay(from, disp);
 }
@@ -930,8 +935,15 @@ void SendBlockMesh(const std::optional<blocks::MiningOverlay>& mining = std::nul
 struct BlockTarget {
     bool have{false};
     bool on_block{false};        // the nearest surface is a placed block (else the game's terrain)
+    bool terrain_hit{false};     // the game's static geometry was hit (ground mining)
+    bool aim_ok{false};          // the camera ray could be read
     blocks::Cell cell;           // the placed block, when on_block
     blocks::Cell place;          // where a new block would go
+    float eye[3]{0.f, 0.f, 0.f};
+    float dir[3]{0.f, 0.f, 1.f};
+    float pitch_deg{0.f};
+    float terrain_pos[3]{0.f, 0.f, 0.f};
+    float terrain_normal[3]{0.f, 1.f, 0.f};
 };
 
 // The aim ray: from the player's eye along the camera's forward vector.
@@ -951,10 +963,22 @@ bool AimRay(float eye[3], float dir[3]) {
     return true;
 }
 
+// The camera's downward angle: 0 = level, 90 = straight down. Issue #81 only allows digging at 60..90.
+static float AimPitchDeg(const float dir[3]) {
+    const float horizontal = std::sqrt(dir[0] * dir[0] + dir[2] * dir[2]);
+    return std::atan2(-dir[1], horizontal) * 57.2957795f;
+}
+
 BlockTarget FindBlockTarget() {
     BlockTarget t;
     float eye[3], dir[3];
     if (!AimRay(eye, dir)) return t;
+    t.aim_ok = true;
+    for (int i = 0; i < 3; ++i) {
+        t.eye[i] = eye[i];
+        t.dir[i] = dir[i];
+    }
+    t.pitch_deg = AimPitchDeg(dir);
     const float reach = g_reach.load();
     std::optional<blocks::GridHit> grid_hit;
     {
@@ -962,7 +986,7 @@ BlockTarget FindBlockTarget() {
         grid_hit = blocks::raycastGrid(g_blocks, eye, dir, reach);
     }
     RayResult world_hit;
-    if (g_los_enabled.load()) {
+    if (g_los_enabled.load() || (g_ground_mining_enabled.load() && t.pitch_deg >= mc::GroundMiningController::kMinPitchDeg)) {
         const float disp[3] = {dir[0] * reach, dir[1] * reach, dir[2] * reach};
         world_hit = CastStaticRay(eye, disp);
     }
@@ -975,7 +999,12 @@ BlockTarget FindBlockTarget() {
         t.place = blocks::placementCellForBlockHit(*grid_hit);
     } else if (terrain) {
         t.have = true;
+        t.terrain_hit = true;
         t.place = blocks::placementCellForWorldHit(world_hit.pos, world_hit.normal);
+        for (int i = 0; i < 3; ++i) {
+            t.terrain_pos[i] = world_hit.pos[i];
+            t.terrain_normal[i] = world_hit.normal[i];
+        }
     }
     return t;
 }
@@ -1166,6 +1195,12 @@ bool TryPlaceBlock() {
 }
 
 static eldenring::mining::MiningController g_mining;
+static mc::GroundMiningController g_ground_mining;
+static uint64_t g_loot_rng = 0;
+
+static const char* GroundHitSound(mc::LootZone zone) {
+    return zone == mc::LootZone::Grassland ? "block.grass.step" : "block.stone.step";
+}
 
 // Progressive block mining: called every tick in KeyThread.
 // When left mouse is held on a placed block within reach, accumulates mining progress,
@@ -1191,6 +1226,41 @@ bool StepMining(float dt, bool left_held) {
     }
     const bool is_creative = (CurrentGameMode() == creative::GameMode::Creative);
 
+    // Ground mining (issues #66/#81): aim at the terrain under the player's feet with an empty hand
+    // or a pickaxe. A placed block keeps the progressive block-mining path below.
+    const bool ground_target = t.have && t.terrain_hit && !t.on_block;
+    const float pitch = t.pitch_deg;
+    const auto zone = static_cast<mc::LootZone>(
+        std::clamp(g_loot_zone.load(), 0, static_cast<int>(mc::LootZone::Count) - 1));
+    if (g_ground_mining_enabled.load() && ground_target && mc::GroundMiningController::canDig(held, pitch)) {
+        if (g_loot_rng == 0) g_loot_rng = GetTickCount64() | 1;
+        g_ground_mining.update(dt, left_held, pitch, held, zone, is_creative, g_loot_rng);
+        const mc::GroundMiningState& gs = g_ground_mining.state();
+        if (gs.is_mining) {
+            if (gs.hit_sound) {
+                std::lock_guard<std::mutex> g(g_melee_mutex);
+                g_melee.startSwing();
+                eraudio::Play(GroundHitSound(zone), 0.6f);
+            }
+            return true;
+        }
+        if (gs.broken) {
+            {
+                std::lock_guard<std::mutex> g(g_melee_mutex);
+                g_melee.inventory().add({gs.drop.item, 1});
+                if (gs.drop.bonus != mc::ItemId::None) g_melee.inventory().add({gs.drop.bonus, 1});
+                g_melee.startSwing();
+            }
+            eraudio::Play("entity.experience_orb.pickup", 0.9f);
+            Log("ground: broke terrain at (%.2f %.2f %.2f) zone=%d item=%d blocked=%d pity=%d combo=%d bonus=%d",
+                t.terrain_pos[0], t.terrain_pos[1], t.terrain_pos[2], static_cast<int>(zone),
+                static_cast<int>(gs.drop.item), gs.drop.tier_blocked ? 1 : 0, gs.drop.pity_triggered ? 1 : 0,
+                gs.drop.combo_triggered ? 1 : 0, static_cast<int>(gs.drop.bonus));
+            return true;
+        }
+    } else {
+        g_ground_mining.reset();
+    }
 
     g_mining.update(dt, left_held, t.have && t.on_block, t.cell, id, held, is_creative);
     const eldenring::mining::MiningState& s = g_mining.state();
@@ -2247,6 +2317,8 @@ void SetupOverlay() {
                 else if (key == "mc_gravity") g_mc_gravity.store(std::clamp(value, 5.f, 80.f));
                 else if (key == "mc_jump_speed") g_mc_jump_speed.store(std::clamp(value, 1.f, 20.f));
                 else if (key == "blocks") g_blocks_enabled.store(value != 0.f);
+                else if (key == "ground_mining") g_ground_mining_enabled.store(value != 0.f);
+                else if (key == "loot_zone") g_loot_zone.store(std::clamp(static_cast<int>(value), 0, static_cast<int>(mc::LootZone::Count) - 1));
                 else if (key == "block_drive") g_block_drive.store(value != 0.f);
                 else if (key == "instant_turn") g_instant_turn.store(value != 0.f);
                 else if (key == "turn_speed") g_turn_speed.store(std::clamp(value, 0.5f, 50.f));

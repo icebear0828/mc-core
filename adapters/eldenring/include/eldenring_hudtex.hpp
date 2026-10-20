@@ -121,6 +121,22 @@ inline const mc::hud::HudUV* uvForItem(mc::ItemId item) {
         case ItemId::DiamondChestplate: return &mc::hud::kUV_ITEM_DIAMOND_CHESTPLATE;
         case ItemId::DiamondLeggings: return &mc::hud::kUV_ITEM_DIAMOND_LEGGINGS;
         case ItemId::DiamondBoots: return &mc::hud::kUV_ITEM_DIAMOND_BOOTS;
+        case ItemId::Coal: return &mc::hud::kUV_ITEM_COAL;
+        case ItemId::RawCopper: return &mc::hud::kUV_ITEM_RAW_COPPER;
+        case ItemId::RawIron: return &mc::hud::kUV_ITEM_RAW_IRON;
+        case ItemId::Redstone: return &mc::hud::kUV_ITEM_REDSTONE;
+        case ItemId::RawGold: return &mc::hud::kUV_ITEM_RAW_GOLD;
+        case ItemId::LapisLazuli: return &mc::hud::kUV_ITEM_LAPIS_LAZULI;
+        case ItemId::AmethystShard: return &mc::hud::kUV_ITEM_AMETHYST_SHARD;
+        case ItemId::Diamond: return &mc::hud::kUV_ITEM_DIAMOND;
+        case ItemId::Emerald: return &mc::hud::kUV_ITEM_EMERALD;
+        case ItemId::NetheriteScrap: return &mc::hud::kUV_ITEM_NETHERITE_SCRAP;
+        case ItemId::BlockCobblestone: return &mc::hud::kUV_ITEM_COBBLESTONE;
+        case ItemId::WoodenPickaxe: return &mc::hud::kUV_ITEM_DIAMOND_PICKAXE; // no separate icon yet
+        case ItemId::StonePickaxe: return &mc::hud::kUV_ITEM_DIAMOND_PICKAXE;
+        case ItemId::IronPickaxe: return &mc::hud::kUV_ITEM_DIAMOND_PICKAXE;
+        case ItemId::GoldenPickaxe: return &mc::hud::kUV_ITEM_DIAMOND_PICKAXE;
+        case ItemId::NetheritePickaxe: return &mc::hud::kUV_ITEM_DIAMOND_PICKAXE;
         default: return nullptr;
     }
 }

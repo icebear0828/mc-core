@@ -80,3 +80,39 @@ def test_atlas_uv_mapping_for_destroy_stages():
         # 16 pixels in a 512 texture is 16/512 = 0.03125
         assert pytest.approx(u1 - u0, abs=1e-5) == 16.0 / 512.0
         assert pytest.approx(v1 - v0, abs=1e-5) == 16.0 / 512.0
+
+
+LOOT_ICON_KEYS = [
+    "item_coal",
+    "item_raw_copper",
+    "item_raw_iron",
+    "item_redstone",
+    "item_raw_gold",
+    "item_lapis_lazuli",
+    "item_amethyst_shard",
+    "item_diamond",
+    "item_emerald",
+    "item_netherite_scrap",
+    "item_cobblestone",
+]
+
+
+def test_loot_icons_registered_in_atlas():
+    """Issue #81 loot items must have a 16x16 icon and a client.jar source."""
+    registered = dict(HUD_SPRITES)
+    for key in LOOT_ICON_KEYS:
+        assert key in registered, f"{key} must be defined in HUD_SPRITES"
+        assert registered[key] == (16, 16), f"{key} must be 16x16"
+        assert key in _JAR_HUD_SPRITES, f"{key} must be mapped in _JAR_HUD_SPRITES"
+
+
+def test_loot_icons_have_atlas_cells():
+    atlas, uv_map = build_hud_atlas(JAR_PATH if JAR_PATH.exists() else None)
+    assert atlas.size == (512, 512)
+    for key in LOOT_ICON_KEYS:
+        assert key in uv_map, f"{key} must exist in atlas UV map"
+        u0, v0, u1, v1 = uv_map[key]
+        assert 0.0 <= u0 < u1 <= 1.0
+        assert 0.0 <= v0 < v1 <= 1.0
+        assert pytest.approx(u1 - u0, abs=1e-5) == 16.0 / 512.0
+        assert pytest.approx(v1 - v0, abs=1e-5) == 16.0 / 512.0
