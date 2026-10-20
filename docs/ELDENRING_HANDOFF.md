@@ -43,8 +43,23 @@
   （`CRASH-VEH` 写坏指针），已删除，不要恢复。**加载画面/菜单期间 `StepMining` 直接返回**
   （`WantSuppress()` 门禁），不发射线、不建裂纹网格；加载期崩溃已修复。石/土/木/金属的不同颜色碎屑
   还没分。
-- **未部署、未实机验收。** 下一步：实机跑六个区域采集 material id 并固化 `zone_mat_*`、地面裂纹/碎屑粒子、实机 E2E。
+- **已部署并实机确认能进世界**（2026-10-20）：当前 DLL `837a498e…`；加载期崩溃已修复，裂纹/材质视觉
+  仍在微调。PR #115 已推送：`fork/feat/mining-loot-tables` = `a6f20a2`（本地/远端一致）。
 - 数据注意：issue #81 火山列合计 **80.5**，当前按列归一化；缺失的 19.5 需要确认归属。
+
+### 0.0.1 下一步：方块掉落（2026-10-20 起）
+
+- **现状**：放置方块破坏的掉落是 `blocks::itemForBlock`：`Stone -> BlockStone`（原版应为圆石），
+  且只有钻石镐能采集石头；`Wood` / `Obsidian` 还没有物品 ID，圆石也还不能右键放置。
+- **计划（TDD，先纯逻辑）**：
+  1. `MiningController::canHarvest(Stone)` 改成任意镐（木/石/铁/金/钻石/下界合金）；
+     `computeBreakTime(Stone)` 按镐等级给时间，保留现有钻石镐 0.3s、空手 7.5s 的断言。
+  2. 新增 `MiningController::blockDrop(BlockId, ItemId, creative)`：
+     `Stone -> BlockCobblestone`（任意镐）、`Dirt -> BlockDirt`、`Tnt -> BlockTnt`、创造模式 `None`；
+     `loader.cpp` 的方块破坏改用它，不再直接 `itemForBlock`。
+  3. 之后再做 `BlockWood` / `BlockObsidian` 物品 ID + 放置 + 图标，以及 issue #81 的合并行拆分
+     （沙 / 深板岩 / 安山岩 / 花岗岩 / 黑曜石）。
+  4. 测试加在 `tests/test_eldenring_mining.cpp`；跑 `build_pure_mc` 全量。
 
 ---
 
