@@ -114,11 +114,6 @@ eldenring::fx::Rng g_fx_rng{20251009u};
 mc::rig::Mat4 g_fx_vp{};
 float g_fx_fov = 0.8378f;
 bool g_fx_valid = false;
-// Visible floor under the crosshair, read from the scene depth while ground mining.
-std::atomic<bool> g_scene_floor_requested{false};
-std::atomic<bool> g_scene_floor_valid{false};
-std::atomic<float> g_scene_floor[3];
-ID3D12Resource* g_depth_readback = nullptr; // 256-byte read-back for the centre depth texel
 // CS hitscan tracers: world-space segments queued by CombatService::fireCsShot.
 struct TracerEvent {
     float from[3];
@@ -345,8 +340,6 @@ void Teardown() {
     SafeRelease(g_s.list);
     SafeRelease(g_s.rtv_heap);
     SafeRelease(g_s.srv_heap);
-    SafeRelease(g_depth_readback);
-    g_scene_floor_valid.store(false);
     SafeRelease(g_atlas_tex);
     SafeRelease(g_atlas_upload);
     g_atlas_ready = false;
@@ -2226,69 +2219,6 @@ void RenderFrame(IDXGISwapChain* sc) {
             b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
         }
     }
-    // Ground mining: read the centre depth texel (the crosshair) once this frame. The shader's
-    // occlusion formula turns it into the scene's view-space z; the camera ray then gives the
-    // visible floor's world position. This avoids the collision mesh's invisible ledges.
-    bool copied_depth = false;
-    float depth_sx = static_cast<float>(g_s.width) * 0.5f;
-    float depth_sy = static_cast<float>(g_s.height) * 0.5f;
-    if (g_scene_floor_requested.load(std::memory_order_relaxed) && g_depth_res != nullptr && g_depth_w > 0 && g_depth_h > 0 &&
-        steve.cam_valid && g_s.device != nullptr) {
-        if (g_depth_readback == nullptr) {
-            D3D12_HEAP_PROPERTIES hp{};
-            hp.Type = D3D12_HEAP_TYPE_READBACK;
-            D3D12_RESOURCE_DESC bd{};
-            bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-            bd.Width = 256;
-            bd.Height = 1;
-            bd.DepthOrArraySize = 1;
-            bd.MipLevels = 1;
-            bd.SampleDesc.Count = 1;
-            bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-            if (FAILED(g_s.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                                          IID_PPV_ARGS(&g_depth_readback)))) {
-                g_depth_readback = nullptr;
-            }
-        }
-        if (g_depth_readback != nullptr) {
-            D3D12_RESOURCE_BARRIER db{};
-            db.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            db.Transition.pResource = g_depth_res;
-            db.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            db.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-            db.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-            g_s.list->ResourceBarrier(1, &db);
-            D3D12_TEXTURE_COPY_LOCATION dst{};
-            dst.pResource = g_depth_readback;
-            dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-            dst.PlacedFootprint.Offset = 0;
-            dst.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32_FLOAT;
-            dst.PlacedFootprint.Footprint.Width = 1;
-            dst.PlacedFootprint.Footprint.Height = 1;
-            dst.PlacedFootprint.Footprint.Depth = 1;
-            dst.PlacedFootprint.Footprint.RowPitch = 256;
-            D3D12_TEXTURE_COPY_LOCATION src{};
-            src.pResource = g_depth_res;
-            src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-            src.SubresourceIndex = 0;
-            if (steve.cam_valid) {
-                const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / static_cast<float>(g_s.height));
-                ImVec2 s; float ppm = 0.f;
-                if (ProjectToScreen(vp, steve.feet, static_cast<float>(g_s.width), static_cast<float>(g_s.height), steve.fov_y, s, ppm)) {
-                    depth_sx = s.x;
-                    depth_sy = s.y + 0.02f * static_cast<float>(g_s.height); // a little below the feet, onto the floor
-                }
-            }
-            const UINT cx = static_cast<UINT>(std::clamp(depth_sx / static_cast<float>(g_s.width) * static_cast<float>(g_depth_w), 0.f, static_cast<float>(g_depth_w - 1)));
-            const UINT cy = static_cast<UINT>(std::clamp(depth_sy / static_cast<float>(g_s.height) * static_cast<float>(g_depth_h), 0.f, static_cast<float>(g_depth_h - 1)));
-            D3D12_BOX box{cx, cy, 0, cx + 1, cy + 1, 1};
-            g_s.list->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
-            db.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
-            db.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-            g_s.list->ResourceBarrier(1, &db);
-            copied_depth = true;
-        }
-    }
     if (shot_buf == nullptr) b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
     g_s.list->ResourceBarrier(1, &b);
@@ -2335,37 +2265,6 @@ void RenderFrame(IDXGISwapChain* sc) {
             Logf("screenshot: the back buffer format is not 8-bit RGBA/BGRA or the read-back map failed");
         }
         shot_buf->Release();
-    }
-    if (copied_depth && g_depth_readback != nullptr) {
-        g_s.fence->SetEventOnCompletion(f.fence_value, g_s.fence_event);
-        WaitForSingleObject(g_s.fence_event, 2000);
-        void* mapped = nullptr;
-        D3D12_RANGE range{0, 4};
-        if (SUCCEEDED(g_depth_readback->Map(0, &range, &mapped)) && mapped != nullptr) {
-            const float gd = *static_cast<const float*>(mapped);
-            D3D12_RANGE none{0, 0};
-            g_depth_readback->Unmap(0, &none);
-            if (gd > 0.f) {
-                const float view_z = g_steve_cfg.depth_const / gd; // the shader's reverse-Z formula
-                const float ndc_x = 2.f * (depth_sx / static_cast<float>(g_s.width)) - 1.f;
-                const float ndc_y = 1.f - 2.f * (depth_sy / static_cast<float>(g_s.height));
-                const float tan_y = std::tan(steve.fov_y * 0.5f);
-                const float tan_x = tan_y * (static_cast<float>(g_s.width) / static_cast<float>(g_s.height));
-                const mc::Vec3& p = steve.cam.position;
-                const mc::Vec3& fw = steve.cam.forward;
-                const mc::Vec3& rt = steve.cam.right;
-                const mc::Vec3& up = steve.cam.up;
-                const float dx = fw.x + rt.x * ndc_x * tan_x + up.x * ndc_y * tan_y;
-                const float dy = fw.y + rt.y * ndc_x * tan_x + up.y * ndc_y * tan_y;
-                const float dz = fw.z + rt.z * ndc_x * tan_x + up.z * ndc_y * tan_y;
-                g_scene_floor[0].store(p.x + dx * view_z, std::memory_order_relaxed);
-                g_scene_floor[1].store(p.y + dy * view_z, std::memory_order_relaxed);
-                g_scene_floor[2].store(p.z + dz * view_z, std::memory_order_relaxed);
-                g_scene_floor_valid.store(true, std::memory_order_relaxed);
-            } else {
-                g_scene_floor_valid.store(false, std::memory_order_relaxed);
-            }
-        }
     }
     (void)sc;
 }
@@ -2553,14 +2452,6 @@ void SpawnFx(FxKind kind, const float world_pos[3], int count) {
     FxEvent e{kind, {world_pos[0], world_pos[1], world_pos[2]}, count};
     std::lock_guard<std::mutex> g(g_fx_mutex);
     if (g_fx_events.size() < 64) g_fx_events.push_back(e);
-}
-
-void RequestSceneFloor(bool on) { g_scene_floor_requested.store(on, std::memory_order_relaxed); }
-
-bool SceneFloor(float out[3]) {
-    if (!g_scene_floor_valid.load(std::memory_order_relaxed)) return false;
-    for (int i = 0; i < 3; ++i) out[i] = g_scene_floor[i].load(std::memory_order_relaxed);
-    return true;
 }
 
 void SpawnTracer(const float from[3], const float to[3], float life_s) {

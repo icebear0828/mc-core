@@ -1308,6 +1308,24 @@ static bool PlayerIsMoving() {
     return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) > kGroundMiningMoveSpeed;
 }
 
+// The collision surface under the player's feet. The crack uses this (not the aim hit) so it sits
+// under the player instead of behind Steve's body in third person; ground_crack_lift compensates
+// the measured collision-surface / visible-floor gap.
+static bool GroundBelow(float out_pos[3], float out_normal[3]) {
+    const uintptr_t player = PlayerChrPtr();
+    float feet[3];
+    if (player == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) return false;
+    const float from[3] = {feet[0], feet[1] + 0.5f, feet[2]};
+    const float disp[3] = {0.f, -(g_reach.load() + 1.0f), 0.f};
+    const RayResult hit = CastStaticRay(from, disp);
+    if (!hit.ok || !hit.hit || feet[1] - hit.pos[1] > 2.0f) return false;
+    for (int i = 0; i < 3; ++i) {
+        out_pos[i] = hit.pos[i];
+        out_normal[i] = hit.normal[i];
+    }
+    return true;
+}
+
 static const char* GroundHitSound(mc::LootZone zone) {
     return zone == mc::LootZone::Grassland ? "block.grass.step" : "block.stone.step";
 }
@@ -1342,10 +1360,8 @@ bool StepMining(float dt, bool left_held) {
                                mc::GroundMiningController::canDigSurface(t.terrain_normal[1]);
     const float pitch = t.pitch_deg;
     if (g_ground_mining_enabled.load() && ground_target && mc::GroundMiningController::canDig(held, pitch)) {
-        erov::RequestSceneFloor(true);
-        // The loot and the material still come from the aim ray. The crack and the dust are anchored
-        // to the visible floor read from the scene depth: the Havok ray can hit an invisible collision
-        // ledge above the rendered ground, which is what made the decal float.
+        // The aim ray decides the target and the loot. The crack uses the same hit; the configured
+        // lift compensates the measured collision-surface / visible-floor gap (about 14 cm here).
         const int configured_zone = g_loot_zone.load(std::memory_order_relaxed);
         const uint32_t block_raw = configured_zone < 0 ? PlayerBlockId() : 0;
         const uint32_t ground_material = g_last_ground_material.load(std::memory_order_relaxed);
@@ -1355,11 +1371,14 @@ bool StepMining(float dt, bool left_held) {
         if (g_loot_rng == 0) g_loot_rng = GetTickCount64() | 1;
         g_ground_mining.update(dt, left_held, pitch, held, zone, is_creative, g_loot_rng, PlayerIsMoving());
         const mc::GroundMiningState& gs = g_ground_mining.state();
-        float scene_pos[3];
-        const bool have_scene = erov::SceneFloor(scene_pos);
-        static constexpr float kUp[3] = {0.f, 1.f, 0.f};
-        const float* fx_pos = have_scene ? scene_pos : t.terrain_pos;
-        const float* fx_normal = have_scene ? kUp : t.terrain_normal;
+        const float* fx_pos = t.terrain_pos;
+        const float* fx_normal = t.terrain_normal;
+        float below_pos[3], below_normal[3];
+        const bool below = GroundBelow(below_pos, below_normal);
+        if (below) {
+            fx_pos = below_pos;
+            fx_normal = below_normal;
+        }
         if (gs.is_mining) {
             blocks::TerrainMiningOverlay terrain{};
             std::memcpy(terrain.pos, fx_pos, sizeof(terrain.pos));
@@ -1380,9 +1399,9 @@ bool StepMining(float dt, bool left_held) {
                     last_anchor_log_ms = now;
                     float feet[3];
                     if (detail::readPhysicsPosition(g_reader, g_img.base, PlayerChrPtr(), feet)) {
-                        Log("GROUNDANCHOR: feet=(%.2f %.2f %.2f) aim=(%.2f %.2f %.2f) floor=(%.2f %.2f %.2f) scene=%d n=(%.2f %.2f %.2f) lift=%.3f mat=%u",
+                        Log("GROUNDANCHOR: feet=(%.2f %.2f %.2f) aim=(%.2f %.2f %.2f) ground=(%.2f %.2f %.2f) below=%d n=(%.2f %.2f %.2f) lift=%.3f mat=%u",
                             feet[0], feet[1], feet[2], t.terrain_pos[0], t.terrain_pos[1], t.terrain_pos[2],
-                            fx_pos[0], fx_pos[1], fx_pos[2], have_scene ? 1 : 0,
+                            fx_pos[0], fx_pos[1], fx_pos[2], below ? 1 : 0,
                             t.terrain_normal[0], t.terrain_normal[1], t.terrain_normal[2], terrain.lift, ground_material);
                     }
                 }
@@ -1399,17 +1418,15 @@ bool StepMining(float dt, bool left_held) {
             }
             eraudio::Play("entity.experience_orb.pickup", 0.9f);
             for (int i = 0; i < 3; ++i) erov::SpawnFx(erov::FxKind::Dust, fx_pos, 0);
-            erov::RequestSceneFloor(false);
             SendBlockMesh(std::nullopt, std::nullopt);
-            Log("ground: broke terrain at (%.2f %.2f %.2f) anchor=%s zone=%d item=%d blocked=%d pity=%d combo=%d bonus=%d block=0x%08X mat=%u auto=%d",
-                fx_pos[0], fx_pos[1], fx_pos[2], have_scene ? "scene" : "aim", static_cast<int>(zone),
+            Log("ground: broke terrain at (%.2f %.2f %.2f) anchor=aim zone=%d item=%d blocked=%d pity=%d combo=%d bonus=%d block=0x%08X mat=%u auto=%d",
+                fx_pos[0], fx_pos[1], fx_pos[2], static_cast<int>(zone),
                 static_cast<int>(gs.drop.item), gs.drop.tier_blocked ? 1 : 0, gs.drop.pity_triggered ? 1 : 0,
                 gs.drop.combo_triggered ? 1 : 0, static_cast<int>(gs.drop.bonus), block_raw, ground_material,
                 configured_zone < 0 ? 1 : 0);
             return true;
         }
     } else {
-        erov::RequestSceneFloor(false);
         g_ground_mining.reset();
     }
 
