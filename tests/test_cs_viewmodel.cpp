@@ -111,7 +111,7 @@ TEST(CSViewModelTest, MemorySerializationRoundtrip) {
     append_submesh("arms_glove", 1, 3, 0, 3);
 
     // 4 vertices
-    CSVMVertex verts[4] = {
+    CSVMVertexLegacy verts[4] = {
         {{-0.1f, -0.1f, 0.0f}, {0, 0, 1}, {0.0f, 0.0f}},
         {{ 0.1f, -0.1f, 0.0f}, {0, 0, 1}, {1.0f, 0.0f}},
         {{-0.1f,  0.1f, 0.0f}, {0, 0, 1}, {0.0f, 1.0f}},
@@ -160,7 +160,7 @@ TEST(CSViewModelTest, FailedLoadKeepsThePreviousModel) {
         std::memcpy(buffer.data() + off, &base_vertex, 4); off += 4;
         std::memcpy(buffer.data() + off, &count, 4);
 
-        CSVMVertex verts[4] = {};
+        CSVMVertexLegacy verts[4] = {};
         off = buffer.size();
         buffer.resize(off + sizeof(verts));
         std::memcpy(buffer.data() + off, verts, sizeof(verts));
@@ -299,7 +299,7 @@ TEST(CSViewModelTest, MemorySerializationRoundtripV2WithClips) {
     std::memcpy(buffer.data() + off, &one, 4);           // count
 
     // 1 vertex (32 bytes)
-    CSVMVertex v{{0.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {0.5f, 0.5f}};
+    CSVMVertexLegacy v{{0.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {0.5f, 0.5f}};
     off = buffer.size();
     buffer.resize(off + sizeof(v));
     std::memcpy(buffer.data() + off, &v, sizeof(v));
@@ -374,7 +374,7 @@ TEST(CSViewModelTest, MemorySerializationRoundtripV3WithNamedTracks) {
     std::memcpy(buffer.data() + off, &zero, 4); off += 4; // base_v
     std::memcpy(buffer.data() + off, &one, 4);            // count
 
-    CSVMVertex v{{0.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {0.5f, 0.5f}};
+    CSVMVertexLegacy v{{0.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {0.5f, 0.5f}};
     off = buffer.size();
     buffer.resize(off + sizeof(v));
     std::memcpy(buffer.data() + off, &v, sizeof(v));
@@ -433,6 +433,110 @@ TEST(CSViewModelTest, MemorySerializationRoundtripV3WithNamedTracks) {
     EXPECT_FLOAT_EQ(clip.tracks.at("clip")[1].m[0], 2.0f);
 }
 
+TEST(CSViewModelTest, MemorySerializationRoundtripV4WithSkinWeights) {
+    CSViewModel model;
+    std::vector<uint8_t> buffer;
+
+    CSVMHeader hdr{};
+    std::memcpy(hdr.magic, "CSVM", 4);
+    hdr.version = 4;
+    hdr.num_submeshes = 1;
+    hdr.total_vertices = 1;
+    hdr.total_indices = 1;
+    buffer.resize(sizeof(CSVMHeader));
+    std::memcpy(buffer.data(), &hdr, sizeof(CSVMHeader));
+
+    const std::string sname = "hand_L";
+    const uint32_t slen = static_cast<uint32_t>(sname.size());
+    size_t off = buffer.size();
+    buffer.resize(off + 4 + slen + 20);
+    std::memcpy(buffer.data() + off, &slen, 4); off += 4;
+    std::memcpy(buffer.data() + off, sname.data(), slen); off += slen;
+    uint32_t zero = 0, one = 1, flags = 1;
+    std::memcpy(buffer.data() + off, &zero, 4); off += 4; // bone_idx
+    std::memcpy(buffer.data() + off, &zero, 4); off += 4; // first_idx
+    std::memcpy(buffer.data() + off, &zero, 4); off += 4; // base_v
+    std::memcpy(buffer.data() + off, &one, 4); off += 4;  // count
+    std::memcpy(buffer.data() + off, &flags, 4); off += 4; // flags
+
+    const std::string bname = "hand_L";
+    const uint32_t blen = static_cast<uint32_t>(bname.size());
+    eldenring::fp::M4 rest{};
+    off = buffer.size();
+    buffer.resize(off + 4 + 4 + blen + sizeof(rest));
+    std::memcpy(buffer.data() + off, &one, 4); off += 4; // num_bones
+    std::memcpy(buffer.data() + off, &blen, 4); off += 4;
+    std::memcpy(buffer.data() + off, bname.data(), blen); off += blen;
+    std::memcpy(buffer.data() + off, &rest, sizeof(rest)); off += sizeof(rest);
+
+    CSVMVertex v{};
+    v.pos[0] = 1.f; v.normal[1] = 1.f; v.uv[0] = 0.5f;
+    v.joints[0] = 0; v.weights[0] = 255;
+    buffer.resize(off + sizeof(v));
+    std::memcpy(buffer.data() + off, &v, sizeof(v)); off += sizeof(v);
+
+    buffer.resize(off + 4);
+    std::memcpy(buffer.data() + off, &zero, 4); off += 4;
+
+    // v4 animation chunk: one clip, one frame, one named track.
+    buffer.resize(off + 4);
+    std::memcpy(buffer.data() + off, &one, 4); off += 4; // num_clips
+    const std::string cname = "idle";
+    const uint32_t clen = static_cast<uint32_t>(cname.size());
+    const float fps = 30.f;
+    const uint32_t frame_count = 1, num_tracks = 1;
+    buffer.resize(off + 4 + clen + 12);
+    std::memcpy(buffer.data() + off, &clen, 4); off += 4;
+    std::memcpy(buffer.data() + off, cname.data(), clen); off += clen;
+    std::memcpy(buffer.data() + off, &fps, 4); off += 4;
+    std::memcpy(buffer.data() + off, &frame_count, 4); off += 4;
+    std::memcpy(buffer.data() + off, &num_tracks, 4); off += 4;
+    buffer.resize(off + 4 + blen + sizeof(rest));
+    std::memcpy(buffer.data() + off, &blen, 4); off += 4;
+    std::memcpy(buffer.data() + off, bname.data(), blen); off += blen;
+    std::memcpy(buffer.data() + off, &rest, sizeof(rest)); off += sizeof(rest);
+
+    EXPECT_TRUE(model.loadFromMemory(buffer.data(), buffer.size()));
+    EXPECT_EQ(model.header().version, 4u);
+    ASSERT_EQ(model.bones.size(), 1u);
+    EXPECT_EQ(model.bones[0].name, "hand_L");
+    ASSERT_EQ(model.submeshes.size(), 1u);
+    EXPECT_TRUE(model.submeshes[0].skinned());
+    ASSERT_EQ(model.vertices.size(), 1u);
+    EXPECT_EQ(model.vertices[0].joints[0], 0u);
+    EXPECT_EQ(model.vertices[0].weights[0], 255u);
+    ASSERT_EQ(model.anim_clips.size(), 1u);
+    ASSERT_TRUE(model.anim_clips.count("idle") > 0);
+    EXPECT_EQ(model.anim_clips.at("idle").tracks.at("hand_L").size(), 1u);
+}
+
+TEST(CSViewModelTest, V4BoneMatrixHostConversionMatchesShaderConvention) {
+    // The vertex shader consumes row-vector host matrices via
+    // mul(float4(pos,1), bone). A CSVM v4 skin matrix is (delta * rest) in MC
+    // space; toHost() must produce the equivalent row-vector transform with
+    // the z mirror, exactly like the rigid `world` path.
+    eldenring::fp::M4 rest = eldenring::fp::translate(0.1f, 0.2f, 0.3f);
+    eldenring::fp::M4 delta = eldenring::fp::rotY(30.0f);
+    eldenring::fp::M4 skin = eldenring::fp::mul(delta, rest);
+
+    mc::Vec3 p{0.4f, 0.5f, 0.6f};
+    mc::Vec3 expected = eldenring::fp::apply(skin, p);
+    expected.z = -expected.z;
+
+    const mc::rig::Mat4 host = eldenring::fp::toHost(skin);
+    const float v[4] = {p.x, p.y, p.z, 1.0f};
+    float out[4] = {0, 0, 0, 0};
+    for (int col = 0; col < 4; ++col) {
+        for (int k = 0; k < 4; ++k) {
+            out[col] += v[k] * host.m[static_cast<size_t>(k * 4 + col)];
+        }
+    }
+    EXPECT_NEAR(out[0], expected.x, 1e-5f);
+    EXPECT_NEAR(out[1], expected.y, 1e-5f);
+    EXPECT_NEAR(out[2], expected.z, 1e-5f);
+    EXPECT_NEAR(out[3], 1.0f, 1e-5f);
+}
+
 TEST(CSViewModelTest, Ak47CsvmV3NamedTracksAndParts) {
     const std::vector<std::string> candidate_paths = {
         "build/cs2assets/cs_ak47_viewmodel.bin",
@@ -453,7 +557,8 @@ TEST(CSViewModelTest, Ak47CsvmV3NamedTracksAndParts) {
 
     CSViewModel vm;
     ASSERT_TRUE(vm.loadFromFile(model_path));
-    EXPECT_EQ(vm.header().version, 3u);
+    EXPECT_EQ(vm.header().version, 4u);
+    EXPECT_EQ(vm.bones.size(), 6u);
 
     std::vector<std::string> parts;
     for (const auto& sub : vm.submeshes) parts.push_back(sub.bone_name);
@@ -462,8 +567,17 @@ TEST(CSViewModelTest, Ak47CsvmV3NamedTracksAndParts) {
     EXPECT_NE(std::find(parts.begin(), parts.end(), "bolt"), parts.end());
     EXPECT_NE(std::find(parts.begin(), parts.end(), "trigger"), parts.end());
     for (const char* part : {"arm_upper_L", "arm_lower_L", "hand_L",
-                             "arm_upper_R", "arm_lower_R", "hand_R"}) {
+                             "arm_upper_R", "arm_lower_R", "hand_R",
+                             "sleeve_upper_L", "sleeve_lower_L",
+                             "sleeve_upper_R", "sleeve_lower_R"}) {
         EXPECT_NE(std::find(parts.begin(), parts.end(), part), parts.end()) << part;
+    }
+
+    for (const auto& sub : vm.submeshes) {
+        const bool should_skin = sub.bone_name.find("arm_") == 0 ||
+                                 sub.bone_name.find("hand_") == 0 ||
+                                 sub.bone_name.find("sleeve_") == 0;
+        EXPECT_EQ(sub.skinned(), should_skin) << sub.bone_name;
     }
 
     for (const char* clip : {"idle", "draw", "fire", "reload", "inspect"}) {
@@ -520,7 +634,7 @@ TEST(CSViewModelTest, AuthenticCS2AnimationTracksFidelity) {
 
     CSViewModel vm;
     ASSERT_TRUE(vm.loadFromFile(model_path));
-    EXPECT_EQ(vm.header().version, 2u);
+    EXPECT_GE(vm.header().version, 2u);
 
     // 1. Inspect Animation track checks
     ASSERT_TRUE(vm.anim_clips.count("inspect") > 0);

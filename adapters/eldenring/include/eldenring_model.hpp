@@ -6,7 +6,9 @@
 // known, so every non-null slot is treated alike. Reading only; the loader does the (guarded) write.
 
 #include "eldenring_rtti.hpp"
+#include "eldenring_chrscan.hpp"
 
+#include <algorithm>
 #include <vector>
 
 namespace eldenring::live {
@@ -69,6 +71,40 @@ inline std::vector<uintptr_t> collectDispFlagAddresses(const IMemoryReader& read
     tryAddDisp(m + layout::kRootDispEntity);
     tryAddDisp(m + layout::kAsmShadowDispEntity);
 
+    return out;
+}
+
+// RTTI-validated variant used by the native model hide. Follow the known
+// PlayerIns+0x648 -> CSChrAsmModelIns pointer, verify the model class, then
+// follow the part pointers and only keep display entities whose own RTTI is
+// CSModelDispEntity. A weapon switch can leave stale part pointers in the
+// fixed-offset scan; this variant skips anything whose class no longer
+// matches instead of writing into a freed/reused object (the 0x200000001
+// vtable crash).
+inline std::vector<uintptr_t> collectAsmModelDispFlagAddresses(const IMemoryReader& reader, uintptr_t image_base,
+                                                               uintptr_t player_chr) {
+    std::vector<uintptr_t> out;
+    uint64_t model = 0;
+    if (player_chr == 0 || !reader.read(player_chr + layout::kAsmModelInPlayerIns, &model, sizeof(model)) || model == 0) return out;
+    const auto m = static_cast<uintptr_t>(model);
+    if (!objectIsClass(reader, image_base, m, layout::kAsmModelVtableRva, layout::kAsmModelRtti)) return out;
+
+    auto add_disp = [&](uintptr_t disp_addr) {
+        uint64_t disp = 0;
+        if (!reader.read(disp_addr, &disp, sizeof(disp)) || disp == 0) return;
+        const auto d = static_cast<uintptr_t>(disp);
+        if (!objectIsClass(reader, image_base, d, 0, "CSModelDispEntity")) return;
+        const uintptr_t at = d + layout::kDispFlags1;
+        if (std::find(out.begin(), out.end(), at) == out.end()) out.push_back(at);
+    };
+
+    for (unsigned i = 0; i < layout::kAsmPartSlots; ++i) {
+        uint64_t part = 0;
+        if (!reader.read(m + layout::kAsmPartPointers + i * sizeof(uint64_t), &part, sizeof(part)) || part == 0) continue;
+        add_disp(static_cast<uintptr_t>(part) + layout::kPartDispEntity);
+    }
+    add_disp(m + layout::kRootDispEntity);
+    add_disp(m + layout::kAsmShadowDispEntity);
     return out;
 }
 
