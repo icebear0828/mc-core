@@ -464,12 +464,12 @@ bool CsRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     pd.SampleMask = UINT_MAX;
     pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    // csgo_character.slang renders the first-person arms/sleeves single-sided:
-    // F_RENDER_BACKFACES is off for bare_arm_113 and sleeve_fbi, and the
-    // shader uses CullMode Back. The CSVM pose goes through fp::toHost(),
-    // whose Z mirror reverses the GLTF winding, so D3D12's default clockwise
-    // front face draws the same inner surfaces CS2 draws.
-    pd.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+    // csgo_character.slang is single-sided (CullMode Back), but the CSVM
+    // winding after fp::toHost()'s Z mirror is not normalized across the AK
+    // and knife assets; CULL_BACK made the knife's glove draw its inner
+    // surface over the blade. Keep both faces until the converters emit a
+    // consistent, mirror-corrected winding.
+    pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     pd.RasterizerState.DepthClipEnable = TRUE;
     pd.DepthStencilState.DepthEnable = TRUE;
     pd.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
