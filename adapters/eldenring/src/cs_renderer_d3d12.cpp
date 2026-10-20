@@ -209,7 +209,9 @@ float4 PSMain(VSOut i) : SV_Target {
                        : knife_norm_tex.Sample(g_sampler, uv);
     float3 mapN;
     mapN.x = norm_sample.x * 2.0 - 1.0;
-    mapN.y = norm_sample.y * 2.0 - 1.0;
+    // CS2 normal maps are DirectX-style (green points down); the shader's
+    // tangent frame is right-handed, so flip G before perturbing the normal.
+    mapN.y = 1.0 - norm_sample.y * 2.0;
     mapN.z = sqrt(saturate(1.0 - dot(mapN.xy, mapN.xy)));
 
     float3 N_geom = normalize(i.normal);
@@ -248,11 +250,16 @@ float4 PSMain(VSOut i) : SV_Target {
 
     // Key light + Viewmodel camera fill light
     float3 light_radiance = float3(1.8, 1.8, 1.75);
-    float3 Lo_key = (kD * albedo_tex.rgb / kPi + specular) * light_radiance * NdotL;
+    // The viewmodel has no shadow map, so the key light otherwise lights
+    // crevices as brightly as the outer surfaces and the weapon reads as a
+    // flat cut-out. Apply the baked AO to the direct term as well; it is the
+    // cheapest way to restore contact darkening without a second pass.
+    float direct_ao = lerp(1.0, ao, 0.75);
+    float3 Lo_key = (kD * albedo_tex.rgb / kPi + specular) * light_radiance * NdotL * direct_ao;
 
     float NdotV = max(dot(N, V), 0.0);
     float3 fill_radiance = float3(0.65, 0.65, 0.70);
-    float3 Lo_fill = (kD * albedo_tex.rgb / kPi) * fill_radiance * NdotV;
+    float3 Lo_fill = (kD * albedo_tex.rgb / kPi) * fill_radiance * NdotV * ao;
 
     float3 Lo = Lo_key + Lo_fill;
 
@@ -280,6 +287,12 @@ float4 PSMain(VSOut i) : SV_Target {
     // camera, where a strong rim turns the whole forearm white.
     float rim = pow(1.0 - saturate(dot(N, V)), 3.0) * 0.22 * ((is_arm < 0.5) ? 1.0 : 0.25);
     color += rim * float3(0.55, 0.62, 0.72);
+
+    // Downward-facing surfaces see less of the bright sky ambient. This gives
+    // the underside of the receiver/barrel and the grip a grounded falloff
+    // even without a shadow map.
+    float sky_occlusion = lerp(0.78, 1.0, saturate(N.y * 0.5 + 0.5));
+    color *= sky_occlusion;
 
     // Filmic tone mapping and a slight exposure lift.
     color = AcesFilm(color * 1.15);
@@ -1197,10 +1210,16 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
     // once per second so the file can be added or removed without a restart.
     static bool depth_flip = false;
     static uint64_t depth_flip_check = 0;
+    static bool bare_arm_visible = false;
+    static uint64_t bare_arm_check = 0;
     const uint64_t now_ms = GetTickCount64();
     if (now_ms - depth_flip_check > 1000) {
         depth_flip = std::filesystem::exists("mc_er_csdepthflip.txt");
         depth_flip_check = now_ms;
+    }
+    if (now_ms - bare_arm_check > 1000) {
+        bare_arm_visible = std::filesystem::exists("mc_er_csbarearm.txt");
+        bare_arm_check = now_ms;
     }
     const bool use_depth_flip = depth_flip && pso_depth_flip_ != nullptr;
     const float clear_depth = use_depth_flip ? 0.0f : 1.0f;
@@ -1297,6 +1316,15 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
         const float is_arm = (type == SubmeshType::Sleeve) ? 3.0f
                            : (type == SubmeshType::BareArm) ? 2.0f
                            : (type == SubmeshType::Arms) ? 1.0f : 0.0f;
+
+        // The bare arm is the skin layer underneath the agent sleeve. When a
+        // sleeve is loaded it is the outer layer; drawing the bare arm as well
+        // makes it poke through the elbow/cuff seams and the near-plane clip,
+        // which reads as brown patches at the bottom corners. Hide it unless
+        // the diagnostic toggle asks for it.
+        if (type == SubmeshType::BareArm && sleeve_tex_.tex != nullptr && !bare_arm_visible) {
+            continue;
+        }
 
         // CSVM v3: a submesh follows the animation track named after its bone.
         // Knife arms_glove maps to the legacy "arms" track; gun arms_L/arms_R

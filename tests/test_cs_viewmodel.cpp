@@ -724,7 +724,7 @@ TEST(CSViewModelTest, Decoupled68DegreeViewmodelProjection) {
     // Standard Source 2 viewmodel FOV is strictly 68 degrees
     ViewmodelProjectionConfig cfg{};
     EXPECT_FLOAT_EQ(cfg.fov_deg, 68.0f);
-    EXPECT_FLOAT_EQ(cfg.z_near, 0.01f);
+    EXPECT_FLOAT_EQ(cfg.z_near, 0.001f);
     EXPECT_FLOAT_EQ(cfg.z_far, 20.0f);
     EXPECT_FALSE(cfg.use_game_projection);
 
@@ -735,13 +735,13 @@ TEST(CSViewModelTest, Decoupled68DegreeViewmodelProjection) {
     constexpr float kPi = 3.14159265358979323846f;
     const float expected_ys = 1.0f / std::tan((68.0f * kPi / 180.0f) * 0.5f);
     const float expected_xs = expected_ys / (1920.0f / 1080.0f);
-    const float expected_a = 20.0f / (20.0f - 0.01f);
+    const float expected_a = cfg.z_far / (cfg.z_far - cfg.z_near);
 
     EXPECT_NEAR(proj.m[0], expected_xs, 0.001f);
     EXPECT_NEAR(proj.m[5], expected_ys, 0.001f);
     EXPECT_NEAR(proj.m[10], expected_a, 0.001f);
     EXPECT_NEAR(proj.m[11], 1.0f, 0.001f);
-    EXPECT_NEAR(proj.m[14], -0.01f * expected_a, 0.001f);
+    EXPECT_NEAR(proj.m[14], -cfg.z_near * expected_a, 0.001f);
 
     // Test with custom viewmodel_offset (e.g. viewmodel_offset_x = 0.05m, y = -0.02m)
     ViewmodelProjectionConfig offset_cfg = cfg;
