@@ -372,6 +372,7 @@ _PLACEHOLDER_ITEM_COLORS = {
     "item_wooden_pickaxe": (140, 100, 50), "item_stone_pickaxe": (130, 130, 130),
     "item_iron_pickaxe": (210, 210, 215), "item_golden_pickaxe": (250, 210, 60),
     "item_netherite_pickaxe": (80, 70, 75),
+    "block_cobblestone": (120, 120, 120),
 }
 
 
@@ -870,6 +871,8 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("item_iron_pickaxe", (16, 16)),
     ("item_golden_pickaxe", (16, 16)),
     ("item_netherite_pickaxe", (16, 16)),
+    # The cobblestone block's own face texture (the item icon is the 3D cube, like dirt/stone)
+    ("block_cobblestone", (16, 16)),
 ]
 
 
@@ -949,6 +952,7 @@ _JAR_HUD_SPRITES = {
     "item_iron_pickaxe": "item/iron_pickaxe.png",
     "item_golden_pickaxe": "item/golden_pickaxe.png",
     "item_netherite_pickaxe": "item/netherite_pickaxe.png",
+    "block_cobblestone": "block/cobblestone.png",
 }
 
 

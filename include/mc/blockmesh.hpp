@@ -20,6 +20,7 @@ struct FaceCells {
 inline FaceCells faceCellsFor(mc::BlockId id) {
     switch (id) {
         case mc::BlockId::Stone: return {&mc::hud::kUV_BLOCK_STONE, &mc::hud::kUV_BLOCK_STONE, &mc::hud::kUV_BLOCK_STONE};
+        case mc::BlockId::Cobblestone: return {&mc::hud::kUV_BLOCK_COBBLESTONE, &mc::hud::kUV_BLOCK_COBBLESTONE, &mc::hud::kUV_BLOCK_COBBLESTONE};
         case mc::BlockId::Tnt: return {&mc::hud::kUV_BLOCK_TNT_TOP, &mc::hud::kUV_BLOCK_TNT_SIDE, &mc::hud::kUV_BLOCK_TNT_BOTTOM};
         default: return {&mc::hud::kUV_BLOCK_DIRT, &mc::hud::kUV_BLOCK_DIRT, &mc::hud::kUV_BLOCK_DIRT};
     }

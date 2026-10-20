@@ -30,7 +30,7 @@ public:
         if (block_id == BlockId::Tnt) {
             return 0.05f; // Extremely fast / near-instant break
         }
-        if (block_id == BlockId::Stone) {
+        if (block_id == BlockId::Stone || block_id == BlockId::Cobblestone) {
             switch (toolTier(held_tool)) {
                 case ToolTier::Wood: return 1.15f;
                 case ToolTier::Stone: return 0.6f;
@@ -51,7 +51,7 @@ public:
         if (is_creative) {
             return false; // Creative mode breaks blocks without dropping items
         }
-        if (block_id == BlockId::Stone) {
+        if (block_id == BlockId::Stone || block_id == BlockId::Cobblestone) {
             return isPickaxe(held_tool);
         }
         if (block_id == BlockId::Dirt || block_id == BlockId::Tnt) {
@@ -66,6 +66,7 @@ public:
         if (is_creative) return ItemId::None;
         switch (block_id) {
             case BlockId::Stone: return isPickaxe(held_tool) ? ItemId::BlockCobblestone : ItemId::None;
+            case BlockId::Cobblestone: return isPickaxe(held_tool) ? ItemId::BlockCobblestone : ItemId::None;
             case BlockId::Dirt: return ItemId::BlockDirt;
             case BlockId::Tnt: return ItemId::BlockTnt;
             default: return ItemId::None;

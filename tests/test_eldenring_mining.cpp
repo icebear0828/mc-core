@@ -54,6 +54,8 @@ TEST(EldenRingMiningTest, AllPickaxeTiersHarvestStoneAndDropCobblestone) {
 TEST(EldenRingMiningTest, BlockDropsMatchVanilla) {
     EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Dirt, mc::ItemId::None, false), mc::ItemId::BlockDirt);
     EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Tnt, mc::ItemId::None, false), mc::ItemId::BlockTnt);
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Cobblestone, mc::ItemId::DiamondPickaxe, false), mc::ItemId::BlockCobblestone);
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Cobblestone, mc::ItemId::None, false), mc::ItemId::None);
     EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Stone, mc::ItemId::DiamondPickaxe, true), mc::ItemId::None);
     EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Wood, mc::ItemId::DiamondPickaxe, false), mc::ItemId::None);
     EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Obsidian, mc::ItemId::DiamondPickaxe, false), mc::ItemId::None);

@@ -32,6 +32,7 @@ inline mc::BlockId blockForItem(mc::ItemId item) {
         case mc::ItemId::BlockDirt: return mc::BlockId::Dirt;
         case mc::ItemId::BlockStone: return mc::BlockId::Stone;
         case mc::ItemId::BlockTnt: return mc::BlockId::Tnt;
+        case mc::ItemId::BlockCobblestone: return mc::BlockId::Cobblestone;
         default: return mc::BlockId::Air;
     }
 }
@@ -41,6 +42,7 @@ inline mc::ItemId itemForBlock(mc::BlockId block) {
         case mc::BlockId::Dirt: return mc::ItemId::BlockDirt;
         case mc::BlockId::Stone: return mc::ItemId::BlockStone;
         case mc::BlockId::Tnt: return mc::ItemId::BlockTnt;
+        case mc::BlockId::Cobblestone: return mc::ItemId::BlockCobblestone;
         default: return mc::ItemId::None;
     }
 }

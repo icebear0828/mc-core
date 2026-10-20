@@ -171,8 +171,10 @@ TEST(Blocks, ItemsMapToBlocks) {
     EXPECT_EQ(blockForItem(mc::ItemId::BlockDirt), mc::BlockId::Dirt);
     EXPECT_EQ(blockForItem(mc::ItemId::BlockStone), mc::BlockId::Stone);
     EXPECT_EQ(blockForItem(mc::ItemId::BlockTnt), mc::BlockId::Tnt);
+    EXPECT_EQ(blockForItem(mc::ItemId::BlockCobblestone), mc::BlockId::Cobblestone);
     EXPECT_EQ(blockForItem(mc::ItemId::DiamondSword), mc::BlockId::Air);
     EXPECT_EQ(itemForBlock(mc::BlockId::Stone), mc::ItemId::BlockStone);
+    EXPECT_EQ(itemForBlock(mc::BlockId::Cobblestone), mc::ItemId::BlockCobblestone);
 }
 
 TEST(Blocks, FallingThroughABlockTopIsCaughtAndStandsOnIt) {

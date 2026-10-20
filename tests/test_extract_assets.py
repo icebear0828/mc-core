@@ -296,6 +296,7 @@ HUD_KEYS = [
     "item_netherite_scrap", "item_cobblestone",
     "item_wooden_pickaxe", "item_stone_pickaxe", "item_iron_pickaxe", "item_golden_pickaxe",
     "item_netherite_pickaxe",
+    "block_cobblestone",
 ]
 
 HUD_SIZES = {

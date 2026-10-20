@@ -57,6 +57,15 @@ TEST(BlockIcon, TntTopUsesTheTopCellAndTheSidesUseTheSideCell) {
     }
 }
 
+TEST(BlockIcon, CobblestoneUsesItsOwnFaceTexture) {
+    const IconCube icon = blockIcon(mc::BlockId::Cobblestone);
+    ASSERT_EQ(icon.count, 3);
+    for (int i = 0; i < icon.count; ++i) {
+        EXPECT_FLOAT_EQ(icon.faces[i].uv.u0, mc::hud::kUV_BLOCK_COBBLESTONE.u0);
+        EXPECT_FLOAT_EQ(icon.faces[i].uv.v1, mc::hud::kUV_BLOCK_COBBLESTONE.v1);
+    }
+}
+
 TEST(BlockIcon, TheFacesDoNotOverlapMuch) {
     // the three parallelograms tile a hexagon: their areas add up to the hexagon's area (no gap, no double cover)
     const IconCube icon = blockIcon(mc::BlockId::Dirt);

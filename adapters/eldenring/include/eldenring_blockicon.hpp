@@ -28,6 +28,7 @@ inline IconCube blockIcon(mc::BlockId id) {
     const mc::hud::HudUV *top_uv, *side_uv;
     switch (id) {
         case mc::BlockId::Stone: top_uv = side_uv = &mc::hud::kUV_BLOCK_STONE; break;
+        case mc::BlockId::Cobblestone: top_uv = side_uv = &mc::hud::kUV_BLOCK_COBBLESTONE; break;
         case mc::BlockId::Tnt: top_uv = &mc::hud::kUV_BLOCK_TNT_TOP; side_uv = &mc::hud::kUV_BLOCK_TNT_SIDE; break;
         default: top_uv = side_uv = &mc::hud::kUV_BLOCK_DIRT; break;
     }

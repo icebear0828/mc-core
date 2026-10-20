@@ -103,6 +103,7 @@ using ::mc::hud::kUV_ITEM_STONE_PICKAXE;
 using ::mc::hud::kUV_ITEM_IRON_PICKAXE;
 using ::mc::hud::kUV_ITEM_GOLDEN_PICKAXE;
 using ::mc::hud::kUV_ITEM_NETHERITE_PICKAXE;
+using ::mc::hud::kUV_BLOCK_COBBLESTONE;
 using ::mc::hud::kUV_ITEMS;
 using ::mc::hud::kHudAtlasWidth;
 using ::mc::hud::kHudAtlasHeight;
