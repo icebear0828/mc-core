@@ -42,12 +42,15 @@ public:
     }
 
     // dt seconds this frame; pitch_deg is the downward angle of the aim (0 = level, 90 = straight down).
-    void update(float dt, bool left_held, float pitch_deg, ItemId held, LootZone zone, bool creative, uint64_t& rng_state) {
+    // `moving` is the adapter's read of the player's own motion: issue #81 interrupts the dig the
+    // moment the player moves, so the crack never follows them across the terrain.
+    void update(float dt, bool left_held, float pitch_deg, ItemId held, LootZone zone, bool creative, uint64_t& rng_state,
+                bool moving = false) {
         state_.broken = false;
         state_.hit_sound = false;
         state_.drop = {};
 
-        if (!left_held || !canDig(held, pitch_deg)) {
+        if (!left_held || moving || !canDig(held, pitch_deg)) {
             resetProgress();
             return;
         }

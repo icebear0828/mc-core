@@ -80,6 +80,44 @@ TEST(GroundMiningTest, LookingUpMidDigDropsTheCrack) {
     EXPECT_EQ(controller.state().stage, -1);
 }
 
+TEST(GroundMiningTest, MovingMidDigDropsTheCrack) {
+    GroundMiningController controller;
+    uint64_t rng = 9;
+    digFor(controller, rng, 1.0f, ItemId::None, LootZone::Grassland);
+    ASSERT_TRUE(controller.state().is_mining);
+    ASSERT_GT(controller.state().progress, 0.0f);
+
+    controller.update(0.05f, true, 90.0f, ItemId::None, LootZone::Grassland, false, rng, /*moving=*/true);
+    EXPECT_FALSE(controller.state().is_mining);
+    EXPECT_EQ(controller.state().stage, -1);
+    EXPECT_FLOAT_EQ(controller.state().progress, 0.0f);
+    EXPECT_FALSE(controller.state().broken);
+}
+
+TEST(GroundMiningTest, MovingCannotStartADig) {
+    GroundMiningController controller;
+    uint64_t rng = 10;
+    controller.update(0.05f, true, 90.0f, ItemId::DiamondPickaxe, LootZone::Cave, false, rng, /*moving=*/true);
+    EXPECT_FALSE(controller.state().is_mining);
+    EXPECT_EQ(controller.state().stage, -1);
+
+    controller.update(0.05f, true, 90.0f, ItemId::DiamondPickaxe, LootZone::Cave, false, rng, /*moving=*/false);
+    EXPECT_TRUE(controller.state().is_mining);
+    EXPECT_EQ(controller.state().stage, 0);
+}
+
+TEST(GroundMiningTest, MovementKeepsTheLootStreak) {
+    GroundMiningController controller;
+    uint64_t rng = 11;
+    digFor(controller, rng, 3.8f, ItemId::DiamondPickaxe, LootZone::Cave);
+    ASSERT_TRUE(controller.state().broken);
+    const int combo_before = controller.loot().combo();
+
+    controller.update(0.05f, true, 90.0f, ItemId::DiamondPickaxe, LootZone::Cave, false, rng, /*moving=*/true);
+    EXPECT_FALSE(controller.state().is_mining);
+    EXPECT_EQ(controller.loot().combo(), combo_before);
+}
+
 TEST(GroundMiningTest, ChangingToolRestartsTheCrack) {
     GroundMiningController controller;
     uint64_t rng = 4;

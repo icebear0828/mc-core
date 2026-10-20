@@ -1198,6 +1198,20 @@ static eldenring::mining::MiningController g_mining;
 static mc::GroundMiningController g_ground_mining;
 static uint64_t g_loot_rng = 0;
 
+// PhysicsModule+0x120 is the linear velocity in m/s (HANDOFF 7). Speed rather than a position
+// delta, so the floating-origin rebase (Havok space jumps in multiples of 8 m) never looks like
+// the player moving.
+static constexpr uintptr_t kPhysicsVelocity = 0x120;
+static constexpr float kGroundMiningMoveSpeed = 0.5f;
+
+static bool PlayerIsMoving() {
+    const uintptr_t player = PlayerChrPtr();
+    if (player == 0) return false;
+    float v[3];
+    if (!detail::readPhysicsVec3(g_reader, g_img.base, player, kPhysicsVelocity, v)) return false;
+    return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) > kGroundMiningMoveSpeed;
+}
+
 static const char* GroundHitSound(mc::LootZone zone) {
     return zone == mc::LootZone::Grassland ? "block.grass.step" : "block.stone.step";
 }
@@ -1234,7 +1248,7 @@ bool StepMining(float dt, bool left_held) {
         std::clamp(g_loot_zone.load(), 0, static_cast<int>(mc::LootZone::Count) - 1));
     if (g_ground_mining_enabled.load() && ground_target && mc::GroundMiningController::canDig(held, pitch)) {
         if (g_loot_rng == 0) g_loot_rng = GetTickCount64() | 1;
-        g_ground_mining.update(dt, left_held, pitch, held, zone, is_creative, g_loot_rng);
+        g_ground_mining.update(dt, left_held, pitch, held, zone, is_creative, g_loot_rng, PlayerIsMoving());
         const mc::GroundMiningState& gs = g_ground_mining.state();
         if (gs.is_mining) {
             if (gs.hit_sound) {
