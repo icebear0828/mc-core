@@ -25,7 +25,8 @@ PR：https://github.com/icebear0828/mc-core/pull/115
 1. `mc_er_steve.txt` 里 `blocks=1`（地面采掘复用方块系统的开关）。
 2. 视线俯仰角 `>= 60°`（`GroundMiningController::kMinPitchDeg`），即视线落在脚下附近。
 3. 主手为空，或手持任意镐（木/石/铁/金/钻石/下界合金）。
-4. 准星命中宿主静态地形，而不是我们放置的方块。命中放置方块时仍走原来的渐进破坏逻辑。
+4. 准星命中宿主静态地形，而不是我们放置的方块；命中面法线必须朝上（`normal.y >= 0.5`），
+   墙/岩石侧面不算地面，不会生成裂纹或触发采掘。命中放置方块时仍走原来的渐进破坏逻辑。
 5. 松开左键、抬头、切换工具、切换区域或**玩家开始移动**会立即清空裂纹进度；保底/连击计数保留。
    移动判定读 `PhysicsModule+0x120` 的线速度（HANDOFF §7 的 A 级事实），速度模长超过 0.5 m/s 即视为移动；
    用速度而不是位置差，避免浮动原点重定位（Havok 空间按 8 m 跳变）被误判成移动。
@@ -126,6 +127,8 @@ ZONEPROBE: block=0x3C2A2400 area=60 gx=42 gz=36 lod=0 pos=(...) n=(...) shape=0x
 
 实机（2026-10-20，Limgrave Church of Elleh）已采集到：`material=1` 出生点石台（掉圆石/煤炭/粗铁），`material=2` 和 `material=5` 草地/泥土（掉泥土/圆石）。配置里是 `zone_mat_1=1`、`zone_mat_2=0`、`zone_mat_5=0`；material 值不是全局语义，其他区域仍需分别采样。
 
+实机调裂纹高度：游戏在前台时，`[` / `PageDown` 下移 5 cm，`]` / `PageUp` 上移 5 cm；每次调整写一行 `cracktune: lift=...`，调到贴地后把该值写进 `ground_crack_lift`。
+
 ## 8. 测试与验证
 
 在 `feat/mining-loot-tables` 上：
@@ -133,8 +136,8 @@ ZONEPROBE: block=0x3C2A2400 area=60 gx=42 gz=36 lod=0 pos=(...) n=(...) shape=0x
 ```bash
 cmake --build build_pure_mc --config Release -j 8
 ./build_pure_mc/bin/Release/mc_tests.exe --gtest_brief=1
-# [==========] 1163 tests from 160 test suites ran.
-# [  PASSED  ] 1163 tests.
+# [==========] 1164 tests from 160 test suites ran.
+# [  PASSED  ] 1164 tests.
 
 uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py -q
 # 8 passed
@@ -170,8 +173,9 @@ uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py 
    贴图，在**准星射线命中点**按法线贴一个 0.9 m 的裂纹四边形（`TerrainMiningOverlay`，抬高量可配）；
    每 0.25 s 打击和破坏时调用现有 `FxKind::Dust` 粒子（破坏时 3 连发）。裂纹、Dust、掉落材质都跟随
    准星命中点。`mc_er_zoneprobe.txt` 存在时每次挖掘会写一行 `GROUNDANCHOR: feet=(...) aim=(...) n=(...)
-   lift=... mat=...`，用来量化「碰撞面 vs 视觉地面」的高度差。石/土/木/金属的**不同颜色**碎屑还没分，
-   目前统一是灰色 Dust。
+   lift=... mat=...`，用来量化「碰撞面 vs 视觉地面」的高度差。命中面法线必须朝上（y≥0.5），
+   墙/岩石侧面不会生成裂纹——实机日志里 `aim.y=6.49/6.81`、`n.y=0` 的垂直墙面就是「太高」的来源。
+   石/土/木/金属的**不同颜色**碎屑还没分，目前统一是灰色 Dust。
 3. **`random.pop` 音效**：提取音效列表里没有这个事件，拾取暂时用 `entity.experience_orb.pickup`。要完全还原可把 `random.pop` 加进 `tools/extract_mc_sounds.py` 的 `EVENTS` 后重新提取。
 4. ~~**镐的图标**~~（**已完成**）：木/石/铁/金/下界合金镐各自有 16×16 图集格子（`item_*_pickaxe`），
    来源是 client.jar 的 `item/*_pickaxe.png`；ER/Sekiro 的 `uvForItem` 与手持模型样式（`Handheld`、平面精灵）

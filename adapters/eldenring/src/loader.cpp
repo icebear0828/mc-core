@@ -1337,7 +1337,8 @@ bool StepMining(float dt, bool left_held) {
 
     // Ground mining (issues #66/#81): aim at the terrain under the player's feet with an empty hand
     // or a pickaxe. A placed block keeps the progressive block-mining path below.
-    const bool ground_target = t.have && t.terrain_hit && !t.on_block;
+    const bool ground_target = t.have && t.terrain_hit && !t.on_block &&
+                               mc::GroundMiningController::canDigSurface(t.terrain_normal[1]);
     const float pitch = t.pitch_deg;
     if (g_ground_mining_enabled.load() && ground_target && mc::GroundMiningController::canDig(held, pitch)) {
         // The crosshair decides where the ground gives way: the crack, the dust and the loot all
@@ -1700,6 +1701,32 @@ void McFlagsStep() {
 DWORD WINAPI KeyThread(LPVOID) {
     Log("key: KeyThread started (tid %lu)", GetCurrentThreadId());
     eldenring::input::HotkeyDispatcher::Instance().runKeyLoop();
+    return 0;
+}
+
+// Diagnostic tuner for the ground crack height: [ / PageDown lowers it, ] / PageUp raises it, in
+// 5 cm steps, only while the game is focused. The value is logged so it can be copied into
+// mc_er_steve.txt. It changes only our overlay; it never writes game state.
+DWORD WINAPI CrackTunerThread(LPVOID) {
+    bool prev_down = false, prev_up = false;
+    for (;;) {
+        const bool focused = GameInForeground();
+        const bool down = focused && (((GetAsyncKeyState(VK_OEM_4) & 0x8000) != 0) || ((GetAsyncKeyState(VK_PRIOR) & 0x8000) != 0));
+        const bool up = focused && (((GetAsyncKeyState(VK_OEM_6) & 0x8000) != 0) || ((GetAsyncKeyState(VK_NEXT) & 0x8000) != 0));
+        if (down && !prev_down) {
+            const float v = std::clamp(g_ground_crack_lift.load(std::memory_order_relaxed) - 0.05f, -2.0f, 1.0f);
+            g_ground_crack_lift.store(v, std::memory_order_relaxed);
+            Log("cracktune: lift=%.2f m ([ / PageDown lower, ] / PageUp raise)", v);
+        }
+        if (up && !prev_up) {
+            const float v = std::clamp(g_ground_crack_lift.load(std::memory_order_relaxed) + 0.05f, -2.0f, 1.0f);
+            g_ground_crack_lift.store(v, std::memory_order_relaxed);
+            Log("cracktune: lift=%.2f m ([ / PageDown lower, ] / PageUp raise)", v);
+        }
+        prev_down = down;
+        prev_up = up;
+        Sleep(30);
+    }
     return 0;
 }
 
@@ -2983,6 +3010,7 @@ DWORD WINAPI LoaderThread(LPVOID) {
     SetupZoneProbe();
     SetupInput();
     CreateThread(nullptr, 0, KeyThread, nullptr, 0, nullptr);
+    CreateThread(nullptr, 0, CrackTunerThread, nullptr, 0, nullptr);
     CreateThread(nullptr, 0, BuddyThread, nullptr, 0, nullptr);
 
     for (;;) {

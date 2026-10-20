@@ -41,6 +41,14 @@ TEST(GroundMiningTest, GatingRequiresDownwardAimAndEmptyHandOrPickaxe) {
     EXPECT_FALSE(controller.state().is_mining);
 }
 
+TEST(GroundMiningTest, OnlyUpwardSurfacesCountAsGround) {
+    EXPECT_TRUE(GroundMiningController::canDigSurface(1.0f));
+    EXPECT_TRUE(GroundMiningController::canDigSurface(0.5f));
+    EXPECT_FALSE(GroundMiningController::canDigSurface(0.49f));
+    EXPECT_FALSE(GroundMiningController::canDigSurface(0.0f));
+    EXPECT_FALSE(GroundMiningController::canDigSurface(-1.0f));
+}
+
 TEST(GroundMiningTest, BreakTimeScalesWithToolAndZone) {
     EXPECT_FLOAT_EQ(GroundMiningController::breakTime(ItemId::None, LootZone::Grassland, false), 2.5f);
     EXPECT_FLOAT_EQ(GroundMiningController::breakTime(ItemId::DiamondPickaxe, LootZone::Grassland, false), 1.0f);

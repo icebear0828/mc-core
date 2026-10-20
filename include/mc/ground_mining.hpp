@@ -26,6 +26,7 @@ struct GroundMiningState {
 class GroundMiningController {
 public:
     static constexpr float kMinPitchDeg = 60.0f; // the aim must be at the ground at the player's feet
+    static constexpr float kMinGroundNormalY = 0.5f; // the hit surface must face up, not a wall
     static constexpr float kHitSoundIntervalSec = 0.25f;
 
     explicit GroundMiningController(std::span<const LootEntry> entries = kDefaultLootTable) : loot_(entries) {}
@@ -33,6 +34,10 @@ public:
     [[nodiscard]] static bool canDig(ItemId held, float pitch_deg) noexcept {
         return pitch_deg >= kMinPitchDeg && (held == ItemId::None || isPickaxe(held));
     }
+
+    // A wall hit (normal mostly horizontal) is not ground: the crack decal would stand up above the
+    // floor. The adapter feeds the terrain ray's normal here before starting a dig.
+    [[nodiscard]] static bool canDigSurface(float normal_y) noexcept { return normal_y >= kMinGroundNormalY; }
 
     // Issue #81 section 2: bare hands are slow; each pickaxe tier is 30%..60% faster. Creative
     // breaks instantly. The zone hardness keeps the deeper regions from feeling like grass.
