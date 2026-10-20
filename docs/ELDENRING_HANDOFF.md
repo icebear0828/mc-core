@@ -13,7 +13,8 @@
 
 ## 0.0 2026-10-20：地面采掘与数据驱动掉落表（issue #66 / #81）
 
-分支：`feat/mining-loot-tables`（基于 `main` `5fe648d`）。完整说明见
+分支：`feat/mining-loot-tables`（基于 `main` `5fe648d`），PR
+[#115](https://github.com/icebear0828/mc-core/pull/115)。完整说明见
 [ELDENRING_MINING_LOOT.md](ELDENRING_MINING_LOOT.md)。
 
 - 新增 `include/mc/loot_table.hpp`（6 区域 × 12 条目权重、工具门槛、保底、矿脉连击、确定性 RNG）

@@ -2,6 +2,7 @@
 
 最后更新：2026-10-20
 分支：`feat/mining-loot-tables`（基于 `main` `5fe648d`）
+PR：https://github.com/icebear0828/mc-core/pull/115
 关联：issue #66（就地采掘）、issue #81（矿物与常用方块掉落表）
 
 ## 1. 这次做了什么
