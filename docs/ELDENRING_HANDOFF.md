@@ -36,10 +36,11 @@
 - **实机材质样本（2026-10-20，Limgrave）**：`material=1` 石台（StoneSurface），`material=2/5` 草地/泥土
   （Grassland）；配置里已加 `zone_mat_1=1`、`zone_mat_2=0`、`zone_mat_5=0`。材质值不是全局语义，其他区域
   仍需采样。
-- **地面裂纹与粒子已接**（2026-10-20）：复用方块挖掘的 `destroy_stage_0..9`，在**准星射线命中点**
-  按法线贴 0.9 m 裂纹四边形（`TerrainMiningOverlay`）；每 0.25 s 打击和破坏时调用 `FxKind::Dust`。
-  抬高量/尺寸由 `ground_crack_lift` / `ground_crack_size` 配置；`GROUNDANCHOR:` 日志（需
-  `mc_er_zoneprobe.txt`）打印脚底与准星命中点坐标，用来量化碰撞面/视觉地面的高度差。石/土/木/金属的
+- **地面裂纹与粒子已接**（2026-10-20）：复用方块挖掘的 `destroy_stage_0..9`，在**视觉地面**上贴
+  0.9 m 裂纹四边形（`TerrainMiningOverlay`）；视觉地面由 overlay 读准星中心**场景深度**还原
+  （`depth_const / depth` → 视空间 z → `cam.position + cam.forward * z`），深度不可用时回退到碰撞
+  命中点。Havok 射线只用于掉落/材质。每 0.25 s 打击和破坏时调用 `FxKind::Dust`。抬高量/尺寸由
+  `ground_crack_lift` / `ground_crack_size` 配置；`GROUNDANCHOR:` 日志带 `floor`/`scene`。石/土/木/金属的
   不同颜色碎屑还没分。
 - **未部署、未实机验收。** 下一步：实机跑六个区域采集 material id 并固化 `zone_mat_*`、地面裂纹/碎屑粒子、实机 E2E。
 - 数据注意：issue #81 火山列合计 **80.5**，当前按列归一化；缺失的 19.5 需要确认归属。

@@ -126,6 +126,10 @@ void SetArrows(const std::vector<eldenring::summon::ArrowDraw>& arrows);
 // number of hearts for Damage. Thread safe; the overlay projects and draws them.
 enum class FxKind { Crit, Damage, Sweep, Spark, Dust };
 void SpawnFx(FxKind kind, const float world_pos[3], int count);
+// The visible floor under the crosshair, read from the scene depth (world metres). Returns false
+// until a valid depth sample is available; RequestSceneFloor(true) while ground mining needs it.
+void RequestSceneFloor(bool on);
+bool SceneFloor(float out_pos[3]);
 // A CS hitscan tracer: a world-space segment (game metres) that fades out over `life_s`. Thread safe.
 void SpawnTracer(const float from[3], const float to[3], float life_s = 0.08f);
 #if ENABLE_CS2_VIEWMODEL
