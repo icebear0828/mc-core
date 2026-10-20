@@ -645,6 +645,8 @@ std::atomic<unsigned> g_los_blocked{0};
 // ---- ground mining (issues #66/#81) ---------------------------------------------------------------------------
 std::atomic<bool> g_ground_mining_enabled{true};
 std::atomic<int> g_loot_zone{0}; // mc_er_steve.txt: loot_zone=0..5, or -1 = auto (block id + material)
+std::atomic<float> g_ground_crack_lift{0.01f}; // mc_er_steve.txt: ground_crack_lift=<m> (negative sinks it)
+std::atomic<float> g_ground_crack_size{0.9f};  // mc_er_steve.txt: ground_crack_size=<m> (full edge length)
 
 // Zone auto-detection. The default table is deliberately small: it only uses the area byte of the
 // player's block id. Material rules are loaded from mc_er_steve.txt (`zone_mat_<id>=<zone>`) once
@@ -1014,7 +1016,8 @@ void SendBlockMesh(const std::optional<blocks::MiningOverlay>& mining = std::nul
         stage == g_prev_mining_stage && cell == g_prev_mining_cell &&
         terrain.stage == g_prev_terrain_mining.stage &&
         std::memcmp(terrain.pos, g_prev_terrain_mining.pos, sizeof(terrain.pos)) == 0 &&
-        std::memcmp(terrain.normal, g_prev_terrain_mining.normal, sizeof(terrain.normal)) == 0) return;
+        std::memcmp(terrain.normal, g_prev_terrain_mining.normal, sizeof(terrain.normal)) == 0 &&
+        terrain.lift == g_prev_terrain_mining.lift && terrain.half_size == g_prev_terrain_mining.half_size) return;
     g_blocks_sent_version = g_blocks.version();
     g_tnt_prev_active_count = tnt_count;
     g_prev_mining_stage = stage;
@@ -1351,6 +1354,8 @@ bool StepMining(float dt, bool left_held) {
             std::memcpy(terrain.pos, t.terrain_pos, sizeof(terrain.pos));
             std::memcpy(terrain.normal, t.terrain_normal, sizeof(terrain.normal));
             terrain.stage = gs.stage;
+            terrain.lift = g_ground_crack_lift.load(std::memory_order_relaxed);
+            terrain.half_size = 0.5f * g_ground_crack_size.load(std::memory_order_relaxed);
             if (gs.hit_sound) {
                 {
                     std::lock_guard<std::mutex> g(g_melee_mutex);
@@ -2472,6 +2477,8 @@ void SetupOverlay() {
                 else if (key == "mc_jump_speed") g_mc_jump_speed.store(std::clamp(value, 1.f, 20.f));
                 else if (key == "blocks") g_blocks_enabled.store(value != 0.f);
                 else if (key == "ground_mining") g_ground_mining_enabled.store(value != 0.f);
+                else if (key == "ground_crack_lift") g_ground_crack_lift.store(std::clamp(value, -1.0f, 0.5f));
+                else if (key == "ground_crack_size") g_ground_crack_size.store(std::clamp(value, 0.2f, 3.0f));
                 else if (key == "loot_zone") {
                     const int zone = static_cast<int>(value);
                     g_loot_zone.store(zone < 0 ? -1 : std::clamp(zone, 0, static_cast<int>(mc::LootZone::Count) - 1));

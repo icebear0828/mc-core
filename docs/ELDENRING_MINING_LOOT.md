@@ -95,6 +95,8 @@ issue #81 的火山列相加是 **80.5**，不是 100（缺 19.5 个百分点）
 blocks=1          # 必须；地面采掘复用方块系统开关
 ground_mining=1   # 默认 1，设为 0 关闭地面采掘
 loot_zone=0       # 0..5 手动指定；-1 = 自动（玩家 block id + 地面材质）
+ground_crack_lift=-0.05  # 裂纹沿法线的抬升（米）；负值往下压，默认 0.01
+ground_crack_size=0.9    # 裂纹四边形边长（米），默认 0.9
 # 自动模式下的可选覆盖（0..5 同下表）：
 # zone_mat_<material_id>=<zone>   # 材质优先，例如 zone_mat_1234=4
 # zone_area_<area_id>=<zone>      # 材质没有规则时按 block id 的 area，例如 zone_area_60=0
@@ -131,8 +133,8 @@ ZONEPROBE: block=0x3C2A2400 area=60 gx=42 gz=36 lod=0 pos=(...) n=(...) shape=0x
 ```bash
 cmake --build build_pure_mc --config Release -j 8
 ./build_pure_mc/bin/Release/mc_tests.exe --gtest_brief=1
-# [==========] 1162 tests from 160 test suites ran.
-# [  PASSED  ] 1162 tests.
+# [==========] 1163 tests from 160 test suites ran.
+# [  PASSED  ] 1163 tests.
 
 uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py -q
 # 8 passed

@@ -144,3 +144,19 @@ TEST(BlockMesh, TerrainMiningCrackIsAbsentWithoutAStage) {
     o.stage = -1;
     EXPECT_TRUE(buildBlockMesh(g, {}, std::nullopt, o).vertices.empty());
 }
+
+TEST(BlockMesh, TerrainMiningCrackLiftAndSizeAreConfigurable) {
+    BlockGrid g;
+    TerrainMiningOverlay o{};
+    o.pos[0] = 1.f; o.pos[1] = 2.f; o.pos[2] = 3.f;
+    o.stage = 4;
+    o.lift = -0.1f;
+    o.half_size = 0.2f;
+    const mc::rig::RigMesh m = buildBlockMesh(g, {}, std::nullopt, o);
+    ASSERT_EQ(m.vertices.size(), 4u);
+    for (const mc::rig::RigVertex& v : m.vertices) {
+        EXPECT_NEAR(v.y, 1.9f, 1e-3f);
+        EXPECT_NEAR(v.x, 1.f, 0.21f);
+        EXPECT_NEAR(v.z, 3.f, 0.21f);
+    }
+}

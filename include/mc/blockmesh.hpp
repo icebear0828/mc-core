@@ -36,6 +36,8 @@ struct TerrainMiningOverlay {
     float pos[3]{};
     float normal[3]{0.f, 1.f, 0.f};
     int stage{-1};
+    float lift{0.01f};      // metres along the normal; negative sinks the decal into the collision surface
+    float half_size{0.45f}; // half of the quad's edge length
 };
 
 inline const mc::hud::HudUV* crackUVForStage(int stage) {
@@ -156,8 +158,8 @@ inline mc::rig::RigMesh buildBlockMesh(const BlockGrid& grid,
             if (len > 1e-4f) {
                 for (float& v : t) v /= len;
                 const float b[3] = {n[1] * t[2] - n[2] * t[1], n[2] * t[0] - n[0] * t[2], n[0] * t[1] - n[1] * t[0]};
-                const float half = 0.45f;
-                const float lift = 0.01f;
+                const float half = o.half_size;
+                const float lift = o.lift;
                 const float c[3] = {o.pos[0] + n[0] * lift, o.pos[1] + n[1] * lift, o.pos[2] + n[2] * lift};
                 const float corners[4][3] = {
                     {c[0] - t[0] * half - b[0] * half, c[1] - t[1] * half - b[1] * half, c[2] - t[2] * half - b[2] * half},

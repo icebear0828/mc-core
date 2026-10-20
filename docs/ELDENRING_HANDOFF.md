@@ -23,7 +23,7 @@
   破坏后掉落自动进背包。`FindBlockTarget` 现在会带回地形命中点、法线、相机俯仰角。
 - `mc_er_steve.txt` 新增 `ground_mining=1`、`loot_zone=0..5`；`blocks=1` 仍是前提。
 - 新增 11 个物品 ID 与图集格子；木/石/铁/金/下界合金镐暂时复用钻石镐图标。
-- 测试：`build_pure_mc` Release **1162/1162**，Python **101 passed / 1 skipped**。
+- 测试：`build_pure_mc` Release **1163/1163**，Python **101 passed / 1 skipped**。
 - **移动打断已接**（2026-10-20）：`GroundMiningController::update` 新增 `moving` 入参；适配层读
   `PhysicsModule+0x120` 线速度，模长 > 0.5 m/s 立即清裂纹（用速度而非位置差，规避浮动原点重定位）。
 - **5 个镐图标已补**（2026-10-20）：`item_wooden/stone/iron/golden/netherite_pickaxe` 图集格子、client.jar
@@ -312,7 +312,7 @@
 
 ### 5.3 `mc_er_steve.txt` 配置键（`key=value`，一行一个）
 
-`occlusion`（1=被场景遮挡）、`depth_const`（**0.00456**，深度×视距常数，实测）、`rel_bias`、`abs_bias`、`debug`/`depthview_gain`/`scene_height`（标定用，保持默认）、`yaw_offset_deg`（**180**，玩家物理四元数朝向与模型相反）、`hide_native`（1=隐藏原模型）、`hide_mask1`（`0x100A1`）、`hide_mask2`（`1`）、`hide_slots`（部件槽位掩码，默认全部）、`sound_volume`（0.8）、`first_person`（1=启动即第一人称）、`eye_height`（1.65）、`fp_persist`（1，持久眼睛相机）、`inv_key`（背包键的虚拟键码，默认 73=`I`）、`inv_sens`（背包指针灵敏度，默认 1）、`no_stagger`（0，实验，见钩子表）、`mc_jump`（0，起跳实验）、`mc_jump_key`（VK，默认空格 32）、`mc_jump_speed`（8.95 m/s）、`blocks`（1，放置/破坏）、`block_collision`（1，软碰撞）、`reach`（4.5 m）、`kb_force`（击退实验，**无效果，别用**）、`no_player_hit_vfx`（配合 `mc_er_hitvfx.txt`）、`ground_mining`（1，地面采掘）、`loot_zone`（0..5 手动，**-1 = 自动**：玩家 block id + 地面材质）、`zone_mat_<id>` / `zone_area_<id>`（自动模式的材质/area 覆盖，值 0..5）。
+`occlusion`（1=被场景遮挡）、`depth_const`（**0.00456**，深度×视距常数，实测）、`rel_bias`、`abs_bias`、`debug`/`depthview_gain`/`scene_height`（标定用，保持默认）、`yaw_offset_deg`（**180**，玩家物理四元数朝向与模型相反）、`hide_native`（1=隐藏原模型）、`hide_mask1`（`0x100A1`）、`hide_mask2`（`1`）、`hide_slots`（部件槽位掩码，默认全部）、`sound_volume`（0.8）、`first_person`（1=启动即第一人称）、`eye_height`（1.65）、`fp_persist`（1，持久眼睛相机）、`inv_key`（背包键的虚拟键码，默认 73=`I`）、`inv_sens`（背包指针灵敏度，默认 1）、`no_stagger`（0，实验，见钩子表）、`mc_jump`（0，起跳实验）、`mc_jump_key`（VK，默认空格 32）、`mc_jump_speed`（8.95 m/s）、`blocks`（1，放置/破坏）、`block_collision`（1，软碰撞）、`reach`（4.5 m）、`kb_force`（击退实验，**无效果，别用**）、`no_player_hit_vfx`（配合 `mc_er_hitvfx.txt`）、`ground_mining`（1，地面采掘）、`ground_crack_lift`（裂纹沿法线抬升，米，负值往下压）、`ground_crack_size`（裂纹四边形边长，米）、`loot_zone`（0..5 手动，**-1 = 自动**：玩家 block id + 地面材质）、`zone_mat_<id>` / `zone_area_<id>`（自动模式的材质/area 覆盖，值 0..5）。
 
 ### 5.4 热键（游戏窗口在前台时）
 
