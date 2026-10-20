@@ -23,8 +23,12 @@
   破坏后掉落自动进背包。`FindBlockTarget` 现在会带回地形命中点、法线、相机俯仰角。
 - `mc_er_steve.txt` 新增 `ground_mining=1`、`loot_zone=0..5`；`blocks=1` 仍是前提。
 - 新增 11 个物品 ID 与图集格子；木/石/铁/金/下界合金镐暂时复用钻石镐图标。
-- 测试：`build_pure_mc` Release **1149/1149**，`tests/test_mining_assets.py` **6/6**。
-- **未部署、未实机验收。** 下一步：区域自动识别、地面裂纹/碎屑粒子、移动打断、实机 E2E。
+- 测试：`build_pure_mc` Release **1152/1152**，Python **101 passed / 1 skipped**。
+- **移动打断已接**（2026-10-20）：`GroundMiningController::update` 新增 `moving` 入参；适配层读
+  `PhysicsModule+0x120` 线速度，模长 > 0.5 m/s 立即清裂纹（用速度而非位置差，规避浮动原点重定位）。
+- **5 个镐图标已补**（2026-10-20）：`item_wooden/stone/iron/golden/netherite_pickaxe` 图集格子、client.jar
+  映射、ER/Sekiro 的 `uvForItem` 与手持 `Handheld` 样式都已接；占位图集是彩点，部署前仍需从 jar 重提。
+- **未部署、未实机验收。** 下一步：区域自动识别（卡在 ER 区域/地图 ID 或地形材质逆向）、地面裂纹/碎屑粒子、实机 E2E。
 - 数据注意：issue #81 火山列合计 **80.5**，当前按列归一化；缺失的 19.5 需要确认归属。
 
 ---

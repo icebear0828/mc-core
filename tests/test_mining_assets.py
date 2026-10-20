@@ -116,3 +116,33 @@ def test_loot_icons_have_atlas_cells():
         assert 0.0 <= v0 < v1 <= 1.0
         assert pytest.approx(u1 - u0, abs=1e-5) == 16.0 / 512.0
         assert pytest.approx(v1 - v0, abs=1e-5) == 16.0 / 512.0
+
+
+PICKAXE_ICON_KEYS = [
+    "item_wooden_pickaxe",
+    "item_stone_pickaxe",
+    "item_iron_pickaxe",
+    "item_golden_pickaxe",
+    "item_netherite_pickaxe",
+]
+
+
+def test_pickaxe_icons_registered_in_atlas():
+    """Issue #81: every pickaxe tier has its own 16x16 icon and a client.jar source."""
+    registered = dict(HUD_SPRITES)
+    for key in PICKAXE_ICON_KEYS:
+        assert key in registered, f"{key} must be defined in HUD_SPRITES"
+        assert registered[key] == (16, 16), f"{key} must be 16x16"
+        assert key in _JAR_HUD_SPRITES, f"{key} must be mapped in _JAR_HUD_SPRITES"
+
+
+def test_pickaxe_icons_have_atlas_cells():
+    atlas, uv_map = build_hud_atlas(JAR_PATH if JAR_PATH.exists() else None)
+    assert atlas.size == (512, 512)
+    for key in PICKAXE_ICON_KEYS:
+        assert key in uv_map, f"{key} must exist in atlas UV map"
+        u0, v0, u1, v1 = uv_map[key]
+        assert 0.0 <= u0 < u1 <= 1.0
+        assert 0.0 <= v0 < v1 <= 1.0
+        assert pytest.approx(u1 - u0, abs=1e-5) == 16.0 / 512.0
+        assert pytest.approx(v1 - v0, abs=1e-5) == 16.0 / 512.0

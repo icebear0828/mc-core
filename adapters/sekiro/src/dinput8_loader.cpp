@@ -872,6 +872,11 @@ const sekiro::hud::HudUV* ItemIconUv(mc::ItemId item) {
     switch (item) {
         case mc::ItemId::DiamondSword: return &sekiro::hud::kUV_ITEM_DIAMOND_SWORD;
         case mc::ItemId::DiamondPickaxe: return &sekiro::hud::kUV_ITEM_DIAMOND_PICKAXE;
+        case mc::ItemId::WoodenPickaxe: return &sekiro::hud::kUV_ITEM_WOODEN_PICKAXE;
+        case mc::ItemId::StonePickaxe: return &sekiro::hud::kUV_ITEM_STONE_PICKAXE;
+        case mc::ItemId::IronPickaxe: return &sekiro::hud::kUV_ITEM_IRON_PICKAXE;
+        case mc::ItemId::GoldenPickaxe: return &sekiro::hud::kUV_ITEM_GOLDEN_PICKAXE;
+        case mc::ItemId::NetheritePickaxe: return &sekiro::hud::kUV_ITEM_NETHERITE_PICKAXE;
         case mc::ItemId::BlockDirt: return &sekiro::hud::kUV_ITEM_DIRT;
         case mc::ItemId::BlockStone: return &sekiro::hud::kUV_ITEM_STONE;
         case mc::ItemId::BlockTnt: return &sekiro::hud::kUV_ITEM_TNT;
@@ -1061,6 +1066,11 @@ const mc::hud::HudUV* HeldItemUv(mc::ItemId item) {
     switch (item) {
         case mc::ItemId::DiamondSword: return &mc::hud::kUV_ITEM_DIAMOND_SWORD;
         case mc::ItemId::DiamondPickaxe: return &mc::hud::kUV_ITEM_DIAMOND_PICKAXE;
+        case mc::ItemId::WoodenPickaxe: return &mc::hud::kUV_ITEM_WOODEN_PICKAXE;
+        case mc::ItemId::StonePickaxe: return &mc::hud::kUV_ITEM_STONE_PICKAXE;
+        case mc::ItemId::IronPickaxe: return &mc::hud::kUV_ITEM_IRON_PICKAXE;
+        case mc::ItemId::GoldenPickaxe: return &mc::hud::kUV_ITEM_GOLDEN_PICKAXE;
+        case mc::ItemId::NetheritePickaxe: return &mc::hud::kUV_ITEM_NETHERITE_PICKAXE;
         case mc::ItemId::Bow: return &mc::hud::kUV_ITEM_BOW;
         case mc::ItemId::GoldenApple: return &mc::hud::kUV_ITEM_GOLDEN_APPLE;
         case mc::ItemId::TotemOfUndying: return &mc::hud::kUV_ITEM_TOTEM_OF_UNDYING;

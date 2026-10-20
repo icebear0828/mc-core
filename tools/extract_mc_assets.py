@@ -368,6 +368,10 @@ _PLACEHOLDER_ITEM_COLORS = {
     "item_redstone": (200, 30, 30), "item_raw_gold": (235, 200, 60), "item_lapis_lazuli": (40, 80, 200),
     "item_amethyst_shard": (160, 100, 210), "item_diamond": (90, 220, 220), "item_emerald": (40, 200, 90),
     "item_netherite_scrap": (110, 75, 65), "item_cobblestone": (120, 120, 120),
+    # Pickaxe tiers (issue #81): flat placeholder colours, replaced by the client.jar icons.
+    "item_wooden_pickaxe": (140, 100, 50), "item_stone_pickaxe": (130, 130, 130),
+    "item_iron_pickaxe": (210, 210, 215), "item_golden_pickaxe": (250, 210, 60),
+    "item_netherite_pickaxe": (80, 70, 75),
 }
 
 
@@ -860,6 +864,12 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("item_emerald", (16, 16)),
     ("item_netherite_scrap", (16, 16)),
     ("item_cobblestone", (16, 16)),
+    # Pickaxe tier icons (issue #81), appended so every earlier UV stays exactly where it was
+    ("item_wooden_pickaxe", (16, 16)),
+    ("item_stone_pickaxe", (16, 16)),
+    ("item_iron_pickaxe", (16, 16)),
+    ("item_golden_pickaxe", (16, 16)),
+    ("item_netherite_pickaxe", (16, 16)),
 ]
 
 
@@ -933,6 +943,12 @@ _JAR_HUD_SPRITES = {
     "item_emerald": "item/emerald.png",
     "item_netherite_scrap": "item/netherite_scrap.png",
     "item_cobblestone": "block/cobblestone.png",
+    # Pickaxe tiers (issue #81)
+    "item_wooden_pickaxe": "item/wooden_pickaxe.png",
+    "item_stone_pickaxe": "item/stone_pickaxe.png",
+    "item_iron_pickaxe": "item/iron_pickaxe.png",
+    "item_golden_pickaxe": "item/golden_pickaxe.png",
+    "item_netherite_pickaxe": "item/netherite_pickaxe.png",
 }
 
 

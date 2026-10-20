@@ -20,6 +20,11 @@ using ::mc::hud::kUV_HOTBAR;
 using ::mc::hud::kUV_HOTBAR_SELECTION;
 using ::mc::hud::kUV_ITEM_DIAMOND_SWORD;
 using ::mc::hud::kUV_ITEM_DIAMOND_PICKAXE;
+using ::mc::hud::kUV_ITEM_WOODEN_PICKAXE;
+using ::mc::hud::kUV_ITEM_STONE_PICKAXE;
+using ::mc::hud::kUV_ITEM_IRON_PICKAXE;
+using ::mc::hud::kUV_ITEM_GOLDEN_PICKAXE;
+using ::mc::hud::kUV_ITEM_NETHERITE_PICKAXE;
 using ::mc::hud::kUV_ITEM_DIRT;
 using ::mc::hud::kUV_ITEM_STONE;
 using ::mc::hud::kUV_ITEM_TNT;
@@ -132,11 +137,11 @@ inline const mc::hud::HudUV* uvForItem(mc::ItemId item) {
         case ItemId::Emerald: return &mc::hud::kUV_ITEM_EMERALD;
         case ItemId::NetheriteScrap: return &mc::hud::kUV_ITEM_NETHERITE_SCRAP;
         case ItemId::BlockCobblestone: return &mc::hud::kUV_ITEM_COBBLESTONE;
-        case ItemId::WoodenPickaxe: return &mc::hud::kUV_ITEM_DIAMOND_PICKAXE; // no separate icon yet
-        case ItemId::StonePickaxe: return &mc::hud::kUV_ITEM_DIAMOND_PICKAXE;
-        case ItemId::IronPickaxe: return &mc::hud::kUV_ITEM_DIAMOND_PICKAXE;
-        case ItemId::GoldenPickaxe: return &mc::hud::kUV_ITEM_DIAMOND_PICKAXE;
-        case ItemId::NetheritePickaxe: return &mc::hud::kUV_ITEM_DIAMOND_PICKAXE;
+        case ItemId::WoodenPickaxe: return &mc::hud::kUV_ITEM_WOODEN_PICKAXE;
+        case ItemId::StonePickaxe: return &mc::hud::kUV_ITEM_STONE_PICKAXE;
+        case ItemId::IronPickaxe: return &mc::hud::kUV_ITEM_IRON_PICKAXE;
+        case ItemId::GoldenPickaxe: return &mc::hud::kUV_ITEM_GOLDEN_PICKAXE;
+        case ItemId::NetheritePickaxe: return &mc::hud::kUV_ITEM_NETHERITE_PICKAXE;
         default: return nullptr;
     }
 }

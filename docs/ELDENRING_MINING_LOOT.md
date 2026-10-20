@@ -26,7 +26,9 @@ PR：https://github.com/icebear0828/mc-core/pull/115
 2. 视线俯仰角 `>= 60°`（`GroundMiningController::kMinPitchDeg`），即视线落在脚下附近。
 3. 主手为空，或手持任意镐（木/石/铁/金/钻石/下界合金）。
 4. 准星命中宿主静态地形，而不是我们放置的方块。命中放置方块时仍走原来的渐进破坏逻辑。
-5. 松开左键、抬头、切换工具或切换区域会立即清空裂纹进度；保底/连击计数保留。
+5. 松开左键、抬头、切换工具、切换区域或**玩家开始移动**会立即清空裂纹进度；保底/连击计数保留。
+   移动判定读 `PhysicsModule+0x120` 的线速度（HANDOFF §7 的 A 级事实），速度模长超过 0.5 m/s 即视为移动；
+   用速度而不是位置差，避免浮动原点重定位（Havok 空间按 8 m 跳变）被误判成移动。
 
 手持剑、弓、盾、食物等非镐物品时，低头长按不会触发地面采掘，仍走宿主原生攻击/交互。
 
@@ -115,11 +117,11 @@ loot_zone=0       # 0..5，默认 0（草地）
 ```bash
 cmake --build build_pure_mc --config Release -j 8
 ./build_pure_mc/bin/Release/mc_tests.exe --gtest_brief=1
-# [==========] 1149 tests from 159 test suites ran.
-# [  PASSED  ] 1149 tests.
+# [==========] 1152 tests from 159 test suites ran.
+# [  PASSED  ] 1152 tests.
 
 uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py -q
-# 6 passed
+# 8 passed
 ```
 
 覆盖点：
@@ -129,9 +131,11 @@ uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py 
 - 空手/石镐的门槛与降级行为
 - 保底计数、连击触发、地表清零
 - 俯仰角 60° 边界、非镐物品不触发
+- 移动立即打断、移动时无法开始、打断不清空保底/连击
 - 裂纹阶段推进、松键/抬头/换工具重置
 - 创造模式瞬时破坏
 - 11 个新图集格子的尺寸与 UV
+- 5 个镐图集格子的注册、尺寸与 UV，以及手持模型样式
 
 **未做**：没有部署 DLL，也没有在游戏里实机验收。用户睡觉前只要求推 PR 和更新文档；部署/实机验证留给下一次会话。
 
@@ -140,16 +144,20 @@ uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py 
 1. **区域自动识别**：目前靠 `loot_zone` 手动选。下一步需要逆向艾尔登法环的区域/地图 ID，或用地形材质 + 向上射线判断地表/地下，再细分火山/结晶/深根。
 2. **地面裂纹与碎屑粒子**：当前只有摆臂、打击音和拾取音；`destroy_stage_0..9` 仍只贴在放置方块上。issue #81 要求的地面裂纹网格、石/土/木/金属碎屑粒子尚未接。
 3. **`random.pop` 音效**：提取音效列表里没有这个事件，拾取暂时用 `entity.experience_orb.pickup`。要完全还原可把 `random.pop` 加进 `tools/extract_mc_sounds.py` 的 `EVENTS` 后重新提取。
-4. **镐的图标**：木/石/铁/金/下界合金镐暂时都复用钻石镐图标；需要补 5 个图集格子。
+4. ~~**镐的图标**~~（**已完成**）：木/石/铁/金/下界合金镐各自有 16×16 图集格子（`item_*_pickaxe`），
+   来源是 client.jar 的 `item/*_pickaxe.png`；ER/Sekiro 的 `uvForItem` 与手持模型样式（`Handheld`、平面精灵）
+   都已接。占位图集里是彩色圆点，实机部署前仍需从 jar 重新提取完整图集。
 5. **合并行拆分**：沙、深板岩、安山岩、花岗岩、黑曜石等常用方块还没拆成独立条目；圆石也还不能右键放置。
-6. **移动打断**：issue 要求"玩家移动立即中断"，当前只在松键/抬头/换工具/换区域时中断；移动打断需要读玩家速度或位移，并处理游戏的浮动原点重定位。
+6. ~~**移动打断**~~（**已完成，待实机验收**）：读 `PhysicsModule+0x120` 线速度，模长 > 0.5 m/s 立即清空裂纹；
+   用速度而不是位置差，浮动原点重定位不会误触发。核心测试见 `tests/test_ground_mining.cpp` 的三个移动用例。
+   实机验收时确认：站立长按不被打断、WASD 移动立即掉裂纹、被打退/下滑同样打断。
 7. **实机验收**：按 issue #81 的验收标准，需要在草地与矿洞各跑一次长按采掘，检查日志、裂纹、背包与退出码。
 
 ## 10. 关键代码入口
 
 - 掉落表数据：`include/mc/loot_table.hpp` → `kDefaultLootTable`
 - 掷骰：`mc::LootTable::rollBase` / `mc::LootTable::roll`
-- 采掘状态机：`mc::GroundMiningController::update`
+- 采掘状态机：`mc::GroundMiningController::update`（`moving` 入参 = 移动打断）
 - 适配层：`adapters/eldenring/src/loader.cpp` → `FindBlockTarget`、`StepMining`、`AimPitchDeg`
 - 配置解析：`mc_er_steve.txt` 的 `ground_mining` / `loot_zone`
 - 图集：`tools/extract_mc_assets.py` → `HUD_SPRITES` / `_JAR_HUD_SPRITES` / `_JAR_BLOCK_ITEMS`
