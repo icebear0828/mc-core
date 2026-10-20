@@ -30,6 +30,14 @@ public:
         if (block_id == BlockId::Tnt) {
             return 0.05f; // Extremely fast / near-instant break
         }
+        if (block_id == BlockId::Wood) {
+            return held_tool == ItemId::None ? 3.0f : 1.5f; // no axes in the mod: any tool speeds it up
+        }
+        if (block_id == BlockId::Obsidian) {
+            if (held_tool == ItemId::DiamondPickaxe) return 9.4f;
+            if (held_tool == ItemId::NetheritePickaxe) return 8.35f;
+            return 30.0f; // cannot be harvested without diamond/netherite
+        }
         if (block_id == BlockId::Stone || block_id == BlockId::Cobblestone) {
             switch (toolTier(held_tool)) {
                 case ToolTier::Wood: return 1.15f;
@@ -54,8 +62,11 @@ public:
         if (block_id == BlockId::Stone || block_id == BlockId::Cobblestone) {
             return isPickaxe(held_tool);
         }
-        if (block_id == BlockId::Dirt || block_id == BlockId::Tnt) {
+        if (block_id == BlockId::Dirt || block_id == BlockId::Tnt || block_id == BlockId::Wood) {
             return true;
+        }
+        if (block_id == BlockId::Obsidian) {
+            return held_tool == ItemId::DiamondPickaxe || held_tool == ItemId::NetheritePickaxe;
         }
         return false;
     }
@@ -69,6 +80,9 @@ public:
             case BlockId::Cobblestone: return isPickaxe(held_tool) ? ItemId::BlockCobblestone : ItemId::None;
             case BlockId::Dirt: return ItemId::BlockDirt;
             case BlockId::Tnt: return ItemId::BlockTnt;
+            case BlockId::Wood: return ItemId::BlockWood;
+            case BlockId::Obsidian:
+                return (held_tool == ItemId::DiamondPickaxe || held_tool == ItemId::NetheritePickaxe) ? ItemId::BlockObsidian : ItemId::None;
             default: return ItemId::None;
         }
     }

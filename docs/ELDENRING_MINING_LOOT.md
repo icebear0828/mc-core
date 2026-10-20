@@ -39,14 +39,16 @@ PR：https://github.com/icebear0828/mc-core/pull/115
 | `Stone` | 任意镐（木/石/铁/金/钻石/下界合金） | `BlockCobblestone`（原版圆石） |
 | `Dirt` | 任意工具/空手 | `BlockDirt` |
 | `Tnt` | 任意工具/空手 | `BlockTnt` |
-| `Wood` / `Obsidian` | — | 还没有物品 ID，暂不掉落 |
+| `Wood` | 任意工具/空手 | `BlockWood` |
+| `Obsidian` | 钻石镐 / 下界合金镐 | `BlockObsidian`（其他工具/空手不掉落） |
 
-创造模式不掉落。石头破坏时间按镐等级：木 1.15s、石 0.6s、铁 0.4s、金 0.2s、钻石 0.3s、
-下界合金 0.25s、空手/非镐 7.5s。
+创造模式不掉落。石头/圆石破坏时间按镐等级：木 1.15s、石 0.6s、铁 0.4s、金 0.2s、钻石 0.3s、
+下界合金 0.25s、空手/非镐 7.5s；木头 3.0s 空手 / 1.5s 任意工具；黑曜石 9.4s 钻石镐 /
+8.35s 下界合金镐 / 30s 其他（且不掉落）。
 
-`BlockCobblestone` 现在是真正的方块（`BlockId::Cobblestone`）：有 `block_cobblestone` 面贴图，
-物品图标走 3D 方块渲染（和泥土/石头/TNT 一致，不再是扁平的预渲染图），右键可以放置；
-放置后的圆石用任意镐采集仍掉圆石。
+`BlockCobblestone`、`BlockWood`、`BlockObsidian` 现在都是真正的方块：有各自的面贴图，
+物品图标走 3D 方块渲染（和泥土/石头/TNT 一致），右键可以放置；放置后的方块用对应工具采集
+仍掉自身。
 
 手持剑、弓、盾、食物等非镐物品时，低头长按不会触发地面采掘，仍走宿主原生攻击/交互。
 
@@ -153,8 +155,8 @@ ZONEPROBE: block=0x3C2A2400 area=60 gx=42 gz=36 lod=0 pos=(...) n=(...) shape=0x
 ```bash
 cmake --build build_pure_mc --config Release -j 8
 ./build_pure_mc/bin/Release/mc_tests.exe --gtest_brief=1
-# [==========] 1169 tests from 160 test suites ran.
-# [  PASSED  ] 1169 tests.
+# [==========] 1171 tests from 160 test suites ran.
+# [  PASSED  ] 1171 tests.
 
 uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py -q
 # 8 passed
@@ -200,8 +202,8 @@ uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py 
 4. ~~**镐的图标**~~（**已完成**）：木/石/铁/金/下界合金镐各自有 16×16 图集格子（`item_*_pickaxe`），
    来源是 client.jar 的 `item/*_pickaxe.png`；ER/Sekiro 的 `uvForItem` 与手持模型样式（`Handheld`、平面精灵）
    都已接。占位图集里是彩色圆点，实机部署前仍需从 jar 重新提取完整图集。
-5. **合并行拆分**：沙、深板岩、安山岩、花岗岩、黑曜石等常用方块还没拆成独立条目；
-   圆石已经补成真正的方块（`BlockId::Cobblestone`，可放置、3D 图标、掉圆石）。
+5. **合并行拆分**：沙、深板岩、安山岩、花岗岩等常用方块还没拆成独立条目；
+   圆石/木头/黑曜石已经补成真正的方块（可放置、3D 图标、掉自身）。
 6. ~~**移动打断**~~（**已完成，待实机验收**）：读 `PhysicsModule+0x120` 线速度，模长 > 0.5 m/s 立即清空裂纹；
    用速度而不是位置差，浮动原点重定位不会误触发。核心测试见 `tests/test_ground_mining.cpp` 的三个移动用例。
    实机验收时确认：站立长按不被打断、WASD 移动立即掉裂纹、被打退/下滑同样打断。

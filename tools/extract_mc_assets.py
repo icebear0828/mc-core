@@ -373,6 +373,9 @@ _PLACEHOLDER_ITEM_COLORS = {
     "item_iron_pickaxe": (210, 210, 215), "item_golden_pickaxe": (250, 210, 60),
     "item_netherite_pickaxe": (80, 70, 75),
     "block_cobblestone": (120, 120, 120),
+    "block_wood_top": (160, 120, 70), "block_wood_side": (120, 85, 45),
+    "block_obsidian": (35, 25, 50),
+    "item_wood": (140, 100, 50), "item_obsidian": (45, 35, 65),
 }
 
 
@@ -873,6 +876,12 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("item_netherite_pickaxe", (16, 16)),
     # The cobblestone block's own face texture (the item icon is the 3D cube, like dirt/stone)
     ("block_cobblestone", (16, 16)),
+    # Wood (oak log) top/side and obsidian face textures
+    ("block_wood_top", (16, 16)),
+    ("block_wood_side", (16, 16)),
+    ("block_obsidian", (16, 16)),
+    ("item_wood", (16, 16)),
+    ("item_obsidian", (16, 16)),
 ]
 
 
@@ -953,6 +962,9 @@ _JAR_HUD_SPRITES = {
     "item_golden_pickaxe": "item/golden_pickaxe.png",
     "item_netherite_pickaxe": "item/netherite_pickaxe.png",
     "block_cobblestone": "block/cobblestone.png",
+    "block_wood_top": "block/oak_log_top.png",
+    "block_wood_side": "block/oak_log.png",
+    "block_obsidian": "block/obsidian.png",
 }
 
 
@@ -974,6 +986,8 @@ _JAR_BLOCK_ITEMS = {
     "item_stone": ("block/stone.png", "block/stone.png"),
     "item_tnt": ("block/tnt_top.png", "block/tnt_side.png"),
     "item_cobblestone": ("block/cobblestone.png", "block/cobblestone.png"),
+    "item_wood": ("block/oak_log_top.png", "block/oak_log.png"),
+    "item_obsidian": ("block/obsidian.png", "block/obsidian.png"),
 }
 _CUBE_SHADE = {"top": 1.0, "left": 0.78, "right": 0.6}
 

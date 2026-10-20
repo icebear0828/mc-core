@@ -297,6 +297,8 @@ HUD_KEYS = [
     "item_wooden_pickaxe", "item_stone_pickaxe", "item_iron_pickaxe", "item_golden_pickaxe",
     "item_netherite_pickaxe",
     "block_cobblestone",
+    "block_wood_top", "block_wood_side", "block_obsidian",
+    "item_wood", "item_obsidian",
 ]
 
 HUD_SIZES = {

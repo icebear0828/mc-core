@@ -128,7 +128,7 @@ TEST(InventoryLayout, CreativeModeHitTestExcludesArmorAndOffhand) {
 
 TEST(InventoryLayout, PaletteListsEveryItemOnce) {
     const auto& items = paletteItems();
-    EXPECT_EQ(items.size(), 25u); // 21 + 4 diamond armor items
+    EXPECT_EQ(items.size(), 27u); // 21 + 4 diamond armor items + wood/obsidian
     EXPECT_EQ(items.front(), ItemId::DiamondSword);
     for (size_t i = 0; i < items.size(); ++i) {
         EXPECT_NE(items[i], ItemId::None);

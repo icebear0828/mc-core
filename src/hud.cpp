@@ -125,6 +125,8 @@ const char* HudEngine::getItemDisplayName(ItemId item) {
         case ItemId::Emerald: return "Emerald";
         case ItemId::NetheriteScrap: return "Netherite Scrap";
         case ItemId::BlockCobblestone: return "Cobblestone";
+        case ItemId::BlockWood: return "Wood";
+        case ItemId::BlockObsidian: return "Obsidian";
         case ItemId::WoodenPickaxe: return "Wooden Pickaxe";
         case ItemId::StonePickaxe: return "Stone Pickaxe";
         case ItemId::IronPickaxe: return "Iron Pickaxe";

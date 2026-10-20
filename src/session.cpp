@@ -34,6 +34,9 @@ BlockId blockForItem(ItemId item) {
         case ItemId::BlockDirt: return BlockId::Dirt;
         case ItemId::BlockStone: return BlockId::Stone;
         case ItemId::BlockTnt: return BlockId::Tnt;
+        case ItemId::BlockCobblestone: return BlockId::Cobblestone;
+        case ItemId::BlockWood: return BlockId::Wood;
+        case ItemId::BlockObsidian: return BlockId::Obsidian;
         default: return BlockId::Air;
     }
 }

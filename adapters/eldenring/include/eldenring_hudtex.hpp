@@ -137,6 +137,8 @@ inline const mc::hud::HudUV* uvForItem(mc::ItemId item) {
         case ItemId::Emerald: return &mc::hud::kUV_ITEM_EMERALD;
         case ItemId::NetheriteScrap: return &mc::hud::kUV_ITEM_NETHERITE_SCRAP;
         case ItemId::BlockCobblestone: return &mc::hud::kUV_ITEM_COBBLESTONE;
+        case ItemId::BlockWood: return &mc::hud::kUV_ITEM_WOOD;
+        case ItemId::BlockObsidian: return &mc::hud::kUV_ITEM_OBSIDIAN;
         case ItemId::WoodenPickaxe: return &mc::hud::kUV_ITEM_WOODEN_PICKAXE;
         case ItemId::StonePickaxe: return &mc::hud::kUV_ITEM_STONE_PICKAXE;
         case ItemId::IronPickaxe: return &mc::hud::kUV_ITEM_IRON_PICKAXE;

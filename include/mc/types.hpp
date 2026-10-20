@@ -113,7 +113,9 @@ enum class ItemId : uint16_t {
     StonePickaxe,
     IronPickaxe,
     GoldenPickaxe,
-    NetheritePickaxe
+    NetheritePickaxe,
+    BlockWood,
+    BlockObsidian
 };
 
 inline constexpr bool isSpawnEgg(ItemId item) noexcept {
