@@ -112,7 +112,7 @@ loot_zone=0       # 0..5 手动指定；-1 = 自动（玩家 block id + 地面�
 | 5 | 深根/永恒之城 | `LootZone::Deeproot` |
 | -1 | 自动 | 读 `PlayerIns+0x6D0` 的 block id 与射线命中的材质 |
 
-自动模式的默认规则：`area 60 -> Grassland`、`area 61 -> Cave`、其他 area -> `StoneSurface`；材质规则优先于 area 规则，未知材质回退到 area。`zone_mat_*`/`zone_area_*` 就是给实机探针拿到材质 id 后调参用的。
+自动模式的默认规则：先查 `include/mc/er_region_table.hpp` 的 **map tile 表**（由 Smithbox 的 ER map ID 列表生成，463 个 `m<area>_<gx>_<gz>_<lod>` 块），再查 area 表（`area 60 -> Grassland`、`area 61 -> Cave`、其他 -> `StoneSurface`），最后回退；材质规则优先于两者。`zone_mat_*`/`zone_area_*` 就是给实机探针拿到材质 id 后调参用的。
 
 在游戏目录放一个空的 `mc_er_zoneprobe.txt` 会打开逐条材质日志（只读，限频 200 ms）：
 
@@ -129,8 +129,8 @@ ZONEPROBE: block=0x3C2A2400 area=60 gx=42 gz=36 lod=0 pos=(...) n=(...) shape=0x
 ```bash
 cmake --build build_pure_mc --config Release -j 8
 ./build_pure_mc/bin/Release/mc_tests.exe --gtest_brief=1
-# [==========] 1157 tests from 160 test suites ran.
-# [  PASSED  ] 1157 tests.
+# [==========] 1159 tests from 160 test suites ran.
+# [  PASSED  ] 1159 tests.
 
 uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py -q
 # 8 passed
@@ -148,7 +148,8 @@ uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py 
 - 创造模式瞬时破坏
 - 11 个新图集格子的尺寸与 UV
 - 5 个镐图集格子的注册、尺寸与 UV，以及手持模型样式
-- block id 解码（area/gx/gz/lod）、材质规则优先于 area 规则、未知输入回退
+- block id 解码（area/gx/gz/lod）、材质规则优先于 tile/area 规则、未知输入回退
+- ER map tile 表的已知块：Limgrave、Volcano Manor、Sellia Crystal Tunnel、Deeproot、Stormveil、Catacombs
 
 **未做**：没有部署 DLL，也没有在游戏里实机验收；`ZONEPROBE:` 还没有真实游戏数据。部署/实机验证留给下一次会话。
 
@@ -176,7 +177,7 @@ uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py 
 - 掉落表数据：`include/mc/loot_table.hpp` → `kDefaultLootTable`
 - 掷骰：`mc::LootTable::rollBase` / `mc::LootTable::roll`
 - 采掘状态机：`mc::GroundMiningController::update`（`moving` 入参 = 移动打断）
-- 区域自动识别：`include/mc/zone_detector.hpp` → `decodeBlockId` / `classifyZone`；适配层 `PlayerBlockId`、`SetupZoneProbe`、`HitCollectorDetour`
+- 区域自动识别：`include/mc/zone_detector.hpp` → `decodeBlockId` / `classifyZone`；`include/mc/er_region_table.hpp`（map tile 表，生成器 `tools/reverse/gen_er_region_table.py`）；适配层 `PlayerBlockId`、`SetupZoneProbe`、`HitCollectorDetour`
 - 适配层：`adapters/eldenring/src/loader.cpp` → `FindBlockTarget`、`StepMining`、`AimPitchDeg`
 - 配置解析：`mc_er_steve.txt` 的 `ground_mining` / `loot_zone` / `zone_mat_*` / `zone_area_*`
 - 探针签名：`adapters/eldenring/include/eldenring_sigscan.hpp` → `kRaycastHitCollector` / `kHavokMaterialLookup`

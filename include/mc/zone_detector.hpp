@@ -41,17 +41,28 @@ struct ZoneRule {
 
 struct ZoneRules {
     std::span<const ZoneRule> material_rules{}; // checked first
-    std::span<const ZoneRule> area_rules{};     // then the block's area
+    std::span<const ZoneRule> region_rules{};   // then the raw block id (map tile)
+    std::span<const ZoneRule> area_rules{};     // then the block's area byte
     LootZone fallback{LootZone::Grassland};
 };
 
-// A material rule wins over an area rule: a stone floor in Limgrave should roll the stone table.
-// Unknown or invalid input falls back to `fallback`.
+// A material rule wins over the map tile, and the tile wins over the area byte: a stone floor in
+// Limgrave should roll the stone table. Unknown or invalid input falls back to `fallback`.
 [[nodiscard]] constexpr LootZone classifyZone(const WorldBlockId& block, uint32_t material_id, const ZoneRules& rules) noexcept {
     for (const ZoneRule& r : rules.material_rules) {
         if (r.key == material_id) return r.zone;
     }
     if (block.valid) {
+        for (const ZoneRule& r : rules.region_rules) {
+            if (r.key == block.raw) return r.zone;
+        }
+        // The player's block may be a LOD 1/2 variant; fall back to the LOD 0 tile of the same block.
+        const uint32_t lod0 = block.raw & 0xFFFFFF00u;
+        if (lod0 != block.raw) {
+            for (const ZoneRule& r : rules.region_rules) {
+                if (r.key == lod0) return r.zone;
+            }
+        }
         for (const ZoneRule& r : rules.area_rules) {
             if (r.key == block.area) return r.zone;
         }

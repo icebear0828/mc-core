@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "mc/contracts/combat_adapter.hpp"
+#include "mc/er_region_table.hpp"
 #include "mc/zone_detector.hpp"
 
 #include <MinHook.h>
@@ -654,7 +655,7 @@ static constexpr mc::ZoneRule kDefaultZoneAreaRules[] = {
 };
 static std::vector<mc::ZoneRule> g_zone_material_rules;
 static std::vector<mc::ZoneRule> g_zone_area_rules;
-static mc::ZoneRules g_zone_rules{{}, kDefaultZoneAreaRules, mc::LootZone::StoneSurface};
+static mc::ZoneRules g_zone_rules{{}, mc::er_region::kTable, kDefaultZoneAreaRules, mc::LootZone::StoneSurface};
 
 // PlayerIns+0x6D0 is the current world block id. Verified in 2.7.1.0: the PlayerIns constructor
 // (0x650C90) writes the PlayerIns vtable 0x2A7FBB0 and initialises +0x6D0 to -1; the world-block

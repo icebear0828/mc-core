@@ -1406,6 +1406,7 @@ Table 1                     Table 2
 - 世界块更新 `0x65AD00`：先 `call 0x1403EEBF0`，再 `0x140661C10`，最后 `0x65ADAC mov [rbx+0x6D0], ecx`（`ecx = [rax]`）。同族字段 `+0x6C0/+0x6C8/+0x6CC` 也在同一段更新。
 - 格式与社区实现一致（`siddoff/Minecraft-Ring` 等 4 个仓库的 `kPlayerBlockId = 0x6D0`）：`area = raw >> 24`、`grid_x = (raw >> 16) & 0xFF`、`grid_z = (raw >> 8) & 0xFF`、`lod = raw & 0xFF`；`area 60/61` 是开放世界（社区注释：`(blk >> 24) == 60 || 61`）。`0` 和 `-1` 表示尚未进入世界块。
 - 未实机验证：2.7.1.0 上 `+0x6D0` 的实际值、`area` 与地图区域（Limgrave/Liurnia/…）的对应表。探针日志会给出 raw 值与坐标。
+- **map tile 表（B，社区数据）**：Smithbox 的 `Documentation/Game Information/ER/Map/Info - Map IDs.txt` 列出 479 个 `m<area>_<gx>_<gz>_<lod>` 与地名，编码与 `+0x6D0` 完全一致。`tools/reverse/gen_er_region_table.py` 把它转成 `include/mc/er_region_table.hpp`（463 条去重后的 `{raw, LootZone}`）；zone 是按地名关键词做的启发式（Volcano/Crystal/Deeproot/Cave/StoneSurface/Grassland），**不是游戏数据**，需要实机校正。`m60_42_36_00`（Limgrave - Church of Elleh）已作为单测样本。
 
 **静态几何射线命中的材质：`CSClosestHitCollectorForRaycast`（B+，静态）**
 - 射线核心 `0xC71AA0` 在栈上构造收集器；RTTI 确认最终 vtable `0x2B945C8` = `.?AVCSClosestHitCollectorForRaycast@CS@@`（基类 `hknpClosestHitCollector`）。
