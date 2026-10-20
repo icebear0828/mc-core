@@ -190,15 +190,15 @@ uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py 
    日志。剩下的是实机采集六个区域的 material id，再用 `zone_mat_<id>=<zone>` 固化；area 与地图
    区域名（Limgrave/Liurnia/…）的对应表也还没做。证据见 `ELDENRING_REVERSE.md` §45。
 2. ~~**地面裂纹与碎屑粒子**~~（**已完成，待实机验收**）：复用方块挖掘的 `destroy_stage_0..9`
-   贴图，在**视觉地面**上按法线贴一个 0.9 m 的裂纹四边形（`TerrainMiningOverlay`，抬高量可配）；
-   每 0.25 s 打击和破坏时调用现有 `FxKind::Dust` 粒子（破坏时 3 连发）。裂纹/Dust 锚定在
-   **玩家脚下的向下碰撞射线**命中点（准星射线只用于掉落/材质）：第三人称下准星落在 Steve 身体上，
-   用准星命中点会把裂纹放到身体后面的地面、被身体挡住。`ground_crack_lift=-0.14` 补偿实测的
-   碰撞面/视觉地面高度差（日志里 `aim y=5.95` vs 视觉地板 `5.81`）。裂纹是**独立网格**，用
-   `rel_bias=0`、`abs_bias=0.001` 绘制：方块用的遮挡偏置（8% + 5 cm）会逼着贴地裂纹往前浮才不被
-   场景深度丢弃，这正是「要么太高、要么往下就消失」的根因。**不要**在 overlay 里读游戏场景深度/
-   给深度纹理加 barrier：那条路径在实机上崩溃过（`CRASH-VEH` 写坏指针），已删除。石/土/木/金属的
-   **不同颜色**碎屑还没分，目前统一是灰色 Dust。
+   贴图，在**玩家脚下的向下碰撞射线**命中点按法线贴一个 0.9 m 的裂纹四边形
+   （`TerrainMiningOverlay`，抬高量可配）。地面采掘**只显示裂纹，不生成额外粒子**：之前加的灰色
+   `FxKind::Dust` 不是原版，已移除；原版的方块纹理碎屑（小方块碎片）尚未实现，需要时再加
+   `Debris` 粒子并用方块面贴图。准星射线只用于掉落/材质；第三人称准星落在 Steve 身体上，用准星
+   命中点会把裂纹放到身体后面的地面、被身体挡住。`ground_crack_lift=-0.14` 补偿实测的碰撞面/视觉
+   地面高度差。裂纹是**独立网格**，用 `rel_bias=0`、`abs_bias=0.001` 绘制：方块用的遮挡偏置
+   （8% + 5 cm）会逼着贴地裂纹往前浮才不被场景深度丢弃，这正是「要么太高、要么往下就消失」的根因。
+   **不要**在 overlay 里读游戏场景深度/给深度纹理加 barrier：那条路径在实机上崩溃过
+   （`CRASH-VEH` 写坏指针），已删除。
 3. **`random.pop` 音效**：提取音效列表里没有这个事件，拾取暂时用 `entity.experience_orb.pickup`。要完全还原可把 `random.pop` 加进 `tools/extract_mc_sounds.py` 的 `EVENTS` 后重新提取。
 4. ~~**镐的图标**~~（**已完成**）：木/石/铁/金/下界合金镐各自有 16×16 图集格子（`item_*_pickaxe`），
    来源是 client.jar 的 `item/*_pickaxe.png`；ER/Sekiro 的 `uvForItem` 与手持模型样式（`Handheld`、平面精灵）

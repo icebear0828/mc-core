@@ -1404,7 +1404,6 @@ bool StepMining(float dt, bool left_held) {
                     g_melee.startSwing();
                     eraudio::Play(GroundHitSound(zone), 0.6f);
                 }
-                erov::SpawnFx(erov::FxKind::Dust, fx_pos, 0);
                 static uint64_t last_anchor_log_ms = 0;
                 const uint64_t now = GetTickCount64();
                 if (g_zone_probe_log.load(std::memory_order_relaxed) && now - last_anchor_log_ms > 1000) {
@@ -1429,7 +1428,6 @@ bool StepMining(float dt, bool left_held) {
                 g_melee.startSwing();
             }
             eraudio::Play("entity.experience_orb.pickup", 0.9f);
-            for (int i = 0; i < 3; ++i) erov::SpawnFx(erov::FxKind::Dust, fx_pos, 0);
             SendBlockMesh(std::nullopt, std::nullopt);
             Log("ground: broke terrain at (%.2f %.2f %.2f) anchor=aim zone=%d item=%d blocked=%d pity=%d combo=%d bonus=%d block=0x%08X mat=%u auto=%d",
                 fx_pos[0], fx_pos[1], fx_pos[2], static_cast<int>(zone),
