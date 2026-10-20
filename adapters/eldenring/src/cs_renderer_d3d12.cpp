@@ -464,13 +464,12 @@ bool CsRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     pd.SampleMask = UINT_MAX;
     pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    // The weapon meshes and the VRF-exported agent glove/sleeve meshes use
-    // opposite winding conventions. Back-face culling therefore drops the near
-    // glove/sleeve surface and leaves the far (inner) surface visible, which is
-    // exactly the "arm shows through the sleeve / knife handle shows through
-    // the glove" symptom. Draw both faces and let the depth test pick the
-    // nearest one; the viewmodel is small enough that the extra fill is cheap.
-    pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    // csgo_character.slang renders the first-person arms/sleeves single-sided:
+    // F_RENDER_BACKFACES is off for bare_arm_113 and sleeve_fbi, and the
+    // shader uses CullMode Back. The CSVM pose goes through fp::toHost(),
+    // whose Z mirror reverses the GLTF winding, so D3D12's default clockwise
+    // front face draws the same inner surfaces CS2 draws.
+    pd.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
     pd.RasterizerState.DepthClipEnable = TRUE;
     pd.DepthStencilState.DepthEnable = TRUE;
     pd.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
