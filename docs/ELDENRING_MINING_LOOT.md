@@ -94,7 +94,10 @@ issue #81 的火山列相加是 **80.5**，不是 100（缺 19.5 个百分点）
 ```ini
 blocks=1          # 必须；地面采掘复用方块系统开关
 ground_mining=1   # 默认 1，设为 0 关闭地面采掘
-loot_zone=0       # 0..5，默认 0（草地）
+loot_zone=0       # 0..5 手动指定；-1 = 自动（玩家 block id + 地面材质）
+# 自动模式下的可选覆盖（0..5 同下表）：
+# zone_mat_<material_id>=<zone>   # 材质优先，例如 zone_mat_1234=4
+# zone_area_<area_id>=<zone>      # 材质没有规则时按 block id 的 area，例如 zone_area_60=0
 ```
 
 `loot_zone` 取值：
@@ -107,8 +110,17 @@ loot_zone=0       # 0..5，默认 0（草地）
 | 3 | 结晶坑道 | `LootZone::CrystalCave` |
 | 4 | 火山熔岩地底 | `LootZone::Volcano` |
 | 5 | 深根/永恒之城 | `LootZone::Deeproot` |
+| -1 | 自动 | 读 `PlayerIns+0x6D0` 的 block id 与射线命中的材质 |
 
-当前区域是**手动配置**，还没有按游戏地图/区域自动识别。
+自动模式的默认规则：`area 60 -> Grassland`、`area 61 -> Cave`、其他 area -> `StoneSurface`；材质规则优先于 area 规则，未知材质回退到 area。`zone_mat_*`/`zone_area_*` 就是给实机探针拿到材质 id 后调参用的。
+
+在游戏目录放一个空的 `mc_er_zoneprobe.txt` 会打开逐条材质日志（只读，限频 200 ms）：
+
+```text
+ZONEPROBE: block=0x3C2A2400 area=60 gx=42 gz=36 lod=0 pos=(...) n=(...) shape=0x... matidx=... material=...
+```
+
+材质路径与 block id 的字节依据见 `ELDENRING_REVERSE.md` §45。自动区域目前是**静态路径已确认、实机材质 id 未采集**的状态：先用探针跑草地/石地/矿洞/结晶/火山/深根，再把 `zone_mat_*` 固化。
 
 ## 8. 测试与验证
 
@@ -117,8 +129,8 @@ loot_zone=0       # 0..5，默认 0（草地）
 ```bash
 cmake --build build_pure_mc --config Release -j 8
 ./build_pure_mc/bin/Release/mc_tests.exe --gtest_brief=1
-# [==========] 1152 tests from 159 test suites ran.
-# [  PASSED  ] 1152 tests.
+# [==========] 1157 tests from 160 test suites ran.
+# [  PASSED  ] 1157 tests.
 
 uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py -q
 # 8 passed
@@ -136,12 +148,18 @@ uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py 
 - 创造模式瞬时破坏
 - 11 个新图集格子的尺寸与 UV
 - 5 个镐图集格子的注册、尺寸与 UV，以及手持模型样式
+- block id 解码（area/gx/gz/lod）、材质规则优先于 area 规则、未知输入回退
 
-**未做**：没有部署 DLL，也没有在游戏里实机验收。用户睡觉前只要求推 PR 和更新文档；部署/实机验证留给下一次会话。
+**未做**：没有部署 DLL，也没有在游戏里实机验收；`ZONEPROBE:` 还没有真实游戏数据。部署/实机验证留给下一次会话。
 
 ## 9. 已知限制与下一步
 
-1. **区域自动识别**：目前靠 `loot_zone` 手动选。下一步需要逆向艾尔登法环的区域/地图 ID，或用地形材质 + 向上射线判断地表/地下，再细分火山/结晶/深根。
+1. **区域自动识别**（**静态路径已完成，待实机材质 id**）：玩家 block id 走 `PlayerIns+0x6D0`
+   （`PlayerIns` vtable `0x2A7FBB0`，构造函数 `0x650C90` 初始化，更新 `0x65AD00` 写入），格式
+   `area<<24 | gx<<16 | gz<<8 | lod`；地面材质由射线命中回调 `0xC5A8E0` 的 `hit+0x48/+0x50`
+   经 `0xC75570` 解析。`loot_zone=-1` 已接自动分类，`mc_er_zoneprobe.txt` 输出 `ZONEPROBE:`
+   日志。剩下的是实机采集六个区域的 material id，再用 `zone_mat_<id>=<zone>` 固化；area 与地图
+   区域名（Limgrave/Liurnia/…）的对应表也还没做。证据见 `ELDENRING_REVERSE.md` §45。
 2. **地面裂纹与碎屑粒子**：当前只有摆臂、打击音和拾取音；`destroy_stage_0..9` 仍只贴在放置方块上。issue #81 要求的地面裂纹网格、石/土/木/金属碎屑粒子尚未接。
 3. **`random.pop` 音效**：提取音效列表里没有这个事件，拾取暂时用 `entity.experience_orb.pickup`。要完全还原可把 `random.pop` 加进 `tools/extract_mc_sounds.py` 的 `EVENTS` 后重新提取。
 4. ~~**镐的图标**~~（**已完成**）：木/石/铁/金/下界合金镐各自有 16×16 图集格子（`item_*_pickaxe`），
@@ -158,6 +176,8 @@ uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py 
 - 掉落表数据：`include/mc/loot_table.hpp` → `kDefaultLootTable`
 - 掷骰：`mc::LootTable::rollBase` / `mc::LootTable::roll`
 - 采掘状态机：`mc::GroundMiningController::update`（`moving` 入参 = 移动打断）
+- 区域自动识别：`include/mc/zone_detector.hpp` → `decodeBlockId` / `classifyZone`；适配层 `PlayerBlockId`、`SetupZoneProbe`、`HitCollectorDetour`
 - 适配层：`adapters/eldenring/src/loader.cpp` → `FindBlockTarget`、`StepMining`、`AimPitchDeg`
-- 配置解析：`mc_er_steve.txt` 的 `ground_mining` / `loot_zone`
+- 配置解析：`mc_er_steve.txt` 的 `ground_mining` / `loot_zone` / `zone_mat_*` / `zone_area_*`
+- 探针签名：`adapters/eldenring/include/eldenring_sigscan.hpp` → `kRaycastHitCollector` / `kHavokMaterialLookup`
 - 图集：`tools/extract_mc_assets.py` → `HUD_SPRITES` / `_JAR_HUD_SPRITES` / `_JAR_BLOCK_ITEMS`

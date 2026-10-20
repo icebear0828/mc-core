@@ -1398,3 +1398,26 @@ Table 1                     Table 2
 - **未核**：深度纹理创建点（`0x0213073C` 等）、SSAO 线性深度图的生成函数（`0x00759C48`、`0x001A5B87`）、Pre-Z 不画生物的说法。
 
 **结论**：不照着回复的地址拦截。改用动态取证：`depth_probe_d3d12.hpp`（`mc_er_depthprobe.txt` 开关）在命令列表的 vtable 上钩 `OMSetRenderTargets`(46)、`DrawInstanced`(12)、`DrawIndexedInstanced`(13)、`ClearDepthStencilView`(47)、`ResourceBarrier`(26)、`CopyResource`(17)、`CopyTextureRegion`(16)，并在 `CreateDepthStencilView` 里记录**每一个**深度纹理（不限尺寸和格式），录三帧（启动后 20 秒，之后每隔 12 秒），日志 `DEPTHPROBE:` 给出：各深度纹理的尺寸/格式、命令列表的提交顺序、每个列表里"绑定哪张深度图、在其中做了多少次绘制、清除（标志/深度值/模板值）、拷贝、状态转换（before → after）"。
+
+## 45. 区域自动识别：玩家 block id 与射线命中材质（2026-10-20，我方静态核对 exe 2.7.1.0）
+
+**玩家当前 block id：`PlayerIns+0x6D0`（A-，静态 + 社区交叉验证，尚未实机读取）**
+- `0x650C90` 是 PlayerIns 构造函数：`0x650CE0 lea rax,[rip+...] -> 0x142A7FBB0; 0x650CE7 mov [rbx],rax`，而 `0x2A7FBB0` 正是 `kPlayerInsVtableRva`（A）。同一函数 `0x650E32` 写 `mov dword [rbx+0x6D0], -1`。
+- 世界块更新 `0x65AD00`：先 `call 0x1403EEBF0`，再 `0x140661C10`，最后 `0x65ADAC mov [rbx+0x6D0], ecx`（`ecx = [rax]`）。同族字段 `+0x6C0/+0x6C8/+0x6CC` 也在同一段更新。
+- 格式与社区实现一致（`siddoff/Minecraft-Ring` 等 4 个仓库的 `kPlayerBlockId = 0x6D0`）：`area = raw >> 24`、`grid_x = (raw >> 16) & 0xFF`、`grid_z = (raw >> 8) & 0xFF`、`lod = raw & 0xFF`；`area 60/61` 是开放世界（社区注释：`(blk >> 24) == 60 || 61`）。`0` 和 `-1` 表示尚未进入世界块。
+- 未实机验证：2.7.1.0 上 `+0x6D0` 的实际值、`area` 与地图区域（Limgrave/Liurnia/…）的对应表。探针日志会给出 raw 值与坐标。
+
+**静态几何射线命中的材质：`CSClosestHitCollectorForRaycast`（B+，静态）**
+- 射线核心 `0xC71AA0` 在栈上构造收集器；RTTI 确认最终 vtable `0x2B945C8` = `.?AVCSClosestHitCollectorForRaycast@CS@@`（基类 `hknpClosestHitCollector`）。
+- 收集器的命中回调 `0xC5A8E0`（`AddHit`，签名见 `sigs::kRaycastHitCollector`）接收 `hit` 指针：
+  - `+0x00` 命中位置（vec4）、`+0x10` 法线（vec4）、`+0x20` fraction（float）
+  - `+0x48` shape key（u32）、`+0x50` material index（u32）
+  - 回调调用 `0xC75570`（`sigs::kHavokMaterialLookup`）解析材质：`0xC75570` 读 `CSHavokManImp(0x3D7A0D0)+0x98 -> hknpWorld+0x28 + shapeKey*0xB0` 的 shape 表，把材质 id 写到输出；回调对 `material/100 == 2` 或 `5` 的命中直接丢弃（推测是水/岩浆，未证实）。
+- 收集器把命中复制到自己的 `+0x30/+0x40/+0x50`（位置/法线/fraction）和 `+0x78/+0x80`（shape key/material index），但游戏自己的射线包装 `0xC71D70` 只把位置/法线/fraction 回传给调用者，**材质 id 被丢掉**。所以探针改为钩命中回调，自己调用 `0xC75570`。
+- 未证实：`hit+0x48/+0x50` 的字段名、`0xC75570` 返回值的语义（材质 id 还是材质参数行 id）、`2/5` 分类的含义。探针日志的 `shape/matidx/material` 三列就是用来对齐这些的。
+
+**探针（只读）**
+- `mc_er_steve.txt`：`loot_zone=-1` 启用自动区域；`mc_er_zoneprobe.txt`（空文件）启用逐条日志。
+- 日志格式：`ZONEPROBE: block=0x%08X area=%u gx=%u gz=%u lod=%u pos=(...) n=(...) shape=0x%X matidx=%u material=%u`，限频 200 ms；只记录玩家周围 6 m 内、法线朝上的命中。
+- 自动区域默认表：`area 60 -> Grassland`、`area 61 -> Cave`、其他 area -> `StoneSurface`；材质规则先用 `zone_mat_<id>=<zone>`（0..5）配置，拿到探针数据后再固化。
+- 实机步骤：部署 `build_pure_mc` 的 `dinput8.dll`，在草地、石地/城堡、矿洞、结晶坑道、火山、深根各低头长按一次，读 `mc_er.log` 的 `ZONEPROBE:`/`ground: broke` 行，把 material 与区域对应起来。

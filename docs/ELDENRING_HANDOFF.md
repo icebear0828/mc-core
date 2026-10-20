@@ -23,12 +23,16 @@
   破坏后掉落自动进背包。`FindBlockTarget` 现在会带回地形命中点、法线、相机俯仰角。
 - `mc_er_steve.txt` 新增 `ground_mining=1`、`loot_zone=0..5`；`blocks=1` 仍是前提。
 - 新增 11 个物品 ID 与图集格子；木/石/铁/金/下界合金镐暂时复用钻石镐图标。
-- 测试：`build_pure_mc` Release **1152/1152**，Python **101 passed / 1 skipped**。
+- 测试：`build_pure_mc` Release **1157/1157**，Python **101 passed / 1 skipped**。
 - **移动打断已接**（2026-10-20）：`GroundMiningController::update` 新增 `moving` 入参；适配层读
   `PhysicsModule+0x120` 线速度，模长 > 0.5 m/s 立即清裂纹（用速度而非位置差，规避浮动原点重定位）。
 - **5 个镐图标已补**（2026-10-20）：`item_wooden/stone/iron/golden/netherite_pickaxe` 图集格子、client.jar
   映射、ER/Sekiro 的 `uvForItem` 与手持 `Handheld` 样式都已接；占位图集是彩点，部署前仍需从 jar 重提。
-- **未部署、未实机验收。** 下一步：区域自动识别（卡在 ER 区域/地图 ID 或地形材质逆向）、地面裂纹/碎屑粒子、实机 E2E。
+- **区域自动识别已接静态路径**（2026-10-20）：玩家 block id 在 `PlayerIns+0x6D0`（PlayerIns vtable
+  `0x2A7FBB0`，构造函数 `0x650C90`；格式 `area<<24|gx<<16|gz<<8|lod`）；地面材质由射线命中回调
+  `0xC5A8E0` 的 `hit+0x48/+0x50` 经 `0xC75570` 解析。`loot_zone=-1` 启用自动分类；空的
+  `mc_er_zoneprobe.txt` 打开 `ZONEPROBE:` 日志。证据见 `ELDENRING_REVERSE.md` §45。
+- **未部署、未实机验收。** 下一步：实机跑六个区域采集 material id 并固化 `zone_mat_*`、地面裂纹/碎屑粒子、实机 E2E。
 - 数据注意：issue #81 火山列合计 **80.5**，当前按列归一化；缺失的 19.5 需要确认归属。
 
 ---
@@ -293,7 +297,7 @@
 
 ### 5.1 开关文件（空文件即可，存在就启用）
 
-`mc_er_overlay.txt`（覆盖层）、`mc_er_damage.txt`（伤害功能）、`mc_er_input.txt`（输入拦截）、`mc_er_hit.bin`（**必须**，见 5.2）、`mc_er_steve.txt`（配置，见下）、`mc_er_physlog.txt`（物理向量日志）、`mc_er_hitlog.txt`（`HIT-IN` 受击日志）、`mc_er_hitvfx.txt`（装受击特效钩子）、`mc_er_buddylog.txt`（召唤管理器只读探针，**会占满一个 CPU 核**）、`mc_er_summon.txt`（让 F2 触发一次群狼召唤）、`mc_er_summonhide.txt`（隐藏召唤物原模型、画 MC 僵尸）、`mc_er_chrscan.txt`（F2 后扫描召唤物结构，只读）、`mc_er_creativelog.txt`（创造模式只读探针：事件分发器、击杀包装等）、`mc_er_bulletlog.txt` / `mc_er_bulletfire.txt` / `mc_er_arrowdmg.txt`（弩箭，见第 0 节）、`mc_er_nolos.txt`（**应急**：关闭墙体遮挡）、`mc_er_anyvictim.txt`（不等受害者被更新，有小概率与 worker 线程竞争）。 **本阶段新增**：`mc_er_noguardhook.txt`（关盾牌的 GuardCheck 与 `vfunc[7]` 钩子）、`mc_er_noknockdownfix.txt`（关去倒地钩子）、`mc_er_noflags.txt`（关体力/HUD/不死标志位的持有）、`mc_er_depthprobe.txt`（开深度探针）。
+`mc_er_overlay.txt`（覆盖层）、`mc_er_damage.txt`（伤害功能）、`mc_er_input.txt`（输入拦截）、`mc_er_hit.bin`（**必须**，见 5.2）、`mc_er_steve.txt`（配置，见下）、`mc_er_physlog.txt`（物理向量日志）、`mc_er_hitlog.txt`（`HIT-IN` 受击日志）、`mc_er_hitvfx.txt`（装受击特效钩子）、`mc_er_buddylog.txt`（召唤管理器只读探针，**会占满一个 CPU 核**）、`mc_er_summon.txt`（让 F2 触发一次群狼召唤）、`mc_er_summonhide.txt`（隐藏召唤物原模型、画 MC 僵尸）、`mc_er_chrscan.txt`（F2 后扫描召唤物结构，只读）、`mc_er_creativelog.txt`（创造模式只读探针：事件分发器、击杀包装等）、`mc_er_bulletlog.txt` / `mc_er_bulletfire.txt` / `mc_er_arrowdmg.txt`（弩箭，见第 0 节）、`mc_er_nolos.txt`（**应急**：关闭墙体遮挡）、`mc_er_anyvictim.txt`（不等受害者被更新，有小概率与 worker 线程竞争）。 **本阶段新增**：`mc_er_noguardhook.txt`（关盾牌的 GuardCheck 与 `vfunc[7]` 钩子）、`mc_er_noknockdownfix.txt`（关去倒地钩子）、`mc_er_noflags.txt`（关体力/HUD/不死标志位的持有）、`mc_er_depthprobe.txt`（开深度探针）、`mc_er_zoneprobe.txt`（开区域/材质探针，日志 `ZONEPROBE:`）。
 
 ### 5.2 `mc_er_hit.bin`（576 字节，必备）
 
@@ -301,7 +305,7 @@
 
 ### 5.3 `mc_er_steve.txt` 配置键（`key=value`，一行一个）
 
-`occlusion`（1=被场景遮挡）、`depth_const`（**0.00456**，深度×视距常数，实测）、`rel_bias`、`abs_bias`、`debug`/`depthview_gain`/`scene_height`（标定用，保持默认）、`yaw_offset_deg`（**180**，玩家物理四元数朝向与模型相反）、`hide_native`（1=隐藏原模型）、`hide_mask1`（`0x100A1`）、`hide_mask2`（`1`）、`hide_slots`（部件槽位掩码，默认全部）、`sound_volume`（0.8）、`first_person`（1=启动即第一人称）、`eye_height`（1.65）、`fp_persist`（1，持久眼睛相机）、`inv_key`（背包键的虚拟键码，默认 73=`I`）、`inv_sens`（背包指针灵敏度，默认 1）、`no_stagger`（0，实验，见钩子表）、`mc_jump`（0，起跳实验）、`mc_jump_key`（VK，默认空格 32）、`mc_jump_speed`（8.95 m/s）、`blocks`（1，放置/破坏）、`block_collision`（1，软碰撞）、`reach`（4.5 m）、`kb_force`（击退实验，**无效果，别用**）、`no_player_hit_vfx`（配合 `mc_er_hitvfx.txt`）。
+`occlusion`（1=被场景遮挡）、`depth_const`（**0.00456**，深度×视距常数，实测）、`rel_bias`、`abs_bias`、`debug`/`depthview_gain`/`scene_height`（标定用，保持默认）、`yaw_offset_deg`（**180**，玩家物理四元数朝向与模型相反）、`hide_native`（1=隐藏原模型）、`hide_mask1`（`0x100A1`）、`hide_mask2`（`1`）、`hide_slots`（部件槽位掩码，默认全部）、`sound_volume`（0.8）、`first_person`（1=启动即第一人称）、`eye_height`（1.65）、`fp_persist`（1，持久眼睛相机）、`inv_key`（背包键的虚拟键码，默认 73=`I`）、`inv_sens`（背包指针灵敏度，默认 1）、`no_stagger`（0，实验，见钩子表）、`mc_jump`（0，起跳实验）、`mc_jump_key`（VK，默认空格 32）、`mc_jump_speed`（8.95 m/s）、`blocks`（1，放置/破坏）、`block_collision`（1，软碰撞）、`reach`（4.5 m）、`kb_force`（击退实验，**无效果，别用**）、`no_player_hit_vfx`（配合 `mc_er_hitvfx.txt`）、`ground_mining`（1，地面采掘）、`loot_zone`（0..5 手动，**-1 = 自动**：玩家 block id + 地面材质）、`zone_mat_<id>` / `zone_area_<id>`（自动模式的材质/area 覆盖，值 0..5）。
 
 ### 5.4 热键（游戏窗口在前台时）
 
