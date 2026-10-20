@@ -1422,3 +1422,9 @@ Table 1                     Table 2
 - 日志格式：`ZONEPROBE: block=0x%08X area=%u gx=%u gz=%u lod=%u pos=(...) n=(...) shape=0x%X matidx=%u material=%u`，限频 200 ms；只记录玩家周围 6 m 内、法线朝上的命中。
 - 自动区域默认表：`area 60 -> Grassland`、`area 61 -> Cave`、其他 area -> `StoneSurface`；材质规则先用 `zone_mat_<id>=<zone>`（0..5）配置，拿到探针数据后再固化。
 - 实机步骤：部署 `build_pure_mc` 的 `dinput8.dll`，在草地、石地/城堡、矿洞、结晶坑道、火山、深根各低头长按一次，读 `mc_er.log` 的 `ZONEPROBE:`/`ground: broke` 行，把 material 与区域对应起来。
+
+**实机（2026-10-20，纯 MC 构建，Limgrave Church of Elleh）**
+- block ID 实机确认：`block=0x3C2A2400 area=60 gx=42 gz=36 lod=0`，对应 `m60_42_36_00`（Limgrave - Church of Elleh, Stranded Graveyard Exit）。
+- 材质解析不是恒为 1：同一地点不同地面给出不同值。已观察到 `material=1`（出生点石台，`shape=0x100010B`，掉圆石/煤炭/粗铁）、`material=2` 和 `material=5`（草地/泥土，`shape=0x1000A59` / `0x100243B`，掉泥土/圆石）。`matidx` 是打包值：高约 10 位是材质索引，低 22 位是 shape key（例如 `matidx=811597823` 的高位为 193、低位为 0x1A59FF）。
+- 失败与修正：最初把 `material=5` 当成石头，配置 `zone_mat_5=1` 后草地反而掉石头；实机确认 `material=5` 也是草地/泥土，改成 `zone_mat_5=0`。石头只保留 `material=1 -> StoneSurface`。`material` 值不是全局语义，必须在各区域分别采样。
+- 未确认：material 1/5 是否在所有地图都是石头、material 2 是否总是草地；需要更多区域的样本。

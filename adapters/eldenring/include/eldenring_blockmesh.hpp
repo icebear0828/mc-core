@@ -8,6 +8,7 @@ namespace eldenring::blocks {
 using mc::FaceCells;
 using mc::faceCellsFor;
 using mc::MiningOverlay;
+using mc::TerrainMiningOverlay;
 using mc::crackUVForStage;
 using mc::buildBlockMesh;
 using mc::buildCubeMesh;

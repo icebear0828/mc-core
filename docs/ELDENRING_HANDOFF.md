@@ -23,7 +23,7 @@
   破坏后掉落自动进背包。`FindBlockTarget` 现在会带回地形命中点、法线、相机俯仰角。
 - `mc_er_steve.txt` 新增 `ground_mining=1`、`loot_zone=0..5`；`blocks=1` 仍是前提。
 - 新增 11 个物品 ID 与图集格子；木/石/铁/金/下界合金镐暂时复用钻石镐图标。
-- 测试：`build_pure_mc` Release **1159/1159**，Python **101 passed / 1 skipped**。
+- 测试：`build_pure_mc` Release **1162/1162**，Python **101 passed / 1 skipped**。
 - **移动打断已接**（2026-10-20）：`GroundMiningController::update` 新增 `moving` 入参；适配层读
   `PhysicsModule+0x120` 线速度，模长 > 0.5 m/s 立即清裂纹（用速度而非位置差，规避浮动原点重定位）。
 - **5 个镐图标已补**（2026-10-20）：`item_wooden/stone/iron/golden/netherite_pickaxe` 图集格子、client.jar
@@ -33,6 +33,12 @@
   `0xC5A8E0` 的 `hit+0x48/+0x50` 经 `0xC75570` 解析。`loot_zone=-1` 启用自动分类；默认先查
   `include/mc/er_region_table.hpp`（Smithbox ER map ID 生成的 463 块 tile 表），再按 area 回退；空的
   `mc_er_zoneprobe.txt` 打开 `ZONEPROBE:` 日志。证据见 `ELDENRING_REVERSE.md` §45。
+- **实机材质样本（2026-10-20，Limgrave）**：`material=1` 石台（StoneSurface），`material=2/5` 草地/泥土
+  （Grassland）；配置里已加 `zone_mat_1=1`、`zone_mat_2=0`、`zone_mat_5=0`。材质值不是全局语义，其他区域
+  仍需采样。
+- **地面裂纹与粒子已接**（2026-10-20）：复用方块挖掘的 `destroy_stage_0..9`，在射线命中点按法线贴
+  0.9 m 裂纹四边形（`TerrainMiningOverlay`）；每 0.25 s 打击和破坏时调用 `FxKind::Dust`。待实机确认
+  可见性和裂纹朝向；石/土/木/金属的不同颜色碎屑还没分。
 - **未部署、未实机验收。** 下一步：实机跑六个区域采集 material id 并固化 `zone_mat_*`、地面裂纹/碎屑粒子、实机 E2E。
 - 数据注意：issue #81 火山列合计 **80.5**，当前按列归一化；缺失的 19.5 需要确认归属。
 

@@ -122,6 +122,8 @@ ZONEPROBE: block=0x3C2A2400 area=60 gx=42 gz=36 lod=0 pos=(...) n=(...) shape=0x
 
 材质路径与 block id 的字节依据见 `ELDENRING_REVERSE.md` §45。自动区域目前是**静态路径已确认、实机材质 id 未采集**的状态：先用探针跑草地/石地/矿洞/结晶/火山/深根，再把 `zone_mat_*` 固化。
 
+实机（2026-10-20，Limgrave Church of Elleh）已采集到：`material=1` 出生点石台（掉圆石/煤炭/粗铁），`material=2` 和 `material=5` 草地/泥土（掉泥土/圆石）。配置里是 `zone_mat_1=1`、`zone_mat_2=0`、`zone_mat_5=0`；material 值不是全局语义，其他区域仍需分别采样。
+
 ## 8. 测试与验证
 
 在 `feat/mining-loot-tables` 上：
@@ -129,8 +131,8 @@ ZONEPROBE: block=0x3C2A2400 area=60 gx=42 gz=36 lod=0 pos=(...) n=(...) shape=0x
 ```bash
 cmake --build build_pure_mc --config Release -j 8
 ./build_pure_mc/bin/Release/mc_tests.exe --gtest_brief=1
-# [==========] 1159 tests from 160 test suites ran.
-# [  PASSED  ] 1159 tests.
+# [==========] 1162 tests from 160 test suites ran.
+# [  PASSED  ] 1162 tests.
 
 uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py -q
 # 8 passed
@@ -150,6 +152,7 @@ uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py 
 - 5 个镐图集格子的注册、尺寸与 UV，以及手持模型样式
 - block id 解码（area/gx/gz/lod）、材质规则优先于 tile/area 规则、未知输入回退
 - ER map tile 表的已知块：Limgrave、Volcano Manor、Sellia Crystal Tunnel、Deeproot、Stormveil、Catacombs
+- 地面裂纹四边形：水平/垂直法线、抬高 1 cm、UV 落在对应 `destroy_stage_N`、无 stage 时不生成
 
 **未做**：没有部署 DLL，也没有在游戏里实机验收；`ZONEPROBE:` 还没有真实游戏数据。部署/实机验证留给下一次会话。
 
@@ -161,7 +164,10 @@ uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py 
    经 `0xC75570` 解析。`loot_zone=-1` 已接自动分类，`mc_er_zoneprobe.txt` 输出 `ZONEPROBE:`
    日志。剩下的是实机采集六个区域的 material id，再用 `zone_mat_<id>=<zone>` 固化；area 与地图
    区域名（Limgrave/Liurnia/…）的对应表也还没做。证据见 `ELDENRING_REVERSE.md` §45。
-2. **地面裂纹与碎屑粒子**：当前只有摆臂、打击音和拾取音；`destroy_stage_0..9` 仍只贴在放置方块上。issue #81 要求的地面裂纹网格、石/土/木/金属碎屑粒子尚未接。
+2. ~~**地面裂纹与碎屑粒子**~~（**已完成，待实机验收**）：复用方块挖掘的 `destroy_stage_0..9`
+   贴图，在射线命中点按法线贴一个 0.9 m 的裂纹四边形（`TerrainMiningOverlay`，抬高 1 cm 防
+   Z-fighting）；每 0.25 s 打击和破坏时调用现有 `FxKind::Dust` 粒子（破坏时 3 连发）。石/土/木/金属
+   的**不同颜色**碎屑还没分，目前统一是灰色 Dust；实机确认可见后再按材质染色。
 3. **`random.pop` 音效**：提取音效列表里没有这个事件，拾取暂时用 `entity.experience_orb.pickup`。要完全还原可把 `random.pop` 加进 `tools/extract_mc_sounds.py` 的 `EVENTS` 后重新提取。
 4. ~~**镐的图标**~~（**已完成**）：木/石/铁/金/下界合金镐各自有 16×16 图集格子（`item_*_pickaxe`），
    来源是 client.jar 的 `item/*_pickaxe.png`；ER/Sekiro 的 `uvForItem` 与手持模型样式（`Handheld`、平面精灵）

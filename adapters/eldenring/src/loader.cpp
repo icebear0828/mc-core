@@ -1001,19 +1001,26 @@ bool BlocksPresent() {
 static size_t g_tnt_prev_active_count = 0;
 static int g_prev_mining_stage = -1;
 static blocks::Cell g_prev_mining_cell{};
+static blocks::TerrainMiningOverlay g_prev_terrain_mining{};
 
-void SendBlockMesh(const std::optional<blocks::MiningOverlay>& mining = std::nullopt) {
+void SendBlockMesh(const std::optional<blocks::MiningOverlay>& mining = std::nullopt,
+                   const std::optional<blocks::TerrainMiningOverlay>& terrain_mining = std::nullopt) {
     std::lock_guard<std::mutex> g(g_blocks_mutex);
     const size_t tnt_count = g_tnt_mgr.activeCount();
     const int stage = mining.has_value() ? mining->stage : -1;
     const blocks::Cell cell = mining.has_value() ? mining->cell : blocks::Cell{};
+    const blocks::TerrainMiningOverlay terrain = terrain_mining.has_value() ? *terrain_mining : blocks::TerrainMiningOverlay{};
     if (g_blocks_sent_version == g_blocks.version() && tnt_count == 0 && g_tnt_prev_active_count == 0 &&
-        stage == g_prev_mining_stage && cell == g_prev_mining_cell) return;
+        stage == g_prev_mining_stage && cell == g_prev_mining_cell &&
+        terrain.stage == g_prev_terrain_mining.stage &&
+        std::memcmp(terrain.pos, g_prev_terrain_mining.pos, sizeof(terrain.pos)) == 0 &&
+        std::memcmp(terrain.normal, g_prev_terrain_mining.normal, sizeof(terrain.normal)) == 0) return;
     g_blocks_sent_version = g_blocks.version();
     g_tnt_prev_active_count = tnt_count;
     g_prev_mining_stage = stage;
     g_prev_mining_cell = cell;
-    erov::SetBlockMesh(blocks::buildBlockMesh(g_blocks, g_tnt_mgr.activePositions(), mining));
+    g_prev_terrain_mining = terrain;
+    erov::SetBlockMesh(blocks::buildBlockMesh(g_blocks, g_tnt_mgr.activePositions(), mining, terrain_mining));
 }
 
 
@@ -1340,11 +1347,19 @@ bool StepMining(float dt, bool left_held) {
         g_ground_mining.update(dt, left_held, pitch, held, zone, is_creative, g_loot_rng, PlayerIsMoving());
         const mc::GroundMiningState& gs = g_ground_mining.state();
         if (gs.is_mining) {
+            blocks::TerrainMiningOverlay terrain{};
+            std::memcpy(terrain.pos, t.terrain_pos, sizeof(terrain.pos));
+            std::memcpy(terrain.normal, t.terrain_normal, sizeof(terrain.normal));
+            terrain.stage = gs.stage;
             if (gs.hit_sound) {
-                std::lock_guard<std::mutex> g(g_melee_mutex);
-                g_melee.startSwing();
-                eraudio::Play(GroundHitSound(zone), 0.6f);
+                {
+                    std::lock_guard<std::mutex> g(g_melee_mutex);
+                    g_melee.startSwing();
+                    eraudio::Play(GroundHitSound(zone), 0.6f);
+                }
+                erov::SpawnFx(erov::FxKind::Dust, t.terrain_pos, 0);
             }
+            SendBlockMesh(std::nullopt, terrain);
             return true;
         }
         if (gs.broken) {
@@ -1355,6 +1370,8 @@ bool StepMining(float dt, bool left_held) {
                 g_melee.startSwing();
             }
             eraudio::Play("entity.experience_orb.pickup", 0.9f);
+            for (int i = 0; i < 3; ++i) erov::SpawnFx(erov::FxKind::Dust, t.terrain_pos, 0);
+            SendBlockMesh(std::nullopt, std::nullopt);
             Log("ground: broke terrain at (%.2f %.2f %.2f) zone=%d item=%d blocked=%d pity=%d combo=%d bonus=%d block=0x%08X mat=%u auto=%d",
                 t.terrain_pos[0], t.terrain_pos[1], t.terrain_pos[2], static_cast<int>(zone),
                 static_cast<int>(gs.drop.item), gs.drop.tier_blocked ? 1 : 0, gs.drop.pity_triggered ? 1 : 0,
