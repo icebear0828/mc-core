@@ -23,7 +23,8 @@ PR：https://github.com/icebear0828/mc-core/pull/115
 一次采掘必须同时满足：
 
 1. `mc_er_steve.txt` 里 `blocks=1`（地面采掘复用方块系统的开关），且游戏已进入世界、没有菜单/弹窗/
-   加载画面（`WantSuppress()` 门禁；加载期间 `StepMining` 直接返回，不发射线、不建裂纹网格）。
+   加载画面（`WantSuppress()` 门禁；加载期间 `StepMining` 直接返回，`CastStaticRay` 也直接返回空结果，
+   不发射线、不建裂纹网格）。
 2. 视线俯仰角 `>= 60°`（`GroundMiningController::kMinPitchDeg`），即视线落在脚下附近。
 3. 主手为空，或手持任意镐（木/石/铁/金/钻石/下界合金）。
 4. 准星命中宿主静态地形，而不是我们放置的方块；命中面法线必须朝上（`normal.y >= 0.5`），

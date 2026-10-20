@@ -260,6 +260,7 @@ void ReadHurt(float& hurt, float& side) {
 // Every hit the player takes goes through one of two reaction pickers (REVERSE 21). While the experiment is on they do nothing for the
 // player (the output byte is cleared), so the hit still costs hit points but plays no reaction animation. Game thread only.
 uintptr_t PlayerChrPtr(); // defined below
+bool WantSuppress();      // defined below: no menu/popup/loading screen
 
 std::atomic<bool> g_no_stagger{false};
 std::atomic<unsigned> g_stagger_skipped{0};
@@ -730,6 +731,9 @@ uint32_t PlayerBlockId() {
 
 
 RayResult CastStaticRay(const float from[3], const float disp[3]) {
+    // The Havok world is not queryable while a menu or loading screen owns it; a ray there has
+    // crashed the game in a null-pointer read during the load transition.
+    if (!WantSuppress()) return {};
     return eldenring::combat::CombatService::Instance().castStaticRay(from, disp);
 }
 
