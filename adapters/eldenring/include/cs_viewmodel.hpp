@@ -346,7 +346,7 @@ struct ViewmodelProjectionConfig {
     float offset_x{0.0f};           // viewmodel_offset_x
     float offset_y{0.0f};           // viewmodel_offset_y
     float offset_z{0.0f};           // viewmodel_offset_z
-    float z_near{0.01f};            // Near clip tuned for viewmodels
+    float z_near{0.001f};           // Near clip tuned for viewmodels; the forearms cross 0.01 in the inspect pose
     float z_far{20.0f};             // Far clip tuned for viewmodels
     bool use_game_projection{false};// Decoupled by default
 };
