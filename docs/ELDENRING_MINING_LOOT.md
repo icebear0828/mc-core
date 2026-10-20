@@ -127,7 +127,7 @@ ZONEPROBE: block=0x3C2A2400 area=60 gx=42 gz=36 lod=0 pos=(...) n=(...) shape=0x
 
 实机（2026-10-20，Limgrave Church of Elleh）已采集到：`material=1` 出生点石台（掉圆石/煤炭/粗铁），`material=2` 和 `material=5` 草地/泥土（掉泥土/圆石）。配置里是 `zone_mat_1=1`、`zone_mat_2=0`、`zone_mat_5=0`；material 值不是全局语义，其他区域仍需分别采样。
 
-实机调裂纹高度：游戏在前台时，`[` / `PageDown` 下移 5 cm，`]` / `PageUp` 上移 5 cm；每次调整写一行 `cracktune: lift=...`，调到贴地后把该值写进 `ground_crack_lift`。
+实机调裂纹高度：游戏在前台时，`[` / `PageDown` 下移 5 cm，`]` / `PageUp` 上移 5 cm；`,` / `.` 精调 1 cm。每次调整写一行 `cracktune: lift=...`，调到贴地后把该值写进 `ground_crack_lift`。裂纹贴在碰撞面上，视觉地板可能略低；往下压越过视觉地板会被深度测试挡住，所以贴近地面时用 1 cm 精调。
 
 ## 8. 测试与验证
 

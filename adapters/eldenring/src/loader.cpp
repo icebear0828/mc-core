@@ -1708,23 +1708,26 @@ DWORD WINAPI KeyThread(LPVOID) {
 // 5 cm steps, only while the game is focused. The value is logged so it can be copied into
 // mc_er_steve.txt. It changes only our overlay; it never writes game state.
 DWORD WINAPI CrackTunerThread(LPVOID) {
-    bool prev_down = false, prev_up = false;
+    bool prev_down = false, prev_up = false, prev_fine_down = false, prev_fine_up = false;
+    auto adjust = [](float delta, const char* kind) {
+        const float v = std::clamp(g_ground_crack_lift.load(std::memory_order_relaxed) + delta, -2.0f, 1.0f);
+        g_ground_crack_lift.store(v, std::memory_order_relaxed);
+        Log("cracktune: lift=%.2f m (%s)", v, kind);
+    };
     for (;;) {
         const bool focused = GameInForeground();
         const bool down = focused && (((GetAsyncKeyState(VK_OEM_4) & 0x8000) != 0) || ((GetAsyncKeyState(VK_PRIOR) & 0x8000) != 0));
         const bool up = focused && (((GetAsyncKeyState(VK_OEM_6) & 0x8000) != 0) || ((GetAsyncKeyState(VK_NEXT) & 0x8000) != 0));
-        if (down && !prev_down) {
-            const float v = std::clamp(g_ground_crack_lift.load(std::memory_order_relaxed) - 0.05f, -2.0f, 1.0f);
-            g_ground_crack_lift.store(v, std::memory_order_relaxed);
-            Log("cracktune: lift=%.2f m ([ / PageDown lower, ] / PageUp raise)", v);
-        }
-        if (up && !prev_up) {
-            const float v = std::clamp(g_ground_crack_lift.load(std::memory_order_relaxed) + 0.05f, -2.0f, 1.0f);
-            g_ground_crack_lift.store(v, std::memory_order_relaxed);
-            Log("cracktune: lift=%.2f m ([ / PageDown lower, ] / PageUp raise)", v);
-        }
+        const bool fine_down = focused && ((GetAsyncKeyState(VK_OEM_COMMA) & 0x8000) != 0);
+        const bool fine_up = focused && ((GetAsyncKeyState(VK_OEM_PERIOD) & 0x8000) != 0);
+        if (down && !prev_down) adjust(-0.05f, "[ / PageDown, coarse");
+        if (up && !prev_up) adjust(+0.05f, "] / PageUp, coarse");
+        if (fine_down && !prev_fine_down) adjust(-0.01f, ", fine");
+        if (fine_up && !prev_fine_up) adjust(+0.01f, ". fine");
         prev_down = down;
         prev_up = up;
+        prev_fine_down = fine_down;
+        prev_fine_up = fine_up;
         Sleep(30);
     }
     return 0;
