@@ -2230,6 +2230,8 @@ void RenderFrame(IDXGISwapChain* sc) {
     // occlusion formula turns it into the scene's view-space z; the camera ray then gives the
     // visible floor's world position. This avoids the collision mesh's invisible ledges.
     bool copied_depth = false;
+    float depth_sx = static_cast<float>(g_s.width) * 0.5f;
+    float depth_sy = static_cast<float>(g_s.height) * 0.5f;
     if (g_scene_floor_requested.load(std::memory_order_relaxed) && g_depth_res != nullptr && g_depth_w > 0 && g_depth_h > 0 &&
         steve.cam_valid && g_s.device != nullptr) {
         if (g_depth_readback == nullptr) {
@@ -2269,7 +2271,16 @@ void RenderFrame(IDXGISwapChain* sc) {
             src.pResource = g_depth_res;
             src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
             src.SubresourceIndex = 0;
-            const UINT cx = g_depth_w / 2, cy = g_depth_h / 2;
+            if (steve.cam_valid) {
+                const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / static_cast<float>(g_s.height));
+                ImVec2 s; float ppm = 0.f;
+                if (ProjectToScreen(vp, steve.feet, static_cast<float>(g_s.width), static_cast<float>(g_s.height), steve.fov_y, s, ppm)) {
+                    depth_sx = s.x;
+                    depth_sy = s.y + 0.02f * static_cast<float>(g_s.height); // a little below the feet, onto the floor
+                }
+            }
+            const UINT cx = static_cast<UINT>(std::clamp(depth_sx / static_cast<float>(g_s.width) * static_cast<float>(g_depth_w), 0.f, static_cast<float>(g_depth_w - 1)));
+            const UINT cy = static_cast<UINT>(std::clamp(depth_sy / static_cast<float>(g_s.height) * static_cast<float>(g_depth_h), 0.f, static_cast<float>(g_depth_h - 1)));
             D3D12_BOX box{cx, cy, 0, cx + 1, cy + 1, 1};
             g_s.list->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
             db.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
@@ -2336,15 +2347,21 @@ void RenderFrame(IDXGISwapChain* sc) {
             g_depth_readback->Unmap(0, &none);
             if (gd > 0.f) {
                 const float view_z = g_steve_cfg.depth_const / gd; // the shader's reverse-Z formula
+                const float ndc_x = 2.f * (depth_sx / static_cast<float>(g_s.width)) - 1.f;
+                const float ndc_y = 1.f - 2.f * (depth_sy / static_cast<float>(g_s.height));
+                const float tan_y = std::tan(steve.fov_y * 0.5f);
+                const float tan_x = tan_y * (static_cast<float>(g_s.width) / static_cast<float>(g_s.height));
                 const mc::Vec3& p = steve.cam.position;
                 const mc::Vec3& fw = steve.cam.forward;
-                const float len = std::sqrt(fw.x * fw.x + fw.y * fw.y + fw.z * fw.z);
-                if (len > 1e-4f) {
-                    g_scene_floor[0].store(p.x + fw.x / len * view_z, std::memory_order_relaxed);
-                    g_scene_floor[1].store(p.y + fw.y / len * view_z, std::memory_order_relaxed);
-                    g_scene_floor[2].store(p.z + fw.z / len * view_z, std::memory_order_relaxed);
-                    g_scene_floor_valid.store(true, std::memory_order_relaxed);
-                }
+                const mc::Vec3& rt = steve.cam.right;
+                const mc::Vec3& up = steve.cam.up;
+                const float dx = fw.x + rt.x * ndc_x * tan_x + up.x * ndc_y * tan_y;
+                const float dy = fw.y + rt.y * ndc_x * tan_x + up.y * ndc_y * tan_y;
+                const float dz = fw.z + rt.z * ndc_x * tan_x + up.z * ndc_y * tan_y;
+                g_scene_floor[0].store(p.x + dx * view_z, std::memory_order_relaxed);
+                g_scene_floor[1].store(p.y + dy * view_z, std::memory_order_relaxed);
+                g_scene_floor[2].store(p.z + dz * view_z, std::memory_order_relaxed);
+                g_scene_floor_valid.store(true, std::memory_order_relaxed);
             } else {
                 g_scene_floor_valid.store(false, std::memory_order_relaxed);
             }
