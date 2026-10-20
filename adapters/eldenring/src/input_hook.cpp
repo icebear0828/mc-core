@@ -36,6 +36,9 @@ std::atomic<bool> g_right_edge{false};
 std::atomic<bool> g_right_prev{false};
 std::atomic<int> g_wheel{0};
 std::atomic<int> g_dx{0}, g_dy{0};
+// A second, independent copy of the mouse delta for the first-person pitch extension. The inventory's
+// virtual cursor consumes g_dx/g_dy; sharing them would make the two steal each other's input.
+std::atomic<int> g_cam_dx{0}, g_cam_dy{0};
 std::atomic<bool> g_suppress_motion{false};
 std::atomic<bool> g_suppress_wheel{false};
 std::atomic<bool> g_suppress_keys{false};
@@ -109,6 +112,8 @@ HRESULT STDMETHODCALLTYPE GetStateDetour(void* self, DWORD cb, LPVOID data) {
             memcpy(xy, data, sizeof(xy));
             if (xy[0] != 0) g_dx.fetch_add(static_cast<int>(xy[0]));
             if (xy[1] != 0) g_dy.fetch_add(static_cast<int>(xy[1]));
+            if (xy[0] != 0) g_cam_dx.fetch_add(static_cast<int>(xy[0]));
+            if (xy[1] != 0) g_cam_dy.fetch_add(static_cast<int>(xy[1]));
         }
         if (k == Kind::Mouse && data != nullptr && cb >= kMouseWheelOffset + sizeof(LONG)) {
             LONG z = 0;
@@ -151,6 +156,8 @@ HRESULT STDMETHODCALLTYPE GetDataDetour(void* self, DWORD cb, LPDIDEVICEOBJECTDA
                 auto* e = reinterpret_cast<DIDEVICEOBJECTDATA*>(reinterpret_cast<BYTE*>(data) + static_cast<size_t>(i) * cb);
                 if (e->dwOfs == DIMOFS_X) g_dx.fetch_add(static_cast<int>(static_cast<LONG>(e->dwData)));
                 if (e->dwOfs == DIMOFS_Y) g_dy.fetch_add(static_cast<int>(static_cast<LONG>(e->dwData)));
+                if (e->dwOfs == DIMOFS_X) g_cam_dx.fetch_add(static_cast<int>(static_cast<LONG>(e->dwData)));
+                if (e->dwOfs == DIMOFS_Y) g_cam_dy.fetch_add(static_cast<int>(static_cast<LONG>(e->dwData)));
                 if (g_suppress_motion.load(std::memory_order_relaxed) && (e->dwOfs == DIMOFS_X || e->dwOfs == DIMOFS_Y || e->dwOfs == DIMOFS_Z)) e->dwData = 0;
                 if (g_suppress_wheel.load(std::memory_order_relaxed) && e->dwOfs == DIMOFS_Z) e->dwData = 0;
             }
@@ -252,6 +259,11 @@ int TakeWheelNotches() { return g_wheel.exchange(0) / 120; }
 void TakeMouseDelta(int& dx, int& dy) {
     dx = g_dx.exchange(0);
     dy = g_dy.exchange(0);
+}
+
+void TakeCameraMouseDelta(int& dx, int& dy) {
+    dx = g_cam_dx.exchange(0);
+    dy = g_cam_dy.exchange(0);
 }
 
 void SetSuppressMouseMotion(bool on) { g_suppress_motion.store(on, std::memory_order_relaxed); }

@@ -5,7 +5,9 @@
 // at +0x50 (A). Left-handed: R x U = +F, Forward points where the camera looks.
 
 #include "eldenring_rtti.hpp"
+#include "eldenring_fp_camera.hpp"
 
+#include <atomic>
 #include <cmath>
 #include <optional>
 
@@ -22,6 +24,20 @@ struct CameraPose {
     float right[3]{}, up[3]{}, forward[3]{}, position[3]{};
     float fov_y{0.f}; // radians, vertical
 };
+
+// First-person pitch extension published by the adapter after the camera step. readCamera applies it to the
+// forward/up vectors, so every consumer (aim, bow, mining, viewmodel) sees the same view as the renderer even
+// while the engine's own clamped axes are back in ChrCam for the camera controller. Set on the game thread,
+// read on the render and key threads.
+struct CameraPitchOverride {
+    std::atomic<bool> active{false};
+    std::atomic<float> down_delta_deg{0.f};
+};
+
+inline CameraPitchOverride& cameraPitchOverride() {
+    static CameraPitchOverride override;
+    return override;
+}
 
 inline bool readCamera(const IMemoryReader& reader, uintptr_t image_base, uintptr_t world_chr_man, CameraPose& out) {
     uint64_t cam = 0;
@@ -44,6 +60,10 @@ inline bool readCamera(const IMemoryReader& reader, uintptr_t image_base, uintpt
     }
     p.fov_y = fov;
     out = p;
+    const CameraPitchOverride& pitch = cameraPitchOverride();
+    if (pitch.active.load(std::memory_order_relaxed)) {
+        fpcam::rotateDown(out.up, out.forward, pitch.down_delta_deg.load(std::memory_order_relaxed));
+    }
     return true;
 }
 

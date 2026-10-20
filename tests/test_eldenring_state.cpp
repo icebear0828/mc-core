@@ -327,6 +327,31 @@ TEST(EldenRingCamera, ReadsMatrixAndVerticalFov) {
     EXPECT_FLOAT_EQ(c.fov_y, 0.8378f);
 }
 
+TEST(EldenRingCamera, AppliesTheFirstPersonPitchOverride) {
+    struct Guard {
+        ~Guard() {
+            cameraPitchOverride().active.store(false);
+            cameraPitchOverride().down_delta_deg.store(0.f);
+        }
+    } guard;
+    const float pos[3] = {0, 0, 0};
+    const Mem m = makeCamera(0.8f, pos);
+
+    cameraPitchOverride().down_delta_deg.store(30.f);
+    cameraPitchOverride().active.store(true);
+    CameraPose c;
+    ASSERT_TRUE(readCamera(m, kBase, 0x7ff500000000ull, c));
+    EXPECT_NEAR(c.forward[1], -0.5f, 1e-4f);       // looking 30 degrees down
+    EXPECT_NEAR(c.forward[2], 0.8660254f, 1e-4f);
+    EXPECT_NEAR(c.up[1], 0.8660254f, 1e-4f);
+
+    cameraPitchOverride().active.store(false);
+    cameraPitchOverride().down_delta_deg.store(0.f);
+    ASSERT_TRUE(readCamera(m, kBase, 0x7ff500000000ull, c));
+    EXPECT_FLOAT_EQ(c.forward[1], 0.f);
+    EXPECT_FLOAT_EQ(c.forward[2], 1.f);
+}
+
 TEST(EldenRingCamera, RejectsWrongClassBadFovAndNonFinite) {
     const float pos[3] = {0, 0, 0};
     CameraPose c;

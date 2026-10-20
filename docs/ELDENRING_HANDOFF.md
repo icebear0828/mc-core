@@ -63,11 +63,18 @@
      `block_obsidian`、`item_wood/obsidian`，木头任意工具掉自身，黑曜石仅钻石/下界合金镐掉自身；
      创造模式物品栏已加这两项）。剩余：issue #81 的合并行拆分（沙 / 深板岩 / 安山岩 / 花岗岩）。
      图集现在是 102 区。
-  4. **第一人称相机俯仰受限**（用户 2026-10-20 实机反馈，待做）：第一视角不能自由转到 90° 朝下，
-     低头到某个角度就停住；影响地面采掘（要求俯仰角 ≥60°）和准星锚定。第一人称目前仍用游戏
-     `ChrCam` 的旋转（`0x1404A7190` 是渲染实际使用的相机拷贝，HANDOFF §7）；下一步查是游戏原生
-     pitch clamp 还是我们写回相机时的限制，目标至少能自由低头到 90°，再验证采掘门槛。
-  4. 测试加在 `tests/test_eldenring_mining.cpp`；跑 `build_pure_mc` 全量。
+  4. **第一人称相机俯仰受限**（用户 2026-10-20 实机反馈）：第一视角不能自由转到 90° 朝下，
+     低头到某个角度就停住；影响地面采掘（要求俯仰角 ≥60°）和准星锚定。**根因已确认是游戏原生
+     pitch clamp**：第一人称只写 `ChrCam+0x40` 位置，从不写 right/up/forward；渲染拷贝里的轴向
+     写入只有受击 roll 且立刻还原。**已实现接管**（分支 `fix/fp-pitch`）：相机步进后从
+     `ChrCam+0x10` 读游戏自己的 pitch，用原始 DirectInput dy 维护
+     `offset += k*dy - Δgame`；`k` 在未触顶时用 `Δgame/dy` 在线校准（自动处理反转 Y）。有效 pitch
+     通过 `eldenring::live::cameraPitchOverride()` 发布，`readCamera` 和渲染相机拷贝各应用一次，
+     **不往 ChrCam 持久写轴向**，所以相机控制器永远看不到我们的偏移，采掘判定也不会撞上还原帧。
+     上限 89.9°（正下方会让移动方向投影退化）。配置键 `fp_pitch`、`fp_pitch_deg_per_count`、
+     `fp_pitch_max_deg`。**待实机验证**：低头到 90°、地面采掘门槛、抬头、受击 roll、退出第一人称、
+     菜单/读盘；日志 `fp pitch:` 给出 game/offset/effective/dy/k。
+  5. 测试加在 `tests/test_eldenring_mining.cpp`；跑 `build_pure_mc` 全量。
 
 ---
 
@@ -280,6 +287,7 @@
 | `eldenring_bow.hpp` | MC 拉弓：`BowController`（按住/松开状态机）、`powerForTicks`/`damageForPower`、`pullingStage`/`shownBow`（拉弓贴图阶段）、瞄准校准（`quatForward`、`aimError`）、`buildBasis`/`determinant` |
 | `eldenring_jump.hpp` | MC 起跳的数值与 `McJumpArc`（起跳实验已搁置，代码保留） |
 | `eldenring_fp.hpp` | 第一人称矩阵链（`itemPose`/`eatPose`/`bareArmPose`/`itemDisplay`/`walkBob`/`handSway`）、`HandAnimator`、`SwayFilter`、`toHost`（MC 右手系 → 渲染左手系） |
+| `eldenring_fp_camera.hpp` | 第一人称俯仰扩展：`PitchOffset`（`offset += k*dy - Δgame`、在线校准、±89.9°）、`downPitchDeg`、`rotateDown`；`eldenring_camera.hpp` 的 `cameraPitchOverride()` 让 `readCamera` 统一应用 |
 | `eldenring_control_policy.hpp` | 模式 → `mc::ControlRequest` 的纯逻辑（第一人称、MC 战斗/跳跃/翻滚、飞行、CS）；`hotkey_dispatcher` 每 tick 构建 `ControlPlan`。教程见 [CONTROL_POLICY.md](CONTROL_POLICY.md) |
 | `eldenring_particles.hpp` | 粒子系统、受击镜头倾斜曲线 |
 | `eldenring_hudtex.hpp` / `eldenring_audio_data.hpp` | 物品→图集格、最近邻放大；声音清单/WAV 解析、脚步节拍 |

@@ -274,6 +274,20 @@
 - 实测日志：`inventory: open; blanked 60 keyboard / 60 mouse polls, input gate forced 0, camera freeze forced 120, player speed 0.00 m/s`。键盘/鼠标在 DirectInput 层清零有效；相机冻结钩子每秒被调用 120 次；**输入总闸门 `0x14067B020` 背包开着时从未被调用**（键盘清零后游戏无输入可处理），保留但不是必需。手柄未测（走 XInput，未处理）。
 - 历史教训：第一版把图集换成 512×512，但加载器还在检查 "必须 256×256"，导致整套 HUD 退回矩形；换图集尺寸要同时查加载器的尺寸检查。
 
+## F26 第一人称俯仰扩展（2026-10-20，`fix/fp-pitch`，待实机验证）
+
+- 部署：`build_pure_mc`（`ENABLE_CS2_VIEWMODEL=OFF`）的 `dinput8.dll`，SHA256 `6E882A5A50832FE2A5CB92F0459567C02320A3AEBF60F3F5368B33713C4889FF`；旧 DLL 备份 `dinput8.dll.bak_before_fp_pitch_20261020`（`66EFAF89…`）。
+- 自动化：`build_pure_mc` **1185 tests passed**；Python **54 passed**。
+- 通过标准：
+  - F10 第一人称，鼠标持续向下能把视角转到脚下（有效 pitch ≈89.9°），准星落到脚下方块。
+  - 低头 ≥60° 时地面采掘能启动并累积裂纹；抬头回正常视角后裂纹清除。
+  - 受击镜头倾斜（roll）仍正常，没有轴向错乱。
+  - 退出第一人称回第三人称，视角不残留偏移；再进第一人称能重新低头。
+  - 菜单/背包/读盘期间不写相机；Alt-Tab 回来没有跳变。
+  - 日志 `fp pitch:` 的 `game` 在某个角度停住、`offset` 继续增大、`effective` 到 89.9；`k` 收敛到合理值（约 0.05~0.3 度/计数，取决于游戏灵敏度/DPI）。
+- 关闭：`mc_er_steve.txt` 加 `fp_pitch=0`。
+- 代码：`adapters/eldenring/include/eldenring_fp_camera.hpp`（纯逻辑 + 单测 `tests/test_eldenring_fp_camera.cpp`）；`eldenring_camera.hpp` 的 `cameraPitchOverride()`；`loader.cpp` 的 `AfterCameraStep` 发布偏移，`on_render_cam_copy` 应用偏移。
+
 ## F25 图腾只认主手 / 死亡后不能挥臂 — 用户实测通过，提交 `f67a4b0`
 - 图腾放在热键栏但没选中时不再触发（日志里 `SURVIVAL: ... TOTEM` 只在手持时出现）；拿在手上被致死伤害打中才触发。
 - 玩家死亡后：点击不挥臂/不攻击/不进食，Steve 的挥臂清零，背包自动关闭。

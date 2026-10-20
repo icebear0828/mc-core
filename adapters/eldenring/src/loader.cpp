@@ -37,6 +37,7 @@
 #include "overlay_d3d12.hpp"
 #include "png_wic.hpp"
 #include "eldenring_camera.hpp"
+#include "eldenring_fp_camera.hpp"
 #include "eldenring_damage.hpp"
 #include "audio_xaudio2.hpp"
 #include "eldenring_audio_data.hpp"
@@ -329,6 +330,17 @@ struct CamKeep {
     bool valid{false};
 };
 CamKeep g_cam_keep;
+// First-person pitch extension: the game's camera controller clamps the pitch (the third-person spring arm must not go
+// under the ground), so first person cannot look at the feet. The camera step measures the game's own pitch and
+// publishes an offset through cameraPitchOverride(); readCamera and the render copy hook apply it, and ChrCam itself
+// is never written, so the camera controller never sees the offset. mc_er_steve.txt:
+//   fp_pitch=1                     master switch
+//   fp_pitch_deg_per_count=<k>     0 = calibrate from the game's own response (handles inverted Y)
+//   fp_pitch_max_deg=<30..90>      how far the view may go past level (capped at 89.9)
+std::atomic<bool> g_fp_pitch_enabled{true};
+std::atomic<float> g_fp_pitch_deg_per_count{0.f};
+std::atomic<float> g_fp_pitch_max_deg{89.9f};
+eldenring::fpcam::PitchOffset g_fp_pitch; // game thread only (the camera task runs there)
 std::atomic<bool> g_camstep_installed{false}; // the camera update hook (game thread, every frame) is in place
 void BlocksCollisionStep(); // defined with the placed blocks below
 void EnemiesBlockCollisionStep(const float player_feet[3]);
@@ -604,6 +616,10 @@ void RestoreCamKeep() {
 
 void AfterCameraStep(bool have_before, uintptr_t addr, const float before[3]) {
     const unsigned call = ++g_camstep_calls;
+    // Drain the camera mouse accumulator every frame. If the extension is off, the inventory is open or the game is
+    // loading, a delta left in the accumulator would otherwise be applied as one huge jump on the first active frame.
+    int raw_dx = 0, raw_dy = 0;
+    erin::TakeCameraMouseDelta(raw_dx, raw_dy);
     float now[3];
     if (!have_before || !SafeCopy(addr, now, sizeof(now))) return;
     const bool changed = std::fabs(now[0] - before[0]) + std::fabs(now[1] - before[1]) + std::fabs(now[2] - before[2]) > 1e-5f;
@@ -615,13 +631,42 @@ void AfterCameraStep(bool have_before, uintptr_t addr, const float before[3]) {
         float feet[3];
         if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) {
             firstPersonEye(feet, g_eye_height.load(), eye);
+            // Read the engine's own rotation to measure its pitch; never write it back. The effective pitch is
+            // published through cameraPitchOverride() and applied by readCamera and the render copy hook, so the
+            // camera controller never sees our offset and gameplay reads cannot land on a restored frame.
+            const uintptr_t axes_addr = addr - 0x30; // kCamMatrix is 0x10; the position is 0x30 into the matrix
+            float axes[12];
+            const bool have_axes = SafeCopy(axes_addr, axes, sizeof(axes));
+            const bool pitch_active = have_axes && g_mc_mode.load(std::memory_order_relaxed) &&
+                                      g_fp_pitch_enabled.load(std::memory_order_relaxed) &&
+                                      !g_inv_open.load(std::memory_order_relaxed) && WantSuppress();
+            float game_down = 0.f, effective_down = 0.f;
+            eldenring::live::CameraPitchOverride& pitch = eldenring::live::cameraPitchOverride();
+            if (pitch_active) {
+                game_down = eldenring::fpcam::downPitchDeg(&axes[8]);
+                effective_down = g_fp_pitch.update(static_cast<float>(raw_dy), game_down);
+                pitch.down_delta_deg.store(effective_down - game_down, std::memory_order_relaxed);
+                pitch.active.store(true, std::memory_order_relaxed);
+            } else {
+                g_fp_pitch.reset();
+                pitch.down_delta_deg.store(0.f, std::memory_order_relaxed);
+                pitch.active.store(false, std::memory_order_relaxed);
+            }
+
             if (WriteBytesSafe(addr, eye, sizeof(eye))) {
                 g_cam_keep.pos_addr = addr;
                 std::memcpy(g_cam_keep.third_person, now, sizeof(now));
                 g_cam_keep.valid = true;
                 wrote = true;
+                static unsigned pitch_logs = 0;
+                if (pitch_active && (++pitch_logs <= 8 || pitch_logs % 600 == 0)) {
+                    Log("fp pitch: game=%.1f offset=%.1f effective=%.1f dy=%d k=%.4f", game_down, g_fp_pitch.offsetDeg(),
+                        effective_down, raw_dy, g_fp_pitch.degPerCount());
+                }
             }
         }
+    } else {
+        g_fp_pitch.reset();
     }
     if (call <= 8 || call % 1200 == 0) {
         Log("camstep: call %u changed=%d (changed so far %u) engine pos=(%.2f %.2f %.2f)%s", call, changed ? 1 : 0, g_camstep_changed.load(), now[0], now[1], now[2],
@@ -2127,7 +2172,7 @@ void SetupGameHooksCallbacks() {
         uintptr_t pos_addr = 0;
         uintptr_t axes_addr = 0;
         float saved[3] = {};
-        float saved_axes[8] = {};
+        float saved_axes[12] = {};
         if (g_first_person.load(std::memory_order_relaxed)) {
             const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
             uint64_t cam = 0, player = 0;
@@ -2141,22 +2186,34 @@ void SetupGameHooksCallbacks() {
                 pos_addr = static_cast<uintptr_t>(cam) + layout::kCamMatrix + 0x30;
                 SafeWrite(pos_addr, eye, sizeof(eye));
 
-                float hurt = 0.f, side = 1.f;
-                ReadHurt(hurt, side);
-                if (pos_addr != 0 && hurt > 0.f) {
-                    const uintptr_t axes = static_cast<uintptr_t>(cam) + layout::kCamMatrix;
-                    if (SafeCopy(axes, saved_axes, sizeof(saved_axes))) {
+                const uintptr_t axes = static_cast<uintptr_t>(cam) + layout::kCamMatrix;
+                if (SafeCopy(axes, saved_axes, sizeof(saved_axes))) {
+                    float modified[12];
+                    std::memcpy(modified, saved_axes, sizeof(modified));
+                    bool changed_axes = false;
+                    const eldenring::live::CameraPitchOverride& pitch = eldenring::live::cameraPitchOverride();
+                    if (pitch.active.load(std::memory_order_relaxed)) {
+                        eldenring::fpcam::rotateDown(&modified[4], &modified[8],
+                                                    pitch.down_delta_deg.load(std::memory_order_relaxed));
+                        changed_axes = true;
+                    }
+
+                    float hurt = 0.f, side = 1.f;
+                    ReadHurt(hurt, side);
+                    if (hurt > 0.f) {
                         const float a = eldenring::fx::hurtTiltRadians(hurt, side), c = std::cos(a), s = std::sin(a);
-                        float rolled[8];
-                        for (int i = 0; i < 3; ++i) {
-                            rolled[i] = saved_axes[i] * c + saved_axes[4 + i] * s;
-                            rolled[4 + i] = saved_axes[4 + i] * c - saved_axes[i] * s;
-                        }
-                        rolled[3] = saved_axes[3];
-                        rolled[7] = saved_axes[7];
-                        if (SafeWrite(axes, rolled, sizeof(rolled))) {
-                            axes_addr = axes;
-                        }
+                        const float r0 = modified[0], r1 = modified[1], r2 = modified[2];
+                        const float u0 = modified[4], u1 = modified[5], u2 = modified[6];
+                        modified[0] = r0 * c + u0 * s;
+                        modified[1] = r1 * c + u1 * s;
+                        modified[2] = r2 * c + u2 * s;
+                        modified[4] = u0 * c - r0 * s;
+                        modified[5] = u1 * c - r1 * s;
+                        modified[6] = u2 * c - r2 * s;
+                        changed_axes = true;
+                    }
+                    if (changed_axes && SafeWrite(axes, modified, sizeof(modified))) {
+                        axes_addr = axes;
                     }
                 }
             }
@@ -2537,6 +2594,9 @@ void SetupOverlay() {
                 else if (key == "sound_volume") g_sound_volume.store(value);
                 else if (key == "no_player_hit_vfx") g_no_player_hit_vfx.store(value != 0.f);
                 else if (key == "first_person") g_first_person.store(value != 0.f);
+                else if (key == "fp_pitch") g_fp_pitch_enabled.store(value != 0.f);
+                else if (key == "fp_pitch_deg_per_count") g_fp_pitch_deg_per_count.store(std::clamp(value, 0.f, 0.5f));
+                else if (key == "fp_pitch_max_deg") g_fp_pitch_max_deg.store(std::clamp(value, 30.f, 90.f));
                 else if (key == "shadow") g_shadow_enabled.store(value != 0.f);
                 else if (key == "bolt_attach_poly") eldenring::combat::CombatService::Instance().setBoltAttachPoly(static_cast<int>(value));
                 else if (key == "eye_height") g_eye_height.store(value);
@@ -2602,6 +2662,8 @@ void SetupOverlay() {
                 else if (key == "hide_mask2") g_hide_mask2.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));
             }
             // The vectors stop growing here (the config is read once), so the spans stay valid.
+            g_fp_pitch.setDegPerCount(g_fp_pitch_deg_per_count.load());
+            g_fp_pitch.setMaxPitchDeg(g_fp_pitch_max_deg.load());
             g_zone_rules.material_rules = g_zone_material_rules;
             g_zone_rules.area_rules = g_zone_area_rules.empty()
                 ? std::span<const mc::ZoneRule>(kDefaultZoneAreaRules)

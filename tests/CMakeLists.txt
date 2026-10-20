@@ -48,6 +48,7 @@ add_executable(mc_tests
     test_eldenring_audio.cpp
     test_eldenring_particles.cpp
     test_eldenring_fp.cpp
+    test_eldenring_fp_camera.cpp
     test_inventory.cpp
     test_inventory_layout.cpp
     test_eldenring_blocks.cpp
