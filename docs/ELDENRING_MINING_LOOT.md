@@ -32,6 +32,18 @@ PR：https://github.com/icebear0828/mc-core/pull/115
    移动判定读 `PhysicsModule+0x120` 的线速度（HANDOFF §7 的 A 级事实），速度模长超过 0.5 m/s 即视为移动；
    用速度而不是位置差，避免浮动原点重定位（Havok 空间按 8 m 跳变）被误判成移动。
 
+### 2.1 放置方块破坏掉落（2026-10-20）
+
+| 方块 | 工具 | 掉落 |
+| :--- | :--- | :--- |
+| `Stone` | 任意镐（木/石/铁/金/钻石/下界合金） | `BlockCobblestone`（原版圆石） |
+| `Dirt` | 任意工具/空手 | `BlockDirt` |
+| `Tnt` | 任意工具/空手 | `BlockTnt` |
+| `Wood` / `Obsidian` | — | 还没有物品 ID，暂不掉落 |
+
+创造模式不掉落。石头破坏时间按镐等级：木 1.15s、石 0.6s、铁 0.4s、金 0.2s、钻石 0.3s、
+下界合金 0.25s、空手/非镐 7.5s。
+
 手持剑、弓、盾、食物等非镐物品时，低头长按不会触发地面采掘，仍走宿主原生攻击/交互。
 
 ## 3. 掉落表
@@ -137,8 +149,8 @@ ZONEPROBE: block=0x3C2A2400 area=60 gx=42 gz=36 lod=0 pos=(...) n=(...) shape=0x
 ```bash
 cmake --build build_pure_mc --config Release -j 8
 ./build_pure_mc/bin/Release/mc_tests.exe --gtest_brief=1
-# [==========] 1165 tests from 160 test suites ran.
-# [  PASSED  ] 1165 tests.
+# [==========] 1168 tests from 160 test suites ran.
+# [  PASSED  ] 1168 tests.
 
 uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py -q
 # 8 passed

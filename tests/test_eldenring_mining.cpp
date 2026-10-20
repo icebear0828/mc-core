@@ -38,6 +38,37 @@ TEST(EldenRingMiningTest, CanHarvestRules) {
     EXPECT_FALSE(MiningController::canHarvest(mc::BlockId::Dirt, mc::ItemId::None, true));
 }
 
+TEST(EldenRingMiningTest, AllPickaxeTiersHarvestStoneAndDropCobblestone) {
+    const mc::ItemId picks[] = {mc::ItemId::WoodenPickaxe, mc::ItemId::StonePickaxe, mc::ItemId::IronPickaxe,
+                                mc::ItemId::GoldenPickaxe, mc::ItemId::DiamondPickaxe, mc::ItemId::NetheritePickaxe};
+    for (mc::ItemId tool : picks) {
+        EXPECT_TRUE(MiningController::canHarvest(mc::BlockId::Stone, tool, false));
+        EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Stone, tool, false), mc::ItemId::BlockCobblestone);
+    }
+    EXPECT_FALSE(MiningController::canHarvest(mc::BlockId::Stone, mc::ItemId::None, false));
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Stone, mc::ItemId::None, false), mc::ItemId::None);
+    EXPECT_FALSE(MiningController::canHarvest(mc::BlockId::Stone, mc::ItemId::DiamondSword, false));
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Stone, mc::ItemId::DiamondSword, false), mc::ItemId::None);
+}
+
+TEST(EldenRingMiningTest, BlockDropsMatchVanilla) {
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Dirt, mc::ItemId::None, false), mc::ItemId::BlockDirt);
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Tnt, mc::ItemId::None, false), mc::ItemId::BlockTnt);
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Stone, mc::ItemId::DiamondPickaxe, true), mc::ItemId::None);
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Wood, mc::ItemId::DiamondPickaxe, false), mc::ItemId::None);
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Obsidian, mc::ItemId::DiamondPickaxe, false), mc::ItemId::None);
+}
+
+TEST(EldenRingMiningTest, StoneBreakTimeScalesWithPickaxeTier) {
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Stone, mc::ItemId::WoodenPickaxe, false), 1.15f);
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Stone, mc::ItemId::StonePickaxe, false), 0.6f);
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Stone, mc::ItemId::IronPickaxe, false), 0.4f);
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Stone, mc::ItemId::GoldenPickaxe, false), 0.2f);
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Stone, mc::ItemId::DiamondPickaxe, false), 0.3f);
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Stone, mc::ItemId::NetheritePickaxe, false), 0.25f);
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Stone, mc::ItemId::None, false), 7.5f);
+}
+
 TEST(EldenRingMiningTest, ProgressiveCrackStagesAndHitSound) {
     MiningController controller;
     const Cell stone_cell{10, 5, 20};

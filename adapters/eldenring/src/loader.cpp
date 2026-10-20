@@ -1457,9 +1457,10 @@ bool StepMining(float dt, bool left_held) {
             std::lock_guard<std::mutex> g(g_blocks_mutex);
             g_blocks.remove(s.target_cell);
         }
-        if (eldenring::mining::MiningController::canHarvest(id, held, is_creative)) {
+        const mc::ItemId drop = eldenring::mining::MiningController::blockDrop(id, held, is_creative);
+        if (drop != mc::ItemId::None) {
             std::lock_guard<std::mutex> g(g_melee_mutex);
-            g_melee.inventory().add({blocks::itemForBlock(id), 1});
+            g_melee.inventory().add({drop, 1});
             harvested = true;
         }
         SendBlockMesh(std::nullopt);

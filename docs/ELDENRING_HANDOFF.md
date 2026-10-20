@@ -23,7 +23,7 @@
   破坏后掉落自动进背包。`FindBlockTarget` 现在会带回地形命中点、法线、相机俯仰角。
 - `mc_er_steve.txt` 新增 `ground_mining=1`、`loot_zone=0..5`；`blocks=1` 仍是前提。
 - 新增 11 个物品 ID 与图集格子；木/石/铁/金/下界合金镐暂时复用钻石镐图标。
-- 测试：`build_pure_mc` Release **1165/1165**，Python **101 passed / 1 skipped**。
+- 测试：`build_pure_mc` Release **1168/1168**，Python **101 passed / 1 skipped**。
 - **移动打断已接**（2026-10-20）：`GroundMiningController::update` 新增 `moving` 入参；适配层读
   `PhysicsModule+0x120` 线速度，模长 > 0.5 m/s 立即清裂纹（用速度而非位置差，规避浮动原点重定位）。
 - **5 个镐图标已补**（2026-10-20）：`item_wooden/stone/iron/golden/netherite_pickaxe` 图集格子、client.jar
@@ -52,11 +52,10 @@
 - **现状**：放置方块破坏的掉落是 `blocks::itemForBlock`：`Stone -> BlockStone`（原版应为圆石），
   且只有钻石镐能采集石头；`Wood` / `Obsidian` 还没有物品 ID，圆石也还不能右键放置。
 - **计划（TDD，先纯逻辑）**：
-  1. `MiningController::canHarvest(Stone)` 改成任意镐（木/石/铁/金/钻石/下界合金）；
-     `computeBreakTime(Stone)` 按镐等级给时间，保留现有钻石镐 0.3s、空手 7.5s 的断言。
-  2. 新增 `MiningController::blockDrop(BlockId, ItemId, creative)`：
-     `Stone -> BlockCobblestone`（任意镐）、`Dirt -> BlockDirt`、`Tnt -> BlockTnt`、创造模式 `None`；
-     `loader.cpp` 的方块破坏改用它，不再直接 `itemForBlock`。
+  1. ~~`MiningController::canHarvest(Stone)` 改成任意镐；`computeBreakTime(Stone)` 按镐等级给时间~~
+     **已完成**：木 1.15s、石 0.6s、铁 0.4s、金 0.2s、钻石 0.3s、下界合金 0.25s、空手 7.5s。
+  2. ~~新增 `MiningController::blockDrop`：`Stone -> BlockCobblestone`（任意镐）、`Dirt -> BlockDirt`、
+     `Tnt -> BlockTnt`、创造模式 `None`；`loader.cpp` 的方块破坏改用它~~ **已完成**。
   3. 之后再做 `BlockWood` / `BlockObsidian` 物品 ID + 放置 + 图标，以及 issue #81 的合并行拆分
      （沙 / 深板岩 / 安山岩 / 花岗岩 / 黑曜石）。
   4. 测试加在 `tests/test_eldenring_mining.cpp`；跑 `build_pure_mc` 全量。

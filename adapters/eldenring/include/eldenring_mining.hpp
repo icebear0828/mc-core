@@ -26,6 +26,10 @@ public:
         return mc::MiningController::canHarvest(block_id, held_tool, is_creative);
     }
 
+    static mc::ItemId blockDrop(mc::BlockId block_id, mc::ItemId held_tool, bool is_creative) {
+        return mc::MiningController::blockDrop(block_id, held_tool, is_creative);
+    }
+
     void update(float dt, bool left_down, bool has_target, const blocks::Cell& target_cell,
                 mc::BlockId target_block, mc::ItemId held_tool, bool is_creative) {
         mc_controller_.update(dt, left_down, has_target, {target_cell.x, target_cell.y, target_cell.z},
