@@ -1359,16 +1359,21 @@ bool StepMining(float dt, bool left_held) {
     const bool ground_target = t.have && t.terrain_hit && !t.on_block;
     const float pitch = t.pitch_deg;
     if (g_ground_mining_enabled.load() && ground_target && mc::GroundMiningController::canDig(held, pitch)) {
-        // Cast the downward ray before reading the material: the probe's last ground hit is then
-        // the ground under the feet, so the crack, the dust and the loot zone agree.
+        // Anchor to the ground under the feet, except when the aim hit is clearly lower (standing on
+        // a platform and mining the floor below): then the aim hit is the ground actually being
+        // mined. The aim material is read before the downward ray, the feet material after it, so
+        // the chosen anchor and the loot zone agree.
+        const uint32_t aim_material = g_last_ground_material.load(std::memory_order_relaxed);
         float below_pos[3], below_normal[3];
         const bool below = GroundBelow(below_pos, below_normal);
-        const float* fx_pos = below ? below_pos : t.terrain_pos;
-        const float* fx_normal = below ? below_normal : t.terrain_normal;
+        const uint32_t feet_material = g_last_ground_material.load(std::memory_order_relaxed);
+        const bool use_below = below && (t.terrain_pos[1] >= below_pos[1] - 0.5f);
+        const float* fx_pos = use_below ? below_pos : t.terrain_pos;
+        const float* fx_normal = use_below ? below_normal : t.terrain_normal;
+        const uint32_t ground_material = use_below ? feet_material : aim_material;
 
         const int configured_zone = g_loot_zone.load(std::memory_order_relaxed);
         const uint32_t block_raw = configured_zone < 0 ? PlayerBlockId() : 0;
-        const uint32_t ground_material = g_last_ground_material.load(std::memory_order_relaxed);
         const mc::LootZone zone = configured_zone < 0
             ? mc::classifyZone(mc::decodeBlockId(block_raw), ground_material, g_zone_rules)
             : static_cast<mc::LootZone>(std::clamp(configured_zone, 0, static_cast<int>(mc::LootZone::Count) - 1));
@@ -1403,8 +1408,8 @@ bool StepMining(float dt, bool left_held) {
             eraudio::Play("entity.experience_orb.pickup", 0.9f);
             for (int i = 0; i < 3; ++i) erov::SpawnFx(erov::FxKind::Dust, fx_pos, 0);
             SendBlockMesh(std::nullopt, std::nullopt);
-            Log("ground: broke terrain at (%.2f %.2f %.2f) zone=%d item=%d blocked=%d pity=%d combo=%d bonus=%d block=0x%08X mat=%u auto=%d",
-                fx_pos[0], fx_pos[1], fx_pos[2], static_cast<int>(zone),
+            Log("ground: broke terrain at (%.2f %.2f %.2f) anchor=%s zone=%d item=%d blocked=%d pity=%d combo=%d bonus=%d block=0x%08X mat=%u auto=%d",
+                fx_pos[0], fx_pos[1], fx_pos[2], use_below ? "feet" : "aim", static_cast<int>(zone),
                 static_cast<int>(gs.drop.item), gs.drop.tier_blocked ? 1 : 0, gs.drop.pity_triggered ? 1 : 0,
                 gs.drop.combo_triggered ? 1 : 0, static_cast<int>(gs.drop.bonus), block_raw, ground_material,
                 configured_zone < 0 ? 1 : 0);
