@@ -172,7 +172,10 @@ inline std::vector<uintptr_t> collectChrDispFlagAddresses(const IMemoryReader& r
     if (chr == 0) return out;
     std::vector<uintptr_t> models;
     for (const ScanHit& h : scanForClasses(reader, image_base, chr, 0, summon::kChrScanEnd, 128)) {
-        if (h.cls.find("CSChrModelIns") == std::string::npos) continue;
+        // The player uses CSChrAsmModelIns; summons use CSChrModelIns. Both
+        // carry CSModelDispEntity children at the same offsets.
+        if (h.cls.find("CSChrModelIns") == std::string::npos &&
+            h.cls.find("CSChrAsmModelIns") == std::string::npos) continue;
         bool seen = false;
         for (uintptr_t m : models) seen = seen || m == h.object;
         if (!seen) models.push_back(h.object);

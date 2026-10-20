@@ -58,7 +58,13 @@ cbuffer Root : register(b0) {
     float4 light_dir;
     float4 tint;
     float is_arm;
-    float3 padding;
+    float skinned;
+    float2 padding;
+};
+
+// CSVM v4: rest-bind * per-frame delta, one matrix per compact arm bone.
+cbuffer Bones : register(b1) {
+    row_major float4x4 bone_matrices[8];
 };
 
 Texture2D knife_tex       : register(t0);
@@ -79,6 +85,8 @@ struct VSIn {
     float3 pos    : POSITION;
     float3 normal : NORMAL;
     float2 uv     : TEXCOORD0;
+    uint4  joints : BLENDINDICES;
+    float4 weights : BLENDWEIGHT;
 };
 
 struct VSOut {
@@ -90,9 +98,27 @@ struct VSOut {
 
 VSOut VSMain(VSIn i) {
     VSOut o;
-    float4 w = mul(float4(i.pos, 1.0), world);
+    float4 skinned_pos = float4(i.pos, 1.0);
+    float3 skinned_nrm = i.normal;
+    if (skinned > 0.5) {
+        float total = i.weights.x + i.weights.y + i.weights.z + i.weights.w;
+        float4 p = float4(0.0, 0.0, 0.0, 0.0);
+        float3 n = float3(0.0, 0.0, 0.0);
+        [unroll] for (int k = 0; k < 4; ++k) {
+            float w = i.weights[k] / max(total, 1e-5);
+            if (w > 1e-5) {
+                uint bi = min(i.joints[k], 7u);
+                float4x4 bm = bone_matrices[bi];
+                p += w * mul(float4(i.pos, 1.0), bm);
+                n += w * mul(float4(i.normal, 0.0), bm).xyz;
+            }
+        }
+        skinned_pos = p;
+        skinned_nrm = n;
+    }
+    float4 w = mul(skinned_pos, world);
     o.pos = mul(w, view_proj);
-    o.normal = mul(float4(i.normal, 0.0), world).xyz;
+    o.normal = mul(float4(skinned_nrm, 0.0), world).xyz;
     o.uv = i.uv;
     o.wpos = w.xyz;
     return o;
@@ -309,6 +335,32 @@ ID3D12Resource* UploadBuffer(ID3D12Device* device, const void* data, size_t size
     return res;
 }
 
+// Persistent upload buffer for the CSVM v4 bone palette. It stays mapped so
+// draw() can rotate through four slots without allocating per frame.
+ID3D12Resource* CreateMappedUploadBuffer(ID3D12Device* device, size_t size, void** mapped) {
+    D3D12_HEAP_PROPERTIES hp{};
+    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC rd{};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rd.Width = size;
+    rd.Height = 1;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1;
+    rd.SampleDesc.Count = 1;
+    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    ID3D12Resource* res = nullptr;
+    if (FAILED(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                               IID_PPV_ARGS(&res)))) {
+        return nullptr;
+    }
+    D3D12_RANGE none{0, 0};
+    if (FAILED(res->Map(0, &none, mapped))) {
+        res->Release();
+        return nullptr;
+    }
+    return res;
+}
+
 } // namespace
 
 void ReleaseCsDecodeCache() {
@@ -318,6 +370,7 @@ void ReleaseCsDecodeCache() {
 bool CsRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     release();
     log_ = log;
+    device_ = device;
 
     // Root signature: 44 root constants (b0) + 1 descriptor table (t0..t8: 9 textures) + 1 static sampler (s0)
     D3D12_DESCRIPTOR_RANGE range{};
@@ -326,7 +379,7 @@ bool CsRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     range.BaseShaderRegister = 0;
     range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER params[2]{};
+    D3D12_ROOT_PARAMETER params[3]{};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.Num32BitValues = 44;
     params[0].Constants.ShaderRegister = 0;
@@ -336,6 +389,13 @@ bool CsRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     params[1].DescriptorTable.NumDescriptorRanges = 1;
     params[1].DescriptorTable.pDescriptorRanges = &range;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // CSVM v4 skinning palette (b1). A CBV root parameter keeps the shader
+    // independent of the 44-DWORD root-constant budget.
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[2].Descriptor.ShaderRegister = 1;
+    params[2].Descriptor.RegisterSpace = 0;
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
     D3D12_STATIC_SAMPLER_DESC sampler{};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -348,7 +408,7 @@ bool CsRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rsd{};
-    rsd.NumParameters = 2;
+    rsd.NumParameters = 3;
     rsd.pParameters = params;
     rsd.NumStaticSamplers = 1;
     rsd.pStaticSamplers = &sampler;
@@ -379,17 +439,25 @@ bool CsRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"BLENDINDICES", 0, DXGI_FORMAT_R8G8B8A8_UINT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"BLENDWEIGHT", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 36, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
     pd.pRootSignature = root_;
     pd.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
     pd.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
-    pd.InputLayout = {layout, 3};
+    pd.InputLayout = {layout, 5};
     pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     pd.SampleMask = UINT_MAX;
     pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pd.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+    // The weapon meshes and the VRF-exported agent glove/sleeve meshes use
+    // opposite winding conventions. Back-face culling therefore drops the near
+    // glove/sleeve surface and leaves the far (inner) surface visible, which is
+    // exactly the "arm shows through the sleeve / knife handle shows through
+    // the glove" symptom. Draw both faces and let the depth test pick the
+    // nearest one; the viewmodel is small enough that the extra fill is cheap.
+    pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     pd.RasterizerState.DepthClipEnable = TRUE;
     pd.DepthStencilState.DepthEnable = TRUE;
     pd.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
@@ -401,6 +469,12 @@ bool CsRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     pd.SampleDesc.Count = 1;
 
     const HRESULT hr = device->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso_));
+    // Debug-only reverse comparison PSO (mc_er_csdepthflip.txt).
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pd_flip = pd;
+    pd_flip.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    if (FAILED(device->CreateGraphicsPipelineState(&pd_flip, IID_PPV_ARGS(&pso_depth_flip_)))) {
+        if (log_) log_("cs_render: depth-flip PSO creation failed");
+    }
     Rel(vs);
     Rel(ps);
     if (FAILED(hr)) {
@@ -409,15 +483,76 @@ bool CsRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
         return false;
     }
 
+    const size_t bone_cb_bytes = kBoneCbSlots * kBoneCbSlotBytes;
+    bone_cb_ = CreateMappedUploadBuffer(device, bone_cb_bytes, &bone_cb_mapped_);
+    if (!bone_cb_) {
+        if (log_) log_("cs_render: bone constant buffer creation failed");
+        release();
+        return false;
+    }
+    std::memset(bone_cb_mapped_, 0, bone_cb_bytes);
+    bone_cb_gpu_ = bone_cb_->GetGPUVirtualAddress();
+    bone_cb_slot_ = 0;
+
     if (log_) log_("cs_render: D3D12 Cook-Torrance PBR pipeline initialized successfully");
+    return true;
+}
+
+bool CsRenderer::ensureDepth(ID3D12Device* device, unsigned width, unsigned height) {
+    if (depth_tex_ && depth_w_ == width && depth_h_ == height) return true;
+    if (!device || width == 0 || height == 0) return false;
+
+    Rel(depth_tex_);
+    if (!dsv_heap_) {
+        D3D12_DESCRIPTOR_HEAP_DESC hd{};
+        hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+        hd.NumDescriptors = 1;
+        if (FAILED(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&dsv_heap_)))) return false;
+    }
+
+    D3D12_HEAP_PROPERTIES hp{};
+    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC rd{};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    rd.Width = width;
+    rd.Height = height;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1;
+    rd.Format = DXGI_FORMAT_D32_FLOAT;
+    rd.SampleDesc.Count = 1;
+    rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    D3D12_CLEAR_VALUE cv{};
+    cv.Format = DXGI_FORMAT_D32_FLOAT;
+    cv.DepthStencil.Depth = 1.0f;
+    if (FAILED(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                                               &cv, IID_PPV_ARGS(&depth_tex_)))) {
+        return false;
+    }
+    device->CreateDepthStencilView(depth_tex_, nullptr, dsv_heap_->GetCPUDescriptorHandleForHeapStart());
+    dsv_cpu_ = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
+    depth_w_ = width;
+    depth_h_ = height;
     return true;
 }
 
 void CsRenderer::release() {
     Rel(pso_);
+    Rel(pso_depth_flip_);
     Rel(root_);
     Rel(vb_);
     Rel(ib_);
+    Rel(depth_tex_);
+    Rel(dsv_heap_);
+    dsv_cpu_ = {};
+    depth_w_ = depth_h_ = 0;
+    device_ = nullptr;
+    if (bone_cb_mapped_ && bone_cb_) {
+        bone_cb_->Unmap(0, nullptr);
+    }
+    bone_cb_mapped_ = nullptr;
+    Rel(bone_cb_);
+    bone_cb_gpu_ = 0;
     knife_tex_.release();
     glove_tex_.release();
     knife_normal_tex_.release();
@@ -882,9 +1017,12 @@ bool CsRenderer::loadModel(ID3D12Device* device, const std::string& path) {
                    model_.submeshes.size(), model_.anim_clips.size());
     if (log_) {
         std::string names;
-        for (const auto& sub : model_.submeshes) {
+        for (size_t i = 0; i < model_.submeshes.size(); ++i) {
+            const auto& sub = model_.submeshes[i];
             if (!names.empty()) names += ", ";
             names += sub.bone_name;
+            log_("cs_render: submesh %zu '%s' first=%u base=%d count=%u flags=%u",
+                 i, sub.bone_name.c_str(), sub.first_index, sub.base_vertex, sub.index_count, sub.flags);
         }
         log_("cs_render: CSVM submeshes: %s", names.c_str());
     }
@@ -931,6 +1069,11 @@ bool CsRenderer::loadModel(ID3D12Device* device, const std::string& path) {
             submesh_types_[i] = SubmeshType::Arms;
         } else {
             submesh_types_[i] = SubmeshType::Base;
+        }
+    }
+    if (log_) {
+        for (size_t i = 0; i < model_.submeshes.size(); ++i) {
+            log_("cs_render: submesh %zu type=%d", i, static_cast<int>(submesh_types_[i]));
         }
     }
 
@@ -1050,6 +1193,31 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
                       D3D12_CPU_DESCRIPTOR_HANDLE dsv) {
     if (!ready()) return;
 
+    // Debug-only reverse-depth comparison (mc_er_csdepthflip.txt). Checked
+    // once per second so the file can be added or removed without a restart.
+    static bool depth_flip = false;
+    static uint64_t depth_flip_check = 0;
+    const uint64_t now_ms = GetTickCount64();
+    if (now_ms - depth_flip_check > 1000) {
+        depth_flip = std::filesystem::exists("mc_er_csdepthflip.txt");
+        depth_flip_check = now_ms;
+    }
+    const bool use_depth_flip = depth_flip && pso_depth_flip_ != nullptr;
+    const float clear_depth = use_depth_flip ? 0.0f : 1.0f;
+
+    // Always prefer the viewmodel's own D32 depth target. The external DSV is
+    // only a fallback, so the CS pass can never silently lose depth testing.
+    const bool dedicated_depth = ensureDepth(device_, width, height);
+    if (dedicated_depth) {
+        dsv = dsv_cpu_;
+    }
+    static bool depth_logged = false;
+    if (!depth_logged && log_) {
+        log_("cs_render: depth %s (%s)", dsv.ptr ? "ON" : "OFF",
+             dedicated_depth ? "dedicated D32" : "external DSV");
+        depth_logged = true;
+    }
+
     D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
     D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
     list->RSSetViewports(1, &vp);
@@ -1057,7 +1225,7 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
 
     if (dsv.ptr != 0) {
         list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-        list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+        list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, clear_depth, 0, 0, nullptr);
     } else {
         list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
     }
@@ -1075,7 +1243,7 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
     sleeve_normal_tex_.recordUpload(list);
     sleeve_pbr_tex_.recordUpload(list);
 
-    list->SetPipelineState(pso_);
+    list->SetPipelineState(use_depth_flip ? pso_depth_flip_ : pso_);
     list->SetGraphicsRootSignature(root_);
 
     if (srv_heap && tex_table.ptr != 0) {
@@ -1095,11 +1263,36 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
     const float light[4] = {0.35f, 0.85f, -0.40f, 0.0f};
     list->SetGraphicsRoot32BitConstants(0, 4, light, 32);
 
+    // CSVM v4 skinning palette. The sampled delta tracks already include the
+    // viewmodel bob, so skinned submeshes use an identity `world` and let the
+    // per-vertex weights apply the bone matrices.
+    const fp::M4 identity{};
+    const bool has_skinning = !model_.bones.empty() && bone_cb_mapped_ != nullptr;
+    const uint32_t bone_slot = bone_cb_slot_++ % kBoneCbSlots;
+    if (has_skinning) {
+        auto* dst = reinterpret_cast<mc::rig::Mat4*>(static_cast<uint8_t*>(bone_cb_mapped_) + bone_slot * kBoneCbSlotBytes);
+        for (uint32_t b = 0; b < kMaxSkinBones; ++b) dst[b] = mc::rig::Mat4{};
+        for (size_t b = 0; b < model_.bones.size() && b < kMaxSkinBones; ++b) {
+            const auto& bone = model_.bones[b];
+            const fp::M4* delta = animator_.currentPose().findTrack(bone.name);
+            // The shader consumes row-vector host matrices; toHost applies the
+            // transpose and the z mirror exactly as it does for `world`.
+            const fp::M4 skin = delta ? fp::mul(*delta, bone.rest) : bone.rest;
+            dst[b] = fp::toHost(skin);
+        }
+    }
+    // Always bind the palette root parameter, even for legacy models: D3D12
+    // validation requires it to be set once the root signature declares it.
+    if (bone_cb_gpu_ != 0) {
+        list->SetGraphicsRootConstantBufferView(2, bone_cb_gpu_ + bone_slot * kBoneCbSlotBytes);
+    }
+
     for (size_t i = 0; i < model_.submeshes.size(); ++i) {
         const auto& sub = model_.submeshes[i];
         const auto type = (i < submesh_types_.size()) ? submesh_types_[i] : SubmeshType::Base;
+        const bool skinned_submesh = sub.skinned() && has_skinning;
 
-        fp::M4 pose = animator_.basePose();
+        fp::M4 pose = skinned_submesh ? identity : animator_.basePose();
         float tint[4] = {0.25f, 0.25f, 0.28f, 1.0f};
         const float is_arm = (type == SubmeshType::Sleeve) ? 3.0f
                            : (type == SubmeshType::BareArm) ? 2.0f
@@ -1108,38 +1301,41 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
         // CSVM v3: a submesh follows the animation track named after its bone.
         // Knife arms_glove maps to the legacy "arms" track; gun arms_L/arms_R
         // map to their own hand tracks so each hand follows its clip bone.
-        std::string track_name = sub.bone_name;
-        if (track_name == "arms_glove") track_name = "arms";
-        else if (track_name == "arms_L") track_name = "hand_L";
-        else if (track_name == "arms_R") track_name = "hand_R";
+        // CSVM v4 skinned submeshes use the bone palette instead.
+        if (!skinned_submesh) {
+            std::string track_name = sub.bone_name;
+            if (track_name == "arms_glove") track_name = "arms";
+            else if (track_name == "arms_L") track_name = "hand_L";
+            else if (track_name == "arms_R") track_name = "hand_R";
 
-        if (const fp::M4* tracked = animator_.currentPose().findTrack(track_name)) {
-            pose = *tracked;
-        } else {
-            switch (type) {
-                case SubmeshType::Blade:
-                    pose = animator_.bladePose();
-                    break;
-                case SubmeshType::HandleFront:
-                    pose = animator_.handleFrontPose();
-                    break;
-                case SubmeshType::HandleRear:
-                    pose = animator_.handleRearPose();
-                    break;
-                case SubmeshType::Lock:
-                    pose = animator_.lockPose();
-                    break;
-                case SubmeshType::BareArm:
-                case SubmeshType::Arms:
-                    pose = animator_.armsPose();
-                    break;
-                case SubmeshType::Sleeve:
-                    pose = animator_.armsPose();
-                    break;
-                case SubmeshType::Base:
-                default:
-                    pose = animator_.basePose();
-                    break;
+            if (const fp::M4* tracked = animator_.currentPose().findTrack(track_name)) {
+                pose = *tracked;
+            } else {
+                switch (type) {
+                    case SubmeshType::Blade:
+                        pose = animator_.bladePose();
+                        break;
+                    case SubmeshType::HandleFront:
+                        pose = animator_.handleFrontPose();
+                        break;
+                    case SubmeshType::HandleRear:
+                        pose = animator_.handleRearPose();
+                        break;
+                    case SubmeshType::Lock:
+                        pose = animator_.lockPose();
+                        break;
+                    case SubmeshType::BareArm:
+                    case SubmeshType::Arms:
+                        pose = animator_.armsPose();
+                        break;
+                    case SubmeshType::Sleeve:
+                        pose = animator_.armsPose();
+                        break;
+                    case SubmeshType::Base:
+                    default:
+                        pose = animator_.basePose();
+                        break;
+                }
             }
         }
 
@@ -1149,10 +1345,24 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
                            : (knife_tex_.tex != nullptr);
         eldenring::cs::getEffectiveSubmeshTint(type, has_tex, tint);
 
-        const mc::rig::Mat4 world = fp::toHost(pose);
+        // Debug: mc_er_cssleeve.txt in the game folder tints the bare arm
+        // blue, the sleeve magenta and the glove green, so the overlap is
+        // directly visible in a screenshot.
+        const bool sleeve_debug = std::filesystem::exists("mc_er_cssleeve.txt");
+        if (sleeve_debug) {
+            if (type == SubmeshType::Sleeve) {
+                tint[0] = 1.0f; tint[1] = 0.0f; tint[2] = 1.0f; tint[3] = 1.0f;
+            } else if (type == SubmeshType::Arms) {
+                tint[0] = 0.0f; tint[1] = 1.0f; tint[2] = 0.0f; tint[3] = 1.0f;
+            } else if (type == SubmeshType::BareArm) {
+                tint[0] = 0.0f; tint[1] = 0.2f; tint[2] = 1.0f; tint[3] = 1.0f;
+            }
+        }
+
+        const mc::rig::Mat4 world = skinned_submesh ? mc::rig::Mat4{} : fp::toHost(pose);
         list->SetGraphicsRoot32BitConstants(0, 16, world.m.data(), 16);
         list->SetGraphicsRoot32BitConstants(0, 4, tint, 36);
-        const float arm_param[4] = {is_arm, 0.0f, 0.0f, 0.0f};
+        const float arm_param[4] = {is_arm, skinned_submesh ? 1.0f : 0.0f, 0.0f, 0.0f};
         list->SetGraphicsRoot32BitConstants(0, 4, arm_param, 40);
 
         list->DrawIndexedInstanced(sub.index_count, 1, sub.first_index, sub.base_vertex, 0);

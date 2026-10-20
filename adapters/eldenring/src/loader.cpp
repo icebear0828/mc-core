@@ -2141,11 +2141,11 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     out.show = have_state && !ms.menu_focused && !ms.popup_open && !ls.screen_loading && fade < 0.02f;
 
     if (g_hide_native.load()) {
-#if ENABLE_CS2_VIEWMODEL
+        // Hide the native body in MC and CS mode. The collector in
+        // hud_bridge.cpp is RTTI-validated, so a weapon switch that leaves a
+        // stale part pointer cannot turn a display-flag write into a vtable
+        // overwrite (the 0x200000001 crash).
         const bool want_hidden = (out.mc_mode || out.cs_mode) && have_state && !ls.screen_loading;
-#else
-        const bool want_hidden = out.mc_mode && have_state && !ls.screen_loading;
-#endif
         g_native_hide_wanted.store(want_hidden);
         UpdateNativeModel(static_cast<uintptr_t>(player), want_hidden);
         static uint64_t last_report_ms = 0;
