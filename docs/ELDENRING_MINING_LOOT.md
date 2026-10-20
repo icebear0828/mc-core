@@ -167,11 +167,11 @@ uv run --with pillow --with pytest python -m pytest tests/test_mining_assets.py 
    日志。剩下的是实机采集六个区域的 material id，再用 `zone_mat_<id>=<zone>` 固化；area 与地图
    区域名（Limgrave/Liurnia/…）的对应表也还没做。证据见 `ELDENRING_REVERSE.md` §45。
 2. ~~**地面裂纹与碎屑粒子**~~（**已完成，待实机验收**）：复用方块挖掘的 `destroy_stage_0..9`
-   贴图，在射线命中点按法线贴一个 0.9 m 的裂纹四边形（`TerrainMiningOverlay`，抬高量可配）；
-   每 0.25 s 打击和破坏时调用现有 `FxKind::Dust` 粒子（破坏时 3 连发）。裂纹/Dust 优先锚定在
-   **玩家脚下**：从脚上方 0.5 m 向下打一条 5.5 m 静态射线；如果准星命中点比脚下低超过 0.5 m
-   （站在石台/高处、挖下面的地面），则改用准星命中点；脚下 2 m 内没有地面时也回退到准星命中点。
-   掉落材质跟随选中的锚点。石/土/木/金属的**不同颜色**碎屑还没分，目前统一是灰色 Dust。
+   贴图，在**准星射线命中点**按法线贴一个 0.9 m 的裂纹四边形（`TerrainMiningOverlay`，抬高量可配）；
+   每 0.25 s 打击和破坏时调用现有 `FxKind::Dust` 粒子（破坏时 3 连发）。裂纹、Dust、掉落材质都跟随
+   准星命中点。`mc_er_zoneprobe.txt` 存在时每次挖掘会写一行 `GROUNDANCHOR: feet=(...) aim=(...) n=(...)
+   lift=... mat=...`，用来量化「碰撞面 vs 视觉地面」的高度差。石/土/木/金属的**不同颜色**碎屑还没分，
+   目前统一是灰色 Dust。
 3. **`random.pop` 音效**：提取音效列表里没有这个事件，拾取暂时用 `entity.experience_orb.pickup`。要完全还原可把 `random.pop` 加进 `tools/extract_mc_sounds.py` 的 `EVENTS` 后重新提取。
 4. ~~**镐的图标**~~（**已完成**）：木/石/铁/金/下界合金镐各自有 16×16 图集格子（`item_*_pickaxe`），
    来源是 client.jar 的 `item/*_pickaxe.png`；ER/Sekiro 的 `uvForItem` 与手持模型样式（`Handheld`、平面精灵）
