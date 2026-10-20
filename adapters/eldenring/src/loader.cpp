@@ -1340,6 +1340,14 @@ bool StepMining(float dt, bool left_held) {
         SendBlockMesh(std::nullopt);
         return false;
     }
+    // Never cast a world ray or touch the overlay while the game is loading or a menu is open: the
+    // Havok world is in transition there, and the load screen is where the crash happened.
+    if (!WantSuppress()) {
+        g_mining.reset();
+        g_ground_mining.reset();
+        SendBlockMesh(std::nullopt, std::nullopt);
+        return false;
+    }
     const BlockTarget t = FindBlockTarget();
     mc::BlockId id = mc::BlockId::Air;
     if (t.have && t.on_block) {
