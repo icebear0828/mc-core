@@ -327,62 +327,6 @@ TEST(EldenRingCamera, ReadsMatrixAndVerticalFov) {
     EXPECT_FLOAT_EQ(c.fov_y, 0.8378f);
 }
 
-TEST(EldenRingCamera, AppliesTheFirstPersonPitchOverride) {
-    struct Guard {
-        ~Guard() {
-            cameraPitchOverride().active.store(false);
-            cameraPitchOverride().down_delta_deg.store(0.f);
-            cameraPitchOverride().game_down_deg.store(0.f);
-        }
-    } guard;
-    const float pos[3] = {0, 0, 0};
-    const Mem m = makeCamera(0.8f, pos);
-
-    cameraPitchOverride().down_delta_deg.store(30.f);
-    cameraPitchOverride().active.store(true);
-    CameraPose c;
-    ASSERT_TRUE(readCamera(m, kBase, 0x7ff500000000ull, c));
-    EXPECT_NEAR(c.forward[1], -0.5f, 1e-4f);       // looking 30 degrees down
-    EXPECT_NEAR(c.forward[2], 0.8660254f, 1e-4f);
-    EXPECT_NEAR(c.up[1], 0.8660254f, 1e-4f);
-
-    cameraPitchOverride().active.store(false);
-    cameraPitchOverride().down_delta_deg.store(0.f);
-    ASSERT_TRUE(readCamera(m, kBase, 0x7ff500000000ull, c));
-    EXPECT_FLOAT_EQ(c.forward[1], 0.f);
-    EXPECT_FLOAT_EQ(c.forward[2], 1.f);
-}
-
-// The camera step writes the extended rotation into ChrCam itself; a read that sees those axes must not rotate again.
-TEST(EldenRingCamera, DoesNotStackThePitchOverrideOnExtendedAxes) {
-    struct Guard {
-        ~Guard() {
-            cameraPitchOverride().active.store(false);
-            cameraPitchOverride().down_delta_deg.store(0.f);
-            cameraPitchOverride().game_down_deg.store(0.f);
-        }
-    } guard;
-    const float pos[3] = {0, 0, 0};
-    Mem m = makeCamera(0.8f, pos);
-    // The extended basis for 30 degrees down (rotateDown on a level basis).
-    const float up[3] = {0.f, 0.8660254f, 0.5f};
-    const float forward[3] = {0.f, -0.5f, 0.8660254f};
-    const uintptr_t cam = 0x7ff500100000ull;
-    for (int i = 0; i < 3; ++i) {
-        m.put<float>(cam + layout::kCamMatrix + (4 + i) * 4, up[i]);
-        m.put<float>(cam + layout::kCamMatrix + (8 + i) * 4, forward[i]);
-    }
-    cameraPitchOverride().game_down_deg.store(0.f);
-    cameraPitchOverride().down_delta_deg.store(30.f);
-    cameraPitchOverride().active.store(true);
-
-    CameraPose c;
-    ASSERT_TRUE(readCamera(m, kBase, 0x7ff500000000ull, c));
-    EXPECT_NEAR(c.forward[1], -0.5f, 1e-4f);
-    EXPECT_NEAR(c.forward[2], 0.8660254f, 1e-4f);
-    EXPECT_NEAR(c.up[1], 0.8660254f, 1e-4f);
-}
-
 TEST(EldenRingCamera, RejectsWrongClassBadFovAndNonFinite) {
     const float pos[3] = {0, 0, 0};
     CameraPose c;

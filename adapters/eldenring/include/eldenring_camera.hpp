@@ -5,9 +5,7 @@
 // at +0x50 (A). Left-handed: R x U = +F, Forward points where the camera looks.
 
 #include "eldenring_rtti.hpp"
-#include "eldenring_fp_camera.hpp"
 
-#include <atomic>
 #include <cmath>
 #include <optional>
 
@@ -24,21 +22,6 @@ struct CameraPose {
     float right[3]{}, up[3]{}, forward[3]{}, position[3]{};
     float fov_y{0.f}; // radians, vertical
 };
-
-// First-person pitch extension published by the adapter after the camera step. The adapter writes the extended
-// rotation into ChrCam (and restores the engine's own axes before the next camera step); readCamera applies the
-// offset only when it lands in the short restore window and still sees the engine's own axes.
-// Set on the game thread, read on the render and key threads.
-struct CameraPitchOverride {
-    std::atomic<bool> active{false};
-    std::atomic<float> down_delta_deg{0.f};
-    std::atomic<float> game_down_deg{0.f}; // the engine's own pitch the offset was measured from
-};
-
-inline CameraPitchOverride& cameraPitchOverride() {
-    static CameraPitchOverride override;
-    return override;
-}
 
 inline bool readCamera(const IMemoryReader& reader, uintptr_t image_base, uintptr_t world_chr_man, CameraPose& out) {
     uint64_t cam = 0;
@@ -61,16 +44,6 @@ inline bool readCamera(const IMemoryReader& reader, uintptr_t image_base, uintpt
     }
     p.fov_y = fov;
     out = p;
-    const CameraPitchOverride& pitch = cameraPitchOverride();
-    if (pitch.active.load(std::memory_order_relaxed)) {
-        const float delta = pitch.down_delta_deg.load(std::memory_order_relaxed);
-        // ChrCam normally already holds the extended rotation; only a read that lands in the restore window (the
-        // engine's own axes are back for the camera step) needs the offset applied here.
-        if (fpcam::pitchExtensionMissing(fpcam::downPitchDeg(out.forward),
-                                         pitch.game_down_deg.load(std::memory_order_relaxed), delta)) {
-            fpcam::rotateDown(out.up, out.forward, delta);
-        }
-    }
     return true;
 }
 

@@ -38,9 +38,6 @@ bool RightHeld();
 int TakeWheelNotches();
 // Mouse movement (counts) since the last call, read before any suppression. Drives the inventory's virtual cursor.
 void TakeMouseDelta(int& dx, int& dy);
-// The same mouse movement for the first-person pitch extension. Independent of TakeMouseDelta, so the inventory
-// cursor and the camera never consume each other's input.
-void TakeCameraMouseDelta(int& dx, int& dy);
 // While on, the game's mouse reads show no movement and no wheel (the inventory is open and owns the mouse).
 void SetSuppressMouseMotion(bool on);
 // While on, the game's keyboard reads show nothing pressed (the inventory is open: no walking, rolling, Esc menu...).
