@@ -103,6 +103,33 @@ TEST(EldenRingControlPolicy, VanillaRollKeysAreMasked) {
     EXPECT_TRUE(masksKey(plan, eldenring::roll::kDikRShift));
 }
 
+TEST(EldenRingControlPolicy, BlockMovementOwnsWasdAndMasksIt) {
+    ModeInputs in;
+    in.mc_mode = true;
+    in.native_input_allowed = true;
+    in.block_movement = true;
+    in.block_move_keys =
+        std::span<const int>(eldenring::control::kBlockMoveKeys, std::size(eldenring::control::kBlockMoveKeys));
+
+    const mc::ControlPlan plan = buildControlPlan(in);
+    EXPECT_TRUE(plan.owns(mc::ControlDomain::Movement));
+    for (const int key : eldenring::control::kBlockMoveKeys) EXPECT_TRUE(masksKey(plan, key));
+}
+
+TEST(EldenRingControlPolicy, BlockMovementDoesNotMaskWhenTheInventoryIsOpen) {
+    ModeInputs in;
+    in.mc_mode = true;
+    in.native_input_allowed = true;
+    in.inventory_open = true;
+    in.block_movement = true;
+    in.block_move_keys =
+        std::span<const int>(eldenring::control::kBlockMoveKeys, std::size(eldenring::control::kBlockMoveKeys));
+
+    const mc::ControlPlan plan = buildControlPlan(in);
+    EXPECT_FALSE(plan.owns(mc::ControlDomain::Movement));
+    for (const int key : eldenring::control::kBlockMoveKeys) EXPECT_FALSE(masksKey(plan, key));
+}
+
 TEST(EldenRingControlPolicy, CreativeFlightMasksItsMovementKeys) {
     ModeInputs in;
     in.mc_mode = true;

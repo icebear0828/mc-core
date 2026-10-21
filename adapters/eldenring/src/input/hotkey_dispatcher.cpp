@@ -313,6 +313,9 @@ void HotkeyDispatcher::tick(float dt) {
     control_inputs.mc_jump = mode.mc_jump.load(std::memory_order_relaxed);
     control_inputs.disable_vanilla_roll = mode.disable_vanilla_roll.load(std::memory_order_relaxed);
     control_inputs.flying = mode.flying.load(std::memory_order_relaxed);
+    control_inputs.block_movement = mode.block_supported.load(std::memory_order_relaxed);
+    control_inputs.block_move_keys =
+        std::span<const int>(eldenring::control::kBlockMoveKeys, std::size(eldenring::control::kBlockMoveKeys));
 
     roll::RollMaskResult roll_mask{};
     if (control_inputs.disable_vanilla_roll && mc_on && fg && !inv_open_for_policy) {

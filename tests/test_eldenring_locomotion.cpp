@@ -252,9 +252,12 @@ TEST(EldenRingLocomotion, JumpTakeoffTrajectoryAndCeilingResolution) {
     // Initial state: controller inactive
     EXPECT_FALSE(loco.jumpController().isActive());
 
-    // Press jump key
+    // Press jump key: the first frame only arms the press; the jump starts after a 25 ms hold (spurious
+    // single-frame edges used to start jumps the player never asked for).
     keys_down[VK_SPACE] = true;
     loco.stepJump(0.016f, 1000, ctx);
+    EXPECT_FALSE(loco.jumpController().isActive());
+    loco.stepJump(0.016f, 1030, ctx);
 
     // Takeoff confirmed
     EXPECT_TRUE(loco.jumpController().isActive());
@@ -269,7 +272,7 @@ TEST(EldenRingLocomotion, JumpTakeoffTrajectoryAndCeilingResolution) {
 
     // Step jump upwards towards ceiling
     for (int i = 0; i < 15 && !ceiling_hit; ++i) {
-        loco.stepJump(0.016f, 1000 + (i + 1) * 16, ctx);
+        loco.stepJump(0.016f, 1030 + (i + 1) * 16, ctx);
     }
 
     EXPECT_TRUE(ceiling_hit);

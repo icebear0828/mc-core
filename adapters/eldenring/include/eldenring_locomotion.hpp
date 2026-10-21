@@ -162,6 +162,10 @@ private:
     std::atomic<float> mc_jump_speed_{eldenring::jump::kMcJumpInitialVelocity};
     bool prev_jump_key_{false};
     uint64_t jump_start_ms_{0};
+    // A jump needs the key held for a couple of frames. A single-frame spurious edge (input state toggling
+    // while the window gains focus, or touching a block) used to start a jump the player never asked for.
+    uint64_t jump_press_ms_{0};
+    bool jump_consumed_{false};
     eldenring::jump::MinecraftJumpController jump_controller_;
 
     // Sprint & fall timer state

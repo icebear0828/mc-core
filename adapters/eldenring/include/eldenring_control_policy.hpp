@@ -15,6 +15,11 @@
 
 namespace eldenring::control {
 
+// DirectInput scan codes for WASD. While the player stands on a placed block the mod's position drive is the
+// only mover, so these are hidden from the native character controller (otherwise both move the player and
+// the effective speed is about 2x).
+inline constexpr int kBlockMoveKeys[] = {0x11 /*W*/, 0x1E /*A*/, 0x1F /*S*/, 0x20 /*D*/};
+
 struct ModeInputs {
     bool foreground{true};
     bool input_enabled{true};
@@ -26,6 +31,9 @@ struct ModeInputs {
 
     bool mc_jump{false};
     int mc_jump_scan{0}; // 0 = do not mask the jump key
+
+    bool block_movement{false}; // standing on a placed block: the position drive owns movement
+    std::span<const int> block_move_keys{}; // DirectInput scan codes
 
     bool disable_vanilla_roll{false};
     std::span<const int> roll_keys{}; // DirectInput scan codes
@@ -81,6 +89,15 @@ inline mc::ControlPlan buildControlPlan(const ModeInputs& in) {
             for (const int key : in.roll_keys) {
                 if (key > 0) resolver.request(mc::ControlDomain::Key, mc::ControlAuthority::Mod, 100, key, "mc roll");
             }
+        }
+    }
+
+    // On a placed block the direct position drive is the only mover. Hide WASD from the native controller,
+    // otherwise it adds its own movement and the player walks at roughly twice the configured speed.
+    if (in.block_movement && in.mc_mode && in.foreground && !in.inventory_open && in.native_input_allowed) {
+        resolver.request(mc::ControlDomain::Movement, mc::ControlAuthority::Mod, 80, 0, "block movement");
+        for (const int key : in.block_move_keys) {
+            if (key > 0) resolver.request(mc::ControlDomain::Key, mc::ControlAuthority::Mod, 80, key, "block movement");
         }
     }
 

@@ -41,6 +41,8 @@ void PlayerLocomotion::resetForTesting() {
     mc_jump_speed_.store(eldenring::jump::kMcJumpInitialVelocity, std::memory_order_relaxed);
     prev_jump_key_ = false;
     jump_start_ms_ = 0;
+    jump_press_ms_ = 0;
+    jump_consumed_ = false;
     jump_controller_.cancel();
 
     sprint_boost_.store(2.5f, std::memory_order_relaxed);
@@ -278,6 +280,7 @@ void PlayerLocomotion::stepJump(float dt, uint64_t now_ms, RuntimeContext& ctx) 
     if (!mc_jump_.load(std::memory_order_relaxed) || !ctx.mode().mc_mode.load(std::memory_order_relaxed) ||
         ctx.ui().inv_open.load(std::memory_order_relaxed) || !fg) {
         prev_jump_key_ = false;
+        jump_consumed_ = true; // a key held across a menu/focus change must be released before it jumps again
         jump_controller_.cancel();
         ctx.player().jump_active.store(false, std::memory_order_relaxed);
         return;
@@ -301,8 +304,15 @@ void PlayerLocomotion::stepJump(float dt, uint64_t now_ms, RuntimeContext& ctx) 
     }
 
     const bool down = isKeyDown(mc_jump_vk_.load(std::memory_order_relaxed));
-    const bool edge = down && !prev_jump_key_;
+    if (down && !prev_jump_key_) {
+        jump_press_ms_ = now_ms;
+        jump_consumed_ = false;
+    }
+    if (!down) jump_consumed_ = false;
     prev_jump_key_ = down;
+    const bool held = down && jump_press_ms_ != 0 && now_ms >= jump_press_ms_ &&
+                      (now_ms - jump_press_ms_) >= 25;
+    const bool edge = held && !jump_consumed_;
 
     uint8_t ground = 0;
     if (callbacks_.safe_read) {
@@ -353,6 +363,7 @@ void PlayerLocomotion::stepJump(float dt, uint64_t now_ms, RuntimeContext& ctx) 
 
             jump_controller_.start(feet[1], init_vx, init_vz, sprinting, mc_jump_speed_.load(std::memory_order_relaxed));
             jump_start_ms_ = now_ms;
+            jump_consumed_ = true;
             ctx.player().jump_active.store(true, std::memory_order_relaxed);
             log("mcjump: start at y=%.3f, v=%.2f m/s, sprint=%d, h_speed=%.2f m/s",
                 feet[1], jump_controller_.vy(), sprinting ? 1 : 0,
