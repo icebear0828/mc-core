@@ -194,3 +194,25 @@ TEST(EldenRingFpCamera, ResetForgetsTheOffsetAndTheSeed) {
     EXPECT_FALSE(pitch.seeded());
     EXPECT_FLOAT_EQ(pitch.offsetDeg(), 0.f);
 }
+
+TEST(EldenRingFpCamera, PitchExtensionMissingDistinguishesTheEngineAxesFromTheExtendedOnes) {
+    // The engine's own pitch is 70 degrees and the extension adds 20: an aim that still reads 70 needs the offset,
+    // one that already reads 90 has it.
+    EXPECT_TRUE(pitchExtensionMissing(70.f, 70.f, 20.f));
+    EXPECT_FALSE(pitchExtensionMissing(90.f, 70.f, 20.f));
+    // A reader that lands a few frames after the measurement still sees the extended axes.
+    EXPECT_FALSE(pitchExtensionMissing(88.f, 70.f, 20.f));
+    // No extension at all: neither branch may rotate.
+    EXPECT_FALSE(pitchExtensionMissing(70.f, 70.f, 0.f));
+    EXPECT_FALSE(pitchExtensionMissing(12.f, 12.f, 0.f));
+}
+
+TEST(EldenRingFpCamera, PitchOffsetReportsTheGameDeltaItMeasured) {
+    PitchOffset pitch;
+    pitch.update(0.f, 30.f);
+    EXPECT_NEAR(pitch.update(10.f, 30.5f), 30.5f, kTolerance);
+    EXPECT_NEAR(pitch.gameDeltaDeg(), 0.5f, kTolerance);
+
+    pitch.reset();
+    EXPECT_FLOAT_EQ(pitch.gameDeltaDeg(), 0.f);
+}

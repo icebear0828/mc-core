@@ -25,13 +25,14 @@ struct CameraPose {
     float fov_y{0.f}; // radians, vertical
 };
 
-// First-person pitch extension published by the adapter after the camera step. readCamera applies it to the
-// forward/up vectors, so every consumer (aim, bow, mining, viewmodel) sees the same view as the renderer even
-// while the engine's own clamped axes are back in ChrCam for the camera controller. Set on the game thread,
-// read on the render and key threads.
+// First-person pitch extension published by the adapter after the camera step. The adapter writes the extended
+// rotation into ChrCam (and restores the engine's own axes before the next camera step); readCamera applies the
+// offset only when it lands in the short restore window and still sees the engine's own axes.
+// Set on the game thread, read on the render and key threads.
 struct CameraPitchOverride {
     std::atomic<bool> active{false};
     std::atomic<float> down_delta_deg{0.f};
+    std::atomic<float> game_down_deg{0.f}; // the engine's own pitch the offset was measured from
 };
 
 inline CameraPitchOverride& cameraPitchOverride() {
@@ -62,7 +63,13 @@ inline bool readCamera(const IMemoryReader& reader, uintptr_t image_base, uintpt
     out = p;
     const CameraPitchOverride& pitch = cameraPitchOverride();
     if (pitch.active.load(std::memory_order_relaxed)) {
-        fpcam::rotateDown(out.up, out.forward, pitch.down_delta_deg.load(std::memory_order_relaxed));
+        const float delta = pitch.down_delta_deg.load(std::memory_order_relaxed);
+        // ChrCam normally already holds the extended rotation; only a read that lands in the restore window (the
+        // engine's own axes are back for the camera step) needs the offset applied here.
+        if (fpcam::pitchExtensionMissing(fpcam::downPitchDeg(out.forward),
+                                         pitch.game_down_deg.load(std::memory_order_relaxed), delta)) {
+            fpcam::rotateDown(out.up, out.forward, delta);
+        }
     }
     return true;
 }

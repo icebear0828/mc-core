@@ -328,12 +328,16 @@ struct CamKeep {
     uintptr_t pos_addr{0};
     float third_person[3]{};
     bool valid{false};
+    uintptr_t axes_addr{0};
+    float axes[12]{}; // the engine's own right/up/forward rows, put back before the next camera step
+    bool axes_valid{false};
 };
 CamKeep g_cam_keep;
 // First-person pitch extension: the game's camera controller clamps the pitch (the third-person spring arm must not go
-// under the ground), so first person cannot look at the feet. The camera step measures the game's own pitch and
-// publishes an offset through cameraPitchOverride(); readCamera and the render copy hook apply it, and ChrCam itself
-// is never written, so the camera controller never sees the offset. mc_er_steve.txt:
+// under the ground), so first person cannot look at the feet. The camera step measures the game's own pitch, writes the
+// extended rotation into ChrCam for the render copy, and puts the engine's own axes back before the next camera step;
+// the offset is published through cameraPitchOverride() as well, for reads that land in that restore window.
+// mc_er_steve.txt:
 //   fp_pitch=1                     master switch
 //   fp_pitch_deg_per_count=<k>     0 = calibrate from the game's own response (handles inverted Y)
 //   fp_pitch_max_deg=<30..90>      how far the view may go past level (capped at 89.9)
@@ -609,6 +613,10 @@ bool ChrCamPosAddress(uintptr_t& addr) {
 }
 
 void RestoreCamKeep() {
+    if (g_cam_keep.axes_valid) {
+        SafeWrite(g_cam_keep.axes_addr, g_cam_keep.axes, sizeof(g_cam_keep.axes));
+        g_cam_keep.axes_valid = false;
+    }
     if (!g_cam_keep.valid) return;
     WriteBytesSafe(g_cam_keep.pos_addr, g_cam_keep.third_person, sizeof(g_cam_keep.third_person));
     g_cam_keep.valid = false;
@@ -631,24 +639,44 @@ void AfterCameraStep(bool have_before, uintptr_t addr, const float before[3]) {
         float feet[3];
         if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) {
             firstPersonEye(feet, g_eye_height.load(), eye);
-            // Read the engine's own rotation to measure its pitch; never write it back. The effective pitch is
-            // published through cameraPitchOverride() and applied by readCamera and the render copy hook, so the
-            // camera controller never sees our offset and gameplay reads cannot land on a restored frame.
+            // Read the engine's own rotation to measure its pitch, then write the extended rotation into ChrCam for the
+            // render copy. The engine's own axes go back in RestoreCamKeep() before the next camera step, so the camera
+            // controller never sees the offset. The offset is also published through cameraPitchOverride(), for reads
+            // that land in that restore window (the key thread's aim) and as the render copy's fallback.
             const uintptr_t axes_addr = addr - 0x30; // kCamMatrix is 0x10; the position is 0x30 into the matrix
             float axes[12];
             const bool have_axes = SafeCopy(axes_addr, axes, sizeof(axes));
             const bool pitch_active = have_axes && g_mc_mode.load(std::memory_order_relaxed) &&
                                       g_fp_pitch_enabled.load(std::memory_order_relaxed) &&
                                       !g_inv_open.load(std::memory_order_relaxed) && WantSuppress();
-            float game_down = 0.f, effective_down = 0.f;
+            float game_down = 0.f, effective_down = 0.f, delta = 0.f;
             eldenring::live::CameraPitchOverride& pitch = eldenring::live::cameraPitchOverride();
             if (pitch_active) {
                 game_down = eldenring::fpcam::downPitchDeg(&axes[8]);
                 effective_down = g_fp_pitch.update(static_cast<float>(raw_dy), game_down);
-                pitch.down_delta_deg.store(effective_down - game_down, std::memory_order_relaxed);
+                delta = effective_down - game_down;
+                pitch.game_down_deg.store(game_down, std::memory_order_relaxed);
+                pitch.down_delta_deg.store(delta, std::memory_order_relaxed);
                 pitch.active.store(true, std::memory_order_relaxed);
+                if (delta != 0.f) {
+                    float extended[12];
+                    std::memcpy(extended, axes, sizeof(extended));
+                    eldenring::fpcam::rotateDown(&extended[4], &extended[8], delta);
+                    if (SafeWrite(axes_addr, extended, sizeof(extended))) {
+                        g_cam_keep.axes_addr = axes_addr;
+                        std::memcpy(g_cam_keep.axes, axes, sizeof(g_cam_keep.axes));
+                        g_cam_keep.axes_valid = true;
+                    } else {
+                        static unsigned axis_fail_logs = 0;
+                        if (++axis_fail_logs <= 4 || axis_fail_logs % 1200 == 0) {
+                            Log("fp pitch: could not write the extended axes at %p (%u time(s))",
+                                reinterpret_cast<void*>(axes_addr), axis_fail_logs);
+                        }
+                    }
+                }
             } else {
                 g_fp_pitch.reset();
+                pitch.game_down_deg.store(0.f, std::memory_order_relaxed);
                 pitch.down_delta_deg.store(0.f, std::memory_order_relaxed);
                 pitch.active.store(false, std::memory_order_relaxed);
             }
@@ -659,9 +687,22 @@ void AfterCameraStep(bool have_before, uintptr_t addr, const float before[3]) {
                 g_cam_keep.valid = true;
                 wrote = true;
                 static unsigned pitch_logs = 0;
-                if (pitch_active && (++pitch_logs <= 8 || pitch_logs % 600 == 0)) {
+                if (pitch_active && (++pitch_logs <= 8 || pitch_logs % 300 == 0)) {
                     Log("fp pitch: game=%.1f offset=%.1f effective=%.1f dy=%d k=%.4f", game_down, g_fp_pitch.offsetDeg(),
                         effective_down, raw_dy, g_fp_pitch.degPerCount());
+                }
+                // The clamp itself: the mouse moved but the engine's pitch did not. This is where the offset starts to
+                // grow, and the line that shows the extension is doing its job.
+                static unsigned clamp_logs = 0;
+                static uint64_t last_clamp_log_ms = 0;
+                const uint64_t now_ms = GetTickCount64();
+                if (pitch_active && std::abs(raw_dy) >= 3 && std::fabs(g_fp_pitch.gameDeltaDeg()) < 0.1f &&
+                    now_ms - last_clamp_log_ms > 1000) {
+                    last_clamp_log_ms = now_ms;
+                    if (++clamp_logs <= 6 || clamp_logs % 60 == 0) {
+                        Log("fp pitch clamp: game=%.1f offset=%.1f effective=%.1f dy=%d k=%.4f", game_down,
+                            g_fp_pitch.offsetDeg(), effective_down, raw_dy, g_fp_pitch.degPerCount());
+                    }
                 }
             }
         }
@@ -2192,10 +2233,24 @@ void SetupGameHooksCallbacks() {
                     std::memcpy(modified, saved_axes, sizeof(modified));
                     bool changed_axes = false;
                     const eldenring::live::CameraPitchOverride& pitch = eldenring::live::cameraPitchOverride();
+                    const float engine_down = eldenring::fpcam::downPitchDeg(&saved_axes[8]);
                     if (pitch.active.load(std::memory_order_relaxed)) {
-                        eldenring::fpcam::rotateDown(&modified[4], &modified[8],
-                                                    pitch.down_delta_deg.load(std::memory_order_relaxed));
-                        changed_axes = true;
+                        const float delta = pitch.down_delta_deg.load(std::memory_order_relaxed);
+                        // The camera step already wrote the extended rotation into ChrCam, so this copy normally sees it.
+                        // Apply the offset here only when the copy still sees the engine's own axes (the write failed,
+                        // or the camera step has not run yet); the same check keeps the two from stacking.
+                        const bool missing = eldenring::fpcam::pitchExtensionMissing(
+                            engine_down, pitch.game_down_deg.load(std::memory_order_relaxed), delta);
+                        if (missing) {
+                            eldenring::fpcam::rotateDown(&modified[4], &modified[8], delta);
+                            changed_axes = true;
+                        }
+                        static uint64_t last_pitch_log_ms = 0;
+                        const uint64_t now_ms = GetTickCount64();
+                        if (now_ms - last_pitch_log_ms > 2000) {
+                            last_pitch_log_ms = now_ms;
+                            Log("rcc pitch: engine_down=%.1f delta=%.1f applied=%d", engine_down, delta, missing ? 1 : 0);
+                        }
                     }
 
                     float hurt = 0.f, side = 1.f;

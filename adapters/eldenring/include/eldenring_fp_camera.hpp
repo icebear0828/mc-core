@@ -33,6 +33,14 @@ inline constexpr float kDefaultMaxPitchDeg = 89.9f;   // never exactly 90: movem
 inline constexpr float kMinMaxPitchDeg = 30.f;
 inline constexpr float kMaxMaxPitchDeg = 89.9f;       // onto the ground plane, and a vertical forward has no heading
 
+// The adapter puts the engine's own axes back just before each camera step and extends them right after it, so a
+// reader on another thread (or the render copy later in the frame) can land in the short window where the axes are
+// still the engine's own. `game_down_deg` is the pitch the offset was measured from, so the axes are the engine's own
+// exactly when their pitch is closer to it than to the extended pitch.
+inline bool pitchExtensionMissing(float current_down_deg, float game_down_deg, float delta_deg) {
+    return std::fabs(current_down_deg - game_down_deg) < std::fabs(current_down_deg - (game_down_deg + delta_deg));
+}
+
 // Down-positive pitch of a forward vector: 0 = level, +90 = straight down, -90 = straight up.
 inline float downPitchDeg(const float forward[3]) {
     const float y = std::clamp(forward[1], -1.f, 1.f);
@@ -61,6 +69,7 @@ public:
     void reset() {
         offset_deg_ = 0.f;
         prev_down_deg_ = 0.f;
+        game_delta_deg_ = 0.f;
         seeded_ = false;
     }
 
@@ -84,6 +93,7 @@ public:
 
         const float game_delta = game_down_deg - prev_down_deg_;
         prev_down_deg_ = game_down_deg;
+        game_delta_deg_ = game_delta;
 
         // A jump this large is a discontinuity (menu, alt-tab, a stalled camera thread), not mouse input.
         if (std::fabs(raw_dy) > kMaxFrameCounts) {
@@ -116,6 +126,7 @@ public:
     }
 
     [[nodiscard]] float offsetDeg() const { return offset_deg_; }
+    [[nodiscard]] float gameDeltaDeg() const { return game_delta_deg_; }
     [[nodiscard]] float degPerCount() const { return deg_per_count_; }
     [[nodiscard]] float maxPitchDeg() const { return max_pitch_deg_; }
     [[nodiscard]] bool seeded() const { return seeded_; }
@@ -137,6 +148,7 @@ private:
 
     float offset_deg_{0.f};
     float prev_down_deg_{0.f};
+    float game_delta_deg_{0.f};
     float deg_per_count_{0.f};
     float max_pitch_deg_{kDefaultMaxPitchDeg};
     bool auto_calibrate_{true};
