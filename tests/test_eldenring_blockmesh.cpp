@@ -104,3 +104,72 @@ TEST(BlockMesh, TheThirdPersonHeldCubeUsesTheBlockFaces) {
     EXPECT_EQ(top, 4);
     EXPECT_EQ(side, 16);
 }
+
+TEST(BlockMesh, TerrainMiningCrackQuadSitsOnTheSurface) {
+    BlockGrid g;
+    TerrainMiningOverlay o{};
+    o.pos[0] = 1.f; o.pos[1] = 2.f; o.pos[2] = 3.f;
+    o.normal[0] = 0.f; o.normal[1] = 1.f; o.normal[2] = 0.f;
+    o.stage = 4;
+    const mc::rig::RigMesh m = buildBlockMesh(g, {}, std::nullopt, o);
+    ASSERT_EQ(m.vertices.size(), 4u);
+    ASSERT_EQ(m.indices.size(), 6u);
+    for (const mc::rig::RigVertex& v : m.vertices) {
+        EXPECT_NEAR(v.x, 1.f, 0.46f);
+        EXPECT_NEAR(v.y, 2.01f, 1e-3f);
+        EXPECT_NEAR(v.z, 3.f, 0.46f);
+        EXPECT_TRUE(inside(mc::hud::kUV_DESTROY_STAGE_4, v));
+    }
+}
+
+TEST(BlockMesh, TerrainMiningCrackFollowsAVerticalNormal) {
+    BlockGrid g;
+    TerrainMiningOverlay o{};
+    o.pos[0] = 1.f; o.pos[1] = 2.f; o.pos[2] = 3.f;
+    o.normal[0] = 0.f; o.normal[1] = 0.f; o.normal[2] = 1.f;
+    o.stage = 9;
+    const mc::rig::RigMesh m = buildBlockMesh(g, {}, std::nullopt, o);
+    ASSERT_EQ(m.vertices.size(), 4u);
+    for (const mc::rig::RigVertex& v : m.vertices) {
+        EXPECT_NEAR(v.x, 1.f, 0.46f);
+        EXPECT_NEAR(v.y, 2.f, 0.46f);
+        EXPECT_NEAR(v.z, 3.01f, 1e-3f);
+    }
+}
+
+TEST(BlockMesh, TerrainMiningCrackIsAbsentWithoutAStage) {
+    BlockGrid g;
+    TerrainMiningOverlay o{};
+    o.pos[0] = 1.f; o.pos[1] = 2.f; o.pos[2] = 3.f;
+    o.stage = -1;
+    EXPECT_TRUE(buildBlockMesh(g, {}, std::nullopt, o).vertices.empty());
+}
+
+TEST(BlockMesh, TerrainMiningCrackLiftAndSizeAreConfigurable) {
+    BlockGrid g;
+    TerrainMiningOverlay o{};
+    o.pos[0] = 1.f; o.pos[1] = 2.f; o.pos[2] = 3.f;
+    o.stage = 4;
+    o.lift = -0.1f;
+    o.half_size = 0.2f;
+    const mc::rig::RigMesh m = buildBlockMesh(g, {}, std::nullopt, o);
+    ASSERT_EQ(m.vertices.size(), 4u);
+    for (const mc::rig::RigVertex& v : m.vertices) {
+        EXPECT_NEAR(v.y, 1.9f, 1e-3f);
+        EXPECT_NEAR(v.x, 1.f, 0.21f);
+        EXPECT_NEAR(v.z, 3.f, 0.21f);
+    }
+}
+
+TEST(BlockMesh, TerrainCrackMeshIsSeparateAndUsesTheSameQuad) {
+    TerrainMiningOverlay o{};
+    o.pos[0] = 1.f; o.pos[1] = 2.f; o.pos[2] = 3.f;
+    o.stage = 4;
+    const mc::rig::RigMesh m = buildTerrainCrackMesh(o);
+    ASSERT_EQ(m.vertices.size(), 4u);
+    ASSERT_EQ(m.indices.size(), 6u);
+    for (const mc::rig::RigVertex& v : m.vertices) {
+        EXPECT_NEAR(v.y, 2.01f, 1e-3f);
+        EXPECT_TRUE(inside(mc::hud::kUV_DESTROY_STAGE_4, v));
+    }
+}

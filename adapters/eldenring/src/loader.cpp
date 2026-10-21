@@ -28,6 +28,10 @@
 #include <vector>
 
 #include "mc/contracts/combat_adapter.hpp"
+#include "mc/er_region_table.hpp"
+#include "mc/zone_detector.hpp"
+
+#include <MinHook.h>
 
 #include "input_hook.hpp"
 #include "overlay_d3d12.hpp"
@@ -39,6 +43,7 @@
 #include "eldenring_blockmesh.hpp"
 #include "eldenring_blocks.hpp"
 #include "eldenring_mining.hpp"
+#include "mc/ground_mining.hpp"
 #include "eldenring_tnt.hpp"
 #include "eldenring_creeper.hpp"
 
@@ -255,6 +260,7 @@ void ReadHurt(float& hurt, float& side) {
 // Every hit the player takes goes through one of two reaction pickers (REVERSE 21). While the experiment is on they do nothing for the
 // player (the output byte is cleared), so the hit still costs hit points but plays no reaction animation. Game thread only.
 uintptr_t PlayerChrPtr(); // defined below
+bool WantSuppress();      // defined below: no menu/popup/loading screen
 
 std::atomic<bool> g_no_stagger{false};
 std::atomic<unsigned> g_stagger_skipped{0};
@@ -665,7 +671,97 @@ std::atomic<unsigned> g_hitvfx_skipped{0};
 std::atomic<bool> g_los_enabled{false};
 std::atomic<unsigned> g_los_blocked{0};
 
+// ---- ground mining (issues #66/#81) ---------------------------------------------------------------------------
+std::atomic<bool> g_ground_mining_enabled{true};
+std::atomic<int> g_loot_zone{0}; // mc_er_steve.txt: loot_zone=0..5, or -1 = auto (block id + material)
+std::atomic<float> g_ground_crack_lift{0.01f}; // mc_er_steve.txt: ground_crack_lift=<m> (negative sinks it)
+std::atomic<float> g_ground_crack_size{0.9f};  // mc_er_steve.txt: ground_crack_size=<m> (full edge length)
+
+// Zone auto-detection. The default table is deliberately small: it only uses the area byte of the
+// player's block id. Material rules are loaded from mc_er_steve.txt (`zone_mat_<id>=<zone>`) once
+// the zone probe has told us which material ids the game uses.
+static constexpr mc::ZoneRule kDefaultZoneAreaRules[] = {
+    {60, mc::LootZone::Grassland}, // open-world overworld
+    {61, mc::LootZone::Cave},      // underground map
+};
+static std::vector<mc::ZoneRule> g_zone_material_rules;
+static std::vector<mc::ZoneRule> g_zone_area_rules;
+static mc::ZoneRules g_zone_rules{{}, mc::er_region::kTable, kDefaultZoneAreaRules, mc::LootZone::StoneSurface};
+
+// PlayerIns+0x6D0 is the current world block id. Verified in 2.7.1.0: the PlayerIns constructor
+// (0x650C90) writes the PlayerIns vtable 0x2A7FBB0 and initialises +0x6D0 to -1; the world-block
+// update (0x65AD00) writes the live id. Format: area<<24 | grid_x<<16 | grid_z<<8 | lod.
+static constexpr uintptr_t kPlayerBlockId = 0x6D0;
+
+// The zone probe hooks CSClosestHitCollectorForRaycast::AddHit (0xC5A8E0) and calls the Havok
+// material resolver (0xC75570). Read-only: it copies the hit, lets the game store it, then logs.
+std::atomic<bool> g_zone_probe_log{false};
+std::atomic<uint32_t> g_last_ground_material{0};
+std::atomic<uint32_t> g_last_ground_shape{0};
+static std::atomic<uint64_t> g_zone_probe_last_log_ms{0};
+
+using HitCollectorFn = void(__fastcall*)(void* self, const void* hit);
+using MaterialLookupFn = bool(__fastcall*)(const uint32_t* shape_key, uint32_t material_index, uint32_t* out_material, bool resolve);
+static HitCollectorFn g_hit_collector_orig = nullptr;
+static MaterialLookupFn g_material_lookup = nullptr;
+
+struct HitSnapshot {
+    float pos[3];
+    float normal[3];
+    uint32_t shape;
+    uint32_t material_index;
+};
+
+static HitSnapshot SnapshotHit(const void* hit) {
+    HitSnapshot s{};
+    const auto* b = static_cast<const uint8_t*>(hit);
+    std::memcpy(s.pos, b, sizeof(s.pos));
+    std::memcpy(s.normal, b + 0x10, sizeof(s.normal));
+    std::memcpy(&s.shape, b + 0x48, sizeof(s.shape));
+    std::memcpy(&s.material_index, b + 0x50, sizeof(s.material_index));
+    return s;
+}
+
+void __fastcall HitCollectorDetour(void* self, const void* hit) {
+    const HitSnapshot s = SnapshotHit(hit);
+    if (g_hit_collector_orig) g_hit_collector_orig(self, hit);
+
+    const uintptr_t player = PlayerChrPtr();
+    float feet[3];
+    if (player == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) return;
+    const float dx = s.pos[0] - feet[0], dy = s.pos[1] - feet[1], dz = s.pos[2] - feet[2];
+    // Only ground hits near the player: the mining ray starts at the eye and reaches ~4.5 m.
+    if (dx * dx + dy * dy + dz * dz > 36.0f || s.normal[1] < 0.2f) return;
+
+    uint32_t material = 0;
+    if (g_material_lookup) g_material_lookup(&s.shape, s.material_index, &material, true);
+    g_last_ground_material.store(material, std::memory_order_relaxed);
+    g_last_ground_shape.store(s.shape, std::memory_order_relaxed);
+
+    if (!g_zone_probe_log.load(std::memory_order_relaxed)) return;
+    const uint64_t now = GetTickCount64();
+    if (now - g_zone_probe_last_log_ms.load(std::memory_order_relaxed) < 200) return;
+    g_zone_probe_last_log_ms.store(now, std::memory_order_relaxed);
+
+    uint32_t raw = 0;
+    if (!SafeCopy(player + kPlayerBlockId, &raw, sizeof(raw))) raw = 0;
+    const mc::WorldBlockId block = mc::decodeBlockId(raw);
+    Log("ZONEPROBE: block=0x%08X area=%u gx=%u gz=%u lod=%u pos=(%.2f %.2f %.2f) n=(%.2f %.2f %.2f) shape=0x%X matidx=%u material=%u",
+        raw, block.area, block.grid_x, block.grid_z, block.lod, s.pos[0], s.pos[1], s.pos[2],
+        s.normal[0], s.normal[1], s.normal[2], s.shape, s.material_index, material);
+}
+
+uint32_t PlayerBlockId() {
+    const uintptr_t player = PlayerChrPtr();
+    uint32_t raw = 0;
+    return player != 0 && SafeCopy(player + kPlayerBlockId, &raw, sizeof(raw)) ? raw : 0;
+}
+
+
 RayResult CastStaticRay(const float from[3], const float disp[3]) {
+    // The Havok world is not queryable while a menu or loading screen owns it; a ray there has
+    // crashed the game in a null-pointer read during the load transition.
+    if (!WantSuppress()) return {};
     return eldenring::combat::CombatService::Instance().castStaticRay(from, disp);
 }
 
@@ -939,27 +1035,43 @@ bool BlocksPresent() {
 static size_t g_tnt_prev_active_count = 0;
 static int g_prev_mining_stage = -1;
 static blocks::Cell g_prev_mining_cell{};
+static blocks::TerrainMiningOverlay g_prev_terrain_mining{};
 
-void SendBlockMesh(const std::optional<blocks::MiningOverlay>& mining = std::nullopt) {
+void SendBlockMesh(const std::optional<blocks::MiningOverlay>& mining = std::nullopt,
+                   const std::optional<blocks::TerrainMiningOverlay>& terrain_mining = std::nullopt) {
     std::lock_guard<std::mutex> g(g_blocks_mutex);
     const size_t tnt_count = g_tnt_mgr.activeCount();
     const int stage = mining.has_value() ? mining->stage : -1;
     const blocks::Cell cell = mining.has_value() ? mining->cell : blocks::Cell{};
+    const blocks::TerrainMiningOverlay terrain = terrain_mining.has_value() ? *terrain_mining : blocks::TerrainMiningOverlay{};
     if (g_blocks_sent_version == g_blocks.version() && tnt_count == 0 && g_tnt_prev_active_count == 0 &&
-        stage == g_prev_mining_stage && cell == g_prev_mining_cell) return;
+        stage == g_prev_mining_stage && cell == g_prev_mining_cell &&
+        terrain.stage == g_prev_terrain_mining.stage &&
+        std::memcmp(terrain.pos, g_prev_terrain_mining.pos, sizeof(terrain.pos)) == 0 &&
+        std::memcmp(terrain.normal, g_prev_terrain_mining.normal, sizeof(terrain.normal)) == 0 &&
+        terrain.lift == g_prev_terrain_mining.lift && terrain.half_size == g_prev_terrain_mining.half_size) return;
     g_blocks_sent_version = g_blocks.version();
     g_tnt_prev_active_count = tnt_count;
     g_prev_mining_stage = stage;
     g_prev_mining_cell = cell;
+    g_prev_terrain_mining = terrain;
     erov::SetBlockMesh(blocks::buildBlockMesh(g_blocks, g_tnt_mgr.activePositions(), mining));
+    erov::SetTerrainCrackMesh(terrain_mining.has_value() ? blocks::buildTerrainCrackMesh(*terrain_mining) : mc::rig::RigMesh{});
 }
 
 
 struct BlockTarget {
     bool have{false};
     bool on_block{false};        // the nearest surface is a placed block (else the game's terrain)
+    bool terrain_hit{false};     // the game's static geometry was hit (ground mining)
+    bool aim_ok{false};          // the camera ray could be read
     blocks::Cell cell;           // the placed block, when on_block
     blocks::Cell place;          // where a new block would go
+    float eye[3]{0.f, 0.f, 0.f};
+    float dir[3]{0.f, 0.f, 1.f};
+    float pitch_deg{0.f};
+    float terrain_pos[3]{0.f, 0.f, 0.f};
+    float terrain_normal[3]{0.f, 1.f, 0.f};
 };
 
 // The aim ray: from the player's eye along the camera's forward vector.
@@ -979,10 +1091,22 @@ bool AimRay(float eye[3], float dir[3]) {
     return true;
 }
 
+// The camera's downward angle: 0 = level, 90 = straight down. Issue #81 only allows digging at 60..90.
+static float AimPitchDeg(const float dir[3]) {
+    const float horizontal = std::sqrt(dir[0] * dir[0] + dir[2] * dir[2]);
+    return std::atan2(-dir[1], horizontal) * 57.2957795f;
+}
+
 BlockTarget FindBlockTarget() {
     BlockTarget t;
     float eye[3], dir[3];
     if (!AimRay(eye, dir)) return t;
+    t.aim_ok = true;
+    for (int i = 0; i < 3; ++i) {
+        t.eye[i] = eye[i];
+        t.dir[i] = dir[i];
+    }
+    t.pitch_deg = AimPitchDeg(dir);
     const float reach = g_reach.load();
     std::optional<blocks::GridHit> grid_hit;
     {
@@ -990,7 +1114,7 @@ BlockTarget FindBlockTarget() {
         grid_hit = blocks::raycastGrid(g_blocks, eye, dir, reach);
     }
     RayResult world_hit;
-    if (g_los_enabled.load()) {
+    if (g_los_enabled.load() || (g_ground_mining_enabled.load() && t.pitch_deg >= mc::GroundMiningController::kMinPitchDeg)) {
         const float disp[3] = {dir[0] * reach, dir[1] * reach, dir[2] * reach};
         world_hit = CastStaticRay(eye, disp);
     }
@@ -1003,7 +1127,12 @@ BlockTarget FindBlockTarget() {
         t.place = blocks::placementCellForBlockHit(*grid_hit);
     } else if (terrain) {
         t.have = true;
+        t.terrain_hit = true;
         t.place = blocks::placementCellForWorldHit(world_hit.pos, world_hit.normal);
+        for (int i = 0; i < 3; ++i) {
+            t.terrain_pos[i] = world_hit.pos[i];
+            t.terrain_normal[i] = world_hit.normal[i];
+        }
     }
     return t;
 }
@@ -1194,6 +1323,44 @@ bool TryPlaceBlock() {
 }
 
 static eldenring::mining::MiningController g_mining;
+static mc::GroundMiningController g_ground_mining;
+static uint64_t g_loot_rng = 0;
+
+// PhysicsModule+0x120 is the linear velocity in m/s (HANDOFF 7). Speed rather than a position
+// delta, so the floating-origin rebase (Havok space jumps in multiples of 8 m) never looks like
+// the player moving.
+static constexpr uintptr_t kPhysicsVelocity = 0x120;
+static constexpr float kGroundMiningMoveSpeed = 0.5f;
+
+static bool PlayerIsMoving() {
+    const uintptr_t player = PlayerChrPtr();
+    if (player == 0) return false;
+    float v[3];
+    if (!detail::readPhysicsVec3(g_reader, g_img.base, player, kPhysicsVelocity, v)) return false;
+    return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) > kGroundMiningMoveSpeed;
+}
+
+// The collision surface under the player's feet. The crack uses this (not the aim hit) so it sits
+// under the player instead of behind Steve's body in third person; ground_crack_lift compensates
+// the measured collision-surface / visible-floor gap.
+static bool GroundBelow(float out_pos[3], float out_normal[3]) {
+    const uintptr_t player = PlayerChrPtr();
+    float feet[3];
+    if (player == 0 || !detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) return false;
+    const float from[3] = {feet[0], feet[1] + 0.5f, feet[2]};
+    const float disp[3] = {0.f, -(g_reach.load() + 1.0f), 0.f};
+    const RayResult hit = CastStaticRay(from, disp);
+    if (!hit.ok || !hit.hit || feet[1] - hit.pos[1] > 2.0f) return false;
+    for (int i = 0; i < 3; ++i) {
+        out_pos[i] = hit.pos[i];
+        out_normal[i] = hit.normal[i];
+    }
+    return true;
+}
+
+static const char* GroundHitSound(mc::LootZone zone) {
+    return zone == mc::LootZone::Grassland ? "block.grass.step" : "block.stone.step";
+}
 
 // Progressive block mining: called every tick in KeyThread.
 // When left mouse is held on a placed block within reach, accumulates mining progress,
@@ -1203,6 +1370,14 @@ bool StepMining(float dt, bool left_held) {
     if (!g_blocks_enabled.load()) {
         g_mining.reset();
         SendBlockMesh(std::nullopt);
+        return false;
+    }
+    // Never cast a world ray or touch the overlay while the game is loading or a menu is open: the
+    // Havok world is in transition there, and the load screen is where the crash happened.
+    if (!WantSuppress()) {
+        g_mining.reset();
+        g_ground_mining.reset();
+        SendBlockMesh(std::nullopt, std::nullopt);
         return false;
     }
     const BlockTarget t = FindBlockTarget();
@@ -1219,6 +1394,79 @@ bool StepMining(float dt, bool left_held) {
     }
     const bool is_creative = (CurrentGameMode() == creative::GameMode::Creative);
 
+    // Ground mining (issues #66/#81): aim at the terrain under the player's feet with an empty hand
+    // or a pickaxe. A placed block keeps the progressive block-mining path below.
+    const bool ground_target = t.have && t.terrain_hit && !t.on_block &&
+                               mc::GroundMiningController::canDigSurface(t.terrain_normal[1]);
+    const float pitch = t.pitch_deg;
+    if (g_ground_mining_enabled.load() && ground_target && mc::GroundMiningController::canDig(held, pitch)) {
+        // The aim ray decides the target and the loot. The crack uses the same hit; the configured
+        // lift compensates the measured collision-surface / visible-floor gap (about 14 cm here).
+        const int configured_zone = g_loot_zone.load(std::memory_order_relaxed);
+        const uint32_t block_raw = configured_zone < 0 ? PlayerBlockId() : 0;
+        const uint32_t ground_material = g_last_ground_material.load(std::memory_order_relaxed);
+        const mc::LootZone zone = configured_zone < 0
+            ? mc::classifyZone(mc::decodeBlockId(block_raw), ground_material, g_zone_rules)
+            : static_cast<mc::LootZone>(std::clamp(configured_zone, 0, static_cast<int>(mc::LootZone::Count) - 1));
+        if (g_loot_rng == 0) g_loot_rng = GetTickCount64() | 1;
+        g_ground_mining.update(dt, left_held, pitch, held, zone, is_creative, g_loot_rng, PlayerIsMoving());
+        const mc::GroundMiningState& gs = g_ground_mining.state();
+        const float* fx_pos = t.terrain_pos;
+        const float* fx_normal = t.terrain_normal;
+        float below_pos[3], below_normal[3];
+        const bool below = GroundBelow(below_pos, below_normal);
+        if (below) {
+            fx_pos = below_pos;
+            fx_normal = below_normal;
+        }
+        if (gs.is_mining) {
+            blocks::TerrainMiningOverlay terrain{};
+            std::memcpy(terrain.pos, fx_pos, sizeof(terrain.pos));
+            std::memcpy(terrain.normal, fx_normal, sizeof(terrain.normal));
+            terrain.stage = gs.stage;
+            terrain.lift = g_ground_crack_lift.load(std::memory_order_relaxed);
+            terrain.half_size = 0.5f * g_ground_crack_size.load(std::memory_order_relaxed);
+            if (gs.hit_sound) {
+                {
+                    std::lock_guard<std::mutex> g(g_melee_mutex);
+                    g_melee.startSwing();
+                    eraudio::Play(GroundHitSound(zone), 0.6f);
+                }
+                static uint64_t last_anchor_log_ms = 0;
+                const uint64_t now = GetTickCount64();
+                if (g_zone_probe_log.load(std::memory_order_relaxed) && now - last_anchor_log_ms > 1000) {
+                    last_anchor_log_ms = now;
+                    float feet[3];
+                    if (detail::readPhysicsPosition(g_reader, g_img.base, PlayerChrPtr(), feet)) {
+                        Log("GROUNDANCHOR: feet=(%.2f %.2f %.2f) aim=(%.2f %.2f %.2f) ground=(%.2f %.2f %.2f) below=%d n=(%.2f %.2f %.2f) lift=%.3f mat=%u",
+                            feet[0], feet[1], feet[2], t.terrain_pos[0], t.terrain_pos[1], t.terrain_pos[2],
+                            fx_pos[0], fx_pos[1], fx_pos[2], below ? 1 : 0,
+                            t.terrain_normal[0], t.terrain_normal[1], t.terrain_normal[2], terrain.lift, ground_material);
+                    }
+                }
+            }
+            SendBlockMesh(std::nullopt, terrain);
+            return true;
+        }
+        if (gs.broken) {
+            {
+                std::lock_guard<std::mutex> g(g_melee_mutex);
+                g_melee.inventory().add({gs.drop.item, 1});
+                if (gs.drop.bonus != mc::ItemId::None) g_melee.inventory().add({gs.drop.bonus, 1});
+                g_melee.startSwing();
+            }
+            eraudio::Play("entity.experience_orb.pickup", 0.9f);
+            SendBlockMesh(std::nullopt, std::nullopt);
+            Log("ground: broke terrain at (%.2f %.2f %.2f) anchor=aim zone=%d item=%d blocked=%d pity=%d combo=%d bonus=%d block=0x%08X mat=%u auto=%d",
+                fx_pos[0], fx_pos[1], fx_pos[2], static_cast<int>(zone),
+                static_cast<int>(gs.drop.item), gs.drop.tier_blocked ? 1 : 0, gs.drop.pity_triggered ? 1 : 0,
+                gs.drop.combo_triggered ? 1 : 0, static_cast<int>(gs.drop.bonus), block_raw, ground_material,
+                configured_zone < 0 ? 1 : 0);
+            return true;
+        }
+    } else {
+        g_ground_mining.reset();
+    }
 
     g_mining.update(dt, left_held, t.have && t.on_block, t.cell, id, held, is_creative);
     const eldenring::mining::MiningState& s = g_mining.state();
@@ -1239,9 +1487,10 @@ bool StepMining(float dt, bool left_held) {
             std::lock_guard<std::mutex> g(g_blocks_mutex);
             g_blocks.remove(s.target_cell);
         }
-        if (eldenring::mining::MiningController::canHarvest(id, held, is_creative)) {
+        const mc::ItemId drop = eldenring::mining::MiningController::blockDrop(id, held, is_creative);
+        if (drop != mc::ItemId::None) {
             std::lock_guard<std::mutex> g(g_melee_mutex);
-            g_melee.inventory().add({blocks::itemForBlock(id), 1});
+            g_melee.inventory().add({drop, 1});
             harvested = true;
         }
         SendBlockMesh(std::nullopt);
@@ -1522,6 +1771,35 @@ DWORD WINAPI KeyThread(LPVOID) {
     return 0;
 }
 
+// Diagnostic tuner for the ground crack height: [ / PageDown lowers it, ] / PageUp raises it, in
+// 5 cm steps, only while the game is focused. The value is logged so it can be copied into
+// mc_er_steve.txt. It changes only our overlay; it never writes game state.
+DWORD WINAPI CrackTunerThread(LPVOID) {
+    bool prev_down = false, prev_up = false, prev_fine_down = false, prev_fine_up = false;
+    auto adjust = [](float delta, const char* kind) {
+        const float v = std::clamp(g_ground_crack_lift.load(std::memory_order_relaxed) + delta, -2.0f, 1.0f);
+        g_ground_crack_lift.store(v, std::memory_order_relaxed);
+        Log("cracktune: lift=%.2f m (%s)", v, kind);
+    };
+    for (;;) {
+        const bool focused = GameInForeground();
+        const bool down = focused && (((GetAsyncKeyState(VK_OEM_4) & 0x8000) != 0) || ((GetAsyncKeyState(VK_PRIOR) & 0x8000) != 0));
+        const bool up = focused && (((GetAsyncKeyState(VK_OEM_6) & 0x8000) != 0) || ((GetAsyncKeyState(VK_NEXT) & 0x8000) != 0));
+        const bool fine_down = focused && ((GetAsyncKeyState(VK_OEM_COMMA) & 0x8000) != 0);
+        const bool fine_up = focused && ((GetAsyncKeyState(VK_OEM_PERIOD) & 0x8000) != 0);
+        if (down && !prev_down) adjust(-0.05f, "[ / PageDown, coarse");
+        if (up && !prev_up) adjust(+0.05f, "] / PageUp, coarse");
+        if (fine_down && !prev_fine_down) adjust(-0.01f, ", fine");
+        if (fine_up && !prev_fine_up) adjust(+0.01f, ". fine");
+        prev_down = down;
+        prev_up = up;
+        prev_fine_down = fine_down;
+        prev_fine_up = fine_up;
+        Sleep(30);
+    }
+    return 0;
+}
+
 bool EnsureMinHook() {
     return eldenring::hooks::GameHooks::Instance().initMinHook();
 }
@@ -1541,6 +1819,39 @@ bool ReadFileAll(const std::string& path, std::vector<uint8_t>& out) {
     const size_t got = out.empty() ? 0 : fread(out.data(), 1, out.size(), f);
     fclose(f);
     return got == out.size();
+}
+
+// Installed when the user asks for auto zones or drops mc_er_zoneprobe.txt next to the DLL. The
+// hook only copies hits and calls the material resolver; it never writes game state.
+void SetupZoneProbe() {
+    const bool probe_log = FileExists(g_game_dir + "mc_er_zoneprobe.txt");
+    const bool auto_zone = g_loot_zone.load(std::memory_order_relaxed) < 0;
+    if (!probe_log && !auto_zone) return;
+    if (!EnsureMinHook()) {
+        Log("zoneprobe: MH_Initialize failed");
+        return;
+    }
+    uintptr_t collector = 0, material = 0;
+    if (!LocateByPrefix(g_img, sigs::kRaycastHitCollector, collector)) {
+        Log("zoneprobe: hit collector signature not unique");
+        return;
+    }
+    if (!LocateByPrefix(g_img, sigs::kHavokMaterialLookup, material)) {
+        Log("zoneprobe: material lookup signature not unique");
+        return;
+    }
+    g_material_lookup = reinterpret_cast<MaterialLookupFn>(material);
+    if (MH_CreateHook(reinterpret_cast<void*>(collector), reinterpret_cast<void*>(&HitCollectorDetour),
+                      reinterpret_cast<void**>(&g_hit_collector_orig)) != MH_OK ||
+        MH_EnableHook(reinterpret_cast<void*>(collector)) != MH_OK) {
+        Log("zoneprobe: hit collector hook failed");
+        return;
+    }
+    g_zone_probe_log.store(probe_log, std::memory_order_relaxed);
+    Log("zoneprobe: installed hit collector at %p (RVA 0x%llX), material lookup at %p (RVA 0x%llX), log=%d auto=%d",
+        reinterpret_cast<void*>(collector), static_cast<unsigned long long>(collector - g_img.base),
+        reinterpret_cast<void*>(material), static_cast<unsigned long long>(material - g_img.base),
+        probe_log ? 1 : 0, auto_zone ? 1 : 0);
 }
 
 void SetupCreativeProbes() {
@@ -2275,6 +2586,23 @@ void SetupOverlay() {
                 else if (key == "mc_gravity") g_mc_gravity.store(std::clamp(value, 5.f, 80.f));
                 else if (key == "mc_jump_speed") g_mc_jump_speed.store(std::clamp(value, 1.f, 20.f));
                 else if (key == "blocks") g_blocks_enabled.store(value != 0.f);
+                else if (key == "ground_mining") g_ground_mining_enabled.store(value != 0.f);
+                else if (key == "ground_crack_lift") g_ground_crack_lift.store(std::clamp(value, -1.0f, 0.5f));
+                else if (key == "ground_crack_size") g_ground_crack_size.store(std::clamp(value, 0.2f, 3.0f));
+                else if (key == "loot_zone") {
+                    const int zone = static_cast<int>(value);
+                    g_loot_zone.store(zone < 0 ? -1 : std::clamp(zone, 0, static_cast<int>(mc::LootZone::Count) - 1));
+                }
+                else if (key.rfind("zone_mat_", 0) == 0) {
+                    const int material = atoi(key.c_str() + 9);
+                    const int zone = std::clamp(static_cast<int>(value), 0, static_cast<int>(mc::LootZone::Count) - 1);
+                    g_zone_material_rules.push_back({static_cast<uint32_t>(material), static_cast<mc::LootZone>(zone)});
+                }
+                else if (key.rfind("zone_area_", 0) == 0) {
+                    const int area = atoi(key.c_str() + 10);
+                    const int zone = std::clamp(static_cast<int>(value), 0, static_cast<int>(mc::LootZone::Count) - 1);
+                    g_zone_area_rules.push_back({static_cast<uint32_t>(area), static_cast<mc::LootZone>(zone)});
+                }
                 else if (key == "block_drive") g_block_drive.store(value != 0.f);
                 else if (key == "instant_turn") g_instant_turn.store(value != 0.f);
                 else if (key == "turn_speed") g_turn_speed.store(std::clamp(value, 0.5f, 50.f));
@@ -2301,6 +2629,11 @@ void SetupOverlay() {
                 else if (key == "hide_mask1") g_hide_mask1.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));
                 else if (key == "hide_mask2") g_hide_mask2.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));
             }
+            // The vectors stop growing here (the config is read once), so the spans stay valid.
+            g_zone_rules.material_rules = g_zone_material_rules;
+            g_zone_rules.area_rules = g_zone_area_rules.empty()
+                ? std::span<const mc::ZoneRule>(kDefaultZoneAreaRules)
+                : std::span<const mc::ZoneRule>(g_zone_area_rules);
         }
         cfg.depth_probe = FileExists(g_game_dir + "mc_er_depthprobe.txt");
         erov::SetSteveConfig(cfg);
@@ -2744,8 +3077,10 @@ DWORD WINAPI LoaderThread(LPVOID) {
     SetupCreativeProbes();
     SetupBulletLog();
     SetupOverlay();
+    SetupZoneProbe();
     SetupInput();
     CreateThread(nullptr, 0, KeyThread, nullptr, 0, nullptr);
+    CreateThread(nullptr, 0, CrackTunerThread, nullptr, 0, nullptr);
     CreateThread(nullptr, 0, BuddyThread, nullptr, 0, nullptr);
 
     for (;;) {

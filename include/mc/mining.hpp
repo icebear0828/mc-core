@@ -3,6 +3,7 @@
 // Minecraft progressive block destruction and mining hardness system.
 // Computes breakdown duration based on block type and held tool, 10-stage crack overlays, and hit sound timing.
 
+#include "mc/loot_table.hpp"
 #include "mc/types.hpp"
 
 #include <algorithm>
@@ -29,8 +30,24 @@ public:
         if (block_id == BlockId::Tnt) {
             return 0.05f; // Extremely fast / near-instant break
         }
-        if (block_id == BlockId::Stone) {
-            return (held_tool == ItemId::DiamondPickaxe) ? 0.3f : 7.5f;
+        if (block_id == BlockId::Wood) {
+            return held_tool == ItemId::None ? 3.0f : 1.5f; // no axes in the mod: any tool speeds it up
+        }
+        if (block_id == BlockId::Obsidian) {
+            if (held_tool == ItemId::DiamondPickaxe) return 9.4f;
+            if (held_tool == ItemId::NetheritePickaxe) return 8.35f;
+            return 30.0f; // cannot be harvested without diamond/netherite
+        }
+        if (block_id == BlockId::Stone || block_id == BlockId::Cobblestone) {
+            switch (toolTier(held_tool)) {
+                case ToolTier::Wood: return 1.15f;
+                case ToolTier::Stone: return 0.6f;
+                case ToolTier::Iron: return 0.4f;
+                case ToolTier::Gold: return 0.2f;
+                case ToolTier::Diamond: return 0.3f;
+                case ToolTier::Netherite: return 0.25f;
+                default: return 7.5f;
+            }
         }
         if (block_id == BlockId::Dirt) {
             return 0.75f;
@@ -42,13 +59,32 @@ public:
         if (is_creative) {
             return false; // Creative mode breaks blocks without dropping items
         }
-        if (block_id == BlockId::Stone) {
-            return held_tool == ItemId::DiamondPickaxe;
+        if (block_id == BlockId::Stone || block_id == BlockId::Cobblestone) {
+            return isPickaxe(held_tool);
         }
-        if (block_id == BlockId::Dirt || block_id == BlockId::Tnt) {
+        if (block_id == BlockId::Dirt || block_id == BlockId::Tnt || block_id == BlockId::Wood) {
             return true;
         }
+        if (block_id == BlockId::Obsidian) {
+            return held_tool == ItemId::DiamondPickaxe || held_tool == ItemId::NetheritePickaxe;
+        }
         return false;
+    }
+
+    // The item a broken placed block leaves behind. Stone drops cobblestone as in vanilla; wood
+    // and obsidian have no item ids yet, so they drop nothing until those are added.
+    [[nodiscard]] static ItemId blockDrop(BlockId block_id, ItemId held_tool, bool is_creative) noexcept {
+        if (is_creative) return ItemId::None;
+        switch (block_id) {
+            case BlockId::Stone: return isPickaxe(held_tool) ? ItemId::BlockCobblestone : ItemId::None;
+            case BlockId::Cobblestone: return isPickaxe(held_tool) ? ItemId::BlockCobblestone : ItemId::None;
+            case BlockId::Dirt: return ItemId::BlockDirt;
+            case BlockId::Tnt: return ItemId::BlockTnt;
+            case BlockId::Wood: return ItemId::BlockWood;
+            case BlockId::Obsidian:
+                return (held_tool == ItemId::DiamondPickaxe || held_tool == ItemId::NetheritePickaxe) ? ItemId::BlockObsidian : ItemId::None;
+            default: return ItemId::None;
+        }
     }
 
     void update(float dt, bool left_down, bool has_target, const GridPos& target_cell,

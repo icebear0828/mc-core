@@ -173,6 +173,9 @@ std::string g_shot_path;
 std::atomic<bool> g_shot_requested{false};
 std::mutex g_block_mutex;
 mc::rig::RigMesh g_block_mesh;
+std::mutex g_crack_mutex;
+mc::rig::RigMesh g_crack_mesh;
+std::atomic<bool> g_crack_dirty{false};
 std::atomic<bool> g_blocks_dirty{false};
 D3D12_CPU_DESCRIPTOR_HANDLE g_depth_copy2_cpu{}; // slot 8: default mob depth copy
 D3D12_GPU_DESCRIPTOR_HANDLE g_mob_table_gpu{};   // default mob table; ptr 0 = no mob skin
@@ -1914,6 +1917,10 @@ void RenderFrame(IDXGISwapChain* sc) {
         std::lock_guard<std::mutex> g(g_block_mutex);
         g_steve.setBlocks(g_block_mesh);
     }
+    if (g_crack_dirty.exchange(false)) {
+        std::lock_guard<std::mutex> g(g_crack_mutex);
+        g_steve.setTerrainCrack(g_crack_mesh);
+    }
     if (steve.cam_valid && g_steve.ready() && g_atlas_ready && g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
         const float scene_h = g_steve_cfg.scene_height > 0.f ? g_steve_cfg.scene_height : static_cast<float>(g_s.height);
         const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
@@ -1925,7 +1932,29 @@ void RenderFrame(IDXGISwapChain* sc) {
         bp.depth_w = static_cast<float>(g_depth_w);
         bp.depth_h = static_cast<float>(g_depth_h);
         blocks_drawn = g_steve.drawBlocks(g_s.device, g_s.list, g_s.srv_heap, g_held_table_gpu, g_s.width, g_s.height, vp, bp, f.rtv, idx);
-        if (blocks_drawn) g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
+        // The crack gets a near-zero bias: the block bias (8% + 5 cm) would force a floor decal to
+        // float in front of the floor to survive the scene-depth test. It is a separate mesh, so it
+        // is drawn even when there are no placed blocks.
+        SteveParams cp = bp;
+        cp.mode = g_depth_res == nullptr ? 0.f : 1.0f;
+        cp.rel_bias = 0.0f;
+        cp.abs_bias = 0.001f;
+        cp.keep_depth = blocks_drawn;
+        const bool crack_drawn = g_steve.drawTerrainCrack(g_s.device, g_s.list, g_s.srv_heap, g_held_table_gpu, g_s.width, g_s.height, vp, cp, f.rtv, idx);
+        static uint64_t last_crack_log = 0;
+        const uint64_t now_crack = GetTickCount64();
+        if (g_log && now_crack - last_crack_log > 1000) {
+            last_crack_log = now_crack;
+            size_t cv = 0, ci = 0;
+            {
+                std::lock_guard<std::mutex> g(g_crack_mutex);
+                cv = g_crack_mesh.vertices.size();
+                ci = g_crack_mesh.indices.size();
+            }
+            g_log("crackdraw: mesh=%zu/%zu drawn=%d mode=%.2f rel=%.3f abs=%.3f", cv, ci, crack_drawn ? 1 : 0,
+                  cp.mode, cp.rel_bias, cp.abs_bias);
+        }
+        if (blocks_drawn || crack_drawn) g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
     }
     g_death_tracker.update(dt, steve.dead);
     if (g_death_tracker.justRespawned()) {
@@ -2546,6 +2575,12 @@ void SetBlockMesh(const mc::rig::RigMesh& mesh) {
     std::lock_guard<std::mutex> g(g_block_mutex);
     g_block_mesh = mesh;
     g_blocks_dirty.store(true);
+}
+
+void SetTerrainCrackMesh(const mc::rig::RigMesh& mesh) {
+    std::lock_guard<std::mutex> g(g_crack_mutex);
+    g_crack_mesh = mesh;
+    g_crack_dirty.store(true);
 }
 
 void ScreenSize(float& width, float& height) {

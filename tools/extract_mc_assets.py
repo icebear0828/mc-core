@@ -363,6 +363,19 @@ _PLACEHOLDER_ITEM_COLORS = {
     "item_creeper_spawn_egg": (13, 167, 0), "item_skeleton_spawn_egg": (193, 193, 193),
     "block_dirt": (134, 96, 67), "block_stone": (125, 125, 125), "block_tnt_top": (160, 80, 70),
     "block_tnt_side": (200, 60, 50), "block_tnt_bottom": (160, 80, 70),
+    # Mining loot (issue #81): flat placeholder colours, replaced by the client.jar icons.
+    "item_coal": (40, 40, 40), "item_raw_copper": (200, 110, 60), "item_raw_iron": (205, 170, 140),
+    "item_redstone": (200, 30, 30), "item_raw_gold": (235, 200, 60), "item_lapis_lazuli": (40, 80, 200),
+    "item_amethyst_shard": (160, 100, 210), "item_diamond": (90, 220, 220), "item_emerald": (40, 200, 90),
+    "item_netherite_scrap": (110, 75, 65), "item_cobblestone": (120, 120, 120),
+    # Pickaxe tiers (issue #81): flat placeholder colours, replaced by the client.jar icons.
+    "item_wooden_pickaxe": (140, 100, 50), "item_stone_pickaxe": (130, 130, 130),
+    "item_iron_pickaxe": (210, 210, 215), "item_golden_pickaxe": (250, 210, 60),
+    "item_netherite_pickaxe": (80, 70, 75),
+    "block_cobblestone": (120, 120, 120),
+    "block_wood_top": (160, 120, 70), "block_wood_side": (120, 85, 45),
+    "block_obsidian": (35, 25, 50),
+    "item_wood": (140, 100, 50), "item_obsidian": (45, 35, 65),
 }
 
 
@@ -843,6 +856,32 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     # Additional authentic spawn eggs (appended at the end to keep earlier UV coordinates invariant)
     ("item_creeper_spawn_egg", (16, 16)),
     ("item_skeleton_spawn_egg", (16, 16)),
+    # Mining loot icons (issue #81), appended so every earlier UV stays exactly where it was
+    ("item_coal", (16, 16)),
+    ("item_raw_copper", (16, 16)),
+    ("item_raw_iron", (16, 16)),
+    ("item_redstone", (16, 16)),
+    ("item_raw_gold", (16, 16)),
+    ("item_lapis_lazuli", (16, 16)),
+    ("item_amethyst_shard", (16, 16)),
+    ("item_diamond", (16, 16)),
+    ("item_emerald", (16, 16)),
+    ("item_netherite_scrap", (16, 16)),
+    ("item_cobblestone", (16, 16)),
+    # Pickaxe tier icons (issue #81), appended so every earlier UV stays exactly where it was
+    ("item_wooden_pickaxe", (16, 16)),
+    ("item_stone_pickaxe", (16, 16)),
+    ("item_iron_pickaxe", (16, 16)),
+    ("item_golden_pickaxe", (16, 16)),
+    ("item_netherite_pickaxe", (16, 16)),
+    # The cobblestone block's own face texture (the item icon is the 3D cube, like dirt/stone)
+    ("block_cobblestone", (16, 16)),
+    # Wood (oak log) top/side and obsidian face textures
+    ("block_wood_top", (16, 16)),
+    ("block_wood_side", (16, 16)),
+    ("block_obsidian", (16, 16)),
+    ("item_wood", (16, 16)),
+    ("item_obsidian", (16, 16)),
 ]
 
 
@@ -904,6 +943,28 @@ _JAR_HUD_SPRITES = {
     "xp_bar_background": "gui/sprites/hud/experience_bar_background.png",
     "xp_bar_progress": "gui/sprites/hud/experience_bar_progress.png",
     **{f"destroy_stage_{i}": f"block/destroy_stage_{i}.png" for i in range(10)},
+    # Mining loot icons (issue #81)
+    "item_coal": "item/coal.png",
+    "item_raw_copper": "item/raw_copper.png",
+    "item_raw_iron": "item/raw_iron.png",
+    "item_redstone": "item/redstone.png",
+    "item_raw_gold": "item/raw_gold.png",
+    "item_lapis_lazuli": "item/lapis_lazuli.png",
+    "item_amethyst_shard": "item/amethyst_shard.png",
+    "item_diamond": "item/diamond.png",
+    "item_emerald": "item/emerald.png",
+    "item_netherite_scrap": "item/netherite_scrap.png",
+    "item_cobblestone": "block/cobblestone.png",
+    # Pickaxe tiers (issue #81)
+    "item_wooden_pickaxe": "item/wooden_pickaxe.png",
+    "item_stone_pickaxe": "item/stone_pickaxe.png",
+    "item_iron_pickaxe": "item/iron_pickaxe.png",
+    "item_golden_pickaxe": "item/golden_pickaxe.png",
+    "item_netherite_pickaxe": "item/netherite_pickaxe.png",
+    "block_cobblestone": "block/cobblestone.png",
+    "block_wood_top": "block/oak_log_top.png",
+    "block_wood_side": "block/oak_log.png",
+    "block_obsidian": "block/obsidian.png",
 }
 
 
@@ -924,6 +985,9 @@ _JAR_BLOCK_ITEMS = {
     "item_dirt": ("block/dirt.png", "block/dirt.png"),
     "item_stone": ("block/stone.png", "block/stone.png"),
     "item_tnt": ("block/tnt_top.png", "block/tnt_side.png"),
+    "item_cobblestone": ("block/cobblestone.png", "block/cobblestone.png"),
+    "item_wood": ("block/oak_log_top.png", "block/oak_log.png"),
+    "item_obsidian": ("block/obsidian.png", "block/obsidian.png"),
 }
 _CUBE_SHADE = {"top": 1.0, "left": 0.78, "right": 0.6}
 

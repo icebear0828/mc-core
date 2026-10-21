@@ -156,6 +156,11 @@ TEST(ItemModelTest, TrianglesAreWoundOutwardFromTheirOwnQuadInAnyBasis) {
 TEST(ItemModelTest, WhichItemsAreHeldAsFlatSpritesAndWithWhatStyle) {
     EXPECT_TRUE(isHeldAsFlatSprite(ItemId::DiamondSword));
     EXPECT_TRUE(isHeldAsFlatSprite(ItemId::DiamondPickaxe));
+    EXPECT_TRUE(isHeldAsFlatSprite(ItemId::WoodenPickaxe));
+    EXPECT_TRUE(isHeldAsFlatSprite(ItemId::StonePickaxe));
+    EXPECT_TRUE(isHeldAsFlatSprite(ItemId::IronPickaxe));
+    EXPECT_TRUE(isHeldAsFlatSprite(ItemId::GoldenPickaxe));
+    EXPECT_TRUE(isHeldAsFlatSprite(ItemId::NetheritePickaxe));
     EXPECT_TRUE(isHeldAsFlatSprite(ItemId::Bow));
     EXPECT_TRUE(isHeldAsFlatSprite(ItemId::GoldenApple));
     EXPECT_TRUE(isHeldAsFlatSprite(ItemId::TotemOfUndying));
@@ -166,6 +171,11 @@ TEST(ItemModelTest, WhichItemsAreHeldAsFlatSpritesAndWithWhatStyle) {
     EXPECT_FALSE(isHeldAsFlatSprite(ItemId::Elytra)) << "worn, not held";
     EXPECT_EQ(heldItemStyle(ItemId::DiamondSword), HeldItemStyle::Handheld);
     EXPECT_EQ(heldItemStyle(ItemId::DiamondPickaxe), HeldItemStyle::Handheld);
+    EXPECT_EQ(heldItemStyle(ItemId::WoodenPickaxe), HeldItemStyle::Handheld);
+    EXPECT_EQ(heldItemStyle(ItemId::StonePickaxe), HeldItemStyle::Handheld);
+    EXPECT_EQ(heldItemStyle(ItemId::IronPickaxe), HeldItemStyle::Handheld);
+    EXPECT_EQ(heldItemStyle(ItemId::GoldenPickaxe), HeldItemStyle::Handheld);
+    EXPECT_EQ(heldItemStyle(ItemId::NetheritePickaxe), HeldItemStyle::Handheld);
     EXPECT_EQ(heldItemStyle(ItemId::Bow), HeldItemStyle::Bow);
     EXPECT_EQ(heldItemStyle(ItemId::GoldenApple), HeldItemStyle::Generated);
 }

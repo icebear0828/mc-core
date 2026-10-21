@@ -11,6 +11,71 @@
 
 ---
 
+## 0.0 2026-10-20：地面采掘与数据驱动掉落表（issue #66 / #81）
+
+分支：`feat/mining-loot-tables`（基于 `main` `5fe648d`），PR
+[#115](https://github.com/icebear0828/mc-core/pull/115)。完整说明见
+[ELDENRING_MINING_LOOT.md](ELDENRING_MINING_LOOT.md)。
+
+- 新增 `include/mc/loot_table.hpp`（6 区域 × 12 条目权重、工具门槛、保底、矿脉连击、确定性 RNG）
+  与 `include/mc/ground_mining.hpp`（60° 俯仰角门槛、空手/镐过滤、0~9 裂纹、区域硬度）。
+- `StepMining` 接入宿主静态地形：命中地形时走地面采掘，命中放置方块仍走原渐进破坏；
+  破坏后掉落自动进背包。`FindBlockTarget` 现在会带回地形命中点、法线、相机俯仰角。
+- `mc_er_steve.txt` 新增 `ground_mining=1`、`loot_zone=0..5`；`blocks=1` 仍是前提。
+- 新增 11 个物品 ID 与图集格子；木/石/铁/金/下界合金镐暂时复用钻石镐图标。
+- 测试：`build_pure_mc` Release **1171/1171**，Python **101 passed / 1 skipped**。
+- **移动打断已接**（2026-10-20）：`GroundMiningController::update` 新增 `moving` 入参；适配层读
+  `PhysicsModule+0x120` 线速度，模长 > 0.5 m/s 立即清裂纹（用速度而非位置差，规避浮动原点重定位）。
+- **5 个镐图标已补**（2026-10-20）：`item_wooden/stone/iron/golden/netherite_pickaxe` 图集格子、client.jar
+  映射、ER/Sekiro 的 `uvForItem` 与手持 `Handheld` 样式都已接；占位图集是彩点，部署前仍需从 jar 重提。
+- **区域自动识别已接静态路径**（2026-10-20）：玩家 block id 在 `PlayerIns+0x6D0`（PlayerIns vtable
+  `0x2A7FBB0`，构造函数 `0x650C90`；格式 `area<<24|gx<<16|gz<<8|lod`）；地面材质由射线命中回调
+  `0xC5A8E0` 的 `hit+0x48/+0x50` 经 `0xC75570` 解析。`loot_zone=-1` 启用自动分类；默认先查
+  `include/mc/er_region_table.hpp`（Smithbox ER map ID 生成的 463 块 tile 表），再按 area 回退；空的
+  `mc_er_zoneprobe.txt` 打开 `ZONEPROBE:` 日志。证据见 `ELDENRING_REVERSE.md` §45。
+- **实机材质样本（2026-10-20，Limgrave）**：`material=1` 石台（StoneSurface），`material=2/5` 草地/泥土
+  （Grassland）；配置里已加 `zone_mat_1=1`、`zone_mat_2=0`、`zone_mat_5=0`。材质值不是全局语义，其他区域
+  仍需采样。
+- **地面裂纹已接**（2026-10-20）：复用方块挖掘的 `destroy_stage_0..9`，锚定在**玩家脚下的
+  向下碰撞射线**命中点（准星射线只用于掉落/材质；第三人称准星落在身体上）。`ground_crack_lift=-0.14`
+  补偿实测的碰撞面/视觉地面差。裂纹是独立网格，遮挡偏置 `rel_bias=0` / `abs_bias=0.001`（方块偏置
+  8%+5cm 会逼它浮起来）。地面采掘**只显示裂纹，没有额外粒子**（灰色 Dust 不是原版，已移除；原版
+  方块纹理碎屑尚未实现）。**教训**：overlay 读游戏场景深度/给深度纹理加 barrier 的版本在实机崩溃
+  （`CRASH-VEH` 写坏指针），已删除，不要恢复。**加载画面/菜单期间 `StepMining` 直接返回**
+  （`WantSuppress()` 门禁），不发射线、不建裂纹网格；**`CastStaticRay` 本身也在 `WantSuppress()` 为假时
+  直接返回空结果**——2026-10-20 第二次加载崩溃（游戏 RVA `0xB5137F`，读 `0x13` 空指针）时，加载画面里
+  仍有 `ZONEPROBE` 命中，说明 locomotion/shadow/voxel 等其它射线也在 Havok 世界切换时打了进去；现在
+  所有静态射线都统一门禁。
+- **已部署并实机确认能进世界**（2026-10-20）：当前 DLL `837a498e…`；加载期崩溃已修复，裂纹/材质视觉
+  仍在微调。PR #115 已推送：`fork/feat/mining-loot-tables` = `a6f20a2`（本地/远端一致）。
+- 数据注意：issue #81 火山列合计 **80.5**，当前按列归一化；缺失的 19.5 需要确认归属。
+
+### 0.0.1 下一步：方块掉落（2026-10-20 起）
+
+- **现状**：放置方块破坏的掉落是 `blocks::itemForBlock`：`Stone -> BlockStone`（原版应为圆石），
+  且只有钻石镐能采集石头；`Wood` / `Obsidian` 还没有物品 ID，圆石也还不能右键放置。
+- **计划（TDD，先纯逻辑）**：
+  1. ~~`MiningController::canHarvest(Stone)` 改成任意镐；`computeBreakTime(Stone)` 按镐等级给时间~~
+     **已完成**：木 1.15s、石 0.6s、铁 0.4s、金 0.2s、钻石 0.3s、下界合金 0.25s、空手 7.5s。
+  2. ~~新增 `MiningController::blockDrop`：`Stone -> BlockCobblestone`（任意镐）、`Dirt -> BlockDirt`、
+     `Tnt -> BlockTnt`、创造模式 `None`；`loader.cpp` 的方块破坏改用它~~ **已完成**。
+  3. `BlockWood` / `BlockObsidian` 物品 ID + 放置 + 图标 **已完成**（`block_wood_top/side`、
+     `block_obsidian`、`item_wood/obsidian`，木头任意工具掉自身，黑曜石仅钻石/下界合金镐掉自身；
+     创造模式物品栏已加这两项）。剩余：issue #81 的合并行拆分（沙 / 深板岩 / 安山岩 / 花岗岩）。
+     图集现在是 102 区。
+  4. **第一人称相机俯仰受限**（用户 2026-10-20 实机反馈，待做）：第一视角不能自由转到 90° 朝下，
+     低头到某个角度就停住；影响地面采掘（要求俯仰角 ≥60°）和准星锚定。第一人称目前仍用游戏
+     `ChrCam` 的旋转（`0x1404A7190` 是渲染实际使用的相机拷贝，HANDOFF §7）。**已确认根因是游戏
+     原生 pitch clamp（上限 70°，日志里 `click` 的 fwd.y 全部卡在 -0.94）**。
+     **2026-10-20 尝试过接管、已整体还原**：两版实现（`570a4f5` 只在 `readCamera`/渲染拷贝里应用
+     偏移；`366496e` 把扩展轴向写回 `ChrCam`）实机都让采掘按“已经低头”的瞄点走、画面却没跟着转，
+     用户反馈“挖掘系统被改坏”，因此 `fix/fp-pitch` 上的两个提交已 revert，部署回 `66EFAF89…`
+     （12:11 的无灰dust 版本）。如果以后再做：先在实机确认 `rcc pitch:` 里渲染拷贝读到的
+     `engine_down` 到底是多少，再决定改哪一层；不要同时动 `readCamera` 和渲染拷贝。
+  4. 测试加在 `tests/test_eldenring_mining.cpp`；跑 `build_pure_mc` 全量。
+
+---
+
 ## 0. 当前最新状态（2026-10-12，新开会话必读）
 
 ### 0.1 核心成果与分支拓扑
@@ -271,7 +336,7 @@
 
 ### 5.1 开关文件（空文件即可，存在就启用）
 
-`mc_er_overlay.txt`（覆盖层）、`mc_er_damage.txt`（伤害功能）、`mc_er_input.txt`（输入拦截）、`mc_er_hit.bin`（**必须**，见 5.2）、`mc_er_steve.txt`（配置，见下）、`mc_er_physlog.txt`（物理向量日志）、`mc_er_hitlog.txt`（`HIT-IN` 受击日志）、`mc_er_hitvfx.txt`（装受击特效钩子）、`mc_er_buddylog.txt`（召唤管理器只读探针，**会占满一个 CPU 核**）、`mc_er_summon.txt`（让 F2 触发一次群狼召唤）、`mc_er_summonhide.txt`（隐藏召唤物原模型、画 MC 僵尸）、`mc_er_chrscan.txt`（F2 后扫描召唤物结构，只读）、`mc_er_creativelog.txt`（创造模式只读探针：事件分发器、击杀包装等）、`mc_er_bulletlog.txt` / `mc_er_bulletfire.txt` / `mc_er_arrowdmg.txt`（弩箭，见第 0 节）、`mc_er_nolos.txt`（**应急**：关闭墙体遮挡）、`mc_er_anyvictim.txt`（不等受害者被更新，有小概率与 worker 线程竞争）。 **本阶段新增**：`mc_er_noguardhook.txt`（关盾牌的 GuardCheck 与 `vfunc[7]` 钩子）、`mc_er_noknockdownfix.txt`（关去倒地钩子）、`mc_er_noflags.txt`（关体力/HUD/不死标志位的持有）、`mc_er_depthprobe.txt`（开深度探针）。
+`mc_er_overlay.txt`（覆盖层）、`mc_er_damage.txt`（伤害功能）、`mc_er_input.txt`（输入拦截）、`mc_er_hit.bin`（**必须**，见 5.2）、`mc_er_steve.txt`（配置，见下）、`mc_er_physlog.txt`（物理向量日志）、`mc_er_hitlog.txt`（`HIT-IN` 受击日志）、`mc_er_hitvfx.txt`（装受击特效钩子）、`mc_er_buddylog.txt`（召唤管理器只读探针，**会占满一个 CPU 核**）、`mc_er_summon.txt`（让 F2 触发一次群狼召唤）、`mc_er_summonhide.txt`（隐藏召唤物原模型、画 MC 僵尸）、`mc_er_chrscan.txt`（F2 后扫描召唤物结构，只读）、`mc_er_creativelog.txt`（创造模式只读探针：事件分发器、击杀包装等）、`mc_er_bulletlog.txt` / `mc_er_bulletfire.txt` / `mc_er_arrowdmg.txt`（弩箭，见第 0 节）、`mc_er_nolos.txt`（**应急**：关闭墙体遮挡）、`mc_er_anyvictim.txt`（不等受害者被更新，有小概率与 worker 线程竞争）。 **本阶段新增**：`mc_er_noguardhook.txt`（关盾牌的 GuardCheck 与 `vfunc[7]` 钩子）、`mc_er_noknockdownfix.txt`（关去倒地钩子）、`mc_er_noflags.txt`（关体力/HUD/不死标志位的持有）、`mc_er_depthprobe.txt`（开深度探针）、`mc_er_zoneprobe.txt`（开区域/材质探针，日志 `ZONEPROBE:`）。
 
 ### 5.2 `mc_er_hit.bin`（576 字节，必备）
 
@@ -279,7 +344,7 @@
 
 ### 5.3 `mc_er_steve.txt` 配置键（`key=value`，一行一个）
 
-`occlusion`（1=被场景遮挡）、`depth_const`（**0.00456**，深度×视距常数，实测）、`rel_bias`、`abs_bias`、`debug`/`depthview_gain`/`scene_height`（标定用，保持默认）、`yaw_offset_deg`（**180**，玩家物理四元数朝向与模型相反）、`hide_native`（1=隐藏原模型）、`hide_mask1`（`0x100A1`）、`hide_mask2`（`1`）、`hide_slots`（部件槽位掩码，默认全部）、`sound_volume`（0.8）、`first_person`（1=启动即第一人称）、`eye_height`（1.65）、`fp_persist`（1，持久眼睛相机）、`inv_key`（背包键的虚拟键码，默认 73=`I`）、`inv_sens`（背包指针灵敏度，默认 1）、`no_stagger`（0，实验，见钩子表）、`mc_jump`（0，起跳实验）、`mc_jump_key`（VK，默认空格 32）、`mc_jump_speed`（8.95 m/s）、`blocks`（1，放置/破坏）、`block_collision`（1，软碰撞）、`reach`（4.5 m）、`kb_force`（击退实验，**无效果，别用**）、`no_player_hit_vfx`（配合 `mc_er_hitvfx.txt`）。
+`occlusion`（1=被场景遮挡）、`depth_const`（**0.00456**，深度×视距常数，实测）、`rel_bias`、`abs_bias`、`debug`/`depthview_gain`/`scene_height`（标定用，保持默认）、`yaw_offset_deg`（**180**，玩家物理四元数朝向与模型相反）、`hide_native`（1=隐藏原模型）、`hide_mask1`（`0x100A1`）、`hide_mask2`（`1`）、`hide_slots`（部件槽位掩码，默认全部）、`sound_volume`（0.8）、`first_person`（1=启动即第一人称）、`eye_height`（1.65）、`fp_persist`（1，持久眼睛相机）、`inv_key`（背包键的虚拟键码，默认 73=`I`）、`inv_sens`（背包指针灵敏度，默认 1）、`no_stagger`（0，实验，见钩子表）、`mc_jump`（0，起跳实验）、`mc_jump_key`（VK，默认空格 32）、`mc_jump_speed`（8.95 m/s）、`blocks`（1，放置/破坏）、`block_collision`（1，软碰撞）、`reach`（4.5 m）、`kb_force`（击退实验，**无效果，别用**）、`no_player_hit_vfx`（配合 `mc_er_hitvfx.txt`）、`ground_mining`（1，地面采掘）、`ground_crack_lift`（裂纹沿法线抬升，米，负值往下压）、`ground_crack_size`（裂纹四边形边长，米）、`loot_zone`（0..5 手动，**-1 = 自动**：玩家 block id + 地面材质）、`zone_mat_<id>` / `zone_area_<id>`（自动模式的材质/area 覆盖，值 0..5）。
 
 ### 5.4 热键（游戏窗口在前台时）
 

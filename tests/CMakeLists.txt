@@ -67,6 +67,9 @@ add_executable(mc_tests
     test_tnt.cpp
     test_eldenring_tnt.cpp
     test_eldenring_mining.cpp
+    test_loot_table.cpp
+    test_ground_mining.cpp
+    test_zone_detector.cpp
     test_eldenring_combat_balance.cpp
     test_eldenring_sprint.cpp
     test_eldenring_creeper.cpp

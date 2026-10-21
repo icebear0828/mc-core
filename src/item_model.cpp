@@ -86,6 +86,11 @@ bool isHeldAsFlatSprite(ItemId item) {
     switch (item) {
         case ItemId::DiamondSword:
         case ItemId::DiamondPickaxe:
+        case ItemId::WoodenPickaxe:
+        case ItemId::StonePickaxe:
+        case ItemId::IronPickaxe:
+        case ItemId::GoldenPickaxe:
+        case ItemId::NetheritePickaxe:
         case ItemId::Bow:
         case ItemId::Arrow:
         case ItemId::Trident:
@@ -111,7 +116,12 @@ bool isHeldAsFlatSprite(ItemId item) {
 HeldItemStyle heldItemStyle(ItemId item) {
     switch (item) {
         case ItemId::DiamondSword:
-        case ItemId::DiamondPickaxe: return HeldItemStyle::Handheld;
+        case ItemId::DiamondPickaxe:
+        case ItemId::WoodenPickaxe:
+        case ItemId::StonePickaxe:
+        case ItemId::IronPickaxe:
+        case ItemId::GoldenPickaxe:
+        case ItemId::NetheritePickaxe: return HeldItemStyle::Handheld;
         case ItemId::Bow:
         case ItemId::BowPulling0:
         case ItemId::BowPulling1:

@@ -137,6 +137,8 @@ void SpawnDecal(const float pos[3], const float normal[3]);
 void ScreenSize(float& width, float& height);
 // The mesh of the placed blocks (world space, game metres; see eldenring_blockmesh.hpp). Thread safe; the overlay uploads and draws it.
 void SetBlockMesh(const mc::rig::RigMesh& mesh);
+// The ground crack's own mesh, drawn with a much smaller occlusion bias than the placed blocks.
+void SetTerrainCrackMesh(const mc::rig::RigMesh& mesh);
 // Saves the next frame (the game plus our overlay) as a PNG at `utf8_path`. Thread safe; the file is written by the Present thread.
 void RequestScreenshot(const char* utf8_path);
 // Duration (seconds) of a clip in the active CS viewmodel, or 0 when unavailable.

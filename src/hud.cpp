@@ -114,6 +114,24 @@ const char* HudEngine::getItemDisplayName(ItemId item) {
         case ItemId::DiamondChestplate: return "Diamond Chestplate";
         case ItemId::DiamondLeggings: return "Diamond Leggings";
         case ItemId::DiamondBoots: return "Diamond Boots";
+        case ItemId::Coal: return "Coal";
+        case ItemId::RawCopper: return "Raw Copper";
+        case ItemId::RawIron: return "Raw Iron";
+        case ItemId::Redstone: return "Redstone";
+        case ItemId::RawGold: return "Raw Gold";
+        case ItemId::LapisLazuli: return "Lapis Lazuli";
+        case ItemId::AmethystShard: return "Amethyst Shard";
+        case ItemId::Diamond: return "Diamond";
+        case ItemId::Emerald: return "Emerald";
+        case ItemId::NetheriteScrap: return "Netherite Scrap";
+        case ItemId::BlockCobblestone: return "Cobblestone";
+        case ItemId::BlockWood: return "Wood";
+        case ItemId::BlockObsidian: return "Obsidian";
+        case ItemId::WoodenPickaxe: return "Wooden Pickaxe";
+        case ItemId::StonePickaxe: return "Stone Pickaxe";
+        case ItemId::IronPickaxe: return "Iron Pickaxe";
+        case ItemId::GoldenPickaxe: return "Golden Pickaxe";
+        case ItemId::NetheritePickaxe: return "Netherite Pickaxe";
         case ItemId::None:
         default: return "";
     }

@@ -63,7 +63,8 @@ enum class BlockId : uint8_t {
     Stone,
     Tnt,
     Wood,
-    Obsidian
+    Obsidian,
+    Cobblestone // appended: every id above keeps its value
 };
 
 enum class ItemId : uint16_t {
@@ -95,7 +96,26 @@ enum class ItemId : uint16_t {
     DiamondHelmet,
     DiamondChestplate,
     DiamondLeggings,
-    DiamondBoots
+    DiamondBoots,
+    // Mining loot (issue #81). Appended so every id above keeps its value.
+    Coal,
+    RawCopper,
+    RawIron,
+    Redstone,
+    RawGold,
+    LapisLazuli,
+    AmethystShard,
+    Diamond,
+    Emerald,
+    NetheriteScrap,
+    BlockCobblestone,
+    WoodenPickaxe,
+    StonePickaxe,
+    IronPickaxe,
+    GoldenPickaxe,
+    NetheritePickaxe,
+    BlockWood,
+    BlockObsidian
 };
 
 inline constexpr bool isSpawnEgg(ItemId item) noexcept {

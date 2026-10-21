@@ -412,8 +412,64 @@ bool SteveRenderer::drawBlocks(ID3D12Device* device, ID3D12GraphicsCommandList* 
     return true;
 }
 
+void SteveRenderer::setTerrainCrack(const mc::rig::RigMesh& mesh) {
+    crack_vertices_cpu_ = mesh.vertices;
+    crack_indices_cpu_ = mesh.indices;
+    ++crack_version_;
+}
+
+bool SteveRenderer::drawTerrainCrack(ID3D12Device* device, ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
+                                     D3D12_GPU_DESCRIPTOR_HANDLE table, unsigned width, unsigned height, const mc::rig::Mat4& view_proj,
+                                     const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv, unsigned frame) {
+    if (!ready() || !own_depth_ || !dsv_heap_ || crack_indices_cpu_.empty() || table.ptr == 0) return false;
+    BlockSlot& slot = crack_slots_[frame % 4];
+    if (slot.version != crack_version_ || !slot.vb) {
+        Rel(slot.vb);
+        Rel(slot.ib);
+        slot.vb = UploadBuffer(device, crack_vertices_cpu_.data(), crack_vertices_cpu_.size() * sizeof(mc::rig::RigVertex));
+        slot.ib = UploadBuffer(device, crack_indices_cpu_.data(), crack_indices_cpu_.size() * sizeof(uint16_t));
+        if (!slot.vb || !slot.ib) {
+            Rel(slot.vb);
+            Rel(slot.ib);
+            return false;
+        }
+        slot.version = crack_version_;
+        slot.index_count = static_cast<unsigned>(crack_indices_cpu_.size());
+        slot.vbv = {slot.vb->GetGPUVirtualAddress(), static_cast<UINT>(crack_vertices_cpu_.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
+        slot.ibv = {slot.ib->GetGPUVirtualAddress(), static_cast<UINT>(crack_indices_cpu_.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
+    }
+    D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
+    D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+    list->RSSetViewports(1, &vp);
+    list->RSSetScissorRects(1, &sc);
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
+    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+    if (!params.keep_depth) list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    list->SetPipelineState(pso_);
+    list->SetGraphicsRootSignature(root_);
+    ID3D12DescriptorHeap* heaps[] = {srv_heap};
+    list->SetDescriptorHeaps(1, heaps);
+    list->SetGraphicsRootDescriptorTable(1, table);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->IASetVertexBuffers(0, 1, &slot.vbv);
+    list->IASetIndexBuffer(&slot.ibv);
+    list->SetGraphicsRoot32BitConstants(0, 16, view_proj.m.data(), 0);
+    const mc::rig::Mat4 identity = mc::rig::Mat4{};
+    list->SetGraphicsRoot32BitConstants(0, 16, identity.m.data(), 16);
+    const float extra[8] = {params.depth_const, params.rel_bias, params.abs_bias, params.mode, params.depth_w, params.depth_h, static_cast<float>(width), static_cast<float>(height)};
+    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
+    const float no_tint[4] = {0.f, 0.f, 0.f, 0.f};
+    list->SetGraphicsRoot32BitConstants(0, 4, no_tint, 40);
+    list->DrawIndexedInstanced(slot.index_count, 1, 0, 0, 0);
+    return true;
+}
+
 void SteveRenderer::release() {
     for (BlockSlot& slot : block_slots_) {
+        Rel(slot.vb);
+        Rel(slot.ib);
+    }
+    for (BlockSlot& slot : crack_slots_) {
         Rel(slot.vb);
         Rel(slot.ib);
     }

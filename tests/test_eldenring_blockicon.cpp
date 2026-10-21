@@ -57,6 +57,29 @@ TEST(BlockIcon, TntTopUsesTheTopCellAndTheSidesUseTheSideCell) {
     }
 }
 
+TEST(BlockIcon, CobblestoneUsesItsOwnFaceTexture) {
+    const IconCube icon = blockIcon(mc::BlockId::Cobblestone);
+    ASSERT_EQ(icon.count, 3);
+    for (int i = 0; i < icon.count; ++i) {
+        EXPECT_FLOAT_EQ(icon.faces[i].uv.u0, mc::hud::kUV_BLOCK_COBBLESTONE.u0);
+        EXPECT_FLOAT_EQ(icon.faces[i].uv.v1, mc::hud::kUV_BLOCK_COBBLESTONE.v1);
+    }
+}
+
+TEST(BlockIcon, WoodUsesTopAndSideCellsAndObsidianUsesItsCell) {
+    const IconCube wood = blockIcon(mc::BlockId::Wood);
+    ASSERT_EQ(wood.count, 3);
+    for (int i = 0; i < wood.count; ++i) {
+        const mc::hud::HudUV& want = wood.faces[i].is_top ? mc::hud::kUV_BLOCK_WOOD_TOP : mc::hud::kUV_BLOCK_WOOD_SIDE;
+        EXPECT_FLOAT_EQ(wood.faces[i].uv.u0, want.u0);
+    }
+    const IconCube obsidian = blockIcon(mc::BlockId::Obsidian);
+    ASSERT_EQ(obsidian.count, 3);
+    for (int i = 0; i < obsidian.count; ++i) {
+        EXPECT_FLOAT_EQ(obsidian.faces[i].uv.u0, mc::hud::kUV_BLOCK_OBSIDIAN.u0);
+    }
+}
+
 TEST(BlockIcon, TheFacesDoNotOverlapMuch) {
     // the three parallelograms tile a hexagon: their areas add up to the hexagon's area (no gap, no double cover)
     const IconCube icon = blockIcon(mc::BlockId::Dirt);

@@ -291,6 +291,14 @@ HUD_KEYS = [
     "armor_empty", "armor_half", "armor_full",
     *[f"destroy_stage_{i}" for i in range(10)],
     "item_creeper_spawn_egg", "item_skeleton_spawn_egg",
+    "item_coal", "item_raw_copper", "item_raw_iron", "item_redstone", "item_raw_gold",
+    "item_lapis_lazuli", "item_amethyst_shard", "item_diamond", "item_emerald",
+    "item_netherite_scrap", "item_cobblestone",
+    "item_wooden_pickaxe", "item_stone_pickaxe", "item_iron_pickaxe", "item_golden_pickaxe",
+    "item_netherite_pickaxe",
+    "block_cobblestone",
+    "block_wood_top", "block_wood_side", "block_obsidian",
+    "item_wood", "item_obsidian",
 ]
 
 HUD_SIZES = {

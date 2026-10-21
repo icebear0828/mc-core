@@ -97,6 +97,11 @@ public:
     bool drawBlocks(ID3D12Device* device, ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE table,
                     unsigned width, unsigned height, const mc::rig::Mat4& view_proj, const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv,
                     unsigned frame);
+    // The ground crack is a separate mesh so it can use a much smaller occlusion bias than the blocks.
+    void setTerrainCrack(const mc::rig::RigMesh& mesh);
+    bool drawTerrainCrack(ID3D12Device* device, ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE table,
+                          unsigned width, unsigned height, const mc::rig::Mat4& view_proj, const SteveParams& params,
+                          D3D12_CPU_DESCRIPTOR_HANDLE rtv, unsigned frame);
     bool initHeldItems(ID3D12Device* device, const uint8_t* atlas_rgba, unsigned atlas_w, unsigned atlas_h, const std::vector<FpItemCell>& cells);
 
     // `rtv` is the back buffer view: the figure is drawn with its own depth buffer (so the faces of the boxes and the parts
@@ -208,6 +213,10 @@ private:
     std::vector<mc::rig::RigVertex> block_vertices_cpu_;
     std::vector<uint16_t> block_indices_cpu_;
     unsigned block_version_{0};
+    BlockSlot crack_slots_[4]{};
+    std::vector<mc::rig::RigVertex> crack_vertices_cpu_;
+    std::vector<uint16_t> crack_indices_cpu_;
+    unsigned crack_version_{0};
     ID3D12Resource* own_depth_{nullptr};
     ID3D12DescriptorHeap* dsv_heap_{nullptr};
     unsigned own_depth_w_{0}, own_depth_h_{0};

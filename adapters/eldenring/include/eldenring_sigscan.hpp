@@ -90,6 +90,17 @@ inline constexpr const char* kRaycastWrapper =
     "4C 8B DC 53 57 48 81 EC 88 00 00 00 41 0F 28 01 4D 8D 4B A8 41 0F 28 08 4D 8D 43 B8 48 8B 84 24 D0 00 00 00";
 inline constexpr const char* kRaycastCore =
     "48 8B C4 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 38 FF FF FF 48 81 EC 90 01 00 00 48 C7 44 24 30 FE FF FF FF";
+// CSClosestHitCollectorForRaycast::AddHit (0x140C5A8E0): (collector, hknpHit*) -> void. The raycast core
+// (0xC71AA0) installs this collector; the callback copies the hit at +0x00 (position), +0x10 (normal),
+// +0x20 (fraction), and resolves the material from +0x48 (shape key) and +0x50 (material index) via
+// 0xC75570. Unique in 2.7.1.0 (checked in the exe; 0xC5A4C0 is the shape-cast sibling and does not match).
+inline constexpr const char* kRaycastHitCollector =
+    "48 89 5C 24 18 57 48 83 EC 20 F3 0F 10 42 20 48 8B DA 0F 28 C8 48 8B F9 0F 28 41 10 0F C6 C9 00 0F 2E C1 0F 86 D5 00 00 00 8B 42 48 4C 8D 44 24 38";
+// Havok material resolver (0x140C75570): (const u32* shape_key, u32 material_index, u32* out, bool resolve) -> bool.
+// It reads CSHavokManImp (0x3D7A0D0) +0x98 -> hknpWorld +0x28 (shape table); `out` receives the game material id.
+// Unique in 2.7.1.0 (checked in the exe).
+inline constexpr const char* kHavokMaterialLookup =
+    "48 89 5C 24 08 48 89 6C 24 18 48 89 74 24 20 89 54 24 10 57 48 83 EC 20 8B 01 40 32 ED 25 FF FF FF 00";
 inline constexpr const char* kCheckTeamHostile =
     "48 83 EC 28 0F B6 01 45 33 C0 48 6B C8 4F 0F B6 02 48 8D 54 24 30 48 03 C8 66 C7 44 24 30 01 00";
 inline constexpr const char* kCheckTeamFriend =
