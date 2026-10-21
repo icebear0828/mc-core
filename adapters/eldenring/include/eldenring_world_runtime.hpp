@@ -118,6 +118,12 @@ private:
     unsigned player_pushes_{0};
     bool anchored_{false};
     float anchor_[2]{0.f, 0.f};
+
+    // mc_er_blockmove.txt probe (diagnostic only): throttle and edge detection.
+    unsigned block_move_probe_frames_{0};
+    bool block_move_probe_last_supported_{false};
+    bool block_move_probe_last_direct_{false};
+    bool block_move_probe_last_drive_{false};
 #ifdef _WIN32
     LARGE_INTEGER last_block_qpc_{};
 #endif

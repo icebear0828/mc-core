@@ -991,8 +991,10 @@ std::atomic<bool>& g_sneak_active = g_mode.sneak_active;
 std::atomic<bool> g_sneak_clamped_x{false};
 std::atomic<bool> g_sneak_clamped_z{false};
 std::atomic<bool>& g_block_drive = g_mode.block_drive;
+std::atomic<bool>& g_block_position_drive = g_mode.block_position_drive;
 std::atomic<bool>& g_block_anchor = g_mode.block_anchor;
 std::atomic<bool>& g_block_ground = g_mode.block_ground;
+std::atomic<bool>& g_block_move_probe = g_mode.block_move_probe;
 std::atomic<bool>& g_block_collision = g_mode.block_collision;
 std::atomic<bool>& g_enemy_block_collision = g_mode.enemy_block_collision;
 std::atomic<bool>& g_block_supported = g_mode.block_supported;
@@ -2576,6 +2578,8 @@ void SetupOverlay() {
                     g_zone_area_rules.push_back({static_cast<uint32_t>(area), static_cast<mc::LootZone>(zone)});
                 }
                 else if (key == "block_drive") g_block_drive.store(value != 0.f);
+                else if (key == "block_position_drive") g_block_position_drive.store(value != 0.f);
+                else if (key == "block_move_probe") g_block_move_probe.store(value != 0.f);
                 else if (key == "instant_turn") g_instant_turn.store(value != 0.f);
                 else if (key == "turn_speed") g_turn_speed.store(std::clamp(value, 0.5f, 50.f));
                 else if (key == "block_speed" || key == "walk_speed") g_block_walk_speed.store(std::clamp(value, 0.5f, 15.f));
@@ -2607,6 +2611,8 @@ void SetupOverlay() {
                 ? std::span<const mc::ZoneRule>(kDefaultZoneAreaRules)
                 : std::span<const mc::ZoneRule>(g_zone_area_rules);
         }
+        // Diagnostic switch: log which block-movement path moved the player (read-only; no behaviour change).
+        g_block_move_probe.store(FileExists(g_game_dir + "mc_er_blockmove.txt"));
         cfg.depth_probe = FileExists(g_game_dir + "mc_er_depthprobe.txt");
         erov::SetSteveConfig(cfg);
         eraudio::Init((g_game_dir + "mods\\mc_adapter\\sounds\\").c_str(), g_sound_volume.load(), &Log);

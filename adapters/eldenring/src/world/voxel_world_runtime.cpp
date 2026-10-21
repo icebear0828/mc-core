@@ -46,6 +46,11 @@ void VoxelWorldRuntime::resetForTesting() {
     anchored_ = false;
     std::memset(anchor_, 0, sizeof(anchor_));
 
+    block_move_probe_frames_ = 0;
+    block_move_probe_last_supported_ = false;
+    block_move_probe_last_direct_ = false;
+    block_move_probe_last_drive_ = false;
+
     enemy_pushes_ = 0;
     prev_enemy_feet_.clear();
     delta_time_override_ = 0.f;
@@ -284,7 +289,9 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
     // directly advance player coordinates by block_walk_speed (4.317 m/s) clamped by block collision.
     // This restores continuous, responsive locomotion on custom voxel surfaces.
     bool direct_moved = false;
-    if (supported && fg && !jumped) {
+    bool velocity_drive_called = false;
+    const bool position_drive = ctx.mode().block_position_drive.load(std::memory_order_relaxed);
+    if (supported && fg && !jumped && position_drive) {
         CameraPose cam{};
         if (callbacks_.read_camera && callbacks_.read_camera(cam)) {
             const float fwd_key = (isKeyDown('W') ? 1.f : 0.f) - (isKeyDown('S') ? 1.f : 0.f);
@@ -383,11 +390,44 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
 
     if (module != 0 && supported && ctx.mode().block_drive.load(std::memory_order_relaxed) && callbacks_.drive_velocity) {
         callbacks_.drive_velocity(module, pinned, ctx);
+        velocity_drive_called = true;
     }
     if (supported) {
         ctx.player().movement_layer_ms.store(GetTickCount64(), std::memory_order_relaxed);
         if (callbacks_.reset_fall_timer) callbacks_.reset_fall_timer(player);
         if (callbacks_.unlock_air_movement) callbacks_.unlock_air_movement(player);
+    }
+
+    if (ctx.mode().block_move_probe.load(std::memory_order_relaxed) && (supported || was_supported) && module != 0) {
+        ++block_move_probe_frames_;
+        const bool edge = supported != block_move_probe_last_supported_ ||
+                          direct_moved != block_move_probe_last_direct_ ||
+                          velocity_drive_called != block_move_probe_last_drive_;
+        if (edge || block_move_probe_frames_ % 12u == 0u) {
+            float vel[3]{};
+            uint8_t flag_92 = 0, flag_1d1 = 0, flag_1d0 = 0;
+            if (callbacks_.safe_read) {
+                callbacks_.safe_read(module + 0x120, vel, sizeof(vel)); // A: linear velocity (m/s)
+                callbacks_.safe_read(module + 0x92, &flag_92, 1);
+                callbacks_.safe_read(module + 0x1D1, &flag_1d1, 1);
+                callbacks_.safe_read(module + 0x1D0, &flag_1d0, 1);
+            }
+            log("BLOCKMOVE: sup=%d was=%d pin=%d sneak=%d jump=%d pos_drive=%d pos_wrote=%d vel_drive=%d ground=%d dt=%.4f "
+                "game=(%.3f,%.3f,%.3f) ours=(%.3f,%.3f,%.3f) feet=(%.2f,%.2f,%.2f) vel=(%.2f,%.2f,%.2f) flags=(%d,%d,%d) "
+                "keys=%d%d%d%d%d",
+                supported ? 1 : 0, was_supported ? 1 : 0, pinned ? 1 : 0, sneak_clamped ? 1 : 0, jumped ? 1 : 0,
+                position_drive ? 1 : 0, (pinned || sneak_clamped || direct_moved) ? 1 : 0,
+                velocity_drive_called ? 1 : 0, ctx.mode().block_ground.load(std::memory_order_relaxed) ? 1 : 0, block_dt,
+                dx, dy, dz,
+                final_feet[0] - feet[0], final_feet[1] - feet[1], final_feet[2] - feet[2],
+                final_feet[0], final_feet[1], final_feet[2],
+                vel[0], vel[1], vel[2],
+                static_cast<int>(flag_92), static_cast<int>(flag_1d1), static_cast<int>(flag_1d0),
+                key_w ? 1 : 0, key_a ? 1 : 0, key_s ? 1 : 0, key_d ? 1 : 0, key_space ? 1 : 0);
+        }
+        block_move_probe_last_supported_ = supported;
+        block_move_probe_last_direct_ = direct_moved;
+        block_move_probe_last_drive_ = velocity_drive_called;
     }
 
     std::memcpy(prev_player_feet_, final_feet, sizeof(prev_player_feet_));

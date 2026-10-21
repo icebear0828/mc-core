@@ -74,6 +74,39 @@
      `engine_down` 到底是多少，再决定改哪一层；不要同时动 `readCamera` 和渲染拷贝。
   4. 测试加在 `tests/test_eldenring_mining.cpp`；跑 `build_pure_mc` 全量。
 
+### 0.0.2 方块移动三路径隔离与实机探针（2026-10-21 起）
+
+方块上的移动现在有三套独立写入，默认**同时开启**：
+
+1. **位置直推**：`stepBlockMovement`（`eldenring_blocks.hpp`）每帧 `feet += dir * speed * dt`，
+   写 `PhysicsModule+0x70/+0x80` 和 `+0x91`；开关 `block_position_drive`（新，默认 1）。
+2. **速度注入**：`PlayerLocomotion::driveVelocity` 写水平 `+0x120`；开关 `block_drive`（原有，默认 1）。
+3. **假着地**：写 `+0x92/+0x1D1/+0x1D0 = 1` 并清垂直速度；开关 `block_ground`（原有，默认 1）。
+
+为了不再猜“到底哪条路径在动”，新增只读探针 `mc_er_blockmove.txt`：存在时每 12 帧（以及支持状态/
+路径变化时）输出一行 `BLOCKMOVE:`：
+
+```
+BLOCKMOVE: sup was pin sneak jump pos_drive pos_wrote vel_drive ground dt
+           game=(dx,dy,dz) ours=(dx,dy,dz) feet=(x,y,z) vel=(x,y,z) flags=(92,1D1,1D0) keys=WASD+space
+```
+
+- `game=` 是**上一次写入之后游戏自己移动了多少**（读到的 feet − 上次写入的 feet）；`ours=` 是这一帧
+  我们位置直推/夹边/锚定产生的位移。两者都非零就说明两套路径在叠加。
+- 默认 DLL 行为不变（`block_position_drive` 默认 1）。探针关闭时没有额外开销。
+
+**实机对照矩阵**（改 `mc_er_steve.txt`，每轮做同样动作：站方块上走 3 s、走下边缘、Shift 潜行到边缘、
+跳一次、被敌人打一下）：
+
+| 轮次 | `block_position_drive` | `block_drive` | `block_ground` | 目的 |
+|---|---|---|---|---|
+| A | 1 | 1 | 1 | 现状：看 `game=` 和 `ours=` 是否叠加 |
+| B | 1 | 0 | 0 | 只看位置直推 |
+| C | 0 | 1 | 1 | 只看速度注入 + 假着地 |
+| D | 0 | 0 | 1 | 只开假着地，确认它本身不产生位移 |
+
+结论落点：保留 `game=` 能跟上目标速度的那条路径，另一条关掉；然后再做 BlockMovementLayer 收敛。
+
 ---
 
 ## 0. 当前最新状态（2026-10-12，新开会话必读）

@@ -481,3 +481,172 @@ TEST(EldenRingWorldRuntime, DetectsFloatingOriginRebaseAndShiftsWorld) {
     // After:  (11.0f)  - (-0.15f)  = +11.15f
     // Relative distance is 100% PRESERVED!
 }
+
+// ---- Block movement path isolation (mc_er_blockmove.txt) ------------------------------------------------
+// The player on a placed block can be moved by three independent mechanisms: a direct position drive, a
+// velocity write (+0x120) and fake-grounded flags (+0x92/+0x1D0/+0x1D1). These tests pin each one behind its
+// own switch so the in-game probe can compare them without guessing which path did the work.
+
+namespace {
+
+struct BlockMoveHarness {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x5000;
+    std::map<int, bool> keys;
+    std::vector<std::string> logs;
+    std::function<void(uintptr_t, bool, RuntimeContext&)> drive;
+    bool drive_called = false;
+
+    BlockMoveHarness() {
+        auto& runtime = VoxelWorldRuntime::Instance();
+        runtime.resetForTesting();
+        runtime.setDeltaTimeOverrideForTesting(0.05f);
+        runtime.setInputProvider([this](int vk) { return keys[vk]; });
+
+        WorldRuntimeCallbacks cb{};
+        cb.get_player_chr = [this]() { return kChr; };
+        cb.get_physics_module = [this](uintptr_t) { return kModule; };
+        cb.read_physics_pos = [this](uintptr_t, float out_f[3]) {
+            return mem.readBytes(kModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+        };
+        cb.safe_read = [this](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+        cb.safe_write = [this](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+        cb.is_game_in_foreground = []() { return true; };
+        cb.read_camera = [](CameraPose& cam) {
+            cam.forward[0] = 0.f; cam.forward[1] = 0.f; cam.forward[2] = 1.f;
+            cam.right[0] = 1.f; cam.right[1] = 0.f; cam.right[2] = 0.f;
+            return true;
+        };
+        cb.drive_velocity = [this](uintptr_t module, bool force_zero, RuntimeContext& c) {
+            drive_called = true;
+            if (drive) drive(module, force_zero, c);
+        };
+        cb.log = [this](const std::string& s) { logs.push_back(s); };
+        runtime.setCallbacks(cb);
+
+        auto& ctx = RuntimeContext::Instance();
+        ctx.resetForTesting();
+        ctx.mode().mc_mode.store(true);
+        ctx.mode().block_collision.store(true);
+        ctx.mode().block_anchor.store(false);
+        ctx.mode().block_walk_speed.store(4.317f);
+
+        {
+            std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+            ctx.world().block_grid.place({0, 0, 0}, mc::BlockId::Stone);
+        }
+        setFeet(0.5f, 1.0f, 0.5f);
+        keys['W'] = true;
+    }
+
+    void step() { VoxelWorldRuntime::Instance().stepPlayerBlockCollision(RuntimeContext::Instance()); }
+    void setFeet(float x, float y, float z) {
+        const float f[3] = {x, y, z};
+        mem.writeBytes(kModule + layout::kPhysicsPosition, f, sizeof(f));
+    }
+    std::array<float, 3> feet() const {
+        float f[3]{};
+        mem.readBytes(kModule + layout::kPhysicsPosition, f, sizeof(f));
+        return {f[0], f[1], f[2]};
+    }
+};
+
+} // namespace
+
+TEST(EldenRingWorldRuntime, BlockPositionDriveDefaultsOn) {
+    BlockMoveHarness h;
+    EXPECT_TRUE(RuntimeContext::Instance().mode().block_position_drive.load());
+    EXPECT_TRUE(RuntimeContext::Instance().mode().block_drive.load());
+    EXPECT_TRUE(RuntimeContext::Instance().mode().block_ground.load());
+}
+
+TEST(EldenRingWorldRuntime, BlockPositionDriveMovesThePlayerWhenEnabled) {
+    BlockMoveHarness h;
+    auto& ctx = RuntimeContext::Instance();
+    ctx.mode().block_position_drive.store(true);
+    ctx.mode().block_drive.store(false);
+    ctx.mode().block_ground.store(false);
+
+    h.step(); // one tick: the direct drive runs on the first tick too (prev_feet is only used for the jump guard)
+
+    const auto f = h.feet();
+    EXPECT_NEAR(f[0], 0.5f, 1e-4f);
+    EXPECT_NEAR(f[1], 1.0f, 1e-4f);
+    EXPECT_NEAR(f[2], 0.5f + 4.317f * 0.05f, 0.02f);
+    EXPECT_EQ(h.mem.read<uint8_t>(h.kModule + layout::kPhysicsProxySyncRequest), 1);
+}
+
+TEST(EldenRingWorldRuntime, BlockPositionDriveCanBeDisabled) {
+    BlockMoveHarness h;
+    auto& ctx = RuntimeContext::Instance();
+    ctx.mode().block_position_drive.store(false);
+    ctx.mode().block_drive.store(false);
+    ctx.mode().block_ground.store(false);
+
+    h.step();
+    h.step();
+
+    const auto f = h.feet();
+    EXPECT_NEAR(f[0], 0.5f, 1e-4f);
+    EXPECT_NEAR(f[1], 1.0f, 1e-4f);
+    EXPECT_NEAR(f[2], 0.5f, 1e-4f);
+    EXPECT_TRUE(ctx.mode().block_supported.load());
+}
+
+TEST(EldenRingWorldRuntime, VelocityDriveWritesHorizontalVelocityWithoutMovingPosition) {
+    BlockMoveHarness h;
+    auto& ctx = RuntimeContext::Instance();
+    ctx.mode().block_position_drive.store(false);
+    ctx.mode().block_drive.store(true);
+    ctx.mode().block_ground.store(true);
+    h.drive = [&h](uintptr_t module, bool, RuntimeContext&) {
+        const float v[3] = {0.f, 0.f, 4.317f};
+        h.mem.writeBytes(module + 0x120, v, sizeof(v));
+    };
+
+    h.step();
+    h.step();
+
+    EXPECT_TRUE(h.drive_called);
+    float v[3]{};
+    h.mem.readBytes(h.kModule + 0x120, v, sizeof(v));
+    EXPECT_NEAR(v[2], 4.317f, 1e-4f);
+    const auto f = h.feet();
+    EXPECT_NEAR(f[2], 0.5f, 1e-4f);
+    EXPECT_EQ(h.mem.read<uint8_t>(h.kModule + 0x92), 1);
+    EXPECT_EQ(h.mem.read<uint8_t>(h.kModule + 0x1D1), 1);
+    EXPECT_EQ(h.mem.read<uint8_t>(h.kModule + 0x1D0), 1);
+}
+
+TEST(EldenRingWorldRuntime, GroundFlagsAreOptional) {
+    BlockMoveHarness h;
+    auto& ctx = RuntimeContext::Instance();
+    ctx.mode().block_position_drive.store(false);
+    ctx.mode().block_drive.store(false);
+    ctx.mode().block_ground.store(false);
+
+    h.step();
+    h.step();
+
+    EXPECT_EQ(h.mem.read<uint8_t>(h.kModule + 0x92), 0);
+    EXPECT_EQ(h.mem.read<uint8_t>(h.kModule + 0x1D1), 0);
+    EXPECT_EQ(h.mem.read<uint8_t>(h.kModule + 0x1D0), 0);
+}
+
+TEST(EldenRingWorldRuntime, BlockMoveProbeLogsWithoutChangingMovement) {
+    BlockMoveHarness h;
+    auto& ctx = RuntimeContext::Instance();
+    ctx.mode().block_position_drive.store(false);
+    ctx.mode().block_drive.store(false);
+    ctx.mode().block_ground.store(false);
+    ctx.mode().block_move_probe.store(true);
+
+    h.step();
+    h.step();
+
+    ASSERT_FALSE(h.logs.empty());
+    EXPECT_NE(h.logs.back().find("BLOCKMOVE:"), std::string::npos);
+    const auto f = h.feet();
+    EXPECT_NEAR(f[2], 0.5f, 1e-4f);
+}

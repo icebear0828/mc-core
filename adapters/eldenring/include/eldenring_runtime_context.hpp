@@ -129,7 +129,12 @@ struct ModeConfig {
     std::atomic<bool> block_anchor{false}; // Always default to false to prevent coordinate lock
     std::atomic<bool> blocks_enabled{true};
     std::atomic<bool> block_drive{true};
+    // Direct position drive on placed blocks (stepBlockMovement). Split from block_drive so the two write paths can be
+    // isolated in game; see mc_er_blockmove.txt and the BLOCKMOVE log.
+    std::atomic<bool> block_position_drive{true};
     std::atomic<bool> block_ground{true};
+    // mc_er_blockmove.txt: log which of the three block-movement paths moved the player this tick (diagnostic only).
+    std::atomic<bool> block_move_probe{false};
     std::atomic<bool> block_collision{true};
     std::atomic<bool> enemy_block_collision{true};
     std::atomic<bool> block_supported{false};
@@ -304,7 +309,9 @@ public:
         mode_.block_anchor.store(false);
         mode_.blocks_enabled.store(true);
         mode_.block_drive.store(true);
+        mode_.block_position_drive.store(true);
         mode_.block_ground.store(true);
+        mode_.block_move_probe.store(false);
         mode_.block_collision.store(true);
         mode_.enemy_block_collision.store(true);
         mode_.block_supported.store(false);
