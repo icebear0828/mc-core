@@ -151,8 +151,8 @@ VEH 会看到**每一个**被处理的 C++ 异常；`diagnostics.cpp` 把它和�
 
 同一次 Run C 也验证了 0.0.3 的跳跃修复：`mcjump` 两次都正常 `landed on block`，落地时 `ours` 从
 Run B 的 +0.070 降到 +0.020，`BLOCKMOVE` 里不再出现 `vel.y=6.81`。用户反馈的“一直有粒子在发光”
-没有对应的 mod 粒子/召唤日志（只有 creeper 模型加载）；如果重启后仍在，需要截图和位置再查
-（可能是赐福/法术特效，或某个 stuck 的 SpEffect）。
+经确认为**旁边的赐福（Site of Grace）**，是正常游戏特效，不是 mod 问题；日志里也没有对应的
+mod 粒子/召唤事件。
 
 ---
 
