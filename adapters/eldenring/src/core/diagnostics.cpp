@@ -38,10 +38,12 @@ void Log(const char* fmt, ...) {
 LONG WINAPI CrashVehHandler(PEXCEPTION_POINTERS ep) {
     if (ep == nullptr || ep->ExceptionRecord == nullptr) return EXCEPTION_CONTINUE_SEARCH;
     const DWORD code = ep->ExceptionRecord->ExceptionCode;
-    // Intercept fatal faults: Access Violation, illegal instruction, stack overflow, fastfail, abort
+    // Intercept fatal faults only: Access Violation, illegal instruction, stack overflow, fastfail, abort.
+    // Do NOT log 0xE06D7363 (C++ exception): the game uses handled C++ exceptions in normal control flow
+    // (e.g. while unfocused/loading), and a VEH sees every one of them. Logging each one with a register +
+    // stack dump floods mc_er.log (24k lines in 24 s in the 2026-10-21 run) and stalls the game.
     if (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION ||
-        code == EXCEPTION_STACK_OVERFLOW || code == 0xC0000409 /* STATUS_STACK_BUFFER_OVERRUN / __fastfail */ ||
-        code == 0xE06D7363 /* C++ exception */) {
+        code == EXCEPTION_STACK_OVERFLOW || code == 0xC0000409 /* STATUS_STACK_BUFFER_OVERRUN / __fastfail */) {
         const uintptr_t rip = ep->ContextRecord != nullptr ? static_cast<uintptr_t>(ep->ContextRecord->Rip) : 0;
         const uintptr_t addr = reinterpret_cast<uintptr_t>(ep->ExceptionRecord->ExceptionAddress);
         const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));

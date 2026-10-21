@@ -136,6 +136,24 @@ Run B 的跳跃日志暴露了第二个“双权威”问题：`mcjump: start` �
 下一轮：同一动作，重点看跳跃上/下方块时 `ja=1` 期间 `pos_wrote=0`、`flags` 不再被方块步骤覆盖，
 以及 `mcjump: landed` 后是否还有 `ours=+0.07` 的抬升。
 
+### 0.0.4 CRASH-VEH 把 C++ 异常当崩溃记录，导致卡死（2026-10-21）
+
+Run C 日志在 54.6 s 开始出现 `CRASH-VEH: Exception 0xE06D7363`，24 秒内 **24,490 行**，每行还带
+寄存器、字符串和 32 条栈扫描（`ReadProcessMemory` + 每行 `Log` 的 mutex/fflush）。实机表现是“卡爆了”。
+
+根因：`0xE06D7363` 是 **MSVC C++ 异常**，不是崩溃。游戏在失焦/加载/内部错误路径上正常 throw/catch，
+VEH 会看到**每一个**被处理的 C++ 异常；`diagnostics.cpp` 把它和访问违例一起记录，等于把正常控制流
+当致命错误刷日志。日志里的 `Exception ... at addr 00007FFF328B41CA` 在系统 DLL 里，RVA 也是假的
+（地址不在游戏映像内）。
+
+修复：`CrashVehHandler` 不再拦截 `0xE06D7363`，只记录访问违例、非法指令、栈溢出、fastfail。
+需要抓未处理的 C++ 异常时应走 `std::set_terminate`，不能靠 VEH。
+
+同一次 Run C 也验证了 0.0.3 的跳跃修复：`mcjump` 两次都正常 `landed on block`，落地时 `ours` 从
+Run B 的 +0.070 降到 +0.020，`BLOCKMOVE` 里不再出现 `vel.y=6.81`。用户反馈的“一直有粒子在发光”
+没有对应的 mod 粒子/召唤日志（只有 creeper 模型加载）；如果重启后仍在，需要截图和位置再查
+（可能是赐福/法术特效，或某个 stuck 的 SpEffect）。
+
 ---
 
 ## 0. 当前最新状态（2026-10-12，新开会话必读）
