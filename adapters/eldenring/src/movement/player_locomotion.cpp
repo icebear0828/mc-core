@@ -279,16 +279,26 @@ void PlayerLocomotion::stepJump(float dt, uint64_t now_ms, RuntimeContext& ctx) 
         ctx.ui().inv_open.load(std::memory_order_relaxed) || !fg) {
         prev_jump_key_ = false;
         jump_controller_.cancel();
+        ctx.player().jump_active.store(false, std::memory_order_relaxed);
         return;
     }
 
     const uintptr_t player = callbacks_.get_player_chr ? callbacks_.get_player_chr() : 0;
-    if (player == 0) return;
+    if (player == 0) {
+        ctx.player().jump_active.store(false, std::memory_order_relaxed);
+        return;
+    }
     const uintptr_t module = callbacks_.get_physics_module ? callbacks_.get_physics_module(player) : 0;
-    if (module == 0) return;
+    if (module == 0) {
+        ctx.player().jump_active.store(false, std::memory_order_relaxed);
+        return;
+    }
 
     float feet[3] = {};
-    if (!callbacks_.safe_read || !callbacks_.safe_read(module + layout::kPhysicsPosition, feet, sizeof(feet))) return;
+    if (!callbacks_.safe_read || !callbacks_.safe_read(module + layout::kPhysicsPosition, feet, sizeof(feet))) {
+        ctx.player().jump_active.store(false, std::memory_order_relaxed);
+        return;
+    }
 
     const bool down = isKeyDown(mc_jump_vk_.load(std::memory_order_relaxed));
     const bool edge = down && !prev_jump_key_;
@@ -343,6 +353,7 @@ void PlayerLocomotion::stepJump(float dt, uint64_t now_ms, RuntimeContext& ctx) 
 
             jump_controller_.start(feet[1], init_vx, init_vz, sprinting, mc_jump_speed_.load(std::memory_order_relaxed));
             jump_start_ms_ = now_ms;
+            ctx.player().jump_active.store(true, std::memory_order_relaxed);
             log("mcjump: start at y=%.3f, v=%.2f m/s, sprint=%d, h_speed=%.2f m/s",
                 feet[1], jump_controller_.vy(), sprinting ? 1 : 0,
                 std::sqrt(jump_controller_.vx() * jump_controller_.vx() + jump_controller_.vz() * jump_controller_.vz()));
@@ -353,6 +364,15 @@ void PlayerLocomotion::stepJump(float dt, uint64_t now_ms, RuntimeContext& ctx) 
 
     unlockAirMovement(player);
     resetFallTimer(player);
+
+    // The jump controller writes the vertical position every tick. Zero the game's vertical velocity and fall
+    // speed while the arc is ours, otherwise the engine adds its own jump/gravity on top of the arc (the
+    // "double jump / frame skip" seen when landing on a block).
+    if (callbacks_.safe_write) {
+        const float zero_vy = 0.f;
+        callbacks_.safe_write(module + 0x120 + 4, &zero_vy, sizeof(zero_vy));
+        callbacks_.safe_write(module + 0x1B8, &zero_vy, sizeof(zero_vy));
+    }
 
     const float fwd_key = (isKeyDown('W') ? 1.f : 0.f) - (isKeyDown('S') ? 1.f : 0.f);
     const float right_key = (isKeyDown('D') ? 1.f : 0.f) - (isKeyDown('A') ? 1.f : 0.f);
@@ -417,6 +437,7 @@ void PlayerLocomotion::stepJump(float dt, uint64_t now_ms, RuntimeContext& ctx) 
         } else if (ny < jump_controller_.startY() - 3.0f) {
             log("mcjump: no ground under the arc, native game takes over");
             jump_controller_.cancel();
+            ctx.player().jump_active.store(false, std::memory_order_relaxed);
             if (callbacks_.safe_write) callbacks_.safe_write(module + 0x92, &zero, 1);
             return;
         }
@@ -445,6 +466,7 @@ void PlayerLocomotion::stepJump(float dt, uint64_t now_ms, RuntimeContext& ctx) 
 
         if (landed) {
             jump_controller_.land(ny);
+            ctx.player().jump_active.store(false, std::memory_order_relaxed);
             const auto flags = eldenring::jump::computeLandingFlags(landed_on_block);
             const uint8_t ground_byte = flags.on_ground_flag ? 1 : 0;
             const uint8_t air_byte = flags.airborne_flag ? 1 : 0;
@@ -454,6 +476,7 @@ void PlayerLocomotion::stepJump(float dt, uint64_t now_ms, RuntimeContext& ctx) 
             callbacks_.safe_write(module + 0x1D0, &air_byte, 1);
             const float zero_f = 0.f;
             callbacks_.safe_write(module + 0x1B8, &zero_f, sizeof(zero_f));
+            callbacks_.safe_write(module + 0x120 + 4, &zero_f, sizeof(zero_f));
             log("mcjump: landed %s, peak %.2f m, %.2f s in the air, fall timer was %.2f",
                 landed_on_block ? "on block" : "on terrain", jump_controller_.peak(),
                 static_cast<float>(now_ms - jump_start_ms_) / 1000.f, fallTimer(player));

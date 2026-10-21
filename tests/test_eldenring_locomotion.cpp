@@ -259,6 +259,13 @@ TEST(EldenRingLocomotion, JumpTakeoffTrajectoryAndCeilingResolution) {
     // Takeoff confirmed
     EXPECT_TRUE(loco.jumpController().isActive());
     EXPECT_GT(loco.jumpController().vy(), 0.f);
+    // The jump owns the vertical axis: the game's own vertical velocity and fall speed are zeroed.
+    EXPECT_TRUE(ctx.player().jump_active.load());
+    float game_vy = -1.f, fall_speed = -1.f;
+    mem.readBytes(kModule + 0x120 + 4, &game_vy, sizeof(game_vy));
+    mem.readBytes(kModule + 0x1B8, &fall_speed, sizeof(fall_speed));
+    EXPECT_FLOAT_EQ(game_vy, 0.f);
+    EXPECT_FLOAT_EQ(fall_speed, 0.f);
 
     // Step jump upwards towards ceiling
     for (int i = 0; i < 15 && !ceiling_hit; ++i) {

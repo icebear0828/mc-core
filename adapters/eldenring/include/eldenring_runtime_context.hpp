@@ -204,6 +204,9 @@ struct PlayerSystems {
     std::atomic<float> ground_y{0.f};
     std::atomic<bool> ground_valid{false};
     std::atomic<uint64_t> movement_layer_ms{0};
+    // Our own MC jump is integrating the arc. While true, the block step must not resolve the player or write
+    // position / ground flags: the jump controller owns the vertical axis and the block landing.
+    std::atomic<bool> jump_active{false};
 };
 
 struct WorldSystems {
@@ -362,6 +365,7 @@ public:
         player_.ground_y.store(0.f);
         player_.ground_valid.store(false);
         player_.movement_layer_ms.store(0);
+        player_.jump_active.store(false);
 
         // Reset World
         {

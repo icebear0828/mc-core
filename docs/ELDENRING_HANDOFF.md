@@ -112,7 +112,29 @@ BLOCKMOVE: sup was pin sneak jump pos_drive pos_wrote vel_drive ground dt
 典型行走帧 `game≈0.072`、`ours≈0.07`（目标 4.317 m/s ≈ 0.072/60Hz 帧），两者相加约 **2 倍速度**。
 `game` 与 `vel/60` 完全吻合（4.31/60≈0.072），说明**速度注入被游戏真正执行**；位置直推是叠加项。
 `game` 的写入有一帧延迟，所以日志里会出现 `keys=00000` 的“游戏应用上一帧速度”行，不是输入丢失。
-下一轮：`block_position_drive=0`，只留速度注入 + 假着地，重复同一动作看是否顺滑、起步/停步/边缘是否正常。
+
+**Run B 实测（2026-10-21，`block_position_drive=0`，只留速度注入 + 假着地）**：
+89 行全部 `pos_drive=0 / pos_wrote=0`；`sup=1` 且有移动键的 51 行里 **47 行 game-only**，
+`game` 中位数 0.0714 ≈ 0.072/帧（4.32 m/s），`ours` 中位数 0。**叠加消失，速度回到 MC 走路速度**。
+用户仍觉得“好快”：4.317 m/s 接近 ER 的跑步速度（约 4.0），不是 bug；要更慢就把
+`mc_er_steve.txt` 的 `walk_speed`（或 `block_speed`）调到 2.5~3.0。
+
+### 0.0.3 跳跃与方块碰撞的权威分离（2026-10-21）
+
+Run B 的跳跃日志暴露了第二个“双权威”问题：`mcjump: start` 后，方块步骤仍在做 `resolvePlayer`，
+把脚从 0.95 m 抬到方块顶 1.00 m（`ours=+0.070`），同时游戏的 `+0x120+4` 还保留着原生跳跃的
+**+6.81 m/s** 垂直速度。两者叠加，实机表现为“抽帧 / 穿模 / 像二段跳”。
+
+修复（TDD，`build_pure_mc` 1178/1178）：
+
+- `PlayerSystems::jump_active`：MC 跳跃激活期间为 true。
+- `stepJump` 激活期间每帧把 `+0x120+4`（垂直速度）和 `+0x1B8`（下落速度）写 0；落地/取消时清标志。
+  这两个字段方块步骤本来就在写（`+0x120+4=0`、`+0x1B8=0`），不是新字段。
+- `stepPlayerBlockCollision` 在 `jump_active` 时**不再**做方块 resolve、位置写入、假着地标志、
+  `drive_velocity`、锚定/潜行夹边；跳跃控制器独占垂直轴和方块落地。`BLOCKMOVE` 新增 `ja=` 字段。
+
+下一轮：同一动作，重点看跳跃上/下方块时 `ja=1` 期间 `pos_wrote=0`、`flags` 不再被方块步骤覆盖，
+以及 `mcjump: landed` 后是否还有 `ours=+0.07` 的抬升。
 
 ---
 

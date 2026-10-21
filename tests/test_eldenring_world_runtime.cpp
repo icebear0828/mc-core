@@ -650,3 +650,18 @@ TEST(EldenRingWorldRuntime, BlockMoveProbeLogsWithoutChangingMovement) {
     const auto f = h.feet();
     EXPECT_NEAR(f[2], 0.5f, 1e-4f);
 }
+
+TEST(EldenRingWorldRuntime, BlockStepDoesNotResolveWhileOurJumpOwnsTheArc) {
+    BlockMoveHarness h;
+    auto& ctx = RuntimeContext::Instance();
+    ctx.mode().block_position_drive.store(true); // even with the position drive on, the jump is the authority
+    ctx.player().jump_active.store(true);
+    h.setFeet(0.5f, 0.95f, 0.5f); // sunk 5 cm into the block top (top at y = 1.0)
+
+    h.step();
+
+    const auto f = h.feet();
+    EXPECT_NEAR(f[0], 0.5f, 1e-4f);
+    EXPECT_NEAR(f[1], 0.95f, 1e-4f); // no lift onto the block while the jump is active
+    EXPECT_NEAR(f[2], 0.5f, 1e-4f);
+}
