@@ -107,6 +107,13 @@ BLOCKMOVE: sup was pin sneak jump pos_drive pos_wrote vel_drive ground dt
 
 结论落点：保留 `game=` 能跟上目标速度的那条路径，另一条关掉；然后再做 BlockMovementLayer 收敛。
 
+**Run A 实测（2026-10-21，三条全开）**：`BLOCKMOVE` 260 行；`sup=1` 且有移动键的 110 行里，
+**39 行 `game` 和 `ours` 同时 >0.02**（另有 28 行 game-only、37 行 ours-only）。
+典型行走帧 `game≈0.072`、`ours≈0.07`（目标 4.317 m/s ≈ 0.072/60Hz 帧），两者相加约 **2 倍速度**。
+`game` 与 `vel/60` 完全吻合（4.31/60≈0.072），说明**速度注入被游戏真正执行**；位置直推是叠加项。
+`game` 的写入有一帧延迟，所以日志里会出现 `keys=00000` 的“游戏应用上一帧速度”行，不是输入丢失。
+下一轮：`block_position_drive=0`，只留速度注入 + 假着地，重复同一动作看是否顺滑、起步/停步/边缘是否正常。
+
 ---
 
 ## 0. 当前最新状态（2026-10-12，新开会话必读）
