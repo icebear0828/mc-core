@@ -730,9 +730,10 @@ void HotkeyDispatcher::tick(float dt) {
 
     const bool d6 = fg && queryKey(VK_F6);
     if (d6 && !prev6_) {
+        bool toggle_mc = true;
 #if ENABLE_CS2_VIEWMODEL
-        // The CS2 build is CS-only at runtime: F6 can leave CS mode but never
-        // enables MC mode.
+        // The CS2 build keeps both modes: the first F6 leaves CS mode, the
+        // next one toggles MC mode.
         if (mode.cs_mode.load()) {
             mode.cs_mode.store(false);
             mode.cs_knife_state.store(0);
@@ -741,15 +742,15 @@ void HotkeyDispatcher::tick(float dt) {
             mode.cs_action_hit.store(true);
             mode.cs_knife_anim_time.store(0.f);
             if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: OFF (via F6)");
+            toggle_mc = false;
         }
-#else
-        {
+#endif
+        if (toggle_mc) {
             const bool new_mc = !mode.mc_mode.load();
             mode.mc_mode.store(new_mc);
             if (cb_.log) cb_.log(std::string("F6: MC mode ") + (new_mc ? "on" : "off"));
             if (cb_.reset_slot_probe) cb_.reset_slot_probe(slot_cursor_);
         }
-#endif
     }
     prev6_ = d6;
 

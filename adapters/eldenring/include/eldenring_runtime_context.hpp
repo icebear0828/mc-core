@@ -97,11 +97,7 @@ private:
 };
 
 struct ModeConfig {
-#if ENABLE_CS2_VIEWMODEL
-    std::atomic<bool> mc_mode{false}; // CS2 build: MC mode is not available at runtime
-#else
     std::atomic<bool> mc_mode{true};
-#endif
     std::atomic<bool> cs_mode{false};
     std::atomic<uint8_t> cs_knife_state{0}; // 0: Idle, 1: Inspect, 2: Primary, 3: Secondary, 4: Deploy, 5: Reload, 6: Backstab
     std::atomic<float> cs_knife_anim_time{0.f};

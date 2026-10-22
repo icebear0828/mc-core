@@ -2550,13 +2550,7 @@ void SetupOverlay() {
                 else if (key == "fly_vspeed") g_fly_v_speed.store(std::clamp(value, 1.f, 40.f));
                 else if (key == "mc_jump") g_mc_jump.store(value != 0.f);
                 else if (key == "mc_jump_key") g_mc_jump_vk.store(static_cast<int>(value));
-                else if (key == "mc_mode") {
-#if ENABLE_CS2_VIEWMODEL
-                    g_mc_mode.store(false); // CS2 build: MC mode is not available
-#else
-                    g_mc_mode.store(value != 0.f);
-#endif
-                }
+                else if (key == "mc_mode") g_mc_mode.store(value != 0.f);
                 else if (key == "mc_gravity") g_mc_gravity.store(std::clamp(value, 5.f, 80.f));
                 else if (key == "mc_jump_speed") g_mc_jump_speed.store(std::clamp(value, 1.f, 20.f));
                 else if (key == "blocks") g_blocks_enabled.store(value != 0.f);
