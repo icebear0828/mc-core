@@ -363,7 +363,7 @@ Run E（位置直推、`block_drive=0`）仍然双倍速：日志里 `game` 和 
 | 目标机 | Windows，`ssh win`。仓库 `D:\game\mc\mc-core`（只此一份，别碰 `D:\game\mc-core`、`D:\game\sekiro`）。游戏目录 `C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game`。 |
 | 代码传输 | **只走 git**（push → win 上 pull）。win 访问不了 GitHub，要用代理：`git -c http.proxy=http://127.0.0.1:7897 pull`；TLS 经常断，**脚本里循环重试直到 `git rev-parse --short HEAD` 两边一致**，别信"没报错"。资产类文件（皮肤、声音）例外，用 scp。 |
 | 编译（win） | `cd /d D:\game\mc\mc-core && call "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 > build-env.log 2>&1 && cmake --build build-win --config Release --target eldenring_adapter > build-er.log 2>&1 & findstr /C:"error" /C:"warning" /C:"eldenring_adapter.vcxproj ->" build-er.log`。MSVC 是 **`/W4 /WX`**（警告即错误）。输出是 GBK，管道过 `iconv -f GBK -t UTF-8 -c`。 |
-| 部署 | 游戏**必须关着**，把 `build-win\bin\eldenring\dinput8.dll` 复制到游戏目录，再 `certutil -hashfile` 对比两边哈希。**游戏进程名是 `start_protected_game.exe`，不是 `eldenring.exe`**——用 `tasklist \| findstr /I "eldenring start_protected"` 判断是否在运行。DLL 被占用就是游戏（或启动器）还开着。**注意两个构建变体**：`ENABLE_CS2_VIEWMODEL=ON` 是 CS2 构建（运行时 MC 模式禁用，表现是纯 CS），`OFF` 是纯 MC 构建；部署 MC 前先在 `CMakeCache.txt` 里确认开关，别把 CS 的 `dinput8.dll` 当成 MC。 |
+| 部署 | 游戏**必须关着**，把 `build-win\bin\eldenring\dinput8.dll` 复制到游戏目录，再 `certutil -hashfile` 对比两边哈希。**游戏进程名是 `start_protected_game.exe`，不是 `eldenring.exe`**——用 `tasklist \| findstr /I "eldenring start_protected"` 判断是否在运行。DLL 被占用就是游戏（或启动器）还开着。**注意两个构建变体**：`ENABLE_CS2_VIEWMODEL=ON` 是 MC+CS 合并构建（MC 模式可用，F1 开关 CS、F6 开关 MC），`OFF` 是纯 MC 构建；部署前先在 `CMakeCache.txt` 里确认开关。 |
 | 日志 | 游戏目录 `mc_er.log`，**追加写入，多次运行首尾相连，时间戳每次从 0 重新开始**。分析时按"时间戳变小"切会话，只看最后一段。 |
 | Python | 一律 `uv run`（用户规定），例如 `uv run --with pillow --with pytest python -m pytest tests/test_extract_assets.py`。win 上：`uv run --python C:\Python313\python.exe --with pillow python ...`。 |
 | 测试 | mac：`./build/bin/mc_tests`（C++，gtest）；Python：`tests/test_*.py`。改了 `tools/extract_mc_assets.py` 的精灵表后要同时更新 `include/mc/hud_atlas.hpp`、`adapters/sekiro/include/sekiro_hud_atlas.hpp`、`assets/source/textures/mc_hud_atlas.png`（有测试逐字节比对，**不要手改生成物**）。 |
@@ -494,7 +494,7 @@ Run E（位置直推、`block_drive=0`）仍然双倍速：日志里 `game` 和 
 - **输入**：游戏用 DirectInput `GetDeviceState` 读键鼠（60 Hz）；手柄走 XInput（我们**只支持键鼠**，用户决定）。
 - **菜单标志**：`CSMenuMan+0x1C|+0x1D` 为菜单聚焦；`+0x1A` 是光标捕获，**不是**菜单标志。
 - **血液特效、战斗时的原生 HUD**：都用游戏自带设置关掉。
-- **控制策略层（2026-10-19，纯 MC 构建，用户实机确认“都没有问题”）**：第一人称、MC 跳跃/翻滚/飞行、鼠标/菜单/背包输入仲裁均正常；纯 MC 与 CS 是两个构建（`ENABLE_CS2_VIEWMODEL` OFF/ON），部署 MC 必须用 `build_pure_mc`。验证记录见 `ELDENRING_VERIFY_CHECKLIST.md` F25。
+- **控制策略层（2026-10-19，纯 MC 构建，用户实机确认“都没有问题”）**：第一人称、MC 跳跃/翻滚/飞行、鼠标/菜单/背包输入仲裁均正常；纯 MC 是 `ENABLE_CS2_VIEWMODEL=OFF`（`build_pure_mc`），`ON`（`build/`）是 MC+CS 合并构建（F1 CS、F6 MC）。验证记录见 `ELDENRING_VERIFY_CHECKLIST.md` F25。
 - **背包输入抑制（2026-10-19，纯 MC 构建，用户实机确认“没问题了”）**：`InventoryController` 只维护开关/UI；`mc::requestInventory` 请求 `MouseMotion`/`Keyboard`/`Cursor = Mod`，由 dispatcher 从 `ControlPlan` 统一应用。验证记录见 F36。
 
 ---

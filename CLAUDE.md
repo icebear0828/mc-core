@@ -25,9 +25,9 @@
 - 跨线程只读 `RuntimeContext::mode().control_authority_bits`，用 `modOwns` / `blocksNative` 查询。
 
 ## 构建变体（别部署错）
-- `build/`：`ENABLE_CS2_VIEWMODEL=ON`，**CS2 viewmodel 构建**；运行时 MC 模式被禁用，表现是“纯 CS”。
-- `build_pure_mc/`：`ENABLE_CS2_VIEWMODEL=OFF`，**纯 MC 构建**。
-- 部署 MC 用 `build_pure_mc\bin\eldenring\dinput8.dll`；部署 CS 用 `build\bin\eldenring\dinput8.dll`。
+- `build/`：`ENABLE_CS2_VIEWMODEL=ON`，**MC+CS 合并构建**；MC 模式可用，F1 开关 CS、F6 退出 CS 后再按一次开关 MC。
+- `build_pure_mc/`：`ENABLE_CS2_VIEWMODEL=OFF`，**纯 MC 构建**（调试 MC 用）。
+- 部署 MC 用 `build_pure_mc\bin\eldenring\dinput8.dll`；部署 MC+CS 用 `build\bin\eldenring\dinput8.dll`。
 - 部署前先确认：`Get-Content <build>\CMakeCache.txt | Select-String ENABLE_CS2_VIEWMODEL`。两个 DLL 都叫 `dinput8.dll`，只看文件名分不出来。
 
 ## 常用命令
