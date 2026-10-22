@@ -596,9 +596,30 @@ bool ChrCamPosAddress(uintptr_t& addr) {
     return true;
 }
 
+// The camera object can be recreated during loads/weapon switches. Writing the
+// 12-byte eye position into a stale target overwrites whatever object now lives
+// there (the 0x9F2E37 crash had a vtable replaced by two float coordinates).
+// Only write when the target still holds a plausible camera position: two
+// finite floats, with the second one a normal (not denormal) magnitude. A
+// module/heap pointer's high 32 bits read as a denormal float, so it is refused.
+bool CameraPositionTargetSafe(uintptr_t addr) {
+    uint64_t probe = 0;
+    float p0 = 0.f, p1 = 0.f;
+    if (!SafeCopy(addr, &probe, sizeof(probe))) return false;
+    std::memcpy(&p0, &probe, sizeof(p0));
+    std::memcpy(&p1, reinterpret_cast<const uint8_t*>(&probe) + 4, sizeof(p1));
+    if (probe >= g_img.base && probe < g_img.base + g_img.image_size) return false;
+    if (!std::isfinite(p0) || !std::isfinite(p1)) return false;
+    if (std::fabs(p0) >= 100000.f) return false;
+    if (std::fabs(p1) <= 1e-6f || std::fabs(p1) >= 100000.f) return false;
+    return true;
+}
+
 void RestoreCamKeep() {
     if (!g_cam_keep.valid) return;
-    WriteBytesSafe(g_cam_keep.pos_addr, g_cam_keep.third_person, sizeof(g_cam_keep.third_person));
+    if (CameraPositionTargetSafe(g_cam_keep.pos_addr)) {
+        WriteBytesSafe(g_cam_keep.pos_addr, g_cam_keep.third_person, sizeof(g_cam_keep.third_person));
+    }
     g_cam_keep.valid = false;
 }
 
@@ -615,7 +636,14 @@ void AfterCameraStep(bool have_before, uintptr_t addr, const float before[3]) {
         float feet[3];
         if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) {
             firstPersonEye(feet, g_eye_height.load(), eye);
-            if (WriteBytesSafe(addr, eye, sizeof(eye))) {
+            if (!CameraPositionTargetSafe(addr)) {
+                static std::atomic<unsigned> refused{0};
+                const unsigned n = ++refused;
+                if (n <= 8) {
+                    Log("camstep: REFUSED eye write at %p (target no longer looks like a camera position)",
+                        reinterpret_cast<void*>(addr));
+                }
+            } else if (WriteBytesSafe(addr, eye, sizeof(eye))) {
                 g_cam_keep.pos_addr = addr;
                 std::memcpy(g_cam_keep.third_person, now, sizeof(now));
                 g_cam_keep.valid = true;
@@ -2426,11 +2454,11 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     out.show = have_state && !ms.menu_focused && !ms.popup_open && !ls.screen_loading && fade < 0.02f;
 
     if (g_hide_native.load()) {
-#if ENABLE_CS2_VIEWMODEL
+        // Hide the native body in MC and CS mode. The collector in
+        // hud_bridge.cpp is RTTI-validated, so a weapon switch that leaves a
+        // stale part pointer cannot turn a display-flag write into a vtable
+        // overwrite (the 0x200000001 crash).
         const bool want_hidden = (out.mc_mode || out.cs_mode) && have_state && !ls.screen_loading;
-#else
-        const bool want_hidden = out.mc_mode && have_state && !ls.screen_loading;
-#endif
         g_native_hide_wanted.store(want_hidden);
         UpdateNativeModel(static_cast<uintptr_t>(player), want_hidden);
         static uint64_t last_report_ms = 0;

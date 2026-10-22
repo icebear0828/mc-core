@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "eldenring_model.hpp"
+#include "eldenring_chrscan.hpp"
 
 namespace eldenring::ui {
 
@@ -140,15 +141,24 @@ void UpdateNativeModel(uintptr_t player, bool hide, const live::IMemoryReader& r
                        std::mutex& native_mutex) {
     std::lock_guard<std::mutex> lock(native_mutex);
     if (ctx.ui().slots_changed.exchange(false)) {
-        restoreAll(hidden_flags);
+        // A weapon/model slot change frees and reuses the old display
+        // entities. Writing the cached flag words back would then land in a
+        // new object (a vtable/function pointer) and crash on the next
+        // virtual call. Drop the cache and hide the new model from scratch.
+        hidden_flags.clear();
     }
     if (!hide) {
         restoreAll(hidden_flags);
         return;
     }
 
-    const std::vector<uintptr_t> addrs = live::collectDispFlagAddresses(
-        reader, base, player, ctx.ui().hide_slots.load(std::memory_order_relaxed));
+    // RTTI-validated collection. A weapon switch can leave stale part pointers
+    // in the model; the fixed-offset scan would then compute a flag address
+    // inside a freed/reused object and corrupt its vtable (the 0x200000001
+    // crash). The RTTI scan only returns real CSModelDispEntity objects.
+    // The returned addresses are the disp_flags1 words, which is what the
+    // loop below expects.
+    const std::vector<uintptr_t> addrs = live::collectAsmModelDispFlagAddresses(reader, base, player);
     const uint32_t masks[2] = {
         ctx.ui().hide_mask1.load(std::memory_order_relaxed),
         ctx.ui().hide_mask2.load(std::memory_order_relaxed)

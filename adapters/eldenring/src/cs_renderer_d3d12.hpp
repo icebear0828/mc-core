@@ -30,6 +30,11 @@ public:
     void release();
     [[nodiscard]] bool ready() const { return pso_ != nullptr && vb_ != nullptr; }
 
+    // Dedicated D32_FLOAT depth buffer for the viewmodel. Keeping it separate
+    // from the Steve/MC depth buffer guarantees the CS pass always has a valid
+    // DSV and never clears another pass's depth.
+    bool ensureDepth(ID3D12Device* device, unsigned width, unsigned height);
+
     bool loadModel(ID3D12Device* device, const std::string& path);
 
     // Textures:
@@ -144,16 +149,35 @@ private:
             pending = false;
         }
 
-        bool create(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+        bool create(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot, bool srgb = false);
         void recordUpload(ID3D12GraphicsCommandList* list);
     };
 
     ID3D12RootSignature* root_{nullptr};
     ID3D12PipelineState* pso_{nullptr};
+    ID3D12PipelineState* pso_depth_flip_{nullptr}; // debug: reverse comparison
     ID3D12Resource* vb_{nullptr};
     ID3D12Resource* ib_{nullptr};
     D3D12_VERTEX_BUFFER_VIEW vbv_{};
     D3D12_INDEX_BUFFER_VIEW ibv_{};
+
+    // Dedicated viewmodel depth target.
+    ID3D12Device* device_{nullptr};
+    ID3D12Resource* depth_tex_{nullptr};
+    ID3D12DescriptorHeap* dsv_heap_{nullptr};
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv_cpu_{};
+    unsigned depth_w_{0};
+    unsigned depth_h_{0};
+
+    // CSVM v4 per-vertex skinning palette. Four 512-byte slots are rotated per
+    // draw so a frame in flight never sees the next frame's bone matrices.
+    static constexpr uint32_t kMaxSkinBones = 8;
+    static constexpr uint32_t kBoneCbSlots = 4;
+    static constexpr uint32_t kBoneCbSlotBytes = kMaxSkinBones * 64;
+    ID3D12Resource* bone_cb_{nullptr};
+    void* bone_cb_mapped_{nullptr};
+    D3D12_GPU_VIRTUAL_ADDRESS bone_cb_gpu_{0};
+    uint32_t bone_cb_slot_{0};
 
     TextureGpu knife_tex_;
     TextureGpu glove_tex_;

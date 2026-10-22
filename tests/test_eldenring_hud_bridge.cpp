@@ -150,12 +150,29 @@ TEST(HudBridgeTest, NativeModelAndShadowDispFlagsHidingAndRestoringWithMockModel
         uint8_t cast_shadow; // +0x2F0
     } asm_model{};
     constexpr uintptr_t kMockImageBase = 0x140000000;
+    constexpr uintptr_t kMockDispVtable = kMockImageBase + 0x1000;
+    constexpr uintptr_t kMockCol = kMockImageBase + 0x2000;
+    constexpr uintptr_t kMockTdRva = 0x3000;
     asm_model.vtable = kMockImageBase + live::layout::kAsmModelVtableRva;
     asm_model.root_disp_ptr = reinterpret_cast<uintptr_t>(&root_disp);
     asm_model.shadow_disp_ptr = reinterpret_cast<uintptr_t>(&shadow_disp);
     asm_model.parts[0] = reinterpret_cast<uintptr_t>(&part);
     asm_model.asm_flags = 0x00000007; // bits 0, 1, 2 set
     asm_model.cast_shadow = 1;
+
+    // Mock x64 RTTI for CSModelDispEntity: vtable[-1] -> COL, COL+0x0C ->
+    // TypeDescriptor RVA, TypeDescriptor+0x10 -> mangled class name.
+    std::vector<uint8_t> mock_image(0x4000, 0);
+    const uint64_t col_ptr = kMockCol;
+    std::memcpy(mock_image.data() + 0x1000 - 8, &col_ptr, sizeof(col_ptr));
+    const uint32_t col_sig = 1;
+    std::memcpy(mock_image.data() + 0x2000, &col_sig, sizeof(col_sig));
+    std::memcpy(mock_image.data() + 0x2000 + 0x0C, &kMockTdRva, sizeof(kMockTdRva));
+    const char disp_class[] = ".?AVCSModelDispEntity@CS@@";
+    std::memcpy(mock_image.data() + kMockTdRva + 0x10, disp_class, sizeof(disp_class));
+    *reinterpret_cast<uint64_t*>(disp_entity.pad_00) = kMockDispVtable;
+    *reinterpret_cast<uint64_t*>(root_disp.pad_00) = kMockDispVtable;
+    *reinterpret_cast<uint64_t*>(shadow_disp.pad_00) = kMockDispVtable;
 
     struct MockPlayer {
         uint8_t pad_00[0x648];
@@ -165,11 +182,19 @@ TEST(HudBridgeTest, NativeModelAndShadowDispFlagsHidingAndRestoringWithMockModel
 
     class MockMemReader : public live::IMemoryReader {
     public:
+        MockMemReader(const std::vector<uint8_t>& image, uintptr_t base) : image_(image), base_(base) {}
         bool read(uintptr_t address, void* dst, size_t size) const override {
+            if (address >= base_ && address + size <= base_ + image_.size()) {
+                std::memcpy(dst, image_.data() + (address - base_), size);
+                return true;
+            }
             std::memcpy(dst, reinterpret_cast<const void*>(address), size);
             return true;
         }
-    } mock_reader;
+    private:
+        const std::vector<uint8_t>& image_;
+        uintptr_t base_;
+    } mock_reader(mock_image, kMockImageBase);
 
     auto& ctx = RuntimeContext::Instance();
     ctx.resetForTesting();
@@ -178,6 +203,9 @@ TEST(HudBridgeTest, NativeModelAndShadowDispFlagsHidingAndRestoringWithMockModel
     ctx.ui().hide_mask2.store(0x1);         // Shadow mask 2
 
     const uintptr_t player_addr = reinterpret_cast<uintptr_t>(&player);
+
+    const auto collected = live::collectAsmModelDispFlagAddresses(mock_reader, kMockImageBase, player_addr);
+    ASSERT_EQ(collected.size(), 3u);
 
     // 1. Hide native model and shadow
     UpdateNativeModel(player_addr, true /* hide */, mock_reader, kMockImageBase, ctx, hidden_flags, native_mutex);

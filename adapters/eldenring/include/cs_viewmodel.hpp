@@ -30,16 +30,28 @@ enum class SubmeshType {
 #pragma pack(push, 1)
 struct CSVMHeader {
     char magic[4];           // "CSVM"
-    uint32_t version;        // 1
+    uint32_t version;        // 1..4
     uint32_t num_submeshes;
     uint32_t total_vertices;
     uint32_t total_indices;
 };
 
+// CSVM v1-v3 vertex: position/normal/UV only (32 bytes).
+struct CSVMVertexLegacy {
+    float pos[3];
+    float normal[3];
+    float uv[2];
+};
+
+// CSVM v4 vertex: adds four joint indices and four normalised uint8 weights
+// (40 bytes). Rigid submeshes leave joints/weights at zero and use the
+// single-bone path; skinned submeshes use the bone table.
 struct CSVMVertex {
     float pos[3];
     float normal[3];
     float uv[2];
+    uint8_t joints[4];
+    uint8_t weights[4];
 };
 #pragma pack(pop)
 
@@ -49,6 +61,18 @@ struct CSVMSubmesh {
     uint32_t first_index{0};
     int32_t base_vertex{0};
     uint32_t index_count{0};
+    // CSVM v4: bit 0 = per-vertex skinned.
+    uint32_t flags{0};
+
+    [[nodiscard]] bool skinned() const { return (flags & 1u) != 0u; }
+};
+
+// CSVM v4: one entry per compact skinning bone. `rest` maps a vertex from the
+// source bind pose into the clip rest pose; the runtime multiplies the sampled
+// delta track by this matrix before skinning.
+struct CSVMBone {
+    std::string name;
+    eldenring::fp::M4 rest{};
 };
 
 struct CSVMAnimClip {
@@ -76,6 +100,7 @@ public:
     std::vector<CSVMSubmesh> submeshes;
     std::vector<CSVMVertex> vertices;
     std::vector<uint32_t> indices;
+    std::vector<CSVMBone> bones;
     std::map<std::string, CSVMAnimClip> anim_clips;
 
     [[nodiscard]] const CSVMHeader& header() const { return header_; }
@@ -88,7 +113,8 @@ public:
         CSViewModel parsed;
         std::memcpy(&parsed.header_, data, sizeof(CSVMHeader));
         if (std::memcmp(parsed.header_.magic, "CSVM", 4) != 0 ||
-            (parsed.header_.version != 1 && parsed.header_.version != 2 && parsed.header_.version != 3)) {
+            (parsed.header_.version != 1 && parsed.header_.version != 2 &&
+             parsed.header_.version != 3 && parsed.header_.version != 4)) {
             return false;
         }
 
@@ -113,14 +139,59 @@ public:
             std::memcpy(&sub.first_index, data + offset, sizeof(uint32_t)); offset += sizeof(uint32_t);
             std::memcpy(&sub.base_vertex, data + offset, sizeof(int32_t)); offset += sizeof(int32_t);
             std::memcpy(&sub.index_count, data + offset, sizeof(uint32_t)); offset += sizeof(uint32_t);
+            if (parsed.header_.version >= 4) {
+                if (offset + sizeof(uint32_t) > size) return false;
+                std::memcpy(&sub.flags, data + offset, sizeof(uint32_t)); offset += sizeof(uint32_t);
+            }
             parsed.submeshes.push_back(std::move(sub));
         }
 
-        const size_t vb_bytes = parsed.header_.total_vertices * sizeof(CSVMVertex);
-        if (offset + vb_bytes > size) return false;
-        parsed.vertices.resize(parsed.header_.total_vertices);
-        std::memcpy(parsed.vertices.data(), data + offset, vb_bytes);
-        offset += vb_bytes;
+        // CSVM v4: compact skin bone table (name + bind-to-rest matrix).
+        parsed.bones.clear();
+        if (parsed.header_.version >= 4) {
+            if (offset + sizeof(uint32_t) > size) return false;
+            uint32_t num_bones = 0;
+            std::memcpy(&num_bones, data + offset, sizeof(uint32_t)); offset += sizeof(uint32_t);
+            if (num_bones > 256) return false;
+            parsed.bones.reserve(num_bones);
+            for (uint32_t b = 0; b < num_bones; ++b) {
+                if (offset + sizeof(uint32_t) > size) return false;
+                uint32_t name_len = 0;
+                std::memcpy(&name_len, data + offset, sizeof(uint32_t)); offset += sizeof(uint32_t);
+                if (name_len > size || offset + name_len + sizeof(eldenring::fp::M4) > size) return false;
+                CSVMBone bone;
+                bone.name.assign(reinterpret_cast<const char*>(data + offset), name_len);
+                offset += name_len;
+                std::memcpy(&bone.rest, data + offset, sizeof(eldenring::fp::M4));
+                offset += sizeof(eldenring::fp::M4);
+                parsed.bones.push_back(std::move(bone));
+            }
+        }
+
+        if (parsed.header_.version >= 4) {
+            const size_t vb_bytes = static_cast<size_t>(parsed.header_.total_vertices) * sizeof(CSVMVertex);
+            if (offset + vb_bytes > size) return false;
+            parsed.vertices.resize(parsed.header_.total_vertices);
+            if (vb_bytes > 0) {
+                std::memcpy(parsed.vertices.data(), data + offset, vb_bytes);
+                offset += vb_bytes;
+            }
+        } else {
+            const size_t legacy_bytes = static_cast<size_t>(parsed.header_.total_vertices) * sizeof(CSVMVertexLegacy);
+            if (offset + legacy_bytes > size) return false;
+            parsed.vertices.resize(parsed.header_.total_vertices);
+            for (uint32_t v = 0; v < parsed.header_.total_vertices; ++v) {
+                CSVMVertexLegacy legacy{};
+                std::memcpy(&legacy, data + offset, sizeof(legacy));
+                offset += sizeof(legacy);
+                CSVMVertex& dst = parsed.vertices[v];
+                std::memcpy(dst.pos, legacy.pos, sizeof(dst.pos));
+                std::memcpy(dst.normal, legacy.normal, sizeof(dst.normal));
+                std::memcpy(dst.uv, legacy.uv, sizeof(dst.uv));
+                std::memset(dst.joints, 0, sizeof(dst.joints));
+                std::memset(dst.weights, 0, sizeof(dst.weights));
+            }
+        }
 
         const size_t ib_bytes = parsed.header_.total_indices * sizeof(uint32_t);
         if (offset + ib_bytes > size) return false;
@@ -141,6 +212,25 @@ public:
                 max_index = std::max<size_t>(max_index, parsed.indices[sub.first_index + k]);
             }
             if (static_cast<size_t>(sub.base_vertex) + max_index >= parsed.vertices.size()) return false;
+        }
+
+        // CSVM v4: every skinned vertex must reference a real bone and carry
+        // at least one non-zero weight. A malformed palette would make the
+        // shader read out of bounds or collapse the mesh to the origin.
+        for (const auto& sub : parsed.submeshes) {
+            if (!sub.skinned()) continue;
+            if (parsed.bones.empty()) return false;
+            for (uint32_t k = 0; k < sub.index_count; ++k) {
+                const size_t vi = static_cast<size_t>(sub.base_vertex) + parsed.indices[sub.first_index + k];
+                const CSVMVertex& v = parsed.vertices[vi];
+                uint32_t weight_sum = 0;
+                for (int j = 0; j < 4; ++j) {
+                    if (v.weights[j] == 0) continue;
+                    if (v.joints[j] >= parsed.bones.size()) return false;
+                    weight_sum += v.weights[j];
+                }
+                if (weight_sum == 0) return false;
+            }
         }
 
         // Version 2: Read animation clips
@@ -191,6 +281,18 @@ public:
                         }
                         clip.tracks[track_name] = std::move(frames);
                     }
+
+                    // Keep the legacy knife slots populated for callers and
+                    // tests written before the named-track format.
+                    auto mirror = [&clip](const char* name, std::vector<eldenring::fp::M4>& dst) {
+                        const auto it = clip.tracks.find(name);
+                        if (it != clip.tracks.end()) dst = it->second;
+                    };
+                    mirror("blade", clip.blade_frames);
+                    mirror("front", clip.front_frames);
+                    mirror("rear", clip.rear_frames);
+                    mirror("lock", clip.lock_frames);
+                    mirror("arms", clip.arms_frames);
                 } else {
                     // CSVM v2: fixed five knife part tracks.
                     const size_t frame_bytes = 5 * m4_size;
@@ -244,7 +346,7 @@ struct ViewmodelProjectionConfig {
     float offset_x{0.0f};           // viewmodel_offset_x
     float offset_y{0.0f};           // viewmodel_offset_y
     float offset_z{0.0f};           // viewmodel_offset_z
-    float z_near{0.01f};            // Near clip tuned for viewmodels
+    float z_near{0.001f};           // Near clip tuned for viewmodels; the forearms cross 0.01 in the inspect pose
     float z_far{20.0f};             // Far clip tuned for viewmodels
     bool use_game_projection{false};// Decoupled by default
 };
