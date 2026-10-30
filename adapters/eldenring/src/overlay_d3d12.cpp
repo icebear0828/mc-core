@@ -593,9 +593,8 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                     snprintf(cs_msg, sizeof(cs_msg), "overlay: CS viewmodel model loaded successfully from %s", p.c_str());
                     Logf(cs_msg);
                     g_cs_knife_model_path = p;
-                    eldenring::RuntimeContext::Instance().mode().cs_mode.store(true);
-                    eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
-                    eldenring::RuntimeContext::Instance().mode().first_person.store(true);
+                    // Loading the model must not change mode state: the user picks
+                    // MC/CS with the hotkey (issue #101).
                     break;
                 }
             }
