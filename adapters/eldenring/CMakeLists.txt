@@ -53,6 +53,21 @@ if(WIN32)
 
     set(ELDENRING_ADAPTER_SRCS
         src/loader.cpp
+        src/core/loader_state.cpp
+        src/core/loader_services.cpp
+        src/core/player_services.cpp
+        src/core/domain_wiring.cpp
+        src/hooks/hook_setup.cpp
+        src/hooks/camera_runtime.cpp
+        src/combat/combat_services.cpp
+        src/combat/bullet_runtime.cpp
+        src/world/summon_runtime.cpp
+        src/world/mining_runtime.cpp
+        src/world/block_actions.cpp
+        src/world/tnt_runtime.cpp
+        src/world/flags_runtime.cpp
+        src/movement/movement_runtime.cpp
+        src/ui/hud_overlay.cpp
         src/overlay_d3d12.cpp
         src/steve_renderer_d3d12.cpp
         src/input_hook.cpp
@@ -85,7 +100,7 @@ if(WIN32)
         RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/bin/eldenring"
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON)
-    target_include_directories(eldenring_adapter PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include")
+    target_include_directories(eldenring_adapter PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include" "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(eldenring_adapter PRIVATE eldenring_live mc_core minhook imgui_dx12 psapi d3d12 dxgi dxguid d3dcompiler windowscodecs ole32 xaudio2)
     if(MSVC)
         target_compile_options(eldenring_adapter PRIVATE /W4 /WX /permissive- /utf-8)
