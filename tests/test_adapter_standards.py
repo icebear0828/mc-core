@@ -127,6 +127,27 @@ def test_playbook_references_only_files_that_exist():
 
 
 
+def test_cs_model_load_does_not_hijack_mode_state():
+    """
+    Rule: loading the CS viewmodel model is not a mode switch. The user picks
+    MC/CS with the hotkey, so a successful load must never store cs_mode,
+    mc_mode or first_person (issue #101).
+    """
+    source = (ADAPTERS_DIR / "eldenring" / "src" / "overlay_d3d12.cpp").read_text(
+        encoding="utf-8", errors="ignore"
+    )
+    load_at = source.rfind("g_cs.loadModel")
+    assert load_at != -1, "overlay_d3d12.cpp no longer loads the CS viewmodel model"
+    success_block_end = source.find("break;", load_at)
+    assert success_block_end != -1, "the model-load success branch is not terminated by break"
+    success_block = source[load_at:success_block_end]
+    for store in (".cs_mode.store(", ".mc_mode.store(", ".first_person.store("):
+        assert store not in success_block, (
+            "loading the CS viewmodel model must not change mode state "
+            f"(found {store} in the model-load success branch); issue #101"
+        )
+
+
 def test_every_host_feature_is_documented_in_the_reverse_interface_list():
     header = (REPO_ROOT / "include" / "mc" / "contracts" / "host_gameplay.hpp").read_text(encoding="utf-8")
     enum_body = re.search(r"enum class HostFeature[^{]*\{(.*?)\};", header, re.S).group(1)

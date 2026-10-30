@@ -23,6 +23,7 @@ TEST_F(RuntimeContextTest, DefaultModeConfigMatchesAdapterInvariants) {
 
     // Default states
     EXPECT_TRUE(mode.mc_mode.load());
+    EXPECT_FALSE(mode.cs_mode.load());
     EXPECT_EQ(mode.game_mode.load(), static_cast<uint8_t>(creative::GameMode::Survival));
     EXPECT_FALSE(mode.first_person.load());
     EXPECT_TRUE(mode.steve_enabled.load());
@@ -33,6 +34,16 @@ TEST_F(RuntimeContextTest, DefaultModeConfigMatchesAdapterInvariants) {
     EXPECT_FLOAT_EQ(mode.reach.load(), 4.5f);
     EXPECT_FLOAT_EQ(mode.damage_scale.load(), 20.0f);
     EXPECT_FLOAT_EQ(mode.sweep_radius.load(), 3.0f);
+}
+
+TEST_F(RuntimeContextTest, StartupModesKeepMcOnAndNeverAutoEnableCs) {
+    auto& ctx = RuntimeContext::Instance();
+
+    // Issue #101: the default first-person path belongs to MC. CS mode is only
+    // entered through the explicit hotkey toggle, never at startup.
+    EXPECT_TRUE(ctx.mode().mc_mode.load());
+    EXPECT_FALSE(ctx.mode().cs_mode.load());
+    EXPECT_FALSE(ctx.mode().first_person.load());
 }
 
 TEST_F(RuntimeContextTest, GameModeTransitionsAreAtomicAndConsistent) {
