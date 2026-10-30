@@ -819,9 +819,21 @@ void HotkeyDispatcher::tick(float dt) {
     }
     prev4_ = d4;
 
+    const bool shift_down = fg && (queryKey(VK_SHIFT) || queryKey(VK_LSHIFT) || queryKey(VK_RSHIFT));
     const bool d7 = fg && queryKey(VK_F7);
     if (d7 && !prev7_) {
-        if (mode.ow_mode.load()) {
+        if (shift_down) {
+            const bool new_ow = !mode.ow_mode.load();
+            mode.ow_mode.store(new_ow);
+            if (new_ow) {
+                mode.mc_mode.store(false);
+                mode.cs_mode.store(false);
+                mode.first_person.store(true);
+                if (cb_.log) cb_.log("[MODE] Overwatch Doomfist Mode: ACTIVE (MC/CS mode off)");
+            } else {
+                if (cb_.log) cb_.log("[MODE] Overwatch Doomfist Mode: OFF");
+            }
+        } else if (mode.ow_mode.load()) {
             const bool new_fp = !mode.first_person.load();
             mode.first_person.store(new_fp);
             if (cb_.log) cb_.log(new_fp ? "[OW] First-Person View (F7)" : "[OW] Third-Person View (F7)");

@@ -592,6 +592,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                     g_cs_knife_model_path = p;
                     eldenring::RuntimeContext::Instance().mode().cs_mode.store(true);
                     eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
+                    eldenring::RuntimeContext::Instance().mode().ow_mode.store(false);
                     eldenring::RuntimeContext::Instance().mode().first_person.store(true);
                     break;
                 }
@@ -2162,9 +2163,10 @@ void RenderFrame(IDXGISwapChain* sc) {
     const bool cs_active = false;
 #endif
     const bool mc_mode_on = eldenring::RuntimeContext::Instance().mode().mc_mode.load(std::memory_order_relaxed);
-    // Do not fall back to the MC first-person model while CS mode owns the view,
+    const bool ow_mode_on = eldenring::RuntimeContext::Instance().mode().ow_mode.load(std::memory_order_relaxed);
+    // Do not fall back to the MC first-person model while CS mode or OW mode owns the view,
     // or while MC mode is off.
-    const bool mc_fp_active = !cs_active && !cs_mode_on && mc_mode_on && steve.first_person && !steve.dead && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
+    const bool mc_fp_active = !cs_active && !cs_mode_on && !ow_mode_on && mc_mode_on && steve.first_person && !steve.dead && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
         g_steve.ensureDepth(g_s.device, g_s.width, g_s.height);
 
 #if ENABLE_CS2_VIEWMODEL
