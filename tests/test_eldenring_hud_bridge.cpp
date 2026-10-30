@@ -45,6 +45,18 @@ TEST(HudBridgeTest, PopulateSteveStateFromContext) {
     EXPECT_GT(steve.hurt, 0.0f);
 }
 
+TEST(HudBridgeTest, PopulateSteveStateCarriesTheHurtSideForTheThirdPersonTilt) {
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.combat().feedback.onHurt(-1.0f);
+
+    erov::SteveState steve{};
+    PopulateSteveStateFromContext(steve, ctx, false /* dead */, false /* sleeping */);
+
+    EXPECT_FLOAT_EQ(steve.hurt, 1.0f);
+    EXPECT_FLOAT_EQ(steve.hurt_side, -1.0f);
+}
+
 TEST(HudBridgeTest, PopulateSteveStateSynchronizesBowState) {
     auto& ctx = RuntimeContext::Instance();
     ctx.resetForTesting();

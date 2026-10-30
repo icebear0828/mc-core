@@ -1,9 +1,42 @@
 #pragma once
 
+#include "mc/particles.hpp"
 #include "mc/types.hpp"
 #include <array>
 
 namespace mc {
+
+// Vanilla Minecraft's third-person hurt roll (GameRenderer.bobHurt): up to 14 degrees away from the damage
+// source, damped back to upright over 10 ticks (0.5 s at 20 TPS). `onHurt` starts the timer; `update` decays
+// it; `tiltRadians` converts the remaining time into the signed roll the animator applies to the rig.
+class HurtTiltTracker {
+public:
+    static constexpr float kMaxRadians = 14.f * 0.01745329252f; // ~0.2443 rad
+    static constexpr float kDecaySec = 0.5f;                    // 10 ticks
+
+    // `side` is the damage source's side: -1 = attacker on the character's left, anything else = on its right.
+    void onHurt(float side) {
+        side_ = side < 0.f ? -1.f : 1.f;
+        timer_ = 1.f;
+    }
+    void update(float dt) {
+        if (timer_ <= 0.f) return;
+        timer_ -= dt / kDecaySec;
+        if (timer_ < 0.f) timer_ = 0.f;
+    }
+    // Signed roll in radians: away from the damage source, following the vanilla sin(t^4 * pi) curve.
+    [[nodiscard]] float tiltRadians() const { return hurtTiltRadians(timer_, side_); }
+    [[nodiscard]] float timer() const { return timer_; } // 1 just hurt .. 0 upright
+    [[nodiscard]] float side() const { return side_; }
+    void reset() {
+        timer_ = 0.f;
+        side_ = 1.f;
+    }
+
+private:
+    float timer_{0.f};
+    float side_{1.f};
+};
 
 enum class StevePart : uint8_t {
     Head = 0,
@@ -42,6 +75,7 @@ struct SteveAnimInput {
     bool is_gliding{false};
     float roll_angle{0.f};    // radians (banking roll when turning during flight)
     bool is_sleeping{false};
+    float hurt_tilt{0.f};     // radians, signed roll about the body's forward axis (vanilla hurt tilt, up to 14 deg)
 };
 
 class SteveAnimator {

@@ -262,6 +262,11 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                 default:
                     break;
             }
+
+            // Issue #62: vanilla's third-person hurt tilt leans the whole rig away from the damage source.
+            // Every part carries the same roll on top of its pose (idle, crouch, block, swing); the sleeping
+            // and gliding branches above deliberately ignore it, so those poses stay untouched.
+            roll += input.hurt_tilt;
         }
 
         transforms_[i].pos = pos;

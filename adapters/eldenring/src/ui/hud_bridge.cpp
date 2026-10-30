@@ -94,6 +94,7 @@ void PopulateSteveStateFromContext(erov::SteveState& steve, const RuntimeContext
     steve.eating = dead ? 0.f : ctx.player().eating.getProgress();
     steve.swing = dead ? 0.f : ctx.combat().melee.swingProgress();
     steve.hurt = ctx.combat().feedback.hurt();
+    steve.hurt_side = ctx.combat().feedback.hurtSide();
 
     steve.bow_charge = dead ? 0.f : ctx.mode().bow_power.load(std::memory_order_relaxed);
     steve.bow_ticks = dead ? 0.f : ctx.mode().bow_ticks.load(std::memory_order_relaxed);

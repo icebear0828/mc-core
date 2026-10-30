@@ -1979,6 +1979,8 @@ void RenderFrame(IDXGISwapChain* sc) {
             anim_in.is_sprinting = steve.sprinting;
             anim_in.on_ground = steve.on_ground;
             anim_in.is_sleeping = (sleep_frac > 0.05f);
+            // Issue #62: the third-person rig leans away from the damage source (vanilla 14 deg hurt roll).
+            anim_in.hurt_tilt = mc::hurtTiltRadians(steve.hurt, steve.hurt_side);
             if (!anim_in.is_sleeping) {
                 g_head.update(steve.cam.forward.x, steve.cam.forward.y, steve.cam.forward.z, steve.yaw, anim_in);
             }

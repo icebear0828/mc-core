@@ -381,6 +381,121 @@ TEST(SteveAnimatorTest, WalkAndSprintKinematicsDynamics) {
     EXPECT_LT(max_sneak_leg, max_walk_leg * 0.7f) << "Sneak walking leg swing must be significantly dampened";
 }
 
+// --- Issue #62: third-person hurt tilt (vanilla 14 degree roll, 0.5 s damped decay) ---
+
+TEST(SteveAnimatorTest, HurtTiltTrackerCapsTheRollAtFourteenDegrees) {
+    mc::HurtTiltTracker tracker;
+    tracker.onHurt(1.f);
+    float peak = 0.f;
+    for (int i = 0; i < 400; ++i) {
+        tracker.update(mc::HurtTiltTracker::kDecaySec / 400.f);
+        peak = std::max(peak, std::abs(tracker.tiltRadians()));
+    }
+    EXPECT_NEAR(mc::HurtTiltTracker::kMaxRadians, 14.f * 0.01745329252f, 1e-6f);
+    EXPECT_NEAR(peak, mc::HurtTiltTracker::kMaxRadians, 1e-3f);
+    EXPECT_LE(peak, mc::HurtTiltTracker::kMaxRadians + 1e-6f);
+}
+
+TEST(SteveAnimatorTest, HurtTiltTrackerSignFollowsTheDamageSource) {
+    mc::HurtTiltTracker tracker;
+    tracker.onHurt(1.f); // attacker on the character's right: the roll leans away, positive
+    for (int i = 0; i < 40; ++i) tracker.update(mc::HurtTiltTracker::kDecaySec * 0.004f);
+    const float right = tracker.tiltRadians();
+    tracker.onHurt(-1.f); // attacker on the left: the roll flips
+    for (int i = 0; i < 40; ++i) tracker.update(mc::HurtTiltTracker::kDecaySec * 0.004f);
+    const float left = tracker.tiltRadians();
+    EXPECT_GT(right, 0.f);
+    EXPECT_LT(left, 0.f);
+    EXPECT_NEAR(right, -left, 1e-5f);
+}
+
+TEST(SteveAnimatorTest, HurtTiltTrackerDecaysToZeroAfterHalfASecond) {
+    mc::HurtTiltTracker tracker;
+    tracker.onHurt(1.f);
+    tracker.update(mc::HurtTiltTracker::kDecaySec * 0.5f);
+    EXPECT_NEAR(tracker.timer(), 0.5f, 1e-6f);
+    EXPECT_NE(tracker.tiltRadians(), 0.f); // still leaning mid-decay
+    tracker.update(mc::HurtTiltTracker::kDecaySec * 0.5f);
+    EXPECT_FLOAT_EQ(tracker.timer(), 0.f);
+    EXPECT_FLOAT_EQ(tracker.tiltRadians(), 0.f);
+    tracker.update(1.f); // and it stays upright afterwards
+    EXPECT_FLOAT_EQ(tracker.tiltRadians(), 0.f);
+}
+
+TEST(SteveAnimatorTest, HurtTiltRollsEveryStevePartAndKeepsTheSign) {
+    const size_t head = static_cast<size_t>(mc::StevePart::Head);
+    mc::SteveAnimator plain, hurt_pos, hurt_neg;
+    mc::SteveAnimInput base{};
+    mc::SteveAnimInput pos_in = base, neg_in = base;
+    pos_in.hurt_tilt = mc::HurtTiltTracker::kMaxRadians;
+    neg_in.hurt_tilt = -mc::HurtTiltTracker::kMaxRadians;
+    plain.update(0.05f, base);
+    hurt_pos.update(0.05f, pos_in);
+    hurt_neg.update(0.05f, neg_in);
+
+    const auto& a = plain.getTransforms();
+    const auto& p = hurt_pos.getTransforms();
+    const auto& n = hurt_neg.getTransforms();
+    for (size_t i = 0; i < mc::SteveAnimator::kPartCount; ++i) {
+        EXPECT_NE(p[i].rot.x, a[i].rot.x) << "part " << i << " must roll with the hurt tilt";
+        EXPECT_NE(n[i].rot.x, a[i].rot.x) << "part " << i << " must roll with the hurt tilt";
+    }
+    // At the first update the head has no base pitch/yaw/roll, so a pure roll shows directly in the quaternion.
+    EXPECT_GT(p[head].rot.x, 0.f);
+    EXPECT_LT(n[head].rot.x, 0.f);
+    EXPECT_NEAR(p[head].rot.x, -n[head].rot.x, 1e-6f);
+}
+
+TEST(SteveAnimatorTest, HurtTiltLeavesSleepingAndGlidingPosesUntouched) {
+    for (int mode = 0; mode < 2; ++mode) {
+        mc::SteveAnimator calm, hurt;
+        mc::SteveAnimInput in{};
+        in.is_sleeping = (mode == 0);
+        in.is_gliding = (mode == 1);
+        mc::SteveAnimInput hurt_in = in;
+        hurt_in.hurt_tilt = mc::HurtTiltTracker::kMaxRadians;
+        for (int i = 0; i < 5; ++i) {
+            calm.update(0.05f, in);
+            hurt.update(0.05f, hurt_in);
+        }
+        const auto& c = calm.getTransforms();
+        const auto& h = hurt.getTransforms();
+        for (size_t i = 0; i < mc::SteveAnimator::kPartCount; ++i) {
+            EXPECT_FLOAT_EQ(c[i].rot.x, h[i].rot.x) << "mode " << mode << " part " << i;
+            EXPECT_FLOAT_EQ(c[i].rot.y, h[i].rot.y) << "mode " << mode << " part " << i;
+            EXPECT_FLOAT_EQ(c[i].rot.z, h[i].rot.z) << "mode " << mode << " part " << i;
+            EXPECT_FLOAT_EQ(c[i].rot.w, h[i].rot.w) << "mode " << mode << " part " << i;
+        }
+    }
+}
+
+TEST(SteveAnimatorTest, HurtTiltKeepsTheCrouchLeanAndBlockPose) {
+    const size_t body = static_cast<size_t>(mc::StevePart::Body);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+
+    // Crouch: the forward lean stays while the roll is added on top.
+    mc::SteveAnimator crouch, crouch_hurt;
+    mc::SteveAnimInput c_in{};
+    c_in.is_crouching = true;
+    mc::SteveAnimInput ch_in = c_in;
+    ch_in.hurt_tilt = mc::HurtTiltTracker::kMaxRadians;
+    crouch.update(0.05f, c_in);
+    crouch_hurt.update(0.05f, ch_in);
+    EXPECT_GT(crouch_hurt.getTransforms()[body].rot.y, 0.2f) << "crouch torso pitch must survive the hurt roll";
+    EXPECT_NE(crouch_hurt.getTransforms()[body].rot.x, crouch.getTransforms()[body].rot.x);
+
+    // Offhand block: the shield arm is still raised while the rig rolls.
+    mc::SteveAnimator block, block_hurt;
+    mc::SteveAnimInput b_in{};
+    b_in.is_blocking = true;
+    b_in.block_offhand = true;
+    mc::SteveAnimInput bh_in = b_in;
+    bh_in.hurt_tilt = mc::HurtTiltTracker::kMaxRadians;
+    block.update(0.05f, b_in);
+    block_hurt.update(0.05f, bh_in);
+    EXPECT_LT(block_hurt.getTransforms()[la].rot.w, 0.92f) << "offhand shield arm must stay raised";
+}
+
 TEST(SteveAnimatorTest, JumpAndAirStanceKinematicsDynamics) {
     const size_t rl = static_cast<size_t>(mc::StevePart::RightLeg);
     const size_t ll = static_cast<size_t>(mc::StevePart::LeftLeg);
