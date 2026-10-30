@@ -435,5 +435,221 @@ TEST(SteveAnimatorTest, JumpAndAirStanceKinematicsDynamics) {
     EXPECT_NE(t_air_move[la].rot.y, 0.0f) << "Arms swing when moving horizontally in mid-air";
 }
 
+// ---------------------------------------------------------------------------------------------
+// Issue #64/#65: trident charge/riptide and elytra glide, ported from the Blockbench app's
+// anim_data.js. The whole-body (rig/upper) rotations live in rootTransform()/upperTransform();
+// the per-part transforms hold only the local limb pose.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr float kDeg = 3.14159265358979323846f / 180.0f;
+
+// The animator's legacy Euler convention (pitch about +Y, yaw about +Z, roll about +X) in
+// q_yaw * q_pitch * q_roll order. Mirrors fromEuler() in src/animator.cpp.
+mc::Quat quatLegacy(float pitch, float yaw, float roll) {
+    const float cy = std::cos(yaw * 0.5f), sy = std::sin(yaw * 0.5f);
+    const float cp = std::cos(pitch * 0.5f), sp = std::sin(pitch * 0.5f);
+    const float cr = std::cos(roll * 0.5f), sr = std::sin(roll * 0.5f);
+    return {sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+            cr * cp * cy + sr * sp * sy};
+}
+
+// Three.js Euler 'XYZ' order (q_pitch * q_yaw * q_roll) used for the whole-body transforms,
+// mirroring fromEulerXyz() in src/animator.cpp.
+mc::Quat quatXyz(float pitch, float yaw, float roll) {
+    const float cp = std::cos(pitch * 0.5f), sp = std::sin(pitch * 0.5f);
+    const float cy = std::cos(yaw * 0.5f), sy = std::sin(yaw * 0.5f);
+    const float cr = std::cos(roll * 0.5f), sr = std::sin(roll * 0.5f);
+    return {cp * cy * sr + sp * sy * cr,
+            sp * cy * cr + cp * sy * sr,
+            cp * sy * cr - sp * cy * sr,
+            cp * cy * cr - sp * sy * sr};
+}
+
+void expectQuatNear(const mc::Quat& actual, const mc::Quat& expected, float tol = 1e-5f) {
+    EXPECT_NEAR(actual.x, expected.x, tol);
+    EXPECT_NEAR(actual.y, expected.y, tol);
+    EXPECT_NEAR(actual.z, expected.z, tol);
+    EXPECT_NEAR(actual.w, expected.w, tol);
+}
+
+} // namespace
+
+TEST(SteveAnimatorTest, TridentChargeFollowsExtractedBlockbenchCurves) {
+    const size_t head = static_cast<size_t>(mc::StevePart::Head);
+    const size_t body = static_cast<size_t>(mc::StevePart::Body);
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+    const size_t rs = static_cast<size_t>(mc::StevePart::RightSleeve);
+    const size_t ls = static_cast<size_t>(mc::StevePart::LeftSleeve);
+
+    mc::SteveAnimator animator;
+    mc::SteveAnimInput in{};
+    in.trident_charge = 0.5f;
+    animator.update(0.f, in);
+
+    const float t = 0.5f / 0.9f; // clamp(charge / 0.9)
+
+    // rightArm: pitch = lerp(-150, -192, t) + n (n = 0 below full draw), roll = -4 deg
+    const mc::Quat right_ref = quatLegacy((-150.f + (-42.f) * t) * kDeg, 0.f, -4.f * kDeg);
+    expectQuatNear(animator.getTransforms()[ra].rot, right_ref);
+    expectQuatNear(animator.getTransforms()[rs].rot, right_ref);
+
+    // leftArm: pitch = lerp(0, -25, t), roll = +8 deg
+    const mc::Quat left_ref = quatLegacy(-25.f * t * kDeg, 0.f, 8.f * kDeg);
+    expectQuatNear(animator.getTransforms()[la].rot, left_ref);
+    expectQuatNear(animator.getTransforms()[ls].rot, left_ref);
+
+    // upper (torso): pitch = lerp(0, -4, t), yaw = lerp(0, -14, t)
+    expectQuatNear(animator.upperTransform().rot, quatXyz(-4.f * t * kDeg, -14.f * t * kDeg, 0.f));
+
+    // head: yaw = lerp(0, 14, t) relative to the torso, pitch 0
+    expectQuatNear(animator.getTransforms()[head].rot, quatLegacy(0.f, 14.f * t * kDeg, 0.f));
+
+    // The torso rotation is carried by upperTransform(); the body part itself stays neutral.
+    expectQuatNear(animator.getTransforms()[body].rot, mc::Quat{});
+    // Charging a trident moves no root.
+    expectQuatNear(animator.rootTransform().rot, mc::Quat{});
+    EXPECT_FLOAT_EQ(animator.rootTransform().pos.length(), 0.f);
+}
+
+TEST(SteveAnimatorTest, TridentChargeFullDrawAddsBoundedShake) {
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+
+    mc::SteveAnimator animator;
+    mc::SteveAnimInput in{};
+    in.trident_charge = 1.0f;
+    animator.update(0.f, in);
+
+    // Full draw: base pitch -192 deg plus sin(charge * 55) * 1.2 deg of shake.
+    const float shake = std::sin(1.0f * 55.0f) * 1.2f;
+    expectQuatNear(animator.getTransforms()[ra].rot, quatLegacy((-192.f + shake) * kDeg, 0.f, -4.f * kDeg));
+    // The shake is live at full draw and stays within the extracted amplitude.
+    EXPECT_GT(std::fabs(shake), 0.5f);
+    EXPECT_LE(std::fabs(shake), 1.2f + 1e-4f);
+}
+
+TEST(SteveAnimatorTest, RiptideSpinsAndLiftsTheWholeBody) {
+    const size_t head = static_cast<size_t>(mc::StevePart::Head);
+    const size_t body = static_cast<size_t>(mc::StevePart::Body);
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+    const size_t rl = static_cast<size_t>(mc::StevePart::RightLeg);
+    const size_t ll = static_cast<size_t>(mc::StevePart::LeftLeg);
+
+    mc::SteveAnimator animator;
+    mc::SteveAnimInput in{};
+    in.riptide = 0.25f; // a quarter of the 0.6 s loop -> 90 deg
+    animator.update(0.f, in);
+
+    // rig: pitch 65 deg, yaw 360 * progress, root lifted by the app's 16 model px (90 cm) along up.
+    expectQuatNear(animator.rootTransform().rot, quatXyz(65.f * kDeg, 90.f * kDeg, 0.f));
+    EXPECT_NEAR(animator.rootTransform().pos.x, 0.f, 1e-5f);
+    EXPECT_NEAR(animator.rootTransform().pos.y, 0.f, 1e-5f);
+    EXPECT_NEAR(animator.rootTransform().pos.z, 90.f, 1e-4f);
+
+    // Local limb pose from the extracted keyframes.
+    expectQuatNear(animator.getTransforms()[head].rot, quatLegacy(-30.f * kDeg, 0.f, 0.f));
+    expectQuatNear(animator.getTransforms()[ra].rot, quatLegacy(-178.f * kDeg, 0.f, -6.f * kDeg));
+    expectQuatNear(animator.getTransforms()[la].rot, quatLegacy(-178.f * kDeg, 0.f, 6.f * kDeg));
+    expectQuatNear(animator.getTransforms()[rl].rot, quatLegacy(0.f, 0.f, 1.f * kDeg));
+    expectQuatNear(animator.getTransforms()[ll].rot, quatLegacy(0.f, 0.f, -1.f * kDeg));
+    // The root carries the spin/pitch, so the torso part stays neutral.
+    expectQuatNear(animator.getTransforms()[body].rot, mc::Quat{});
+
+    // Half the loop -> 180 deg.
+    in.riptide = 0.5f;
+    animator.update(0.f, in);
+    expectQuatNear(animator.rootTransform().rot, quatXyz(65.f * kDeg, 180.f * kDeg, 0.f));
+
+    // Stopping resets the root.
+    in.riptide = 0.f;
+    animator.update(0.f, in);
+    expectQuatNear(animator.rootTransform().rot, mc::Quat{});
+    EXPECT_FLOAT_EQ(animator.rootTransform().pos.length(), 0.f);
+}
+
+TEST(SteveAnimatorTest, ElytraGlidePoseMatchesExtractedCurvesAndBank) {
+    const size_t head = static_cast<size_t>(mc::StevePart::Head);
+    const size_t body = static_cast<size_t>(mc::StevePart::Body);
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+    const size_t rl = static_cast<size_t>(mc::StevePart::RightLeg);
+    const size_t ll = static_cast<size_t>(mc::StevePart::LeftLeg);
+
+    mc::SteveAnimator animator;
+    mc::SteveAnimInput in{};
+    in.is_gliding = true;
+    in.roll_angle = 0.2f; // bank to the side
+    animator.update(0.f, in); // glide_age_ == 0 -> phase 0 (sin 0, cos 1)
+
+    // rig: pitch 80 deg, roll 2 deg + bank, root lift (14 + 0) * 5.625 cm.
+    expectQuatNear(animator.rootTransform().rot, quatXyz(80.f * kDeg, 0.f, 2.f * kDeg + 0.2f));
+    EXPECT_NEAR(animator.rootTransform().pos.z, 78.75f, 1e-4f);
+
+    // Local limb pose from the extracted keyframes.
+    expectQuatNear(animator.getTransforms()[head].rot, quatLegacy(-72.f * kDeg, 0.f, 0.f));
+    expectQuatNear(animator.getTransforms()[ra].rot, quatLegacy(14.f * kDeg, 0.f, -10.f * kDeg));
+    expectQuatNear(animator.getTransforms()[la].rot, quatLegacy(14.f * kDeg, 0.f, 10.f * kDeg));
+    expectQuatNear(animator.getTransforms()[rl].rot, quatLegacy(6.f * kDeg, 0.f, -2.f * kDeg));
+    expectQuatNear(animator.getTransforms()[ll].rot, quatLegacy(6.f * kDeg, 0.f, 2.f * kDeg));
+    expectQuatNear(animator.getTransforms()[body].rot, mc::Quat{});
+
+    // A quarter of the 1.6 s bob -> phase pi/2 (sin 1, cos 0): the arms beat and the body dives.
+    animator.update(0.4f, in);
+    const float phase = 2.f * 3.14159265358979323846f * 0.4f / 1.6f;
+    const float s = std::sin(phase);
+    const float c = std::cos(phase);
+    expectQuatNear(animator.rootTransform().rot, quatXyz((80.f + 3.f * s) * kDeg, 0.f, 2.f * kDeg * c + 0.2f));
+    EXPECT_NEAR(animator.rootTransform().pos.z, (14.f + s) * 5.625f, 1e-4f);
+    expectQuatNear(animator.getTransforms()[ra].rot, quatLegacy(14.f * kDeg, 0.f, (-10.f + 3.f * s) * kDeg));
+    expectQuatNear(animator.getTransforms()[la].rot, quatLegacy(14.f * kDeg, 0.f, (10.f - 3.f * s) * kDeg));
+
+    // Leaving the glide resets the bob timer and the root.
+    in.is_gliding = false;
+    animator.update(0.4f, in);
+    expectQuatNear(animator.rootTransform().rot, mc::Quat{});
+    EXPECT_FLOAT_EQ(animator.rootTransform().pos.length(), 0.f);
+}
+
+TEST(SteveAnimatorTest, ZeroNewInputsKeepTheLegacyPoseBitIdentical) {
+    const size_t head = static_cast<size_t>(mc::StevePart::Head);
+    const size_t body = static_cast<size_t>(mc::StevePart::Body);
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+    const size_t rl = static_cast<size_t>(mc::StevePart::RightLeg);
+    const size_t ll = static_cast<size_t>(mc::StevePart::LeftLeg);
+
+    mc::SteveAnimator animator;
+    mc::SteveAnimInput in{};
+    in.forward_speed = 4.317f;
+    in.look_yaw = 0.2f;
+    in.look_pitch = 0.3f;
+    // riptide == 0 and elytra_wing_flap == 0 (the new fields stay at their defaults).
+    animator.update(0.1f, in);
+
+    // Reference values captured from the implementation before #64/#65 (legacy fromEuler order).
+    expectQuatNear(animator.getTransforms()[head].rot, mc::Quat{-0.014918919f, 0.148691564f, 0.098712395f, 0.983831341f}, 1e-6f);
+    expectQuatNear(animator.getTransforms()[body].rot, mc::Quat{0.f, 0.f, 0.f, 1.f}, 1e-6f);
+    expectQuatNear(animator.getTransforms()[rl].rot, mc::Quat{0.f, 0.281818921f, 0.f, 0.959467610f}, 1e-6f);
+    expectQuatNear(animator.getTransforms()[ll].rot, mc::Quat{0.f, -0.281818921f, 0.f, 0.959467610f}, 1e-6f);
+    expectQuatNear(animator.getTransforms()[ra].rot, mc::Quat{0.003270677f, -0.202649360f, 0.000676848f, 0.979245670f}, 1e-6f);
+    expectQuatNear(animator.getTransforms()[la].rot, mc::Quat{-0.003270677f, 0.202649360f, 0.000676848f, 0.979245670f}, 1e-6f);
+
+    for (const auto& t : animator.getTransforms()) {
+        EXPECT_FLOAT_EQ(t.pos.x, 0.f);
+        EXPECT_FLOAT_EQ(t.pos.y, 0.f);
+        EXPECT_FLOAT_EQ(t.pos.z, 0.f);
+    }
+    // The new whole-body outputs stay at rest.
+    expectQuatNear(animator.rootTransform().rot, mc::Quat{});
+    expectQuatNear(animator.upperTransform().rot, mc::Quat{});
+    EXPECT_FLOAT_EQ(animator.rootTransform().pos.length(), 0.f);
+    EXPECT_FLOAT_EQ(animator.upperTransform().pos.length(), 0.f);
+}
+
 
 
