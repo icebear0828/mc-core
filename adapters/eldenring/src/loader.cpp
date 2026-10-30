@@ -1558,6 +1558,12 @@ void BlocksCollisionStep() {
     eldenring::world::VoxelWorldRuntime::Instance().stepPlayerBlockCollision(g_ctx);
 }
 
+// First-person sneak eye height: stepped every camera update, independent of block collision (which can early-return)
+// and of how many blocks are placed, so the 1.65 m <-> 1.27 m transition also works on native terrain.
+void SneakEyeHeightStep(float dt) {
+    eldenring::world::VoxelWorldRuntime::Instance().stepSneakEyeHeight(dt, g_ctx);
+}
+
 std::atomic<float> g_sprint_boost{2.5f}; // mc_er_steve.txt: sprint_boost=<m/s> (extra speed boost applied while sprinting on ground, default 2.5 m/s)
 
 void GroundSprintStep(float dt) {
@@ -2024,6 +2030,7 @@ void SetupGameHooksCallbacks() {
             RunBulletFire();
         }
         FlightStep();
+        SneakEyeHeightStep(dt);
         BlocksCollisionStep();
         McJumpStep();
         GroundSprintStep(dt);
