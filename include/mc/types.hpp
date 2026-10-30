@@ -115,7 +115,24 @@ enum class ItemId : uint16_t {
     GoldenPickaxe,
     NetheritePickaxe,
     BlockWood,
-    BlockObsidian
+    BlockObsidian,
+    // Crafting (issue #67). Appended so every id above keeps its value.
+    WoodenSword,
+    StoneSword,
+    IronSword,
+    NetheriteSword,
+    CraftingTable,
+    Anvil,
+    WoodPlanks,
+    Stick,
+    IronIngot,
+    GoldIngot,
+    NetheriteIngot,
+    String,
+    Gunpowder,
+    Sand,
+    Flint,
+    Apple
 };
 
 inline constexpr bool isSpawnEgg(ItemId item) noexcept {
