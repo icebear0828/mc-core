@@ -103,6 +103,7 @@ struct ModeConfig {
     std::atomic<bool> mc_mode{true};
 #endif
     std::atomic<bool> cs_mode{false};
+    std::atomic<bool> ow_mode{false};
     std::atomic<uint8_t> cs_knife_state{0}; // 0: Idle, 1: Inspect, 2: Primary, 3: Secondary, 4: Deploy, 5: Reload, 6: Backstab
     std::atomic<float> cs_knife_anim_time{0.f};
     std::atomic<bool> cs_knife_inspect{false};
@@ -281,6 +282,7 @@ public:
         // Reset ModeConfig
         mode_.mc_mode.store(true);
         mode_.cs_mode.store(false);
+        mode_.ow_mode.store(false);
         mode_.cs_knife_state.store(0);
         mode_.cs_knife_anim_time.store(0.f);
         mode_.cs_knife_inspect.store(false);

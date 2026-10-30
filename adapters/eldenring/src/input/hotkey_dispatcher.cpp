@@ -343,6 +343,20 @@ void HotkeyDispatcher::tick(float dt) {
     control_inputs.cs_keys = std::span<const int>(cs_scans, cs_scan_count);
 #endif
 
+#if defined(_WIN32)
+    control_inputs.ow_mode = mode.ow_mode.load(std::memory_order_relaxed);
+    int ow_scans[5] = {};
+    size_t ow_scan_count = 0;
+    if (control_inputs.ow_mode && fg && !inv_open_for_policy) {
+        const int ow_keys[] = {VK_SHIFT, 'E', 'Q', VK_F7};
+        for (const int vk : ow_keys) {
+            const int sc = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC));
+            if (sc > 0) ow_scans[ow_scan_count++] = sc;
+        }
+    }
+    control_inputs.ow_keys = std::span<const int>(ow_scans, ow_scan_count);
+#endif
+
     const mc::ControlPlan control_plan = eldenring::control::buildControlPlan(control_inputs);
     mode.control_authority_bits.store(control_plan.packedAuthorities(), std::memory_order_relaxed);
 
@@ -686,8 +700,9 @@ void HotkeyDispatcher::tick(float dt) {
         const bool new_cs = !mode.cs_mode.load();
         mode.cs_mode.store(new_cs);
         if (new_cs) {
-            // CS mode is standalone: stop every MC behaviour while it is active.
+            // CS mode is standalone: stop every MC and OW behaviour while it is active.
             mode.mc_mode.store(false);
+            mode.ow_mode.store(false);
             mode.first_person.store(true);
             mode.cs_knife_state.store(4); // Deploy
             mode.cs_knife_inspect.store(false);
@@ -695,7 +710,7 @@ void HotkeyDispatcher::tick(float dt) {
             mode.cs_action_hit.store(true);
             mode.cs_knife_anim_time.store(0.f);
             if (cb_.play_sound) cb_.play_sound("cs.knife.deploy", 1.0f);
-            if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: ACTIVE (MC mode off)");
+            if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: ACTIVE (MC/OW mode off)");
         } else {
             mode.cs_knife_state.store(0);
             mode.cs_knife_inspect.store(false);
@@ -727,26 +742,33 @@ void HotkeyDispatcher::tick(float dt) {
 
     const bool d6 = fg && queryKey(VK_F6);
     if (d6 && !prev6_) {
+        const bool ow_was_on = mode.ow_mode.load();
+        if (ow_was_on) {
+            mode.ow_mode.store(false);
+            if (cb_.log) cb_.log("[MODE] Overwatch Mode: OFF (via F6)");
+        }
+        if (!ow_was_on) {
 #if ENABLE_CS2_VIEWMODEL
-        // The CS2 build is CS-only at runtime: F6 can leave CS mode but never
-        // enables MC mode.
-        if (mode.cs_mode.load()) {
-            mode.cs_mode.store(false);
-            mode.cs_knife_state.store(0);
-            mode.cs_knife_inspect.store(false);
-            mode.cs_action_variant.store(0);
-            mode.cs_action_hit.store(true);
-            mode.cs_knife_anim_time.store(0.f);
-            if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: OFF (via F6)");
-        }
+            // The CS2 build is CS-only at runtime: F6 can leave CS mode but never
+            // enables MC mode.
+            if (mode.cs_mode.load()) {
+                mode.cs_mode.store(false);
+                mode.cs_knife_state.store(0);
+                mode.cs_knife_inspect.store(false);
+                mode.cs_action_variant.store(0);
+                mode.cs_action_hit.store(true);
+                mode.cs_knife_anim_time.store(0.f);
+                if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: OFF (via F6)");
+            }
 #else
-        {
-            const bool new_mc = !mode.mc_mode.load();
-            mode.mc_mode.store(new_mc);
-            if (cb_.log) cb_.log(std::string("F6: MC mode ") + (new_mc ? "on" : "off"));
-            if (cb_.reset_slot_probe) cb_.reset_slot_probe(slot_cursor_);
-        }
+            {
+                const bool new_mc = !mode.mc_mode.load();
+                mode.mc_mode.store(new_mc);
+                if (cb_.log) cb_.log(std::string("F6: MC mode ") + (new_mc ? "on" : "off"));
+                if (cb_.reset_slot_probe) cb_.reset_slot_probe(slot_cursor_);
+            }
 #endif
+        }
     }
     prev6_ = d6;
 
@@ -797,8 +819,14 @@ void HotkeyDispatcher::tick(float dt) {
     prev4_ = d4;
 
     const bool d7 = fg && queryKey(VK_F7);
-    if (d7 && !prev7_ && cb_.cycle_depth_candidate) {
-        cb_.cycle_depth_candidate();
+    if (d7 && !prev7_) {
+        if (mode.ow_mode.load()) {
+            const bool new_fp = !mode.first_person.load();
+            mode.first_person.store(new_fp);
+            if (cb_.log) cb_.log(new_fp ? "[OW] First-Person View (F7)" : "[OW] Third-Person View (F7)");
+        } else if (cb_.cycle_depth_candidate) {
+            cb_.cycle_depth_candidate();
+        }
     }
     prev7_ = d7;
 
