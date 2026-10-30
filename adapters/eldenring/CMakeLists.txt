@@ -66,6 +66,7 @@ if(WIN32)
         src/movement/player_locomotion.cpp
         src/world/voxel_world_runtime.cpp
         src/combat/combat_service.cpp
+        src/combat/projectile_service.cpp
         src/input/hotkey_dispatcher.cpp
         src/hooks/game_hooks.cpp
         eldenring_dinput8.def)
