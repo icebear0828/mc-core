@@ -1,0 +1,41 @@
+{
+  "format_version": "1.12.0",
+  "source": "Custom Blockbench recreation, not a Mojang asset. Extracted from 'replicate-steve-animations-in-blockbench (1)/dist/index.html' (see re_data_cache/model_data.js, bones 'rightWing'/'leftWing'). Coordinates are Bedrock model pixels.",
+  "minecraft:geometry": [
+    {
+      "description": {
+        "identifier": "geometry.elytra_wings",
+        "texture_width": 64,
+        "texture_height": 64,
+        "visible_bounds_width": 2,
+        "visible_bounds_height": 2,
+        "visible_bounds_offset": [0, 1, 0]
+      },
+      "bones": [
+        {
+          "name": "upper",
+          "pivot": [0, 12, 0],
+          "cubes": []
+        },
+        {
+          "name": "rightWing",
+          "parent": "upper",
+          "pivot": [-1, 23, -3],
+          "cubes": [
+            {"origin": [-11, 3, -3.6], "size": [10, 20, 1], "color": "wing"},
+            {"origin": [-11, 3, -3.8], "size": [2, 20, 0.2], "color": "wingDark"}
+          ]
+        },
+        {
+          "name": "leftWing",
+          "parent": "upper",
+          "pivot": [1, 23, -3],
+          "cubes": [
+            {"origin": [1, 3, -3.6], "size": [10, 20, 1], "color": "wing"},
+            {"origin": [9, 3, -3.8], "size": [2, 20, 0.2], "color": "wingDark"}
+          ]
+        }
+      ]
+    }
+  ]
+}

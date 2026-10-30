@@ -7,7 +7,7 @@
 
 namespace mc {
 
-enum class ParticleKind : uint8_t { Crit, Damage, Sweep, Spark, Dust };
+enum class ParticleKind : uint8_t { Crit, Damage, Sweep, Spark, Dust, Firework, Riptide };
 using Kind = ParticleKind;
 
 struct Particle {
@@ -37,6 +37,8 @@ private:
 class ParticleSystem {
 public:
     static constexpr int kCritCount = 16;     // Player.crit(): a burst of 16
+    static constexpr int kFireworkCount = 10; // elytra rocket boost trail, per tick
+    static constexpr int kRiptideCount = 8;   // riptide water helix, per tick
     static constexpr float kSweepSec = 0.4f;  // 8 frames
     static constexpr size_t kMax = 256;
 
@@ -120,10 +122,64 @@ public:
         particles_.push_back(p);
     }
 
+    // Elytra firework boost (#38): a jet of upward sparks and a trail streaming opposite the rocket's
+    // direction of travel. `dir` may be all zeros, which is treated as straight up.
+    void spawnFirework(const float at[3], const float dir[3], Rng& rng) {
+        float f[3] = {dir[0], dir[1], dir[2]};
+        float len = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+        if (len < 1e-4f) {
+            f[0] = 0.f;
+            f[1] = 1.f;
+            f[2] = 0.f;
+            len = 1.f;
+        }
+        for (int i = 0; i < kFireworkCount && particles_.size() < kMax; ++i) {
+            Particle p;
+            p.kind = ParticleKind::Firework;
+            p.pos[0] = at[0] + rng.range(-0.12f, 0.12f);
+            p.pos[1] = at[1] + rng.range(-0.12f, 0.12f);
+            p.pos[2] = at[2] + rng.range(-0.12f, 0.12f);
+            const float back = rng.range(2.f, 5.f);
+            p.vel[0] = -f[0] / len * back + rng.range(-1.f, 1.f);
+            p.vel[1] = -f[1] / len * back + rng.range(0.6f, 2.2f); // sparks drift upward as they fall behind
+            p.vel[2] = -f[2] / len * back + rng.range(-1.f, 1.f);
+            p.life = rng.range(0.35f, 0.7f);
+            p.size = rng.range(0.06f, 0.12f);
+            particles_.push_back(p);
+        }
+    }
+
+    // Riptide dash (#39): a spinning ring of water droplets around the player. `phase` turns the whole
+    // ring (0..1 = one full turn), so a caller that advances it each tick gets a helix. Deterministic.
+    void spawnRiptide(const float at[3], float phase, Rng& rng) {
+        constexpr float kRadius = 0.5f; // metres
+        constexpr float kTwoPi = 6.2831853f;
+        for (int i = 0; i < kRiptideCount && particles_.size() < kMax; ++i) {
+            Particle p;
+            p.kind = ParticleKind::Riptide;
+            const float angle = phase * kTwoPi + static_cast<float>(i) * (kTwoPi / static_cast<float>(kRiptideCount)) + rng.range(-0.08f, 0.08f);
+            const float c = std::cos(angle);
+            const float s = std::sin(angle);
+            p.pos[0] = at[0] + c * kRadius;
+            p.pos[1] = at[1] + rng.range(0.f, 1.2f);
+            p.pos[2] = at[2] + s * kRadius;
+            const float speed = rng.range(1.2f, 2.2f);
+            // tangential direction: d/d(angle) (cos, sin) = (-sin, cos)
+            p.vel[0] = -s * speed + rng.range(-0.2f, 0.2f);
+            p.vel[1] = rng.range(0.4f, 1.f);
+            p.vel[2] = c * speed + rng.range(-0.2f, 0.2f);
+            p.life = rng.range(0.3f, 0.6f);
+            p.size = rng.range(0.08f, 0.15f);
+            particles_.push_back(p);
+        }
+    }
+
     void update(float dt) {
         for (Particle& p : particles_) {
             p.age += dt;
-            if (p.kind == ParticleKind::Crit || p.kind == ParticleKind::Spark) p.vel[1] -= 5.f * dt;
+            if (p.kind == ParticleKind::Crit || p.kind == ParticleKind::Spark || p.kind == ParticleKind::Firework ||
+                p.kind == ParticleKind::Riptide)
+                p.vel[1] -= 5.f * dt;
             for (int a = 0; a < 3; ++a) p.pos[a] += p.vel[a] * dt;
             if (p.kind == ParticleKind::Sweep) p.frame = std::min(7, static_cast<int>(8.f * p.age / p.life));
         }

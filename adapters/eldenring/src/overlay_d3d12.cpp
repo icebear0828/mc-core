@@ -106,6 +106,7 @@ struct FxEvent {
     FxKind kind;
     float pos[3];
     int count;
+    float dir[3];
 };
 std::mutex g_fx_mutex;
 std::vector<FxEvent> g_fx_events;
@@ -1214,6 +1215,14 @@ void DrawFx(ImDrawList* dl, ImTextureID atlas, float w, float h) {
             dl->AddCircleFilled(s, std::max(1.f, half * 0.55f), IM_COL32(205, 195, 178, static_cast<int>(55 * fade)), 8);
             continue;
         }
+        if (p.kind == eldenring::fx::Kind::Firework) {
+            dl->AddCircleFilled(s, std::max(1.f, half), IM_COL32(255, 220, 140, static_cast<int>(255 * fade)), 6);
+            continue;
+        }
+        if (p.kind == eldenring::fx::Kind::Riptide) {
+            dl->AddCircleFilled(s, std::max(1.f, half), IM_COL32(110, 200, 255, static_cast<int>(220 * fade)), 8);
+            continue;
+        }
         const mc::hud::HudUV* uv = nullptr;
         ImU32 col = IM_COL32(255, 255, 255, static_cast<int>(255 * std::min(1.f, fade * 1.5f)));
         switch (p.kind) {
@@ -1227,6 +1236,9 @@ void DrawFx(ImDrawList* dl, ImTextureID atlas, float w, float h) {
                 col = IM_COL32(255, 255, 255, 255);
                 break;
             }
+            // Firework and Riptide are drawn as ImGui circles above, so they never reach this atlas switch.
+            case eldenring::fx::Kind::Firework:
+            case eldenring::fx::Kind::Riptide: break;
         }
         dl->AddImage(atlas, {s.x - half, s.y - half}, {s.x + half, s.y + half}, {uv->u0, uv->v0}, {uv->u1, uv->v1}, col);
     }
@@ -1881,6 +1893,9 @@ void RenderFrame(IDXGISwapChain* sc) {
                 case FxKind::Sweep: g_particles.spawnSweep(e.pos); break;
                 case FxKind::Spark: g_particles.spawnSpark(e.pos, g_fx_rng); break;
                 case FxKind::Dust: g_particles.spawnDust(e.pos, g_fx_rng); break;
+                case FxKind::Firework: g_particles.spawnFirework(e.pos, e.dir, g_fx_rng); break;
+                // `count` doubles as a phase index here: each queued event advances the ring a little.
+                case FxKind::Riptide: g_particles.spawnRiptide(e.pos, static_cast<float>(e.count) * 0.1f, g_fx_rng); break;
             }
         }
         g_particles.update(dt);
@@ -2511,7 +2526,12 @@ void SetArrows(const std::vector<eldenring::summon::ArrowDraw>& arrows) {
 }
 
 void SpawnFx(FxKind kind, const float world_pos[3], int count) {
-    FxEvent e{kind, {world_pos[0], world_pos[1], world_pos[2]}, count};
+    const float no_dir[3] = {0.f, 0.f, 0.f};
+    SpawnFx(kind, world_pos, no_dir, count);
+}
+
+void SpawnFx(FxKind kind, const float world_pos[3], const float dir[3], int count) {
+    FxEvent e{kind, {world_pos[0], world_pos[1], world_pos[2]}, count, {dir[0], dir[1], dir[2]}};
     std::lock_guard<std::mutex> g(g_fx_mutex);
     if (g_fx_events.size() < 64) g_fx_events.push_back(e);
 }
