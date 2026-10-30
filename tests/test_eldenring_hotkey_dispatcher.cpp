@@ -54,6 +54,9 @@
 #ifndef VK_F12
 #define VK_F12 0x7B
 #endif
+#ifndef VK_SHIFT
+#define VK_SHIFT 0x10
+#endif
 
 using namespace eldenring;
 using namespace eldenring::input;
@@ -854,4 +857,62 @@ TEST_F(HotkeyDispatcherTest, PureMcBuildDisablesCsHotkeysAndInteractions) {
     EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "cs.knife.deploy") == played_sounds_.end());
 }
 #endif
+
+TEST_F(HotkeyDispatcherTest, OwModeShiftF7TogglePerspectiveAndIsolation) {
+    auto& ctx = RuntimeContext::Instance();
+    EXPECT_FALSE(ctx.mode().ow_mode.load());
+    EXPECT_TRUE(ctx.mode().mc_mode.load());
+
+    // 1. Shift + F7: Activate OW Doomfist mode
+    setKey(VK_SHIFT, true);
+    setKey(VK_F7, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F7, false);
+    setKey(VK_SHIFT, false);
+    dispatcher_->tick(0.016f);
+
+    EXPECT_TRUE(ctx.mode().ow_mode.load());
+    EXPECT_FALSE(ctx.mode().mc_mode.load());
+    EXPECT_FALSE(ctx.mode().cs_mode.load());
+    EXPECT_TRUE(ctx.mode().first_person.load());
+
+    // 2. F7 alone in OW mode: Toggle 1P / 3P perspective
+    setKey(VK_F7, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F7, false);
+    dispatcher_->tick(0.016f);
+    EXPECT_FALSE(ctx.mode().first_person.load()); // switched to 3P
+
+    setKey(VK_F7, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F7, false);
+    dispatcher_->tick(0.016f);
+    EXPECT_TRUE(ctx.mode().first_person.load()); // switched back to 1P
+
+    // 3. F6: Leaves OW mode cleanly without MC mode active
+    setKey(VK_F6, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F6, false);
+    dispatcher_->tick(0.016f);
+    EXPECT_FALSE(ctx.mode().ow_mode.load());
+    EXPECT_FALSE(ctx.mode().mc_mode.load());
+
+    // 4. Reactivate OW mode, then press F1 (CS mode toggle): OW mode must turn off
+    setKey(VK_SHIFT, true);
+    setKey(VK_F7, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F7, false);
+    setKey(VK_SHIFT, false);
+    dispatcher_->tick(0.016f);
+    EXPECT_TRUE(ctx.mode().ow_mode.load());
+
+#if ENABLE_CS2_VIEWMODEL
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    EXPECT_FALSE(ctx.mode().ow_mode.load());
+    EXPECT_TRUE(ctx.mode().cs_mode.load());
+#endif
+}
 

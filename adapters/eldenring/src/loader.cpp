@@ -2474,7 +2474,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     steve.cam_valid = false;
     CameraPose cam;
     float feet[3], q[4];
-    if (g_steve_enabled.load() && readCamera(g_reader, g_img.base, world, cam) &&
+    if (g_steve_enabled.load() && !eldenring::RuntimeContext::Instance().mode().ow_mode.load(std::memory_order_relaxed) && readCamera(g_reader, g_img.base, world, cam) &&
         detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(player), feet) &&
         detail::readPhysicsOrientation(g_reader, g_img.base, static_cast<uintptr_t>(player), q)) {
         steve.draw = true;
@@ -2582,6 +2582,16 @@ void SetupOverlay() {
 #else
                     g_mc_mode.store(value != 0.f);
 #endif
+                }
+                else if (key == "ow_mode") {
+                    const bool ow = (value != 0.f);
+                    eldenring::RuntimeContext::Instance().mode().ow_mode.store(ow);
+                    if (ow) {
+                        g_mc_mode.store(false);
+                        eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
+                        eldenring::RuntimeContext::Instance().mode().cs_mode.store(false);
+                        eldenring::RuntimeContext::Instance().mode().first_person.store(true);
+                    }
                 }
                 else if (key == "mc_gravity") g_mc_gravity.store(std::clamp(value, 5.f, 80.f));
                 else if (key == "mc_jump_speed") g_mc_jump_speed.store(std::clamp(value, 1.f, 20.f));
