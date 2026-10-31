@@ -76,6 +76,11 @@ if(WIN32)
             src/cs_weapon_registry.cpp)
     endif()
 
+    if(ENABLE_OW_VIEWMODEL)
+        list(APPEND ELDENRING_ADAPTER_SRCS
+            src/ow_renderer_d3d12.cpp)
+    endif()
+
     add_library(eldenring_adapter SHARED ${ELDENRING_ADAPTER_SRCS})
     set_target_properties(eldenring_adapter PROPERTIES
         OUTPUT_NAME dinput8

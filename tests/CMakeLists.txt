@@ -108,6 +108,12 @@ if(ENABLE_CS2_VIEWMODEL)
     )
 endif()
 
+if(ENABLE_OW_VIEWMODEL)
+    target_sources(mc_tests PRIVATE
+        test_ow_viewmodel.cpp
+    )
+endif()
+
 
 
 target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source" MC_CORE_TESTS)

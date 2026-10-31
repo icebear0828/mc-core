@@ -944,9 +944,10 @@ bool ClickAttack(float charged) {
 // Should the native character ignore the mouse buttons right now? Only while the MC HUD is on and the game shows no UI.
 bool WantSuppress() {
 #if ENABLE_CS2_VIEWMODEL
-    if (!g_mc_mode.load() && !eldenring::RuntimeContext::Instance().mode().cs_mode.load()) return false;
+    if (!g_mc_mode.load() && !eldenring::RuntimeContext::Instance().mode().cs_mode.load() &&
+        !eldenring::RuntimeContext::Instance().mode().ow_mode.load()) return false;
 #else
-    if (!g_mc_mode.load()) return false;
+    if (!g_mc_mode.load() && !eldenring::RuntimeContext::Instance().mode().ow_mode.load()) return false;
 #endif
     MenuState ms;
     LoadingState ls;
@@ -2451,12 +2452,14 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     out.max_hp = v.max_hp;
     out.show = have_state && !ms.menu_focused && !ms.popup_open && !ls.screen_loading && fade < 0.02f;
 
-    if (g_hide_native.load()) {
-        // Hide the native body in MC and CS mode. The collector in
+    const bool ow_fp = eldenring::RuntimeContext::Instance().mode().ow_mode.load(std::memory_order_relaxed) &&
+                       g_first_person.load(std::memory_order_relaxed);
+    if (g_hide_native.load() || out.mc_mode || out.cs_mode || ow_fp) {
+        // Hide the native body in MC, CS, and OW first-person modes. The collector in
         // hud_bridge.cpp is RTTI-validated, so a weapon switch that leaves a
         // stale part pointer cannot turn a display-flag write into a vtable
         // overwrite (the 0x200000001 crash).
-        const bool want_hidden = (out.mc_mode || out.cs_mode) && have_state && !ls.screen_loading;
+        const bool want_hidden = (out.mc_mode || out.cs_mode || ow_fp) && have_state && !ls.screen_loading;
         g_native_hide_wanted.store(want_hidden);
         UpdateNativeModel(static_cast<uintptr_t>(player), want_hidden);
         static uint64_t last_report_ms = 0;
@@ -2474,7 +2477,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     steve.cam_valid = false;
     CameraPose cam;
     float feet[3], q[4];
-    if (g_steve_enabled.load() && readCamera(g_reader, g_img.base, world, cam) &&
+    if (g_steve_enabled.load() && !eldenring::RuntimeContext::Instance().mode().ow_mode.load(std::memory_order_relaxed) && readCamera(g_reader, g_img.base, world, cam) &&
         detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(player), feet) &&
         detail::readPhysicsOrientation(g_reader, g_img.base, static_cast<uintptr_t>(player), q)) {
         steve.draw = true;
@@ -2581,6 +2584,18 @@ void SetupOverlay() {
                     g_mc_mode.store(false); // CS2 build: MC mode is not available
 #else
                     g_mc_mode.store(value != 0.f);
+#endif
+                }
+                else if (key == "ow_mode") {
+#if ENABLE_OW_VIEWMODEL
+                    const bool ow = (value != 0.f);
+                    eldenring::RuntimeContext::Instance().mode().ow_mode.store(ow);
+                    if (ow) {
+                        g_mc_mode.store(false);
+                        eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
+                        eldenring::RuntimeContext::Instance().mode().cs_mode.store(false);
+                        eldenring::RuntimeContext::Instance().mode().first_person.store(true);
+                    }
 #endif
                 }
                 else if (key == "mc_gravity") g_mc_gravity.store(std::clamp(value, 5.f, 80.f));
@@ -2694,6 +2709,51 @@ void SetupOverlay() {
         Log("steve: enabled (occlusion=%d depth_const=%.4f rel_bias=%.3f abs_bias=%.3f scene_height=%.0f yaw_offset=%.1f deg)",
             cfg.occlusion ? 1 : 0, cfg.depth_const, cfg.rel_bias, cfg.abs_bias, cfg.scene_height, g_steve_yaw_offset * 180.f / 3.14159265f);
     }
+#if ENABLE_OW_VIEWMODEL
+    {
+        // OW has its own config file: the gauntlet's FOV, scale and offset are
+        // independent from the Steve/CS tuning in mc_er_steve.txt, and load
+        // even when that file is absent.
+        erov::OwConfig ow_cfg;
+        std::vector<uint8_t> ow_bytes;
+        if (FileExists(g_game_dir + "mc_er_ow.txt") && ReadFileAll(g_game_dir + "mc_er_ow.txt", ow_bytes)) {
+            const std::string text(ow_bytes.begin(), ow_bytes.end());
+            size_t pos = 0;
+            while (pos < text.size()) {
+                size_t end = text.find('\n', pos);
+                if (end == std::string::npos) end = text.size();
+                const std::string line = text.substr(pos, end - pos);
+                pos = end + 1;
+                const size_t eq = line.find('=');
+                if (eq == std::string::npos) continue;
+                const std::string key = line.substr(0, eq);
+                const float value = static_cast<float>(atof(line.c_str() + eq + 1));
+                if (key == "ow_mode") {
+                    const bool ow = (value != 0.f);
+                    eldenring::RuntimeContext::Instance().mode().ow_mode.store(ow);
+                    if (ow) {
+                        g_mc_mode.store(false);
+                        eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
+                        eldenring::RuntimeContext::Instance().mode().cs_mode.store(false);
+                        eldenring::RuntimeContext::Instance().mode().first_person.store(true);
+                    }
+                } else if (key == "ow_fov") {
+                    ow_cfg.fov_deg = std::clamp(value, 20.f, 140.f);
+                } else if (key == "ow_scale") {
+                    ow_cfg.scale = std::clamp(value, 0.05f, 10.f);
+                } else if (key == "ow_offset_x") {
+                    ow_cfg.offset_x = value;
+                } else if (key == "ow_offset_y") {
+                    ow_cfg.offset_y = value;
+                } else if (key == "ow_offset_z") {
+                    ow_cfg.offset_z = value;
+                }
+            }
+            Log("ow config: %s", (g_game_dir + "mc_er_ow.txt").c_str());
+        }
+        erov::SetOwConfig(ow_cfg);
+    }
+#endif
     erov::Install(&HudProvider, [](const char* fmt, ...) {
         char msg[512];
         va_list args;
