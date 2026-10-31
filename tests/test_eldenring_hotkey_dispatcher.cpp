@@ -939,5 +939,40 @@ TEST_F(HotkeyDispatcherTest, OwModePlaysAuthenticSoundEvents) {
     EXPECT_EQ(ctx.mode().ow_state.load(), 3);
     EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "ow.punch.release") != played_sounds_.end());
 }
+
+TEST_F(HotkeyDispatcherTest, OwModeDoesNotLeakMcGameplay) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_SHIFT, true);
+    setKey(VK_F7, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F7, false);
+    setKey(VK_SHIFT, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().ow_mode.load());
+
+    // The OW cannon owns the left click; the generic MC melee swing must not fire.
+    attack_called_ = false;
+    left_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().ow_state.load(), 2);
+    EXPECT_FALSE(attack_called_) << "OW left click must not also start the MC melee swing";
+
+#ifdef _WIN32
+    // Both physical Shift keys are hidden from DirectInput.
+    EXPECT_NE(std::find(masked_keys_.begin(), masked_keys_.end(), eldenring::roll::kDikLShift), masked_keys_.end());
+    EXPECT_NE(std::find(masked_keys_.begin(), masked_keys_.end(), eldenring::roll::kDikRShift), masked_keys_.end());
+#endif
+
+    // F must not swap the MC main/offhand while OW owns the view.
+    auto& inv = ctx.combat().melee.inventory();
+    inv.setSlot(0, {mc::ItemId::DiamondSword, 1});
+    inv.setOffhand({mc::ItemId::Shield, 1});
+    setKey('F', true);
+    dispatcher_->tick(0.016f);
+    setKey('F', false);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(inv.slot(0).item, mc::ItemId::DiamondSword);
+    EXPECT_EQ(inv.offhand().item, mc::ItemId::Shield);
+}
 #endif
 

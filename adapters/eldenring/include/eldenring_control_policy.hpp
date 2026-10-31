@@ -44,6 +44,9 @@ inline mc::ControlPlan buildControlPlan(const ModeInputs& in) {
     // Strict Mode Isolation:
     // When OW mode is active, it runs completely isolated from MC and CS modes.
     if (in.ow_mode && in.foreground) {
+        // OW owns the wheel too: the native quick-slot must not switch items
+        // while the gauntlet is out.
+        resolver.request(mc::ControlDomain::MouseWheel, mc::ControlAuthority::Mod, 100, 0, "ow mode");
         if (in.input_enabled && in.native_input_allowed) {
             mc::requestMinecraftCombat(resolver);
         }

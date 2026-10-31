@@ -30,6 +30,20 @@
 | 热键 | 无宏保护 | OW 热键与攻击触发由 `#if ENABLE_OW_VIEWMODEL` 保护 |
 | 音效 | 回退 `cs.knife.slash` / `cs.knife.hit` | 原版 Bink Audio 解码为 44.1 kHz WAV，注册 `ow.cannon.fire` / `ow.punch.release` |
 
+### 0.2 模式隔离修复（2026-10-31）
+
+实测反馈“Shift 没屏蔽、三个模式没分开”，逐项 trace 到的根因与修复：
+
+| 根因 | 修复 |
+|---|---|
+| `ow_keys` 只映射 `VK_SHIFT`（DIK 0x2A），**右 Shift（0x36）仍传给游戏** | OW 键表加入 `VK_LSHIFT` + `VK_RSHIFT`，两个物理 Shift 都屏蔽 |
+| 通用 MC 近战/挖掘/F 换手没有 `mc_on` 门控，OW 左键会同时触发 MC 挥击、F 会换手 | 近战条件改为 `mc_on || CS 刀`；挖掘与 F 换手只在 `mc_on` 下执行 |
+| CS 构建在 overlay 初始化时强制 `cs_mode=true` 并 `ow_mode=false`，顶掉 OW 配置 | 初始化只在 `ow_mode` 未激活时自动进 CS |
+| OW 模式没屏蔽滚轮、R、1–4，原生快捷栏/道具仍会响应 | OW 分支屏蔽 `MouseWheel`，键表加入 `R` 与 `1`–`4` |
+| MC 冲刺状态在 OW/CS 下仍每帧更新 | `player.sprint` 只在 `mc_on` 下更新 |
+
+回归测试：`HotkeyDispatcherTest.OwModeDoesNotLeakMcGameplay`、`OwModePlaysAuthenticSoundEvents`、`EldenRingControlPolicy.OwMode*`，全量 1247/1247 通过。
+
 
 ---
 

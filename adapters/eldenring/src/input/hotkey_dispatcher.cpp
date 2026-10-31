@@ -218,8 +218,8 @@ void HotkeyDispatcher::tick(float dt) {
         combat.feedback.tick(dt);
     }
 
-    // Sprinting update
-    if (fg) {
+    // Sprinting update (MC only: OW/CS do not own the Steve sprint state)
+    if (mc_on && fg) {
         const bool key_w = queryKey('W');
         const bool key_s = queryKey('S');
         const bool key_ctrl = queryKey(VK_CONTROL);
@@ -345,10 +345,13 @@ void HotkeyDispatcher::tick(float dt) {
 
 #if defined(_WIN32) && ENABLE_OW_VIEWMODEL
     control_inputs.ow_mode = mode.ow_mode.load(std::memory_order_relaxed);
-    int ow_scans[5] = {};
+    int ow_scans[12] = {};
     size_t ow_scan_count = 0;
     if (control_inputs.ow_mode && fg && !inv_open_for_policy) {
-        const int ow_keys[] = {VK_SHIFT, 'E', 'Q', VK_F7};
+        // Mask both Shift keys: VK_SHIFT alone maps to DIK_LSHIFT, and the native
+        // sprint/roll still fires from DIK_RSHIFT. R and the quick slots are
+        // native-only actions and must not fire while the gauntlet is out.
+        const int ow_keys[] = {VK_SHIFT, VK_LSHIFT, VK_RSHIFT, 'E', 'Q', 'R', '1', '2', '3', '4', VK_F7};
         for (const int vk : ow_keys) {
             const int sc = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC));
             if (sc > 0) ow_scans[ow_scan_count++] = sc;
@@ -550,6 +553,7 @@ void HotkeyDispatcher::tick(float dt) {
                 if (cb_.log) cb_.log(slot == 0 ? "CS: Butterfly Knife Inspect (Flower Spin)" : "CS: weapon inspect");
             } else
 #endif
+            if (mc_on)
             {
                 mc::contracts::ModInputEvent f_ev{'F', true};
                 if (!ctx.mods().dispatchInput(f_ev)) {
@@ -706,13 +710,17 @@ void HotkeyDispatcher::tick(float dt) {
     }
 #endif
 
-    // A CS gun owns the left click: the generic MC swing must not fire too.
+    // The generic MC swing belongs to MC mode, and to the CS knife (which shares
+    // the melee path for its hit/miss take). OW owns its own attacks.
     bool cs_gun_equipped = false;
+    bool cs_knife_owns_melee = false;
 #if ENABLE_CS2_VIEWMODEL
     cs_gun_equipped = mode.cs_mode.load() && mode.cs_weapon_slot.load() != 0;
+    cs_knife_owns_melee = mode.cs_mode.load() && mode.cs_weapon_slot.load() == 0;
 #endif
-    const bool mining_consumed = fg && mode.click_attack.load() && want_suppress_click && cb_.step_mining && cb_.step_mining(dt, left_held);
-    if (!mining_consumed && !cs_gun_equipped && click_edge && fg && mode.click_attack.load() && want_suppress_click) {
+    const bool mc_melee_owner = mc_on || cs_knife_owns_melee;
+    const bool mining_consumed = mc_on && fg && mode.click_attack.load() && want_suppress_click && cb_.step_mining && cb_.step_mining(dt, left_held);
+    if (mc_melee_owner && !mining_consumed && !cs_gun_equipped && click_edge && fg && mode.click_attack.load() && want_suppress_click) {
         float charged = 1.0f;
         {
             std::lock_guard<std::mutex> g(combat.melee_mutex);

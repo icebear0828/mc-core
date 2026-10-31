@@ -177,6 +177,7 @@ TEST(EldenRingControlPolicy, OwModeMasksActionKeysAndOwnsCombat) {
 
     const mc::ControlPlan plan = buildControlPlan(in);
     EXPECT_TRUE(plan.blocksNative(mc::ControlDomain::MouseButtons));
+    EXPECT_TRUE(plan.blocksNative(mc::ControlDomain::MouseWheel));
     EXPECT_TRUE(plan.blocksNative(mc::ControlDomain::Attack));
     EXPECT_TRUE(plan.blocksNative(mc::ControlDomain::Use));
     for (const int key : ow_keys) {
@@ -199,7 +200,7 @@ TEST(EldenRingControlPolicy, OwModeStrictlyIsolatesFromMcAndCs) {
 
     const mc::ControlPlan plan = buildControlPlan(in);
     // Under strict isolation: OW mode takes exclusive authority, suppressing MC flight and CS keys.
-    EXPECT_FALSE(plan.blocksNative(mc::ControlDomain::MouseWheel));
+    EXPECT_TRUE(plan.blocksNative(mc::ControlDomain::MouseWheel));
     EXPECT_FALSE(masksKey(plan, 0x21)); // CS key must NOT be masked
     for (const int key : eldenring::flight::kHiddenKeys) {
         EXPECT_FALSE(masksKey(plan, key)); // MC flight keys must NOT be masked

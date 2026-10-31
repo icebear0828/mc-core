@@ -618,10 +618,14 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                     snprintf(cs_msg, sizeof(cs_msg), "overlay: CS viewmodel model loaded successfully from %s", p.c_str());
                     Logf(cs_msg);
                     g_cs_knife_model_path = p;
-                    eldenring::RuntimeContext::Instance().mode().cs_mode.store(true);
-                    eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
-                    eldenring::RuntimeContext::Instance().mode().ow_mode.store(false);
-                    eldenring::RuntimeContext::Instance().mode().first_person.store(true);
+                    // The CS2 build starts in CS mode, but an OW config or a
+                    // runtime OW toggle must win: never force CS over OW.
+                    auto& cs_mode_ref = eldenring::RuntimeContext::Instance().mode();
+                    if (!cs_mode_ref.ow_mode.load()) {
+                        cs_mode_ref.cs_mode.store(true);
+                        cs_mode_ref.mc_mode.store(false);
+                        cs_mode_ref.first_person.store(true);
+                    }
                     break;
                 }
             }
