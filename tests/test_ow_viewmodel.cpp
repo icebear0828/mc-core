@@ -339,6 +339,26 @@ TEST(OwViewmodelTest, ParsesTheShippedAssetWhenProvided) {
     EXPECT_NEAR(model.clipDuration("shoot"), 28.0f / 31.071428f, 1e-3f);
 }
 
+TEST(OwViewmodelTest, AnimatorBlendsAfterASeek) {
+    OwModel model = makeAnimModel();
+    OwAnimator anim;
+    anim.setModel(&model);
+
+    anim.tick(0.016f, 3, 0.0f); // punch frame 0, z = 10
+    ASSERT_NEAR(anim.palette()[0].m[11], 10.0f, 1e-4f);
+
+    // Releasing a charge seeks forward; the pose eases instead of popping.
+    anim.tick(0.016f, 3, 2.0f); // starts the blend from the held windup pose
+    EXPECT_NEAR(anim.palette()[0].m[11], 10.0f, 1e-4f);
+
+    anim.tick(0.016f, 3, 2.0f); // punch frame 2, z = 12
+    EXPECT_GT(anim.palette()[0].m[11], 10.0f);
+    EXPECT_LT(anim.palette()[0].m[11], 12.0f);
+
+    for (int i = 0; i < 10; ++i) anim.tick(0.016f, 3, 2.0f);
+    EXPECT_NEAR(anim.palette()[0].m[11], 12.0f, 1e-4f);
+}
+
 TEST(OwViewmodelTest, ProjectionUsesItsOwnFov) {
     eldenring::ow::OwViewmodelConfig wide;
     wide.fov_deg = 90.f;

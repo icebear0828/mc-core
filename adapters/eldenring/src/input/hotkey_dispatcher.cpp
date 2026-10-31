@@ -180,6 +180,7 @@ void HotkeyDispatcher::resetKeyStates() {
     prev_reload_r_ = false;
     prev_ow_e_ = false;
     prev_ow_q_ = false;
+    ow_punch_released_ = false;
     cs_fire_cooldown_ = 0.f;
 }
 
@@ -376,12 +377,13 @@ void HotkeyDispatcher::tick(float dt) {
     const bool right_edge = !inv_open && input_enabled && cb_.take_right_click && cb_.take_right_click();
 #if ENABLE_OW_VIEWMODEL
     if (mode.ow_mode.load() && fg && !is_dead && right_edge) {
-        // RMB: Rocket Punch (state 3). Its authored clip starts with a long
-        // windup; the release sound and the player dash are keyed to the strike
-        // frame in the timer block below, not to the click.
+        // RMB: Rocket Punch charge. The authored controller starts the charge
+        // on press and fires the straight punch on release, so the state stays
+        // in the windup until the button comes up (see the timer block).
         mode.ow_state.store(3);
         mode.ow_anim_time.store(0.f);
         mode.ow_action_variant.store(static_cast<uint8_t>((mode.ow_action_variant.load() + 1u) & 1u));
+        ow_punch_released_ = false;
     } else
 #endif
 #if ENABLE_CS2_VIEWMODEL
@@ -532,33 +534,38 @@ void HotkeyDispatcher::tick(float dt) {
         const float prev_t = mode.ow_anim_time.load();
         const float t = prev_t + dt;
         const bool holding = cb_.right_held ? cb_.right_held() : true;
-        // RMB is a hold-to-charge: let go during the windup and the rocket
-        // punch is aborted. Holding through the release frame commits to it.
-        const bool punch_cancelled =
-            state == 3 && t < eldenring::ow::kRocketPunchReleaseTime && !holding;
-        if (punch_cancelled) {
-            mode.ow_state.store(0);
-            mode.ow_anim_time.store(0.f);
-        } else {
-            // The authored punch clip coils through frame 67 and releases at
-            // frame 68 (2.25 s). Fire the authentic release sound on that
-            // crossing.
-            if (state == 3 && prev_t < eldenring::ow::kRocketPunchReleaseTime &&
-                t >= eldenring::ow::kRocketPunchReleaseTime && cb_.play_sound) {
-                cb_.play_sound("ow.punch.release", 1.0f);
-            }
-            float max_t = 0.f;
-            if (state != 0) {
-                const char* clip = eldenring::ow::owClipNameForState(state);
-                if (cb_.ow_clip_duration && clip != nullptr) max_t = cb_.ow_clip_duration(clip);
-                if (max_t <= 0.f) max_t = eldenring::ow::owClipDurationFallback(state);
-            }
-            if (state != 0 && max_t > 0.f && t >= max_t) {
-                mode.ow_state.store(0); // Return to Idle
+        float max_t = 0.f;
+        if (state != 0) {
+            const char* clip = eldenring::ow::owClipNameForState(state);
+            if (cb_.ow_clip_duration && clip != nullptr) max_t = cb_.ow_clip_duration(clip);
+            if (max_t <= 0.f) max_t = eldenring::ow::owClipDurationFallback(state);
+        }
+
+        if (state == 3) {
+            // Authored controller flow: hold RMB to coil the punch, release to
+            // fire. The windup holds at the release frame while the button is
+            // down; letting go jumps to that frame and plays the strike.
+            const float release_time = eldenring::ow::kRocketPunchReleaseTime;
+            if (!ow_punch_released_) {
+                if (holding) {
+                    mode.ow_anim_time.store(std::min(t, release_time));
+                } else {
+                    mode.ow_anim_time.store(release_time);
+                    ow_punch_released_ = true;
+                    if (cb_.play_sound) cb_.play_sound("ow.punch.release", 1.0f);
+                }
+            } else if (max_t > 0.f && t >= max_t) {
+                mode.ow_state.store(0);
                 mode.ow_anim_time.store(0.f);
+                ow_punch_released_ = false;
             } else {
                 mode.ow_anim_time.store(t);
             }
+        } else if (state != 0 && max_t > 0.f && t >= max_t) {
+            mode.ow_state.store(0); // Return to Idle
+            mode.ow_anim_time.store(0.f);
+        } else {
+            mode.ow_anim_time.store(t);
         }
     }
 #endif

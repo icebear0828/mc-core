@@ -59,7 +59,7 @@
 | 渲染 | 保留 v1 的 3 元素顶点布局与着色器；每帧在 CPU 用 palette 做四骨蒙皮，写入 4 槽环形上传顶点缓冲（避免 GPU 读到正在改写的槽位），世界变换仍是原来的 `toHost(base * scale)` |
 | 播放 | `OwAnimator` 按 state 选 clip，keyframe 之间逐元素插值（keyframe 位精确），状态切换 80 ms 交叉淡化；idle 循环 |
 | 动作 | 状态表：0 idle、2 手炮、3 火箭拳、4 上勾拳、**5 裂地猛击**；**E = 上勾拳，Q = 裂地猛击** |
-| 火箭拳输入 | 右键是**按住蓄力**：按住播放蓄力，2.25 s 前松开 = 取消回待机；按住过释放帧才出拳并冲刺 |
+| 火箭拳输入 | 原版控制器 `右键_开始蓄力` / `右键_释放直拳`：**按住右键蓄力**，windup 停在释放帧；**松开右键出拳**（跳到 f68、播放释放音效、开始冲刺）。快速点击 = 立即出拳 |
 | 射击幅度 | 原版 shoot clip 手腕前移 0.35 m、上抬 0.34 m，第一人称太飘；`ow_shoot_motion`（0–1，默认 0.4）把每根骨骼向 idle 姿态混合 |
 | 时序 | 各状态时长取资产 clip 的 `(frames-1)/fps`；callback 未就绪时用烘焙常量兜底 |
 | 火箭拳 | 播放完整 109 帧（3.567 s）：f0–67 蓄力，f68 释放（2.25 s），f92 完全伸展（3.05 s）。`ow.punch.release` 音效与玩家冲刺都对齐 2.25 s，不再在右键瞬间触发 |
@@ -84,6 +84,22 @@ C++ 侧 `MC_OW_ASSET=<bin> mc_tests --gtest_filter=OwViewmodelTest.ParsesTheShip
 实机日志应出现 `gauntlet loaded ... 36 bones, 5 clips`。
 
 **已备份**：`Game/dinput8.dll.bak_ow_anim_20261101`、`mods/mc_adapter/ow_gauntlet.bin.bak_v1_20261101`。
+
+### 0.4 原版 Montage / 控制器解析结论（2026-11-01）
+
+用 CUE4Parse 直接解析原版资产（`C:\Users\30435\ow_export\Program.cs --dump/--imports`）后确认：
+
+| 资产 | 结论 |
+|---|---|
+| `AM_原版直拳/手炮/上勾拳/裂地猛击` | 都是**单 section（Default）**，section 从 0 到全长，`AnimStart=0 / AnimEnd=全长 / PlayRate=1 / Looping=1`。Montage 本身没有截取子段 |
+| `BP_铁拳控制器` | 函数：`右键_开始蓄力`、`右键_释放直拳`、`左键_手炮`；调用 `Montage_Play`、`Montage_GetPosition`、`Montage_SetPosition`、`WasInputKeyJustReleased`；变量 `直拳蓄力`、`直拳冲刺`、`直拳起点`、`直拳上一帧位置` |
+| 直拳音效 | `MIX_原版直拳蓄力一`（蓄力）、`MIX_原版直拳释放`（释放）、`MIX_原版直拳二次撞击`（命中） |
+| 裂地猛击 | `帧_技能阶段`、`帧_裂地落点`、`计算当前裂地方向`、`BP_裂地冲击`、`SFX_原版裂地飞行`，以及 `T_PBZ_SlamFade_00..16` 17 张淡出贴图 |
+
+因此原版右键流程是 **按下开始蓄力 → 松开释放直拳**（不是松开取消），本轮已按此重做。
+裂地猛击的“隐身放大”来自技能阶段切换 + SlamFade 淡出/飞行效果，需要后续按 `帧_技能阶段` 的状态机再还原。
+
+> CUE4Parse 需要脚本映射才能把 `UFunction` 的 `ScriptBytecode` 解出来；当前只映射了 `Function`/`BlueprintGeneratedClass`/`AnimMontage` 的类哈希，字节码仍为空，交互流程是从函数名、变量名和 Montage 数据推断的。
 
 
 ---

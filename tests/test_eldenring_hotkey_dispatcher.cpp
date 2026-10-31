@@ -3,6 +3,7 @@
 #include "eldenring_hotkey_dispatcher.hpp"
 #include "eldenring_runtime_context.hpp"
 #include "eldenring_flight.hpp"
+#include "eldenring_ow_dash.hpp"
 #include "eldenring_roll.hpp"
 #include <map>
 #include <vector>
@@ -934,19 +935,29 @@ TEST_F(HotkeyDispatcherTest, OwModePlaysAuthenticSoundEvents) {
     EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "ow.cannon.fire") != played_sounds_.end());
 
     played_sounds_.clear();
-    right_held_ = true; // RMB is hold-to-charge; releasing cancels the windup
+    right_held_ = true; // RMB is hold-to-charge; the punch fires on release
     right_click_edge_ = true;
     dispatcher_->tick(0.016f);
     EXPECT_EQ(ctx.mode().ow_state.load(), 3);
     EXPECT_TRUE(played_sounds_.empty()) << "the windup must not play the release sound";
 
-    // The authored clip releases at 2.25 s; each tick advances its timer.
-    for (int i = 0; i < 150; ++i) dispatcher_->tick(0.016f);
-    EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "ow.punch.release") != played_sounds_.end());
+    // Holding charges up to the authored release frame and no further.
+    for (int i = 0; i < 200; ++i) dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().ow_state.load(), 3);
+    EXPECT_NEAR(ctx.mode().ow_anim_time.load(), eldenring::ow::kRocketPunchReleaseTime, 1e-3f);
+    EXPECT_TRUE(played_sounds_.empty()) << "the punch fires when the button comes up";
+
+    // Releasing plays the strike and the authentic release sound.
     right_held_ = false;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().ow_state.load(), 3);
+    EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "ow.punch.release") != played_sounds_.end());
+
+    for (int i = 0; i < 100; ++i) dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().ow_state.load(), 0);
 }
 
-TEST_F(HotkeyDispatcherTest, OwModeRocketPunchCancelsWhenRightButtonReleased) {
+TEST_F(HotkeyDispatcherTest, OwModeRocketPunchFiresOnRelease) {
     auto& ctx = RuntimeContext::Instance();
     setKey(VK_SHIFT, true);
     setKey(VK_F7, true);
@@ -961,13 +972,13 @@ TEST_F(HotkeyDispatcherTest, OwModeRocketPunchCancelsWhenRightButtonReleased) {
     dispatcher_->tick(0.016f);
     ASSERT_EQ(ctx.mode().ow_state.load(), 3);
 
-    dispatcher_->tick(0.5f); // still charging
-    EXPECT_EQ(ctx.mode().ow_state.load(), 3);
+    dispatcher_->tick(0.5f); // charge for half a second
+    ASSERT_LT(ctx.mode().ow_anim_time.load(), eldenring::ow::kRocketPunchReleaseTime);
 
-    right_held_ = false; // release before the 2.25 s release frame
+    right_held_ = false; // release: jump to the release frame and fire
     dispatcher_->tick(0.016f);
-    EXPECT_EQ(ctx.mode().ow_state.load(), 0);
-    EXPECT_FLOAT_EQ(ctx.mode().ow_anim_time.load(), 0.f);
+    EXPECT_EQ(ctx.mode().ow_state.load(), 3);
+    EXPECT_NEAR(ctx.mode().ow_anim_time.load(), eldenring::ow::kRocketPunchReleaseTime, 1e-3f);
 }
 
 TEST_F(HotkeyDispatcherTest, OwModePlaysUppercutAndSlamOnEAndQ) {

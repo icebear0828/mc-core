@@ -350,6 +350,7 @@ public:
         palette_.clear();
         blend_from_.clear();
         last_state_ = 0;
+        last_anim_time_ = 0.0f;
         blend_left_ = 0.0f;
     }
 
@@ -359,6 +360,7 @@ public:
         last_state_ = state;
         current_state_ = state;
         anim_time_ = anim_time;
+        float effective_time = anim_time;
 
         const float bob = (state == 0) ? std::sin(anim_time * 2.5f) * 0.003f : 0.0f;
         pose_.base = fp::translate(0.0f, bob, 0.0f);
@@ -375,6 +377,7 @@ public:
                 if (state == 0 && clip.fps > 0.0f && clip.frame_count > 1) {
                     time = std::fmod(anim_time, static_cast<float>(clip.frame_count) / clip.fps);
                 }
+                effective_time = time;
                 for (size_t b = 0; b < target.size(); ++b) {
                     if (b >= clip.tracks.size() || clip.tracks[b].empty()) continue;
                     const std::vector<fp::M4>& track = clip.tracks[b];
@@ -396,9 +399,13 @@ public:
             return;
         }
 
-        // Crossfade on state changes. The first tick after setModel() has no
-        // previous pose, so it snaps to the clip.
-        if (state != previous_state && !palette_.empty() && palette_.size() == target.size()) {
+        // Crossfade on state changes and on deliberate time jumps (releasing a
+        // charged punch seeks from the windup to the release frame). Compare
+        // the sampled time so the idle loop wrap is not mistaken for a seek.
+        const float time_delta = effective_time - last_anim_time_;
+        last_anim_time_ = effective_time;
+        const bool seeked = state == previous_state && std::fabs(time_delta) > 0.15f;
+        if ((state != previous_state || seeked) && !palette_.empty() && palette_.size() == target.size()) {
             blend_from_ = palette_;
             blend_left_ = kBlendSeconds;
         } else if (palette_.size() != target.size()) {
@@ -444,6 +451,7 @@ private:
     uint8_t current_state_{0};
     uint8_t last_state_{0};
     float anim_time_{0.0f};
+    float last_anim_time_{0.0f};
 };
 
 } // namespace eldenring::ow

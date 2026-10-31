@@ -118,6 +118,7 @@ private:
     bool prev_reload_r_{false};
     bool prev_ow_e_{false};
     bool prev_ow_q_{false};
+    bool ow_punch_released_{false}; // RMB hold-to-charge: true once the punch fired
     float cs_fire_cooldown_{0.f};
     float cs_since_shot_{10.f}; // seconds since the last CS round: the first shot is accurate
 };
