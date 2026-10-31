@@ -944,9 +944,10 @@ bool ClickAttack(float charged) {
 // Should the native character ignore the mouse buttons right now? Only while the MC HUD is on and the game shows no UI.
 bool WantSuppress() {
 #if ENABLE_CS2_VIEWMODEL
-    if (!g_mc_mode.load() && !eldenring::RuntimeContext::Instance().mode().cs_mode.load()) return false;
+    if (!g_mc_mode.load() && !eldenring::RuntimeContext::Instance().mode().cs_mode.load() &&
+        !eldenring::RuntimeContext::Instance().mode().ow_mode.load()) return false;
 #else
-    if (!g_mc_mode.load()) return false;
+    if (!g_mc_mode.load() && !eldenring::RuntimeContext::Instance().mode().ow_mode.load()) return false;
 #endif
     MenuState ms;
     LoadingState ls;
@@ -2451,12 +2452,14 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     out.max_hp = v.max_hp;
     out.show = have_state && !ms.menu_focused && !ms.popup_open && !ls.screen_loading && fade < 0.02f;
 
-    if (g_hide_native.load()) {
-        // Hide the native body in MC and CS mode. The collector in
+    const bool ow_fp = eldenring::RuntimeContext::Instance().mode().ow_mode.load(std::memory_order_relaxed) &&
+                       g_first_person.load(std::memory_order_relaxed);
+    if (g_hide_native.load() || out.mc_mode || out.cs_mode || ow_fp) {
+        // Hide the native body in MC, CS, and OW first-person modes. The collector in
         // hud_bridge.cpp is RTTI-validated, so a weapon switch that leaves a
         // stale part pointer cannot turn a display-flag write into a vtable
         // overwrite (the 0x200000001 crash).
-        const bool want_hidden = (out.mc_mode || out.cs_mode) && have_state && !ls.screen_loading;
+        const bool want_hidden = (out.mc_mode || out.cs_mode || ow_fp) && have_state && !ls.screen_loading;
         g_native_hide_wanted.store(want_hidden);
         UpdateNativeModel(static_cast<uintptr_t>(player), want_hidden);
         static uint64_t last_report_ms = 0;

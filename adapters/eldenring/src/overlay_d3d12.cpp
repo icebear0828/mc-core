@@ -150,6 +150,15 @@ std::string g_cs_game_dir;
 std::string g_cs_knife_model_path;
 uint8_t g_cs_active_slot = 0;
 uint8_t g_cs_gun_table_slot = 0; // weapon slot whose maps are in g_cs_ak_table (0 = none)
+
+// Overwatch (Doomfist) first-person gauntlet. A second renderer instance keeps
+// the OW model/textures independent from the CS knife/gun tables.
+CsRenderer g_ow;
+D3D12_CPU_DESCRIPTOR_HANDLE g_ow_table_cpu{};
+D3D12_GPU_DESCRIPTOR_HANDLE g_ow_table_gpu{};
+bool g_ow_initialized = false;
+bool g_ow_model_loaded = false;
+bool g_ow_load_failed = false;
 #endif
 mc::SteveAnimator g_anim;
 eldenring::render::SteveMotion g_motion;
@@ -575,6 +584,18 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             g_cs_knife_table_gpu.ptr += static_cast<UINT64>(srv_inc) * 16;
             g_cs_ak_table_gpu = srv_gpu_base;
             g_cs_ak_table_gpu.ptr += static_cast<UINT64>(srv_inc) * 32;
+
+            // OW gauntlet renderer and its own descriptor table (slots 48-63).
+            if (g_ow.init(g_s.device, g_s.format, g_log)) {
+                g_ow_table_cpu = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
+                g_ow_table_cpu.ptr += static_cast<SIZE_T>(srv_inc) * 48;
+                g_ow_table_gpu = srv_gpu_base;
+                g_ow_table_gpu.ptr += static_cast<UINT64>(srv_inc) * 48;
+                g_ow_initialized = true;
+                Logf("overlay: OW gauntlet renderer ready");
+            } else {
+                Logf("overlay: OW gauntlet renderer unavailable");
+            }
 
             const std::string& game_dir = eldenring::diagnostics::GetGameDir();
             g_cs_game_dir = game_dir;
@@ -1476,6 +1497,36 @@ void DrawInventory(const HudState& hud, float w, float h) {
 eldenring::live::HeartAnimator g_hearts;
 
 void DrawHud(const HudState& hud, float w, float h) {
+    if (hud.ow_mode) {
+        // Overwatch HUD: crosshair + ability legend. The MC hearts/hotbar must
+        // not leak into OW mode (the CS branch returns for the same reason).
+        ImDrawList* dl = ImGui::GetBackgroundDrawList();
+        const float cx = w * 0.5f, cy = h * 0.5f;
+        const float s = std::max(0.5f, h / 1080.f);
+        const ImU32 cyan = IM_COL32(120, 255, 220, 235);
+        const ImU32 shadow = IM_COL32(0, 0, 0, 190);
+        dl->AddCircleFilled({cx, cy}, 1.8f * s, shadow);
+        dl->AddCircleFilled({cx, cy}, 1.2f * s, cyan);
+        const float gap = 7.f * s, len = 9.f * s, th = 2.f * s;
+        auto tick = [&](float x0, float y0, float x1, float y1) {
+            dl->AddLine({x0, y0}, {x1, y1}, shadow, th + 2.f * s);
+            dl->AddLine({x0, y0}, {x1, y1}, cyan, th);
+        };
+        tick(cx - gap - len, cy, cx - gap, cy);
+        tick(cx + gap, cy, cx + gap + len, cy);
+        tick(cx, cy - gap - len, cx, cy - gap);
+        tick(cx, cy + gap, cx, cy + gap + len);
+
+        const char* legend[4] = {"[LMB] Hand Cannon", "[RMB] Rocket Punch", "[Shift] Seismic Slam", "[E] Rising Uppercut"};
+        const float fs = 15.f * s;
+        for (int i = 0; i < 4; ++i) {
+            const float px = 24.f * s;
+            const float py = h - (110.f - i * 24.f) * s;
+            dl->AddText(ImGui::GetFont(), fs, {px + s, py + s}, IM_COL32(0, 0, 0, 200), legend[i]);
+            dl->AddText(ImGui::GetFont(), fs, {px, py}, cyan, legend[i]);
+        }
+        return;
+    }
 #if ENABLE_CS2_VIEWMODEL
     if (hud.cs_mode) {
         ImDrawList* dl = ImGui::GetBackgroundDrawList();
@@ -1815,9 +1866,9 @@ void RenderFrame(IDXGISwapChain* sc) {
     HudState hud;
     SteveState steve;
 #if ENABLE_CS2_VIEWMODEL
-    if (!g_provider || !g_provider(hud, steve) || !hud.show || (!hud.mc_mode && !hud.cs_mode)) return;
+    if (!g_provider || !g_provider(hud, steve) || !hud.show || (!hud.mc_mode && !hud.cs_mode && !hud.ow_mode)) return;
 #else
-    if (!g_provider || !g_provider(hud, steve) || !hud.show || !hud.mc_mode) return;
+    if (!g_provider || !g_provider(hud, steve) || !hud.show || (!hud.mc_mode && !hud.ow_mode)) return;
 #endif
 
     if (g_depth_dirty.exchange(false)) {
@@ -2173,7 +2224,59 @@ void RenderFrame(IDXGISwapChain* sc) {
         g_steve.ensureDepth(g_s.device, g_s.width, g_s.height);
 
 #if ENABLE_CS2_VIEWMODEL
-    if (cs_active && !steve.dead) {
+    const bool ow_active = ow_mode_on && steve.first_person && !steve.dead && GameIsForeground() && g_ow_initialized;
+    if (ow_active) {
+        if (!g_ow_model_loaded && !g_ow_load_failed) {
+            const std::string& ow_game_dir = eldenring::diagnostics::GetGameDir();
+            std::vector<std::string> ow_model_candidates;
+            if (!ow_game_dir.empty()) {
+                ow_model_candidates.push_back((std::filesystem::path(ow_game_dir) / "mods" / "mc_adapter" / "ow_gauntlet.bin").string());
+            }
+            ow_model_candidates.push_back("mods\\mc_adapter\\ow_gauntlet.bin");
+            ow_model_candidates.push_back("ow_gauntlet.bin");
+            for (const auto& p : ow_model_candidates) {
+                if (std::filesystem::exists(p) && g_ow.loadModel(g_s.device, p)) {
+                    g_ow_model_loaded = true;
+                    Logf("overlay: OW gauntlet loaded from %s", p.c_str());
+                    break;
+                }
+            }
+            if (!g_ow_model_loaded) {
+                g_ow_load_failed = true;
+                Logf("overlay: OW gauntlet model not found");
+            } else {
+                auto firstExisting = [](const std::vector<std::string>& candidates) {
+                    for (const auto& p : candidates) {
+                        if (std::filesystem::exists(p)) return p;
+                    }
+                    return std::string();
+                };
+                std::vector<std::string> albedo, normal, pbr;
+                if (!ow_game_dir.empty()) {
+                    albedo.push_back((std::filesystem::path(ow_game_dir) / "mods" / "mc_adapter" / "ow_gauntlet.png").string());
+                    normal.push_back((std::filesystem::path(ow_game_dir) / "mods" / "mc_adapter" / "ow_gauntlet_normal.png").string());
+                    pbr.push_back((std::filesystem::path(ow_game_dir) / "mods" / "mc_adapter" / "ow_gauntlet_pbr.png").string());
+                }
+                albedo.push_back("mods\\mc_adapter\\ow_gauntlet.png");
+                normal.push_back("mods\\mc_adapter\\ow_gauntlet_normal.png");
+                pbr.push_back("mods\\mc_adapter\\ow_gauntlet_pbr.png");
+                const UINT srv_inc = g_s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                D3D12_CPU_DESCRIPTOR_HANDLE glove_cpu = g_ow_table_cpu;
+                glove_cpu.ptr += srv_inc;
+                g_ow.loadTexturesFromFiles(g_s.device, firstExisting(albedo), "", g_ow_table_cpu, glove_cpu,
+                                           firstExisting(normal), "", firstExisting(pbr), "",
+                                           "", "", "", "", "", "");
+                Logf("overlay: OW gauntlet textures loaded");
+            }
+        }
+        if (g_ow_model_loaded) {
+            const mc::rig::Mat4 proj = g_ow.computeViewmodelProjection(g_s.width, g_s.height);
+            g_ow.tick(dt, r_mode.ow_state.load(), r_mode.ow_anim_time.load(), r_mode.ow_action_variant.load(), true);
+            const D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_steve.ready() ? g_steve.dsvHandle() : D3D12_CPU_DESCRIPTOR_HANDLE{};
+            g_ow.draw(g_s.list, g_s.srv_heap, g_ow_table_gpu, g_s.width, g_s.height, proj, f.rtv, dsv);
+            g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
+        }
+    } else if (cs_active && !steve.dead) {
         const mc::rig::Mat4 proj = g_cs.computeViewmodelProjection(g_s.width, g_s.height);
         // The knife and the shared gun table have their own descriptors;
         // switching is just a descriptor-handle swap.

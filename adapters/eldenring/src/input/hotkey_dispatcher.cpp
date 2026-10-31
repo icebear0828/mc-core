@@ -367,6 +367,13 @@ void HotkeyDispatcher::tick(float dt) {
     // Right-click interaction cascade
     const bool input_enabled = mode.input_enabled.load(std::memory_order_relaxed);
     const bool right_edge = !inv_open && input_enabled && cb_.take_right_click && cb_.take_right_click();
+    if (mode.ow_mode.load() && fg && !is_dead && right_edge) {
+        // RMB: Rocket Punch / Heavy Uppercut (state 3)
+        mode.ow_state.store(3);
+        mode.ow_anim_time.store(0.f);
+        mode.ow_action_variant.store(static_cast<uint8_t>((mode.ow_action_variant.load() + 1u) & 1u));
+        if (cb_.play_sound) cb_.play_sound("cs.knife.hit", 1.0f);
+    } else
 #if ENABLE_CS2_VIEWMODEL
     if (mode.cs_mode.load() && fg && !is_dead && right_edge) {
         // RMB is the knife's heavy attack. Guns consume the click but have no
@@ -508,6 +515,21 @@ void HotkeyDispatcher::tick(float dt) {
     }
 #endif
 
+    // OW action timer advance
+    if (mode.ow_mode.load()) {
+        const uint8_t state = mode.ow_state.load();
+        const float t = mode.ow_anim_time.load() + dt;
+        float max_t = 0.f;
+        if (state == 2) max_t = 0.40f;      // Primary punch / cannon
+        else if (state == 3) max_t = 0.80f; // Heavy rocket punch
+        if (state != 0 && max_t > 0.f && t >= max_t) {
+            mode.ow_state.store(0); // Return to Idle
+            mode.ow_anim_time.store(0.f);
+        } else {
+            mode.ow_anim_time.store(t);
+        }
+    }
+
     // F key (inspect in CS mode / swap offhand in MC) & Digits 1-9 (slot select / deploy)
     if (fg && !inv_open && want_suppress) {
         const bool f_down = queryKey('F');
@@ -617,6 +639,16 @@ void HotkeyDispatcher::tick(float dt) {
     const bool click_edge = !inv_open && input_enabled && cb_.take_left_click && cb_.take_left_click() && alive;
     const bool left_held = !inv_open && input_enabled && ((cb_.left_held && cb_.left_held()) || queryKey(VK_LBUTTON)) && alive;
     const bool want_suppress_click = (click_edge || left_held) ? want_suppress : false;
+
+    // OW mode attack triggers: gauntlet punch / hand cannon
+    if (mode.ow_mode.load() && fg && alive) {
+        if (click_edge) {
+            mode.ow_state.store(2); // Primary punch / cannon
+            mode.ow_action_variant.store(static_cast<uint8_t>((mode.ow_action_variant.load() + 1u) & 1u));
+            mode.ow_anim_time.store(0.f);
+            if (cb_.play_sound) cb_.play_sound("cs.knife.slash", 1.0f);
+        }
+    }
 
 #if ENABLE_CS2_VIEWMODEL
     cs_fire_cooldown_ = std::max(0.f, cs_fire_cooldown_ - dt);
@@ -828,8 +860,12 @@ void HotkeyDispatcher::tick(float dt) {
                 mode.mc_mode.store(false);
                 mode.cs_mode.store(false);
                 mode.first_person.store(true);
+                mode.ow_state.store(0);
+                mode.ow_anim_time.store(0.f);
                 if (cb_.log) cb_.log("[MODE] Overwatch Doomfist Mode: ACTIVE (MC/CS mode off)");
             } else {
+                mode.ow_state.store(0);
+                mode.ow_anim_time.store(0.f);
                 if (cb_.log) cb_.log("[MODE] Overwatch Doomfist Mode: OFF");
             }
         } else if (mode.ow_mode.load()) {
