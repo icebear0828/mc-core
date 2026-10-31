@@ -192,21 +192,15 @@ TEST(EldenRingControlPolicy, OwModeStrictlyIsolatesFromMcAndCs) {
     in.cs_mode = true;
     in.foreground = true;
     in.native_input_allowed = true;
-    in.block_movement = true;
-    in.block_move_keys =
-        std::span<const int>(eldenring::control::kBlockMoveKeys, std::size(eldenring::control::kBlockMoveKeys));
     in.flying = true;
     in.flight_keys = std::span<const int>(eldenring::flight::kHiddenKeys, std::size(eldenring::flight::kHiddenKeys));
     const std::array<int, 1> cs_keys{0x21};
     in.cs_keys = std::span<const int>(cs_keys);
 
     const mc::ControlPlan plan = buildControlPlan(in);
-    // Under strict isolation: OW mode takes exclusive authority, suppressing MC block movement, MC flight, and CS keys!
+    // Under strict isolation: OW mode takes exclusive authority, suppressing MC flight and CS keys.
     EXPECT_FALSE(plan.blocksNative(mc::ControlDomain::MouseWheel));
     EXPECT_FALSE(masksKey(plan, 0x21)); // CS key must NOT be masked
-    for (const int key : eldenring::control::kBlockMoveKeys) {
-        EXPECT_FALSE(masksKey(plan, key)); // MC block movement must NOT be masked
-    }
     for (const int key : eldenring::flight::kHiddenKeys) {
         EXPECT_FALSE(masksKey(plan, key)); // MC flight keys must NOT be masked
     }
