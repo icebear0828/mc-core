@@ -14,6 +14,8 @@
 #include "eldenring_shield.hpp"
 #include "eldenring_roll.hpp"
 #include "eldenring_flight.hpp"
+#include "eldenring_ow_dash.hpp"
+#include "ow_viewmodel.hpp"
 #include "cs_weapon_registry.hpp"
 #include <algorithm>
 #include <cmath>
@@ -176,6 +178,8 @@ void HotkeyDispatcher::resetKeyStates() {
     prev_f1_ = false;
     prev_gameplay_f_ = false;
     prev_reload_r_ = false;
+    prev_ow_e_ = false;
+    prev_ow_q_ = false;
     cs_fire_cooldown_ = 0.f;
 }
 
@@ -372,11 +376,12 @@ void HotkeyDispatcher::tick(float dt) {
     const bool right_edge = !inv_open && input_enabled && cb_.take_right_click && cb_.take_right_click();
 #if ENABLE_OW_VIEWMODEL
     if (mode.ow_mode.load() && fg && !is_dead && right_edge) {
-        // RMB: Rocket Punch / Heavy Uppercut (state 3)
+        // RMB: Rocket Punch (state 3). Its authored clip starts with a long
+        // windup; the release sound and the player dash are keyed to the strike
+        // frame in the timer block below, not to the click.
         mode.ow_state.store(3);
         mode.ow_anim_time.store(0.f);
         mode.ow_action_variant.store(static_cast<uint8_t>((mode.ow_action_variant.load() + 1u) & 1u));
-        if (cb_.play_sound) cb_.play_sound("ow.punch.release", 1.0f);
     } else
 #endif
 #if ENABLE_CS2_VIEWMODEL
@@ -524,15 +529,36 @@ void HotkeyDispatcher::tick(float dt) {
 #if ENABLE_OW_VIEWMODEL
     if (mode.ow_mode.load()) {
         const uint8_t state = mode.ow_state.load();
-        const float t = mode.ow_anim_time.load() + dt;
-        float max_t = 0.f;
-        if (state == 2) max_t = 0.40f;      // Primary punch / cannon
-        else if (state == 3) max_t = 0.80f; // Heavy rocket punch
-        if (state != 0 && max_t > 0.f && t >= max_t) {
-            mode.ow_state.store(0); // Return to Idle
+        const float prev_t = mode.ow_anim_time.load();
+        const float t = prev_t + dt;
+        const bool holding = cb_.right_held ? cb_.right_held() : true;
+        // RMB is a hold-to-charge: let go during the windup and the rocket
+        // punch is aborted. Holding through the release frame commits to it.
+        const bool punch_cancelled =
+            state == 3 && t < eldenring::ow::kRocketPunchReleaseTime && !holding;
+        if (punch_cancelled) {
+            mode.ow_state.store(0);
             mode.ow_anim_time.store(0.f);
         } else {
-            mode.ow_anim_time.store(t);
+            // The authored punch clip coils through frame 67 and releases at
+            // frame 68 (2.25 s). Fire the authentic release sound on that
+            // crossing.
+            if (state == 3 && prev_t < eldenring::ow::kRocketPunchReleaseTime &&
+                t >= eldenring::ow::kRocketPunchReleaseTime && cb_.play_sound) {
+                cb_.play_sound("ow.punch.release", 1.0f);
+            }
+            float max_t = 0.f;
+            if (state != 0) {
+                const char* clip = eldenring::ow::owClipNameForState(state);
+                if (cb_.ow_clip_duration && clip != nullptr) max_t = cb_.ow_clip_duration(clip);
+                if (max_t <= 0.f) max_t = eldenring::ow::owClipDurationFallback(state);
+            }
+            if (state != 0 && max_t > 0.f && t >= max_t) {
+                mode.ow_state.store(0); // Return to Idle
+                mode.ow_anim_time.store(0.f);
+            } else {
+                mode.ow_anim_time.store(t);
+            }
         }
     }
 #endif
@@ -648,15 +674,33 @@ void HotkeyDispatcher::tick(float dt) {
     const bool left_held = !inv_open && input_enabled && ((cb_.left_held && cb_.left_held()) || queryKey(VK_LBUTTON)) && alive;
     const bool want_suppress_click = (click_edge || left_held) ? want_suppress : false;
 
-    // OW mode attack triggers: gauntlet punch / hand cannon
+    // OW mode attack triggers: hand cannon, rocket punch (right click, above),
+    // rising uppercut (E) and seismic slam (Q).
 #if ENABLE_OW_VIEWMODEL
     if (mode.ow_mode.load() && fg && alive) {
         if (click_edge) {
-            mode.ow_state.store(2); // Primary punch / cannon
+            mode.ow_state.store(2); // Hand cannon
             mode.ow_action_variant.store(static_cast<uint8_t>((mode.ow_action_variant.load() + 1u) & 1u));
             mode.ow_anim_time.store(0.f);
             if (cb_.play_sound) cb_.play_sound("ow.cannon.fire", 1.0f);
         }
+
+        const bool gameplay_key = !inv_open && input_enabled;
+        const bool e_down = gameplay_key && queryKey('E');
+        const bool q_down = gameplay_key && queryKey('Q');
+        if (e_down && !prev_ow_e_) {
+            mode.ow_state.store(4); // Rising uppercut
+            mode.ow_anim_time.store(0.f);
+        }
+        if (q_down && !prev_ow_q_) {
+            mode.ow_state.store(5); // Seismic slam
+            mode.ow_anim_time.store(0.f);
+        }
+        prev_ow_e_ = e_down;
+        prev_ow_q_ = q_down;
+    } else {
+        prev_ow_e_ = false;
+        prev_ow_q_ = false;
     }
 #endif
 

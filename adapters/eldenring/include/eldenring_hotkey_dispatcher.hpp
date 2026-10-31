@@ -19,6 +19,8 @@ struct HotkeyCallbacks {
     std::function<void(const std::string&)> log;
     // Duration (seconds) of a clip in the active CS viewmodel, or 0 when absent.
     std::function<float(const char*)> clip_duration;
+    // Duration (seconds) of an Overwatch authored clip, or 0 when absent.
+    std::function<float(const char*)> ow_clip_duration;
 
     // DirectInput / input hook wrappers
     std::function<bool()> take_left_click;
@@ -114,6 +116,8 @@ private:
     bool prev_f1_{false};
     bool prev_gameplay_f_{false};
     bool prev_reload_r_{false};
+    bool prev_ow_e_{false};
+    bool prev_ow_q_{false};
     float cs_fire_cooldown_{0.f};
     float cs_since_shot_{10.f}; // seconds since the last CS round: the first shot is accurate
 };

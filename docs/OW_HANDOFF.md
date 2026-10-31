@@ -45,6 +45,46 @@
 
 回归测试：`HotkeyDispatcherTest.OwModeDoesNotLeakMcGameplay`、`OwModePlaysAuthenticSoundEvents`、`EldenRingControlPolicy.OwMode*`，全量 1247/1247 通过。
 
+### 0.3 骨骼动画完整接入（2026-11-01）
+
+实测反馈"射击没问题，其他几个动画有问题；上勾拳/裂地猛击缺失，火箭拳没有蓄力"。
+根因：PR #129 的 `ow_gauntlet.bin` 是**单帧刚体姿态**（`0 clips`），`OwAnimator` 只对整只手做平移/滚转；
+导出的 `punch/shoot/uppercut/slam` 骨骼动画从未进入 C++。
+
+本轮改为**烘焙原版骨骼动画，由 CPU 蒙皮播放**，渲染复用 v1 已验证的着色器与管线：
+
+| 层 | 改造 |
+|---|---|
+| 资产 | `tools/ow/build_ow_skinned.py` 读取 `doomfist_1p.json` + 5 段 `*_anim.json`，输出 **CSVM v4**：12409 顶点（section 0）、36 根手/指骨骼、5 个 named-track clip（idle/shoot/punch/uppercut/slam），每帧存 bind→viewmodel 空间 palette |
+| 渲染 | 保留 v1 的 3 元素顶点布局与着色器；每帧在 CPU 用 palette 做四骨蒙皮，写入 4 槽环形上传顶点缓冲（避免 GPU 读到正在改写的槽位），世界变换仍是原来的 `toHost(base * scale)` |
+| 播放 | `OwAnimator` 按 state 选 clip，keyframe 之间逐元素插值（keyframe 位精确），状态切换 80 ms 交叉淡化；idle 循环 |
+| 动作 | 状态表：0 idle、2 手炮、3 火箭拳、4 上勾拳、**5 裂地猛击**；**E = 上勾拳，Q = 裂地猛击** |
+| 火箭拳输入 | 右键是**按住蓄力**：按住播放蓄力，2.25 s 前松开 = 取消回待机；按住过释放帧才出拳并冲刺 |
+| 射击幅度 | 原版 shoot clip 手腕前移 0.35 m、上抬 0.34 m，第一人称太飘；`ow_shoot_motion`（0–1，默认 0.4）把每根骨骼向 idle 姿态混合 |
+| 时序 | 各状态时长取资产 clip 的 `(frames-1)/fps`；callback 未就绪时用烘焙常量兜底 |
+| 火箭拳 | 播放完整 109 帧（3.567 s）：f0–67 蓄力，f68 释放（2.25 s），f92 完全伸展（3.05 s）。`ow.punch.release` 音效与玩家冲刺都对齐 2.25 s，不再在右键瞬间触发 |
+
+> 为什么不用 GPU 蒙皮：第一版（palette CBV + HLSL 蒙皮）实机出现闪屏、手势/材质异常。
+> CPU 蒙皮每帧约 12k 顶点 × 4 骨骼，开销可忽略，且直接沿用 v1 已验证的绘制路径。
+
+资产与部署：
+
+```powershell
+uv run --with numpy python tools/ow/build_ow_skinned.py `
+  --mesh "C:\Users\30435\ow_export\out\doomfist_1p.json" `
+  --anim-dir "C:\Users\30435\ow_export\out" `
+  --out "C:\Users\30435\ow_export\out\ow_gauntlet_skinned.bin"
+
+# 部署（游戏关闭时）
+Copy-Item "...\ow_gauntlet_skinned.bin" "C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game\mods\mc_adapter\ow_gauntlet.bin" -Force
+```
+
+验证：`uv run --with pytest --with numpy python -m pytest tests/test_ow_skinned_export.py`；
+C++ 侧 `MC_OW_ASSET=<bin> mc_tests --gtest_filter=OwViewmodelTest.ParsesTheShippedAssetWhenProvided`。
+实机日志应出现 `gauntlet loaded ... 36 bones, 5 clips`。
+
+**已备份**：`Game/dinput8.dll.bak_ow_anim_20261101`、`mods/mc_adapter/ow_gauntlet.bin.bak_v1_20261101`。
+
 
 ---
 
@@ -86,6 +126,7 @@
   3. `loader.cpp` 的 `UpdateNativeModel` 统一在 `(out.mc_mode || out.cs_mode || ow_fp)` 时隐藏法环角色的原生模型与持握武器，杜绝穿模与动作干扰。
 
 ### 1.3 攻击动作接入与状态机
+> **2026-11-01 更新**：本节描述的程序化整体变换已被 §0.3 的原版骨骼动画取代，保留为历史记录。
 - **状态机与时序控制**：
   - 在 `ModeState` 新增 `std::atomic<uint8_t> ow_state{0};`、`std::atomic<float> ow_anim_time{0.f};`、`std::atomic<uint8_t> ow_action_variant{0};`。
   - **左键（Primary Attack / 状态 2）**：触发快速手炮直拳，前冲位移 $-0.16\text{m}$，伴随 $10^\circ$ 微滚转倾角，总时长 $0.40\text{s}$。
@@ -145,6 +186,8 @@ flowchart TD
 | **手炮动画 JSON** | `C:\Users\30435\ow_export\out\shoot_anim.json` | 原版手炮射击（31.07 FPS，29 帧） |
 | **上勾拳动画 JSON** | `C:\Users\30435\ow_export\out\uppercut_anim.json` | 原版上勾拳动作（27 帧） |
 | **裂地猛击动画 JSON** | `C:\Users\30435\ow_export\out\slam_anim.json` | 原版裂地猛击动作（61 帧） |
+| **骨骼动画烘焙** | `tools/ow/build_ow_skinned.py` | 5 段 clip + 36 骨骼 → CSVM v4（GPU 蒙皮） |
+| **已部署新资产** | `mods/mc_adapter/ow_gauntlet.bin` | v4 skinned，约 1.2 MB，5 clips |
 | **网格模型 JSON** | `C:\Users\30435\ow_export\out\doomfist_1p.json` | 21,356 顶点，126 骨骼，83,592 索引 |
 | **反解工具 (C#)** | `C:\Users\30435\ow_export\Program.cs` | 包含 IoPackage 导入修复与 Mock Codec 注入 |
 | **LBS 蒙皮工具** | `C:\Users\30435\ow_export\export_posed_csvm.py` | 依据 FK/LBS 及 Camera 逆矩阵输出二进制 CSVM |
@@ -247,6 +290,7 @@ ow_offset_x=0
 ow_offset_y=0
 ow_offset_z=0
 ow_dash_distance=4.0
+ow_shoot_motion=0.4
 ```
 
 ### 5.3 仍需实机确认

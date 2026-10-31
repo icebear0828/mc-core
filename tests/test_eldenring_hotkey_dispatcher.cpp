@@ -934,10 +934,63 @@ TEST_F(HotkeyDispatcherTest, OwModePlaysAuthenticSoundEvents) {
     EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "ow.cannon.fire") != played_sounds_.end());
 
     played_sounds_.clear();
+    right_held_ = true; // RMB is hold-to-charge; releasing cancels the windup
     right_click_edge_ = true;
     dispatcher_->tick(0.016f);
     EXPECT_EQ(ctx.mode().ow_state.load(), 3);
+    EXPECT_TRUE(played_sounds_.empty()) << "the windup must not play the release sound";
+
+    // The authored clip releases at 2.25 s; each tick advances its timer.
+    for (int i = 0; i < 150; ++i) dispatcher_->tick(0.016f);
     EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "ow.punch.release") != played_sounds_.end());
+    right_held_ = false;
+}
+
+TEST_F(HotkeyDispatcherTest, OwModeRocketPunchCancelsWhenRightButtonReleased) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_SHIFT, true);
+    setKey(VK_F7, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F7, false);
+    setKey(VK_SHIFT, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().ow_mode.load());
+
+    right_held_ = true;
+    right_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ctx.mode().ow_state.load(), 3);
+
+    dispatcher_->tick(0.5f); // still charging
+    EXPECT_EQ(ctx.mode().ow_state.load(), 3);
+
+    right_held_ = false; // release before the 2.25 s release frame
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().ow_state.load(), 0);
+    EXPECT_FLOAT_EQ(ctx.mode().ow_anim_time.load(), 0.f);
+}
+
+TEST_F(HotkeyDispatcherTest, OwModePlaysUppercutAndSlamOnEAndQ) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_SHIFT, true);
+    setKey(VK_F7, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F7, false);
+    setKey(VK_SHIFT, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().ow_mode.load());
+
+    setKey('E', true);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().ow_state.load(), 4);
+    setKey('E', false);
+    dispatcher_->tick(0.016f);
+
+    setKey('Q', true);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().ow_state.load(), 5);
+    setKey('Q', false);
+    dispatcher_->tick(0.016f);
 }
 
 TEST_F(HotkeyDispatcherTest, OwModeDoesNotLeakMcGameplay) {

@@ -8,10 +8,16 @@
 
 namespace eldenring::ow {
 
+// Authored punch clip (109 frames @ 30.278 fps): the windup coils the arm
+// through frame 67, the fist releases at frame 68 (2.25 s) and reaches full
+// extension at frame 92 (3.05 s). The release sound and the player dash are
+// keyed to this window, not to the right-click itself.
+inline constexpr float kRocketPunchReleaseTime = 2.25f;
+
 struct RocketPunchDashConfig {
     float distance_m{4.0f}; // total forward displacement over the thrust window
-    float start_time{0.25f}; // state 3: windup ends, the punch releases
-    float end_time{0.60f};   // state 3: thrust ends, recovery begins
+    float start_time{kRocketPunchReleaseTime}; // 68 / 30.278
+    float end_time{3.05f};   // 92 / 30.278
 };
 
 // Forward speed (m/s) at `anim_time`. A sin(pi * p) profile keeps the total

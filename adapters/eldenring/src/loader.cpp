@@ -2758,6 +2758,8 @@ void SetupOverlay() {
                     ow_cfg.offset_z = value;
                 } else if (key == "ow_dash_distance") {
                     eldenring::RuntimeContext::Instance().mode().ow_dash_distance.store(std::clamp(value, 0.f, 15.f));
+                } else if (key == "ow_shoot_motion") {
+                    ow_cfg.shoot_motion = std::clamp(value, 0.f, 1.f);
                 }
             }
             Log("ow config: %s", (g_game_dir + "mc_er_ow.txt").c_str());
@@ -2971,6 +2973,7 @@ void SetupInput() {
         cb.play_sound = [](const char* s, float v) { eraudio::Play(s, v); };
         cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
         cb.clip_duration = [](const char* n) { return erov::CsClipDuration(n); };
+        cb.ow_clip_duration = [](const char* n) { return erov::OwClipDuration(n); };
         cb.take_left_click = erin::TakeLeftClick;
         cb.take_right_click = erin::TakeRightClick;
         cb.left_held = erin::LeftHeld;

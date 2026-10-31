@@ -104,7 +104,7 @@ struct ModeConfig {
 #endif
     std::atomic<bool> cs_mode{false};
     std::atomic<bool> ow_mode{false};
-    std::atomic<uint8_t> ow_state{0}; // 0: Idle, 2: Primary Attack, 3: Heavy Attack / Rocket Punch
+    std::atomic<uint8_t> ow_state{0}; // 0: Idle, 2: Shoot, 3: Rocket Punch, 4: Uppercut, 5: Slam
     std::atomic<float> ow_anim_time{0.f};
     std::atomic<uint8_t> ow_action_variant{0};
     std::atomic<float> ow_dash_distance{4.0f}; // mc_er_ow.txt: ow_dash_distance=<m> for the rocket punch

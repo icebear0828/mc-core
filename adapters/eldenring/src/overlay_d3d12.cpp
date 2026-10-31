@@ -2610,6 +2610,15 @@ void SetOwConfig(const OwConfig& cfg) {
 #endif
 }
 
+float OwClipDuration(const char* name) {
+#if ENABLE_OW_VIEWMODEL
+    return g_ow.clipDuration(name);
+#else
+    (void)name;
+    return 0.f;
+#endif
+}
+
 void RequestFrameTrace(int frames) { g_trace_left.store(frames); }
 
 void SetMobModel(const mc::model::EntityModel& model) {

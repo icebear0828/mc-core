@@ -14,17 +14,17 @@ using eldenring::ow::rocketPunchSpeed;
 TEST(OwDashTest, SpeedIsZeroOutsideTheThrustWindow) {
     const RocketPunchDashConfig cfg{};
     EXPECT_FLOAT_EQ(rocketPunchSpeed(0.0f, cfg), 0.f);
-    EXPECT_FLOAT_EQ(rocketPunchSpeed(0.25f, cfg), 0.f);
-    EXPECT_FLOAT_EQ(rocketPunchSpeed(0.60f, cfg), 0.f);
-    EXPECT_FLOAT_EQ(rocketPunchSpeed(0.80f, cfg), 0.f);
-    EXPECT_GT(rocketPunchSpeed(0.425f, cfg), 0.f);
+    EXPECT_FLOAT_EQ(rocketPunchSpeed(2.25f, cfg), 0.f);
+    EXPECT_FLOAT_EQ(rocketPunchSpeed(3.05f, cfg), 0.f);
+    EXPECT_FLOAT_EQ(rocketPunchSpeed(3.50f, cfg), 0.f);
+    EXPECT_GT(rocketPunchSpeed(2.65f, cfg), 0.f);
 }
 
 TEST(OwDashTest, PeakSpeedMatchesTheSinProfile) {
     const RocketPunchDashConfig cfg{};
     const float span = cfg.end_time - cfg.start_time;
     const float expected_peak = cfg.distance_m * 3.14159265358979f / (2.f * span);
-    EXPECT_NEAR(rocketPunchSpeed(0.425f, cfg), expected_peak, 1e-3f);
+    EXPECT_NEAR(rocketPunchSpeed(2.65f, cfg), expected_peak, 1e-3f);
 }
 
 TEST(OwDashTest, IntegratesToTheConfiguredDistance) {
@@ -44,8 +44,8 @@ TEST(OwDashTest, DistanceIsMonotonicAndClamped) {
     const RocketPunchDashConfig cfg{};
     EXPECT_FLOAT_EQ(rocketPunchDistance(0.0f, cfg), 0.f);
     EXPECT_FLOAT_EQ(rocketPunchDistance(cfg.end_time, cfg), cfg.distance_m);
-    EXPECT_FLOAT_EQ(rocketPunchDistance(0.9f, cfg), cfg.distance_m);
-    EXPECT_NEAR(rocketPunchDistance(0.425f, cfg), cfg.distance_m * 0.5f, 1e-3f);
+    EXPECT_FLOAT_EQ(rocketPunchDistance(3.5f, cfg), cfg.distance_m);
+    EXPECT_NEAR(rocketPunchDistance(2.65f, cfg), cfg.distance_m * 0.5f, 1e-3f);
     float prev = 0.f;
     for (float t = cfg.start_time; t <= cfg.end_time; t += 0.01f) {
         const float d = rocketPunchDistance(t, cfg);
