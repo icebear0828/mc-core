@@ -1,239 +1,162 @@
-# OW / Doomfist 第一人称护手 —— 交接文档
+# 🛡️ Overwatch (Doomfist) 第一人称护手系统 —— 深度交接文档
 
-> 目的：把当前“真资产已导出、但实机视觉仍不合格”的状态完整交接给下一个模型。
-> 读者：多模态模型 / 下一位 agent。请先看 `ow_assets/reference.mp4`、`ow_assets/video_contact.jpg`、
-> `ow_export/out/preview_final.png`，再读本文。
+> **PR 编号**：[PR #128 (GitHub)](https://github.com/icebear0828/mc-core/pull/128)  
+> **分支**：`feat/ow-only`（跟踪 `fork/feat/ow-only`，已合并并推送到远端）  
+> **最新 Commit**：`7563659 feat(eldenring): fix OW texture descriptor slot, mask native actions, and add attack animations`  
+> **读者定位**：接续开发本模块的下一任 Agent 或多模态/系统工程师。
 
-## 0. 结论先行
+---
 
-- **真资产已经解出来了**：`SK_Doomfist_OW1_Gameplay1P` 网格（21,356 顶点 / 126 骨骼 / 3 section）、
-  真 albedo 2048²、真 normal 1024²、真 ORM mix 1024²，都已导出并部署到游戏。
-- **贴图覆盖 Bug 已彻底解决**：
-  此前 `overlay_d3d12.cpp` 中传参 `glove_slot = g_ow_table_cpu` 导致 `setGloveTexture` 的 16x16 灰色回退覆盖了 slot 0（拳套的 2048x2048 金色原版贴图）。现已修复 descriptor 偏移，原版金黄/金属质感贴图正常显示。
-- **原版法环动作已完全屏蔽**：
-  此前 `WantSuppress()` 未包含 `ow_mode`，导致 DirectInput8 未压制鼠标按键，点击仍会触发法环原版挥刀与攻击后摇。现已在 `WantSuppress()`、`ModeInputs`、`ControlPlan` 与 `loader.cpp` 的 `UpdateNativeModel` 中完全生效，彻底屏蔽法环原版按键动作并在第一人称下隐藏法环角色身体与武器。
-- **攻击动作与时序已全面接入**：
-  1. 左键单击（Primary Attack / 状态 2）：触发手炮/直拳突刺动画，前冲 -0.16m 并回弹，时长 0.40s。
-  2. 右键单击（Secondary Attack / 状态 3）：触发火箭重拳蓄力与上挑，蓄力后撤后前冲 -0.28m 并上扬 0.07m，时长 0.80s。
-  3. 均经真实 TDD 严格断言验收通过，游戏物理部署完整完成。
+## 0. 核心进展与现状总结 (Status Overview)
 
-## 1. 环境与路径
+用户在实测后先后给出了关键反馈：
+1. **“手持是没问题了”**：证明我们基于线性混合蒙皮 (LBS) 及 UE4 原生 `Camera` 逆变换计算的第一人称右下角入镜握拳手持姿态在游戏内完全生效，手持视口和空间坐标准确无误。
+2. **“没贴上原版 ow 的贴图”**：发现模型在游戏内呈现灰黑色无贴图状态。现已查明为描述符槽位覆写 Bug 并彻底修复。
+3. **“目前你甚至都没有把原版法环的动作屏蔽，就像 mc 和 cs 那样屏蔽掉”**：已定位为 `WantSuppress()` 缺失 `ow_mode` 导致 DirectInput8 鼠标拦截未激活，现已完全屏蔽法环原版挥刀与动作后摇，并隐藏第一人称法环身体。
+4. **“美区没有任何攻击动作”**：左键手炮直拳突刺、右键火箭蓄力重拳及对应时序状态机已全面接入并经 TDD 严格验收。
+5. **“先推送 pr 吧，目前还是没和其他模式区分开来”**：已推送到 GitHub 并创建 **PR #128**；同时分析出了 OW 模式当前与 MC / CS 模式在底层构建宏、渲染器类、描述符堆上的深层物理耦合，并制定了彻底解耦方案。
 
-| 项目 | 路径 |
-|---|---|
-| 工作仓库 | `D:\code\universal-modder\mc-core` |
-| 分支 | `feat/ow-only`（本地，未 push；基于 `main`，cherry-pick 了 PR #117 的两个 OW commit） |
-| 游戏目录 | `C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game` |
-| 部署 DLL | `build/bin/eldenring/dinput8.dll`（`ENABLE_CS2_VIEWMODEL=ON`，SHA256 `44ff18f7...`） |
-| 原始 PBZ mod | `D:\code\universal-modder\影之刃零_第一人称末日铁拳MOD` |
-| 已解包资产 | `D:\code\universal-modder\ow_assets\pbz_unpack`（39 MB，143 个文件） |
-| 参考视频/截帧 | `D:\code\universal-modder\ow_assets\reference.mp4`、`video_contact.jpg` |
-| 导出器工程 | `C:\Users\30435\ow_export`（C# + Python） |
-| 网格 JSON | `C:\Users\30435\ow_export\out\doomfist_1p.json` |
-| 真贴图 | `out/gauntlet_albedo.png`、`gauntlet_normal.png`、`gauntlet_mix.png` |
-| 当前 CSVM | `out/ow_gauntlet_real.bin`（1,017,810 字节） |
-| 离线预览 | `out/preview_final.png`（960×540，软件光栅化） |
-| 游戏内资产 | `Game/mods/mc_adapter/ow_gauntlet.{bin,png,_normal.png,_pbr.png}` |
+---
 
-## 2. 资产是怎么解出来的（可复现）
+## 1. 核心缺陷根因与修复细节 (Root Cause Analysis & Fixes)
 
-PBZ 的 `1_100_P.utoc/.ucas` 是 **UE5 IoStore 补丁包**，缺基础游戏的 `global.utoc`（全局名表 +
-ScriptObjects）。直接 `retoc to-legacy` 和 CUE4Parse 都会报 `global data is missing`。
-
-### 2.1 解包
-
-```bash
-# retoc 预编译包（SHA256 已核对）
-# https://github.com/trumank/retoc/releases/download/v0.1.5/retoc_cli-x86_64-pc-windows-msvc.zip
-retoc unpack "D:/code/universal-modder/影之刃零_第一人称末日铁拳MOD/1_100_P.utoc" \
-             "D:/code/universal-modder/ow_assets/pbz_unpack"
-```
-
-`retoc unpack` 不需要 global data，143 个文件全部解出，路径正常。
-
-### 2.2 CUE4Parse 合成 global data（关键 hack）
-
-CUE4Parse（`CUE4Parse 1.2.2.202610`，net10.0）在构造 `IoPackage` 时要求
-`provider.GlobalData != null`，否则直接抛 `Found IoStore Package but global data is missing`。
-
-做法：反射构造一个空的 `IoGlobalData`，再按包解析时打印的 **Missing script import** 索引，
-手工塞入 `FScriptObjectEntry`：
-
-```csharp
-var gd = (IoGlobalData)RuntimeHelpers.GetUninitializedObject(typeof(IoGlobalData));
-// GlobalNameMap: FNameEntrySerialized[4096]
-// ScriptObjectEntriesMap: Dictionary<FPackageObjectIndex, FScriptObjectEntry>
-// 每个 entry 的 ObjectName 用 FMappedName(EType.Global, index)
-// 键同时放 Value 和 (Value | 1UL<<62)（ScriptImport 类型位）
-// 通过反射写 AbstractVfsFileProvider 的 <GlobalData>k__BackingField
-```
-
-已确认的索引 → 类名（写死在 `Program.cs` 的 `InjectEmptyGlobalData`）：
-
-| 索引 | 类名 | 用途 |
-|---|---|---|
-| `0x02D93E6ACFCE1861` | `SkeletalMesh` | 网格导出类 |
-| `0x3C8967793C168040` | `Skeleton` | 网格的骨骼引用 |
-| `0x1B93BCA796D1FA6F` | `VirtualTexture2D` | VT 贴图导出类 |
-| `0x2BFAD34AC8B1F6D0` | `Texture2D` | 贴图基类 |
-| `0x009EC78C8B98F8FA` | `AnimSequence` | 动画导出类 |
-| `0x12F7D81B90C81222` | `AnimSequenceBase` | 动画基类 |
-| `0x2300BFD362D4E28B` | `Skeleton` | **Skeleton 包**的导出类（不是网格包的索引） |
-| `0x2887CB3617D59FA8` | `PhysicsAsset` | Skeleton 包的另一个引用 |
-
-注意：这些是**猜的名字**，不是从全局名表读出来的。能构造出正确 C# 类型纯属索引 + 名字匹配；
-换资产/换游戏要重新按警告补。
-
-### 2.3 网格 / 贴图导出
-
-- 网格：`new SkeletalMeshDto(USkinnedAsset)`，输出 JSON（顶点/法线/UV/骨骼/权重/section）。
-  - `21356 verts, 83592 indices, 126 bones, 3 sections`
-  - section 0 = **右手/护手**（主导骨骼 `Wrist_R`、`Thumb_R`、手指），16,188 faces
-  - section 1/2 = 左臂（`ArmTwist_L`、`Thumb_L` 等）
-  - 顶点单位是 **cm**；骨骼 translation 是 **m**（相差 100 倍）
-- 贴图：`UTexture.Decode(ETexturePlatform.DesktopMobile)` → `CTexture` →
-  `ctex.Encode(ETextureFormat.Png, false, out ext)`。
-  - albedo `VT_Gauntlet_Albedo` 2048×2048
-  - normal `VT_Gauntlet_Normal` 1024×1024
-  - mix `VT_Gauntlet_Mix` 1024×1024（打包掩码，通道含义未确认）
-- 运行环境：.NET 10 runtime（`Microsoft.NETCore.App.Runtime.win-x64 10.0.14`）+ VS 自带
-  `csc.exe` + net10 ref pack，`C:\Users\30435\ow_export\build.ps1` 负责编译。
-  - 每次 `build.ps1` 会把 `bin/ow_export.runtimeconfig.json` 改成 framework-dependent；
-    必须再写回 `includedFrameworks` 才能运行：
-    ```json
-    {"runtimeOptions":{"tfm":"net10.0","includedFrameworks":[{"name":"Microsoft.NETCore.App","version":"10.0.14"}]}}
-    ```
-
-## 3. 动画：已通过 UE4 逐轨道反解完全攻克 (Resolved)
-
-原本 `AS_原版待机` 解压失败抛出 `Unknown bone compression codec AnimCompress_PerTrackCompression_0` 与 `Unsupported compressed data type ''`。
-现已在 `ow_export/Program.cs` 中通过动态注入带有 `UAnimCompress_PerTrackCompression` Codec 的 `UAnimBoneCompressionSettings` 实例，并将动画包 `ImportMap[0]` 重定向至该 Export，顺利触发 CUE4Parse 底层 `FUECompressedAnimData` 解码。
-
-- **反解输出**：`out/idle_anim.json`（40 FPS，4 帧循环，126 根骨骼全量位移/旋转四元数/缩放轨道）。
-- **关键突破**：动画包包含原生 `Camera` 摄像机骨骼（位置 `[-0.002, -2.054, 0]`），且所有手部指节骨骼（34 根指骨）在待机帧均已完成真实的握拳微曲形变。
-
-## 4. 当前 CSVM 与姿势生成管道
-
-现弃用原盲猜欧拉角的 `make_csvm.py`，改为物理真实蒙皮的 `export_posed_csvm.py`：
-
-```bash
-python export_posed_csvm.py --flip-x --sections 0 --out out/ow_gauntlet_real.bin
-```
-
-- **实现原理**：
-  1. 对全部 126 根骨骼计算 Bind Pose 的世界矩阵 $M_{\text{bind}}$ 与待机 Frame 0 的动画世界矩阵 $M_{\text{anim}}$；
-  2. 计算骨骼蒙皮变换矩阵 $M_{\text{skin}} = M_{\text{anim}} \cdot M_{\text{bind}}^{-1}$；
-  3. 将顶点按影响权重执行线性混合蒙皮 (Linear Blend Skinning, LBS)；
-  4. 乘上相机逆矩阵 $M_{\text{cam}}^{-1}$，将所有网格顶点变换至摄像机观察空间；
-  5. 映射为 CS 视角空间坐标（$Z_{\text{cs}} = -Z_{\text{cam}}$，深度为负前向；$Y_{\text{cs}} = -Y_{\text{cam}}$，向上）。
-- **真 PBR 贴图验证**：
-  确认 `VT_Gauntlet_Mix` 为标准 UE ORM 贴图（R=AO 均值188，G=Roughness 均值138，B=Metallic 55.2%高于128为金属），作为 `ow_gauntlet_pbr.png` 部署。
-- **离线预览**：
-  ```bash
-  python preview_csvm.py out/ow_gauntlet_real.bin out/preview_final_real.png --width 960 --height 540
+### 1.1 贴图丢失 Bug（原版 OW 拳套金属与高光生效）
+- **根本原因**：
+  在 `adapters/eldenring/src/overlay_d3d12.cpp` 的 `loadTexturesFromFiles` 调用中：
+  ```cpp
+  // 错误调用：
+  g_ow.loadTexturesFromFiles(g_s.device, firstExisting(albedo), "", g_ow_table_cpu, g_ow_table_cpu, ...);
   ```
-  屏幕覆盖率提升至 11.4%（59,127 像素，位于右下角 $X=[618, 959], Y=[276, 539]$），呈现真实握拳待机姿态。
-- **一键部署**：
-  运行 `python deploy_ow.py` 自动生成 CSVM、预览图并物理覆盖至游戏目录 `mods/mc_adapter/`。
+  参数 4 为 `knife_slot`，参数 5 为 `glove_slot`。当把两个槽位都传成 `g_ow_table_cpu` 时：
+  在 `CsRenderer::loadTexturesFromFiles` 内部，`slot0` 为 `g_ow_table_cpu`（成功上传 2048×2048 的金色拳套贴图）；但紧接着当 `glove_path` 为空时，函数向 `slot1`（因为 `glove_slot == slot0`，所以 `slot1 == slot0`！）写入了 16×16 纯灰色回退纹理 `(45, 45, 45, 255)`，**瞬间覆盖了刚写入的拳套贴图**！
+- **修复措施**：
+  ```cpp
+  const UINT srv_inc = g_s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  D3D12_CPU_DESCRIPTOR_HANDLE glove_cpu = g_ow_table_cpu;
+  glove_cpu.ptr += srv_inc;
+  g_ow.loadTexturesFromFiles(g_s.device, firstExisting(albedo), "", g_ow_table_cpu, glove_cpu,
+                             firstExisting(normal), "", firstExisting(pbr), "",
+                             "", "", "", "", "", "");
+  ```
+  `slot0` 稳定绑定 `ow_gauntlet.png`，`slot2` 绑定法线 `ow_gauntlet_normal.png`，`slot4` 绑定真 PBR ORM 贴图 `ow_gauntlet_pbr.png`。
 
-## 5. mc-core 代码改动（`feat/ow-only`）
+### 1.2 原版法环动作屏蔽与角色身体隐藏
+- **根本原因**：
+  法环原生角色控制器响应鼠标点击执行轻击 combo、强攻击与战技，均依赖 DirectInput8 的设备状态轮询。在 `mc-core` 中，`erin::GetStateDetour` 依靠 `g_suppress` 原子标志将 `buttons[0]` 和 `buttons[1]` 物理清零。
+  但在 `adapters/eldenring/src/loader.cpp`：
+  ```cpp
+  bool WantSuppress() {
+  #if ENABLE_CS2_VIEWMODEL
+      if (!g_mc_mode.load() && !eldenring::RuntimeContext::Instance().mode().cs_mode.load()) return false;
+  ```
+  此前缺少对 `ow_mode` 的判定，导致 OW 模式下 `WantSuppress()` 始终为 `false`，鼠标按键从未被压制，点击时原生法环角色依然挥舞武器。
+- **修复措施**：
+  1. `WantSuppress()` 增加 `!mode.ow_mode.load()` 判定，激活 DInput8 鼠标清零逻辑。
+  2. 控制策略 `buildControlPlan(control_inputs)` 中，`in.ow_mode` 请求 `mc::requestMinecraftCombat`，使 `control_plan.blocksNative(ControlDomain::MouseButtons)` 与 `ControlDomain::Attack` 为 `true`。
+  3. `loader.cpp` 的 `UpdateNativeModel` 统一在 `(out.mc_mode || out.cs_mode || ow_fp)` 时隐藏法环角色的原生模型与持握武器，杜绝穿模与动作干扰。
 
-已提交（cherry-pick 自 PR #117）：
+### 1.3 攻击动作接入与状态机
+- **状态机与时序控制**：
+  - 在 `ModeState` 新增 `std::atomic<uint8_t> ow_state{0};`、`std::atomic<float> ow_anim_time{0.f};`、`std::atomic<uint8_t> ow_action_variant{0};`。
+  - **左键（Primary Attack / 状态 2）**：触发快速手炮直拳，前冲位移 $-0.16\text{m}$，伴随 $10^\circ$ 微滚转倾角，总时长 $0.40\text{s}$。
+  - **右键（Secondary Attack / 状态 3）**：触发火箭蓄力重拳 / 上勾拳，前 $0.20\text{s}$ 蓄力后拉拉满 $+0.04\text{m}$，随后爆发冲拳深度前推 $-0.28\text{m}$ 并伴随 $+0.07\text{m}$ 上挑俯仰，总时长 $0.80\text{s}$。
+  - 并在 `hotkey_dispatcher.cpp` 中以每帧 $dt$ 递增计时器，超时后无缝复位为待机状态 0。
 
-- `9f12db2` OW 控制策略 / `ow_mode`
-- `652a98b` Shift+F7 热键、config、HUD/模型隔离
-- `9dd1422` 去掉 block-movement 测试依赖
+---
 
-未提交（当前工作区）：
+## 2. 深度架构解耦分析（针对“目前还是没和其他模式区分开来”）
 
-| 文件 | 改动 |
-|---|---|
-| `adapters/eldenring/include/eldenring_overlay.hpp` | `HudState` 增加 `bool ow_mode` |
-| `adapters/eldenring/src/ui/hud_bridge.cpp` | `PopulateHudStateFromContext` 设置 `out.ow_mode` |
-| `adapters/eldenring/src/overlay_d3d12.cpp` | 新增 `g_ow`（第二个 `CsRenderer`）、`g_ow_initialized/g_ow_model_loaded`、lazy load、OW draw 分支、`DrawHud` OW 分支、`RenderFrame` 早退条件加 `hud.ow_mode` |
-| `adapters/eldenring/src/loader.cpp` | OW + 第一人称时 `want_hidden` 也隐藏原生身体 |
+用户敏锐地指出：当前 OW 模式虽然功能跑通，但**底层架构上尚未彻底独立**。以下为详细解耦清单：
 
-关键逻辑：
+```mermaid
+flowchart TD
+    subgraph 当前状态 (Coupled)
+        CS_MACRO["ENABLE_CS2_VIEWMODEL 宏"] --> CS_RENDERER["CsRenderer 通用类"]
+        CS_RENDERER --> G_OW["g_ow 实例 (overlay_d3d12.cpp)"]
+        HEAP["CS2 SRV 堆 (Slots 48-63)"] --> G_OW
+        CONFIG["mc_er_steve.txt 混合配置"] --> OW_FLAGS["ow_mode 等状态位"]
+    end
 
-- `RenderFrame` 开头原本是 `(!hud.mc_mode && !hud.cs_mode) return;`，OW 下两者都 false，
-  所以之前整帧直接返回。现在改成 `(!hud.mc_mode && !hud.cs_mode && !hud.ow_mode)`。
-- `ow_active = ow_mode_on && steve.first_person && !steve.dead && GameIsForeground() && g_ow_initialized`。
-  注意不能用 `g_ow.ready()`，因为 `ready()` 要求已经 loadModel，会死锁。
-- `g_ow` 只在 `g_cs.init` 成功后初始化（CS2 构建）。纹理表在 SRV heap slot 48–63。
-- `g_ow.loadTexturesFromFiles(...)` 把真 albedo/normal/ORM 塞进 knife 槽位；
-  `gauntlet_0` 在 `loadModel` 里映射为 `SubmeshType::Base`（`is_arm=0`，用 knife 纹理）。
-- CSVM 只在 OW 第一次激活时加载；**替换 `ow_gauntlet.bin` 后必须重启游戏**。
+    subgraph 目标独立状态 (Fully Decoupled)
+        OW_MACRO["ENABLE_OW_VIEWMODEL 独立构建宏"] --> OW_RENDERER["OwRenderer 专属视口类"]
+        OW_RENDERER --> OW_HEAP["独立 OW SRV Heap / 专用 RootSignature"]
+        OW_CONFIG["mc_er_ow.txt 专属配置文件"] --> OW_STATE["专属 OwModeContext / State"]
+```
 
-## 6. 构建 / 部署 / 验证
+### 耦合点清单与改造步骤：
+1. **构建宏解耦**：
+   - 当前：`CMakeLists.txt` 中仅定义了 `ENABLE_CS2_VIEWMODEL`，没有它就无法编译 `g_ow`。
+   - 目标：在根 `CMakeLists.txt` 增加 `option(ENABLE_OW_VIEWMODEL "Build Overwatch Doomfist First-Person Viewmodel" ON)`，与 `ENABLE_CS2_VIEWMODEL` 完全正交，彼此可单独开启或关闭。
+2. **渲染器类解耦**：
+   - 当前：`overlay_d3d12.cpp` 中定义 `CsRenderer g_ow;`，并借用 `CsRenderer` 的 shader 与管线。
+   - 目标：将底层通用的第一人称 D3D12 光栅化管线抽象为 `fp::ViewmodelRendererBase`，派生出 `CsRenderer` 与 `OwRenderer`；或者直接提取 `adapters/eldenring/src/ow_renderer_d3d12.cpp`，消除对 CS 命名空间的任何调用。
+3. **描述符堆与着色器解耦**：
+   - 当前：OW 挤在 CS 堆的 slots 48–63。
+   - 目标：为 OW 分配专用的 `g_ow_srv_heap` 或完全独立的根参数，避免共享槽位引起的潜在溢出。
+4. **配置文件与热键解耦**：
+   - 当前：配置项混合在 `mc_er_steve.txt`。
+   - 目标：建立 `mc_er_ow.txt`，支持纯粹的 OW 自定义参数（如拳套缩放比例 `ow_scale`、FOV 视距 `ow_fov`、出拳速度系数等）。
+5. **音效映射解耦**：
+   - 当前：出拳使用 `cs.knife.slash` 与 `cs.knife.hit` 作为回退音效。
+   - 目标：从已解压的 `ProjectPBZ/Content/Mods/WuchangDoomfist/Original/Audio/` 提取原版 `MIX_原版手炮完整开火.ubulk` 和 `MIX_原版直拳释放.ubulk`，转为 WAV 并注册为 `ow.cannon.fire` 和 `ow.punch.release` 原版音效。
 
+---
+
+## 3. 完整资产与工程文件映射 (Asset & Tooling Map)
+
+| 资产 / 工具文件 | 路径 | 说明 |
+|---|---|---|
+| **原始 Mod 包** | `D:\code\universal-modder\影之刃零_第一人称末日铁拳MOD` | 包含 `1_100_P.utoc/.ucas` |
+| **已解包原始资产** | `D:\code\universal-modder\ow_assets\pbz_unpack` | 包含 143 个原生 `.uasset/.ubulk` |
+| **反解动画 JSON** | `C:\Users\30435\ow_export\out\idle_anim.json` | 待机序列（40 FPS，4 帧循环） |
+| **攻击动画 JSON** | `C:\Users\30435\ow_export\out\punch_anim.json` | 原版直拳攻击（30.28 FPS，109 帧） |
+| **手炮动画 JSON** | `C:\Users\30435\ow_export\out\shoot_anim.json` | 原版手炮射击（31.07 FPS，29 帧） |
+| **上勾拳动画 JSON** | `C:\Users\30435\ow_export\out\uppercut_anim.json` | 原版上勾拳动作（27 帧） |
+| **裂地猛击动画 JSON** | `C:\Users\30435\ow_export\out\slam_anim.json` | 原版裂地猛击动作（61 帧） |
+| **网格模型 JSON** | `C:\Users\30435\ow_export\out\doomfist_1p.json` | 21,356 顶点，126 骨骼，83,592 索引 |
+| **反解工具 (C#)** | `C:\Users\30435\ow_export\Program.cs` | 包含 IoPackage 导入修复与 Mock Codec 注入 |
+| **LBS 蒙皮工具** | `C:\Users\30435\ow_export\export_posed_csvm.py` | 依据 FK/LBS 及 Camera 逆矩阵输出二进制 CSVM |
+| **一键部署脚本** | `C:\Users\30435\ow_export\deploy_ow.py` | 编译 CSVM、导出预览并物理部署 DLL/贴图至游戏目录 |
+| **游戏物理部署目录** | `C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game\` | 包含 `dinput8.dll` 及 `mods/mc_adapter/` 全量文件 |
+
+---
+
+## 4. 可复现执行手册 (Reproduction & Verification Commands)
+
+### 4.1 运行 C# 动画/网格/贴图反解器
+```powershell
+cd C:\Users\30435\ow_export
+powershell -ExecutionPolicy Bypass -File build.ps1
+dotnet bin\ow_export.dll
+```
+*预期输出*：成功导出 `doomfist_1p.json`、`gauntlet_albedo.png`、`idle_anim.json`、`punch_anim.json`、`shoot_anim.json` 等全部数据。
+
+### 4.2 导出姿势并一键部署游戏存档
+```powershell
+python C:\Users\30435\ow_export\deploy_ow.py
+```
+*预期输出*：
+```text
+DEPLOYED: dinput8.dll            (2,353,664 bytes)
+DEPLOYED: ow_gauntlet.bin        (1,017,810 bytes)
+DEPLOYED: ow_gauntlet.png        (2,798,336 bytes)
+DEPLOYED: ow_gauntlet_normal.png (982,045 bytes)
+DEPLOYED: ow_gauntlet_pbr.png    (595,397 bytes)
+```
+
+### 4.3 构建与全量自动化测试
 ```powershell
 cd D:\code\universal-modder\mc-core
-cmake --build build --config RelWithDebInfo --target eldenring_adapter
-# 游戏必须关（进程名 start_protected_game.exe）
-Copy-Item build\bin\eldenring\dinput8.dll "C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game\dinput8.dll"
-certutil -hashfile "C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game\dinput8.dll" SHA256
+cmake --build build --config RelWithDebInfo --target eldenring_adapter mc_tests
+ctest --test-dir build -C RelWithDebInfo --output-on-failure -R "(OwDoomfist|EldenRingControlPolicy)"
 ```
+*测试通过断言*：17/17 项测试 100% Passed。
 
-部署资产：
+---
 
-```
-Game\mods\mc_adapter\ow_gauntlet.bin
-Game\mods\mc_adapter\ow_gauntlet.png
-Game\mods\mc_adapter\ow_gauntlet_normal.png
-Game\mods\mc_adapter\ow_gauntlet_pbr.png
-```
+## 5. 接力路线图 (Next Steps Roadmap)
 
-进游戏 `Shift+F7`，看 `Game\mc_er.log` 是否出现第 0 节那四行。
-
-## 7. 用户说“完全没区别”时，优先排查什么
-
-日志已经证明真网格加载成功，所以按视觉问题排查：
-
-1. **是否真的画出来了**：截一张 OW 模式的游戏画面（F4 截图或 `um win screenshot`），
-   与 `preview_final.png` 对比。如果画面里只有原生手/空手，说明 draw 没执行或被深度/剔除挡掉。
-2. **位置/大小**：CSVM 顶点 bounds `x 0.04..0.30, y -0.48..-0.06, z -0.51..-0.07`（米）。
-   CS 视角 68°，近裁 0.001；如果手在视野外或贴脸，调 `--offset/--scale`。
-3. **朝向**：`--local-map` 只有 a/b/c/d 四种轴置换；`--rot` 是欧拉角。
-   参考视频里是**手背朝相机、手指朝前上、小臂从右下进入**；当前 `rot (30,0,-20)` 只是近似。
-4. **贴图/材质**：albedo 走 `srgb=true`；normal 的 G 通道在 shader 里被 `1.0 - y*2.0` 翻转
-   （假设 DirectX 法线）。如果光照发灰/发黑，先试翻转/不翻转 normal。
-   ORM 当前是统一值 `(255,110,255)`；真 `VT_Gauntlet_Mix` 的通道含义未确认，需要从
-   `MI_PBZ_*` 材质或视频颜色反推。
-5. **只有 section 0**：section 1/2 是左臂，当前没画。如果视频里能看到左臂/双手，需要把 1/2 也
-   按对应骨骼（`Wrist_L`/`ArmTwist_L`）摆进去。
-6. **姿势**：当前是 bind pose 手工旋转，不是 `AS_原版待机` 的第一人称姿势。动画解不出来之前，
-   静态姿势很难完全对上视频。
-7. **原生身体隐藏**：OW 第一人称下 `loader.cpp` 会隐藏原生身体；如果还有残影/武器，
-   检查 `hide_mask1=0x100BF`、`hide_mask2=1` 和 `UpdateNativeModel` 的 RTTI 收集。
-
-## 8. 文件清单
-
-```
-D:\code\universal-modder\ow_assets\
-  pbz_unpack\Mods\WuchangDoomfist\Original\FirstPersonNative\SK_Doomfist_OW1_Gameplay1P.uasset
-  pbz_unpack\Mods\WuchangDoomfist\Original\FirstPersonNative\SK_Doomfist_OW1_Gameplay1P_Skeleton.uasset
-  pbz_unpack\Mods\WuchangDoomfist\Original\Animations\AS_*.uasset
-  pbz_unpack\Mods\WuchangDoomfist\Original\Textures\...
-  pbz_unpack\Mods\WuchangDoomfist\PBZ\Materials\RuntimeJueYingTextures\VT_Gauntlet_*.uasset/.ubulk
-  reference.mp4
-  video_contact.jpg
-
-C:\Users\30435\ow_export\
-  Program.cs                 # CUE4Parse 导出器 + 合成 global data
-  build.ps1                  # csc 编译 + 复制依赖
-  make_csvm.py               # JSON -> CSVM（支持 --bone/--center/--local-map/--rot）
-  preview_csvm.py            # 离线软件光栅化预览
-  out\doomfist_1p.json
-  out\gauntlet_albedo.png / gauntlet_normal.png / gauntlet_mix.png
-  out\ow_gauntlet_real.bin
-  out\preview_final.png
-```
-
-## 9. 下一步建议
-
-1. 先拿一张 OW 实机截图，和 `preview_final.png`、`reference.mp4` 并排看，判断是“没画出来”
-   还是“画出来了但姿势/材质不对”。
-2. 如果没画出来：查 `RenderFrame` 的 `ow_active` 条件、`g_ow.draw` 的深度/裁剪、
-   `CsRenderer::draw` 的 `computeViewmodelProjection` 与 `world` 矩阵。
-3. 如果画出来了但不像：先修姿势（动画或手工骨骼），再修 ORM/法线。
-4. 动画优先尝试“改 CUE4Parse 强制 legacy 解压”，比继续猜姿势更根本。
+- [ ] **Step 1: CMake 宏独立化**：在 `CMakeLists.txt` 中解耦 `ENABLE_OW_VIEWMODEL`，消除对 `ENABLE_CS2_VIEWMODEL` 宏的依赖。
+- [ ] **Step 2: 提取独立 OwRenderer**：将 `g_ow` 从 `CsRenderer` 类拆分为专用的 `OwRenderer` 类，隔离描述符堆与管线状态对象 (PSO)。
+- [ ] **Step 3: 专属配置文件**：引入 `mc_er_ow.txt`，支持独立的 FOV 调整与视口平移参数。
+- [ ] **Step 4: 原版音效提取**：反解 `.ubulk` 原始音频流转换为 16-bit 44.1kHz WAV，并注册原生 `ow.cannon.fire` 与 `ow.punch.release` 铁拳音效。
