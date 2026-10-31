@@ -373,7 +373,7 @@ void HotkeyDispatcher::tick(float dt) {
         mode.ow_state.store(3);
         mode.ow_anim_time.store(0.f);
         mode.ow_action_variant.store(static_cast<uint8_t>((mode.ow_action_variant.load() + 1u) & 1u));
-        if (cb_.play_sound) cb_.play_sound("cs.knife.hit", 1.0f);
+        if (cb_.play_sound) cb_.play_sound("ow.punch.release", 1.0f);
     } else
 #endif
 #if ENABLE_CS2_VIEWMODEL
@@ -651,7 +651,7 @@ void HotkeyDispatcher::tick(float dt) {
             mode.ow_state.store(2); // Primary punch / cannon
             mode.ow_action_variant.store(static_cast<uint8_t>((mode.ow_action_variant.load() + 1u) & 1u));
             mode.ow_anim_time.store(0.f);
-            if (cb_.play_sound) cb_.play_sound("cs.knife.slash", 1.0f);
+            if (cb_.play_sound) cb_.play_sound("ow.cannon.fire", 1.0f);
         }
     }
 #endif

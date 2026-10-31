@@ -916,5 +916,28 @@ TEST_F(HotkeyDispatcherTest, OwModeShiftF7TogglePerspectiveAndIsolation) {
     EXPECT_TRUE(ctx.mode().cs_mode.load());
 #endif
 }
+
+TEST_F(HotkeyDispatcherTest, OwModePlaysAuthenticSoundEvents) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_SHIFT, true);
+    setKey(VK_F7, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F7, false);
+    setKey(VK_SHIFT, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().ow_mode.load());
+
+    played_sounds_.clear();
+    left_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().ow_state.load(), 2);
+    EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "ow.cannon.fire") != played_sounds_.end());
+
+    played_sounds_.clear();
+    right_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().ow_state.load(), 3);
+    EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "ow.punch.release") != played_sounds_.end());
+}
 #endif
 

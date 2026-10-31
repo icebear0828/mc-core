@@ -28,6 +28,7 @@
 | 配置 | 混在 `mc_er_steve.txt` | 独立 `mc_er_ow.txt`：`ow_mode`、`ow_fov`、`ow_scale`、`ow_offset_x/y/z` |
 | 纯逻辑 | 复用 `eldenring::cs::CSViewModelAnimator` | 独立 `eldenring::ow::OwAnimator` + `parseOwModel`（`include/ow_viewmodel.hpp`），可单测 |
 | 热键 | 无宏保护 | OW 热键与攻击触发由 `#if ENABLE_OW_VIEWMODEL` 保护 |
+| 音效 | 回退 `cs.knife.slash` / `cs.knife.hit` | 原版 Bink Audio 解码为 44.1 kHz WAV，注册 `ow.cannon.fire` / `ow.punch.release` |
 
 
 ---
@@ -133,6 +134,7 @@ flowchart TD
 | **反解工具 (C#)** | `C:\Users\30435\ow_export\Program.cs` | 包含 IoPackage 导入修复与 Mock Codec 注入 |
 | **LBS 蒙皮工具** | `C:\Users\30435\ow_export\export_posed_csvm.py` | 依据 FK/LBS 及 Camera 逆矩阵输出二进制 CSVM |
 | **一键部署脚本** | `C:\Users\30435\ow_export\deploy_ow.py` | 编译 CSVM、导出预览并物理部署 DLL/贴图至游戏目录 |
+| **原版音效提取** | `tools/extract_ow_sounds.py` | 解析 `.ubulk`（SEEK 表 + Bink Audio 2 块）→ UEBA `.binka` → FFmpeg → 44.1 kHz WAV，并更新 `sounds_manifest.txt` |
 | **游戏物理部署目录** | `C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game\` | 包含 `dinput8.dll` 及 `mods/mc_adapter/` 全量文件 |
 
 ---
@@ -175,7 +177,22 @@ ctest --test-dir build -C RelWithDebInfo --output-on-failure -R "(OwDoomfist|Eld
 - [x] **Step 1: CMake 宏独立化**：新增 `ENABLE_OW_VIEWMODEL`，与 `ENABLE_CS2_VIEWMODEL` 完全正交。
 - [x] **Step 2: 提取独立 OwRenderer**：`erow::OwRenderer` 拥有自己的根签名、PSO、深度缓冲、VB/IB 与 3 槽 SRV 堆；不再调用任何 `eldenring::cs` 类型。
 - [x] **Step 3: 专属配置文件**：`mc_er_ow.txt` 支持 `ow_mode` / `ow_fov` / `ow_scale` / `ow_offset_x|y|z`，即使 `mc_er_steve.txt` 缺失也会加载。
-- [ ] **Step 4: 原版音效提取**：反解 `.ubulk` 原始音频流转换为 16-bit 44.1kHz WAV，并注册原生 `ow.cannon.fire` 与 `ow.punch.release` 铁拳音效。当前仍回退到 `cs.knife.slash` / `cs.knife.hit`。
+- [x] **Step 4: 原版音效提取**：`tools/extract_ow_sounds.py` 解析 `.ubulk` 的 `SEEK` 表与 `0x9999` Bink Audio 2 块，重建 UEBA `.binka` 容器交给 FFmpeg 解码为 16-bit 44.1 kHz WAV，并注册 `ow.cannon.fire` / `ow.punch.release`。
+
+### 5.0 Step 4 使用说明
+
+```powershell
+# 需要 2025-09 之后、带 UEBA binka 支持的 FFmpeg
+uv run python tools/extract_ow_sounds.py `
+  --audio-dir "D:\code\universal-modder\ow_assets\pbz_unpack\Mods\WuchangDoomfist\Original\Audio" `
+  --out-dir "C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game\mods\mc_adapter" `
+  --ffmpeg "<path-to-ffmpeg.exe>"
+```
+
+- 输出：`sounds/ow/ow_cannon_fire.wav`（4.275 s）、`sounds/ow/ow_punch_release.wav`（1.479 s）
+- 清单：在 `sounds_manifest.txt` 中幂等追加 `ow.*` 行，不触碰其他事件
+- 解码要点：`.ubulk` 块头为 `0x9999 | (帧长 << 16)`；最后一帧是 trimmed 帧（`0xffff` + 帧长 + 有效采样数），必须保留该头，FFmpeg 才会丢弃 overlap padding
+- UE 变体必须走 **DCT** 解码器；强制 `binkaudio_rdft` 会得到满幅噪声
 
 ### 5.1 本轮验证命令与结果
 
