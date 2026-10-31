@@ -14,7 +14,21 @@
 2. **“没贴上原版 ow 的贴图”**：发现模型在游戏内呈现灰黑色无贴图状态。现已查明为描述符槽位覆写 Bug 并彻底修复。
 3. **“目前你甚至都没有把原版法环的动作屏蔽，就像 mc 和 cs 那样屏蔽掉”**：已定位为 `WantSuppress()` 缺失 `ow_mode` 导致 DirectInput8 鼠标拦截未激活，现已完全屏蔽法环原版挥刀与动作后摇，并隐藏第一人称法环身体。
 4. **“美区没有任何攻击动作”**：左键手炮直拳突刺、右键火箭蓄力重拳及对应时序状态机已全面接入并经 TDD 严格验收。
-5. **“先推送 pr 吧，目前还是没和其他模式区分开来”**：已推送到 GitHub 并创建 **PR #128**；同时分析出了 OW 模式当前与 MC / CS 模式在底层构建宏、渲染器类、描述符堆上的深层物理耦合，并制定了彻底解耦方案。
+5. **“先推送 pr 吧，目前还是没和其他模式区分开来”**：已推送到 GitHub 并创建 **PR #128**。
+6. **（本轮）彻底解耦**：OW 现在拥有独立的构建宏、渲染器类、着色器、描述符堆和配置文件，与 CS2 / MC 完全正交。三种构建组合（CS+OW、仅 OW、仅 CS、仅 MC）均已编译验证。
+
+### 0.1 本轮完成的解耦改造
+
+| 层 | 改造前 | 改造后 |
+|---|---|---|
+| 构建宏 | 整块 OW 代码位于 `#if ENABLE_CS2_VIEWMODEL` 内 | 新增独立 `option(ENABLE_OW_VIEWMODEL ... ON)`；`ow_renderer_d3d12.cpp` 仅在 OW 开启时编译 |
+| 渲染器 | `CsRenderer g_ow` | 独立 `erow::OwRenderer`（`src/ow_renderer_d3d12.{hpp,cpp}`），自带根签名 / PSO / 深度缓冲 / VB·IB |
+| 着色器 | 复用 12 贴图 CS 着色器 | 独立 3 贴图 PBR 着色器（albedo / normal / ORM），光照与 CS 管线对齐 |
+| 描述符堆 | 借用 CS 堆 slot 48–63 | 独立 `g_ow_srv_heap`（3 个 SRV，shader-visible） |
+| 配置 | 混在 `mc_er_steve.txt` | 独立 `mc_er_ow.txt`：`ow_mode`、`ow_fov`、`ow_scale`、`ow_offset_x/y/z` |
+| 纯逻辑 | 复用 `eldenring::cs::CSViewModelAnimator` | 独立 `eldenring::ow::OwAnimator` + `parseOwModel`（`include/ow_viewmodel.hpp`），可单测 |
+| 热键 | 无宏保护 | OW 热键与攻击触发由 `#if ENABLE_OW_VIEWMODEL` 保护 |
+
 
 ---
 
@@ -65,6 +79,8 @@
 ---
 
 ## 2. 深度架构解耦分析（针对“目前还是没和其他模式区分开来”）
+
+> **状态：已完成（2026-10-31）。** 以下清单保留为设计依据；实际落地见 §0.1 与 §5。
 
 用户敏锐地指出：当前 OW 模式虽然功能跑通，但**底层架构上尚未彻底独立**。以下为详细解耦清单：
 
@@ -156,7 +172,53 @@ ctest --test-dir build -C RelWithDebInfo --output-on-failure -R "(OwDoomfist|Eld
 
 ## 5. 接力路线图 (Next Steps Roadmap)
 
-- [ ] **Step 1: CMake 宏独立化**：在 `CMakeLists.txt` 中解耦 `ENABLE_OW_VIEWMODEL`，消除对 `ENABLE_CS2_VIEWMODEL` 宏的依赖。
-- [ ] **Step 2: 提取独立 OwRenderer**：将 `g_ow` 从 `CsRenderer` 类拆分为专用的 `OwRenderer` 类，隔离描述符堆与管线状态对象 (PSO)。
-- [ ] **Step 3: 专属配置文件**：引入 `mc_er_ow.txt`，支持独立的 FOV 调整与视口平移参数。
-- [ ] **Step 4: 原版音效提取**：反解 `.ubulk` 原始音频流转换为 16-bit 44.1kHz WAV，并注册原生 `ow.cannon.fire` 与 `ow.punch.release` 铁拳音效。
+- [x] **Step 1: CMake 宏独立化**：新增 `ENABLE_OW_VIEWMODEL`，与 `ENABLE_CS2_VIEWMODEL` 完全正交。
+- [x] **Step 2: 提取独立 OwRenderer**：`erow::OwRenderer` 拥有自己的根签名、PSO、深度缓冲、VB/IB 与 3 槽 SRV 堆；不再调用任何 `eldenring::cs` 类型。
+- [x] **Step 3: 专属配置文件**：`mc_er_ow.txt` 支持 `ow_mode` / `ow_fov` / `ow_scale` / `ow_offset_x|y|z`，即使 `mc_er_steve.txt` 缺失也会加载。
+- [ ] **Step 4: 原版音效提取**：反解 `.ubulk` 原始音频流转换为 16-bit 44.1kHz WAV，并注册原生 `ow.cannon.fire` 与 `ow.punch.release` 铁拳音效。当前仍回退到 `cs.knife.slash` / `cs.knife.hit`。
+
+### 5.1 本轮验证命令与结果
+
+```powershell
+cd D:\code\universal-modder\mc-core
+
+# 1) CS2 + OW 双开
+cmake -S . -B build -DENABLE_CS2_VIEWMODEL=ON -DENABLE_OW_VIEWMODEL=ON
+cmake --build build --config RelWithDebInfo --target eldenring_adapter mc_tests
+ctest --test-dir build -C RelWithDebInfo --output-on-failure
+# -> 1245/1245 passed (2 项按设计 Skip)
+
+# 2) 仅 OW（关键解耦证明）
+cmake -S . -B build_ow_only -DENABLE_CS2_VIEWMODEL=OFF -DENABLE_OW_VIEWMODEL=ON
+cmake --build build_ow_only --config RelWithDebInfo --target eldenring_adapter mc_tests
+# -> eldenring_adapter / mc_tests 编译通过；OwViewmodelTest 6/6 passed
+
+# 3) 仅 CS2
+cmake -S . -B build_cs_only -DENABLE_CS2_VIEWMODEL=ON -DENABLE_OW_VIEWMODEL=OFF
+cmake --build build_cs_only --config RelWithDebInfo --target eldenring_adapter mc_tests
+ctest --test-dir build_cs_only -C RelWithDebInfo --output-on-failure
+# -> 1238/1238 passed
+
+# 4) 纯 MC
+cmake -S . -B build_mc_only -DENABLE_CS2_VIEWMODEL=OFF -DENABLE_OW_VIEWMODEL=OFF
+cmake --build build_mc_only --config RelWithDebInfo --target eldenring_adapter mc_tests
+# -> 编译通过
+```
+
+### 5.2 `mc_er_ow.txt` 示例
+
+```ini
+ow_mode=1
+ow_fov=68
+ow_scale=1.0
+ow_offset_x=0
+ow_offset_y=0
+ow_offset_z=0
+```
+
+### 5.3 仍需实机确认
+
+- [ ] 用新的 `build\bin\eldenring\dinput8.dll` 启动游戏，Shift+F7 进入 OW，确认拳套贴图、PBR 高光与左/右键动作与改造前一致。
+- [ ] 在 `mc_er_ow.txt` 中调整 `ow_fov` / `ow_scale`，确认实时生效。
+- [ ] 确认切出 OW（F6）后 CS / MC 模式行为无回归。
+

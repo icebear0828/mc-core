@@ -15,6 +15,15 @@ else()
     add_compile_definitions(ENABLE_CS2_VIEWMODEL=0)
 endif()
 
+# Orthogonal to the CS2 subsystem: the Overwatch (Doomfist) gauntlet has its own
+# renderer, descriptor heap, config file and assets.
+option(ENABLE_OW_VIEWMODEL "Enable the Overwatch Doomfist first-person viewmodel" ON)
+if(ENABLE_OW_VIEWMODEL)
+    add_compile_definitions(ENABLE_OW_VIEWMODEL=1)
+else()
+    add_compile_definitions(ENABLE_OW_VIEWMODEL=0)
+endif()
+
 # Compiler Warnings
 if(MSVC)
     add_compile_options(/W4 /WX /permissive- /utf-8)

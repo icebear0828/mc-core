@@ -10,6 +10,7 @@
 #include "eldenring_virtual_summon.hpp"
 #include "mc/entity_model.hpp"
 #include "mc/rig.hpp"
+#include "ow_viewmodel.hpp"
 
 #include <vector>
 
@@ -104,6 +105,11 @@ struct SteveConfig {
     bool depth_probe{false}; // record how the game uses its depth textures for three frames (depth_probe_d3d12.hpp); mc_er_depthprobe.txt switches it on
 };
 void SetSteveConfig(const SteveConfig& cfg);
+
+// Tuning read from mc_er_ow.txt (key=value lines): the gauntlet's own FOV,
+// scale and translation. Independent from the CS2/Steve config.
+using OwConfig = eldenring::ow::OwViewmodelConfig;
+void SetOwConfig(const OwConfig& cfg);
 // The Steve skin (RGBA8, 64x64) the loader decoded; call before the overlay is created. Without it the figure is flat grey-brown.
 void SetSteveSkin(const uint8_t* rgba, unsigned width, unsigned height);
 // The HUD atlas (RGBA8, 256x256, the locally extracted mc_hud_atlas.png); call before the overlay is created. Without it the HUD

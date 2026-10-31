@@ -858,6 +858,7 @@ TEST_F(HotkeyDispatcherTest, PureMcBuildDisablesCsHotkeysAndInteractions) {
 }
 #endif
 
+#if ENABLE_OW_VIEWMODEL
 TEST_F(HotkeyDispatcherTest, OwModeShiftF7TogglePerspectiveAndIsolation) {
     auto& ctx = RuntimeContext::Instance();
     EXPECT_FALSE(ctx.mode().ow_mode.load());
@@ -915,4 +916,5 @@ TEST_F(HotkeyDispatcherTest, OwModeShiftF7TogglePerspectiveAndIsolation) {
     EXPECT_TRUE(ctx.mode().cs_mode.load());
 #endif
 }
+#endif
 

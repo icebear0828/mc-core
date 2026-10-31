@@ -2587,6 +2587,7 @@ void SetupOverlay() {
 #endif
                 }
                 else if (key == "ow_mode") {
+#if ENABLE_OW_VIEWMODEL
                     const bool ow = (value != 0.f);
                     eldenring::RuntimeContext::Instance().mode().ow_mode.store(ow);
                     if (ow) {
@@ -2595,6 +2596,7 @@ void SetupOverlay() {
                         eldenring::RuntimeContext::Instance().mode().cs_mode.store(false);
                         eldenring::RuntimeContext::Instance().mode().first_person.store(true);
                     }
+#endif
                 }
                 else if (key == "mc_gravity") g_mc_gravity.store(std::clamp(value, 5.f, 80.f));
                 else if (key == "mc_jump_speed") g_mc_jump_speed.store(std::clamp(value, 1.f, 20.f));
@@ -2707,6 +2709,51 @@ void SetupOverlay() {
         Log("steve: enabled (occlusion=%d depth_const=%.4f rel_bias=%.3f abs_bias=%.3f scene_height=%.0f yaw_offset=%.1f deg)",
             cfg.occlusion ? 1 : 0, cfg.depth_const, cfg.rel_bias, cfg.abs_bias, cfg.scene_height, g_steve_yaw_offset * 180.f / 3.14159265f);
     }
+#if ENABLE_OW_VIEWMODEL
+    {
+        // OW has its own config file: the gauntlet's FOV, scale and offset are
+        // independent from the Steve/CS tuning in mc_er_steve.txt, and load
+        // even when that file is absent.
+        erov::OwConfig ow_cfg;
+        std::vector<uint8_t> ow_bytes;
+        if (FileExists(g_game_dir + "mc_er_ow.txt") && ReadFileAll(g_game_dir + "mc_er_ow.txt", ow_bytes)) {
+            const std::string text(ow_bytes.begin(), ow_bytes.end());
+            size_t pos = 0;
+            while (pos < text.size()) {
+                size_t end = text.find('\n', pos);
+                if (end == std::string::npos) end = text.size();
+                const std::string line = text.substr(pos, end - pos);
+                pos = end + 1;
+                const size_t eq = line.find('=');
+                if (eq == std::string::npos) continue;
+                const std::string key = line.substr(0, eq);
+                const float value = static_cast<float>(atof(line.c_str() + eq + 1));
+                if (key == "ow_mode") {
+                    const bool ow = (value != 0.f);
+                    eldenring::RuntimeContext::Instance().mode().ow_mode.store(ow);
+                    if (ow) {
+                        g_mc_mode.store(false);
+                        eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
+                        eldenring::RuntimeContext::Instance().mode().cs_mode.store(false);
+                        eldenring::RuntimeContext::Instance().mode().first_person.store(true);
+                    }
+                } else if (key == "ow_fov") {
+                    ow_cfg.fov_deg = std::clamp(value, 20.f, 140.f);
+                } else if (key == "ow_scale") {
+                    ow_cfg.scale = std::clamp(value, 0.05f, 10.f);
+                } else if (key == "ow_offset_x") {
+                    ow_cfg.offset_x = value;
+                } else if (key == "ow_offset_y") {
+                    ow_cfg.offset_y = value;
+                } else if (key == "ow_offset_z") {
+                    ow_cfg.offset_z = value;
+                }
+            }
+            Log("ow config: %s", (g_game_dir + "mc_er_ow.txt").c_str());
+        }
+        erov::SetOwConfig(ow_cfg);
+    }
+#endif
     erov::Install(&HudProvider, [](const char* fmt, ...) {
         char msg[512];
         va_list args;

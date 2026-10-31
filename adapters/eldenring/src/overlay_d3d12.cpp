@@ -40,6 +40,9 @@
 #include "cs_renderer_d3d12.hpp"
 #include "cs_impact_decals.hpp"
 #endif
+#if ENABLE_OW_VIEWMODEL
+#include "ow_renderer_d3d12.hpp"
+#endif
 #include "eldenring_runtime_context.hpp"
 #include "eldenring_inventory_preview.hpp"
 #include "eldenring_diagnostics.hpp"
@@ -78,6 +81,9 @@ using CreateDsvFn = void(STDMETHODCALLTYPE*)(ID3D12Device*, ID3D12Resource*, con
 CreateDsvFn g_create_dsv_orig = nullptr;
 
 SteveConfig g_steve_cfg;
+#if ENABLE_OW_VIEWMODEL
+OwConfig g_ow_cfg;
+#endif
 // The HUD atlas, enlarged 4x with nearest neighbour (ImGui's DX12 backend samples linearly), in heap slot 3.
 std::vector<uint8_t> g_atlas_rgba;
 unsigned g_atlas_w = 0, g_atlas_h = 0;
@@ -150,11 +156,13 @@ std::string g_cs_game_dir;
 std::string g_cs_knife_model_path;
 uint8_t g_cs_active_slot = 0;
 uint8_t g_cs_gun_table_slot = 0; // weapon slot whose maps are in g_cs_ak_table (0 = none)
+#endif
 
-// Overwatch (Doomfist) first-person gauntlet. A second renderer instance keeps
-// the OW model/textures independent from the CS knife/gun tables.
-CsRenderer g_ow;
-D3D12_CPU_DESCRIPTOR_HANDLE g_ow_table_cpu{};
+#if ENABLE_OW_VIEWMODEL
+// Overwatch (Doomfist) first-person gauntlet. It owns a renderer, a descriptor
+// heap and a config of its own; nothing here touches the CS2 tables.
+erow::OwRenderer g_ow;
+ID3D12DescriptorHeap* g_ow_srv_heap = nullptr; // 3 SRVs: albedo, normal, ORM
 D3D12_GPU_DESCRIPTOR_HANDLE g_ow_table_gpu{};
 bool g_ow_initialized = false;
 bool g_ow_model_loaded = false;
@@ -335,6 +343,14 @@ void Teardown() {
     g_steve.release();
 #if ENABLE_CS2_VIEWMODEL
     g_cs.release();
+#endif
+#if ENABLE_OW_VIEWMODEL
+    g_ow.release();
+    SafeRelease(g_ow_srv_heap);
+    g_ow_table_gpu = {};
+    g_ow_initialized = false;
+    g_ow_model_loaded = false;
+    g_ow_load_failed = false;
 #endif
     if (g_s.imgui_ready) {
         ImGui_ImplDX12_Shutdown();
@@ -585,18 +601,6 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             g_cs_ak_table_gpu = srv_gpu_base;
             g_cs_ak_table_gpu.ptr += static_cast<UINT64>(srv_inc) * 32;
 
-            // OW gauntlet renderer and its own descriptor table (slots 48-63).
-            if (g_ow.init(g_s.device, g_s.format, g_log)) {
-                g_ow_table_cpu = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
-                g_ow_table_cpu.ptr += static_cast<SIZE_T>(srv_inc) * 48;
-                g_ow_table_gpu = srv_gpu_base;
-                g_ow_table_gpu.ptr += static_cast<UINT64>(srv_inc) * 48;
-                g_ow_initialized = true;
-                Logf("overlay: OW gauntlet renderer ready");
-            } else {
-                Logf("overlay: OW gauntlet renderer unavailable");
-            }
-
             const std::string& game_dir = eldenring::diagnostics::GetGameDir();
             g_cs_game_dir = game_dir;
 
@@ -795,6 +799,25 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                 D3D12_CPU_DESCRIPTOR_HANDLE src{cs_table_cpu.ptr + static_cast<SIZE_T>(srv_inc) * shared};
                 D3D12_CPU_DESCRIPTOR_HANDLE dst{ak_table_cpu.ptr + static_cast<SIZE_T>(srv_inc) * shared};
                 g_s.device->CopyDescriptorsSimple(1, dst, src, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            }
+        }
+#endif
+#if ENABLE_OW_VIEWMODEL
+        {
+            // The gauntlet owns a three-slot SRV heap. It never shares a slot
+            // with the CS2 knife/gun tables, so either subsystem can be built
+            // without the other.
+            D3D12_DESCRIPTOR_HEAP_DESC ow_heap{};
+            ow_heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+            ow_heap.NumDescriptors = 3;
+            ow_heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+            if (SUCCEEDED(g_s.device->CreateDescriptorHeap(&ow_heap, IID_PPV_ARGS(&g_ow_srv_heap))) &&
+                g_ow.init(g_s.device, g_s.format, g_log)) {
+                g_ow_table_gpu = g_ow_srv_heap->GetGPUDescriptorHandleForHeapStart();
+                g_ow_initialized = true;
+                Logf("overlay: OW gauntlet renderer ready (dedicated 3-slot SRV heap)");
+            } else {
+                Logf("overlay: OW gauntlet renderer unavailable");
             }
         }
 #endif
@@ -2200,8 +2223,8 @@ void RenderFrame(IDXGISwapChain* sc) {
     } else {
         g_mob_registry.clear();
     }
+    [[maybe_unused]] auto& r_mode = eldenring::RuntimeContext::Instance().mode();
 #if ENABLE_CS2_VIEWMODEL
-    auto& r_mode = eldenring::RuntimeContext::Instance().mode();
     if (r_mode.cs_mode.load() && g_cs.ready()) {
         // A weapon switch releases the old VB/IB and textures; wait for the
         // GPU to finish the previous frame before replacing them.
@@ -2223,7 +2246,7 @@ void RenderFrame(IDXGISwapChain* sc) {
     const bool mc_fp_active = !cs_active && !cs_mode_on && !ow_mode_on && mc_mode_on && steve.first_person && !steve.dead && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
         g_steve.ensureDepth(g_s.device, g_s.width, g_s.height);
 
-#if ENABLE_CS2_VIEWMODEL
+#if ENABLE_OW_VIEWMODEL
     const bool ow_active = ow_mode_on && steve.first_person && !steve.dead && GameIsForeground() && g_ow_initialized;
     if (ow_active) {
         if (!g_ow_model_loaded && !g_ow_load_failed) {
@@ -2260,23 +2283,26 @@ void RenderFrame(IDXGISwapChain* sc) {
                 albedo.push_back("mods\\mc_adapter\\ow_gauntlet.png");
                 normal.push_back("mods\\mc_adapter\\ow_gauntlet_normal.png");
                 pbr.push_back("mods\\mc_adapter\\ow_gauntlet_pbr.png");
-                const UINT srv_inc = g_s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-                D3D12_CPU_DESCRIPTOR_HANDLE glove_cpu = g_ow_table_cpu;
-                glove_cpu.ptr += srv_inc;
-                g_ow.loadTexturesFromFiles(g_s.device, firstExisting(albedo), "", g_ow_table_cpu, glove_cpu,
-                                           firstExisting(normal), "", firstExisting(pbr), "",
-                                           "", "", "", "", "", "");
-                Logf("overlay: OW gauntlet textures loaded");
+                if (g_ow.loadTextures(g_s.device, firstExisting(albedo), firstExisting(normal), firstExisting(pbr),
+                                      g_ow_srv_heap->GetCPUDescriptorHandleForHeapStart())) {
+                    Logf("overlay: OW gauntlet textures loaded");
+                } else {
+                    Logf("overlay: OW gauntlet textures missing");
+                }
             }
         }
         if (g_ow_model_loaded) {
-            const mc::rig::Mat4 proj = g_ow.computeViewmodelProjection(g_s.width, g_s.height);
-            g_ow.tick(dt, r_mode.ow_state.load(), r_mode.ow_anim_time.load(), r_mode.ow_action_variant.load(), true);
+            g_ow.setConfig(g_ow_cfg);
+            const mc::rig::Mat4 proj = g_ow.computeProjection(g_s.width, g_s.height);
+            g_ow.tick(dt, r_mode.ow_state.load(), r_mode.ow_anim_time.load(), r_mode.ow_action_variant.load());
             const D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_steve.ready() ? g_steve.dsvHandle() : D3D12_CPU_DESCRIPTOR_HANDLE{};
-            g_ow.draw(g_s.list, g_s.srv_heap, g_ow_table_gpu, g_s.width, g_s.height, proj, f.rtv, dsv);
+            g_ow.draw(g_s.list, g_ow_srv_heap, g_ow_table_gpu, g_s.width, g_s.height, proj, f.rtv, dsv);
             g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
         }
-    } else if (cs_active && !steve.dead) {
+    } else
+#endif
+#if ENABLE_CS2_VIEWMODEL
+    if (cs_active && !steve.dead) {
         const mc::rig::Mat4 proj = g_cs.computeViewmodelProjection(g_s.width, g_s.height);
         // The knife and the shared gun table have their own descriptors;
         // switching is just a descriptor-handle swap.
@@ -2572,6 +2598,13 @@ bool ResolveTargets(void*& present, void*& resize, void*& execute, void*& create
 } // namespace
 
 void SetSteveConfig(const SteveConfig& cfg) { g_steve_cfg = cfg; }
+void SetOwConfig(const OwConfig& cfg) {
+#if ENABLE_OW_VIEWMODEL
+    g_ow_cfg = cfg;
+#else
+    (void)cfg;
+#endif
+}
 
 void RequestFrameTrace(int frames) { g_trace_left.store(frames); }
 
