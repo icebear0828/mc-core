@@ -29,6 +29,7 @@
 | 纯逻辑 | 复用 `eldenring::cs::CSViewModelAnimator` | 独立 `eldenring::ow::OwAnimator` + `parseOwModel`（`include/ow_viewmodel.hpp`），可单测 |
 | 热键 | 无宏保护 | OW 热键与攻击触发由 `#if ENABLE_OW_VIEWMODEL` 保护 |
 | 音效 | 回退 `cs.knife.slash` / `cs.knife.hit` | 原版 Bink Audio 解码为 44.1 kHz WAV，注册 `ow.cannon.fire` / `ow.punch.release` |
+| 右键位移 | 只有视口动画，玩家本体不动 | `stepOwRocketPunch` 在 state 3 推力段（0.25–0.60 s）沿相机水平前向写入位置，并用 `CastStaticRay` 在腰/胸两个高度夹紧，默认 4 m，可用 `ow_dash_distance` 调 |
 
 ### 0.2 模式隔离修复（2026-10-31）
 
@@ -245,6 +246,7 @@ ow_scale=1.0
 ow_offset_x=0
 ow_offset_y=0
 ow_offset_z=0
+ow_dash_distance=4.0
 ```
 
 ### 5.3 仍需实机确认
@@ -252,4 +254,20 @@ ow_offset_z=0
 - [ ] 用新的 `build\bin\eldenring\dinput8.dll` 启动游戏，Shift+F7 进入 OW，确认拳套贴图、PBR 高光与左/右键动作与改造前一致。
 - [ ] 在 `mc_er_ow.txt` 中调整 `ow_fov` / `ow_scale`，确认实时生效。
 - [ ] 确认切出 OW（F6）后 CS / MC 模式行为无回归。
+
+### 5.4 右键火箭冲拳位移（2026-10-31）
+
+- **纯逻辑**：`include/eldenring_ow_dash.hpp`
+  - `rocketPunchSpeed(t, cfg)`：`sin(pi * p)` 速度曲线，窗口 `[0.25, 0.60]`，总位移严格等于 `distance_m`
+  - `rocketPunchDistance(t, cfg)`：积分后的累计位移，便于测试与调试
+  - `rocketPunchDirection(forward, x, z)`：把相机前向投影到水平面；俯仰接近垂直时返回 false
+- **执行层**：`PlayerLocomotion::stepOwRocketPunch(dt, ctx)`，由 `on_camera_step_pre` 每帧调用
+  - 只在 `ow_mode && ow_state==3`、前台、非背包、非死亡时运行
+  - 沿相机水平前向写 `kPhysicsPosition` 与 `+0x10`，并置 `kPhysicsProxySyncRequest`
+  - 用 `CastStaticRay` 在 `feet+0.4` 与 `feet+1.0` 两个高度向前投射，按命中比例夹紧步长，保留 0.4 m 胶囊半径
+  - 同时把角色朝向转到冲拳方向
+- **配置**：`mc_er_ow.txt` 的 `ow_dash_distance`（米，默认 4.0，范围 0–15）
+- **测试**：`tests/test_ow_dash.cpp`（窗口外为 0、峰值、数值积分等于总位移、单调性、水平投影）
+
+**注意**：这是位置写入而非速度写入。原生游戏的角色控制器每帧也会写位置；冲刺增强（`stepGroundSprint`）证明了同路径可行，但冲拳步长更大，实机需要重点看是否抖动、是否被原生动画/行为拉回。若出现回拉，下一步改为写 `PhysicsModule+0x120` 线速度并让原生物理积分。
 

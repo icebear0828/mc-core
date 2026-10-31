@@ -1565,6 +1565,14 @@ void GroundSprintStep(float dt) {
     eldenring::movement::PlayerLocomotion::Instance().stepGroundSprint(dt, g_ctx);
 }
 
+void OwRocketPunchStep(float dt) {
+#if ENABLE_OW_VIEWMODEL
+    eldenring::movement::PlayerLocomotion::Instance().stepOwRocketPunch(dt, g_ctx);
+#else
+    (void)dt;
+#endif
+}
+
 void ProcessTntExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies) {
     eldenring::world::VoxelWorldRuntime::Instance().processTntExplosions(enemies, g_ctx);
 }
@@ -2028,6 +2036,7 @@ void SetupGameHooksCallbacks() {
         BlocksCollisionStep();
         McJumpStep();
         GroundSprintStep(dt);
+        OwRocketPunchStep(dt);
         ShadowGroundStep();
         RestoreCamKeep();
         {
@@ -2747,6 +2756,8 @@ void SetupOverlay() {
                     ow_cfg.offset_y = value;
                 } else if (key == "ow_offset_z") {
                     ow_cfg.offset_z = value;
+                } else if (key == "ow_dash_distance") {
+                    eldenring::RuntimeContext::Instance().mode().ow_dash_distance.store(std::clamp(value, 0.f, 15.f));
                 }
             }
             Log("ow config: %s", (g_game_dir + "mc_er_ow.txt").c_str());

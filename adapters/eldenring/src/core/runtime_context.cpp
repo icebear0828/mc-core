@@ -15,6 +15,7 @@ void RuntimeContext::resetForTesting() {
     mode_.ow_state.store(0);
     mode_.ow_anim_time.store(0.f);
     mode_.ow_action_variant.store(0);
+    mode_.ow_dash_distance.store(4.0f);
     mode_.game_mode.store(static_cast<uint8_t>(creative::GameMode::Survival));
     mode_.mode_toast_ms.store(0);
     mode_.damage_enabled.store(false);
