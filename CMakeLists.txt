@@ -69,6 +69,7 @@ add_library(mc_core STATIC
     include/mc/heart_anim.hpp
     include/mc/mining.hpp
     include/mc/loot_table.hpp
+    include/mc/recipe.hpp
     include/mc/ground_mining.hpp
     include/mc/shield.hpp
     include/mc/contracts/physics_adapter.hpp
@@ -91,6 +92,7 @@ add_library(mc_core STATIC
     src/item_model.cpp
     src/entity_model.cpp
     src/tnt.cpp
+    src/recipe.cpp
 )
 
 target_include_directories(mc_core

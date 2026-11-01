@@ -23,6 +23,10 @@ inline uint32_t maxStackSize(ItemId item) {
     switch (item) {
         case ItemId::None: return 0;
         case ItemId::DiamondSword:
+        case ItemId::WoodenSword:
+        case ItemId::StoneSword:
+        case ItemId::IronSword:
+        case ItemId::NetheriteSword:
         case ItemId::DiamondPickaxe:
         case ItemId::DiamondHelmet:
         case ItemId::DiamondChestplate:
@@ -140,6 +144,20 @@ public:
             if (s.count == 0) return 0;
         }
         return s.count;
+    }
+
+    // True when add(s) would consume the whole stack, without mutating the inventory.
+    [[nodiscard]] bool canAdd(ItemStack s) const {
+        if (s.empty()) return true;
+        const uint32_t cap = maxStackSize(s.item);
+        uint32_t room = 0;
+        for (const ItemStack& t : slots_) {
+            if (!t.empty() && t.item == s.item) room += cap > t.count ? cap - t.count : 0;
+        }
+        for (const ItemStack& t : slots_) {
+            if (t.empty()) room += cap;
+        }
+        return s.count <= room;
     }
 
     bool consume(int i) {
