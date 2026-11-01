@@ -82,6 +82,7 @@ add_executable(mc_tests
     test_eldenring_hud_bridge.cpp
     test_eldenring_locomotion.cpp
     test_eldenring_world_runtime.cpp
+    test_eldenring_sneak.cpp
     test_eldenring_combat_service.cpp
     test_eldenring_virtual_summon.cpp
     test_eldenring_hotkey_dispatcher.cpp
