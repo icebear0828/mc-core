@@ -18,7 +18,7 @@ TEMPLATE = SHADER_DIR / "steve_shader_source.hpp.in"
 RENDERER = ROOT / "adapters" / "eldenring" / "src" / "steve_renderer_d3d12.cpp"
 
 # SHA-256 of the raw string body at bd3b870. The move must be byte-for-byte.
-SHADER_SHA256 = "529e4541a689c1c03d19750c7c0809c2743c12bbf68e3eaf44bb1ed667342a39"
+SHADER_SHA256 = "c4006ccae8041de29e7cd2af1628c84ccd99691d2480e8dc06ae1c6effcfc7a0"
 
 ENTRY_POINTS = ["VSMain", "VSFull", "PSMain", "PSDepthView", "PSShadow"]
 

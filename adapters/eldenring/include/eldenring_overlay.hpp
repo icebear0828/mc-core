@@ -91,6 +91,11 @@ struct SteveState {
     bool ground_valid{false};  // ground_y is the height of the ground under the feet this frame (otherwise the feet's own height is used)
     float ground_y{0.f};
     bool cam_valid{false}; // cam/fov_y are a real camera this frame (also set while the figure itself is not drawn)
+    // Phase A debug animation state (mc_er_dbg_anim.txt + Insert/Delete/Home/End).
+    bool gliding{false};
+    bool riptide{false};
+    float trident_charge{0.f};
+    uint32_t firework_seq{0};
 };
 
 // Tuning read from mc_er_steve.txt (key=value lines).
@@ -124,6 +129,8 @@ void SetMobSkin(std::string_view name, const uint8_t* rgba, unsigned width, unsi
 // The mobs' model (a Bedrock geometry file parsed by the loader): call before the overlay is created. Without it the mobs are drawn with the Steve rig.
 void SetMobModel(const mc::model::EntityModel& model);
 void SetMobModel(std::string_view name, const mc::model::EntityModel& model);
+// Registers a model under a name without changing the default mob model (the Phase A props).
+void RegisterModel(std::string_view name, const mc::model::EntityModel& model);
 // The mobs drawn over the game's summons this frame (positions and headings in game metres/radians). Thread safe, replaces the last list.
 void SetMobs(const std::vector<eldenring::mobs::MobSnapshot>& mobs);
 // In-flight arrows drawn this frame in 3D world space. Thread safe, replaces the last list.

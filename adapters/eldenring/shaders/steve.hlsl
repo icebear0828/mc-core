@@ -79,7 +79,7 @@ float4 PSMain(VSOut i) : SV_Target {
     float3 a = abs(n);
     float face = a.y > 0.7 ? 1.0 : (a.z > a.x ? 0.82 : 0.68);
     float4 texel = skin.Sample(skin_sampler, i.uv);
-    if (texel.a < 0.5) discard; // the hat / jacket layers are cut out of the skin
+    if (texel.a < 0.5 && tint.a < 0.99) discard; // the hat / jacket layers are cut out of the skin (a fully opaque tint is a solid prop)
     return float4(lerp(texel.rgb * face, tint.rgb, tint.a), 1.0);
 }
 

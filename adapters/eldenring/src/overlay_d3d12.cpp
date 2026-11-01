@@ -37,6 +37,12 @@ void SetMobModel(std::string_view name, const mc::model::EntityModel& model) {
     }
 }
 
+void RegisterModel(std::string_view name, const mc::model::EntityModel& model) {
+    if (name.empty() || model.bones.empty()) return;
+    g_mob_models[std::string(name)] = model;
+    g_mob_registry.registerModel(name, &g_mob_models[std::string(name)]);
+}
+
 void SetMobSkin(const uint8_t* rgba, unsigned width, unsigned height) {
     SetMobSkin("", rgba, width, height);
 }

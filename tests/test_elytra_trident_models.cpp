@@ -77,29 +77,29 @@ TEST(ElytraTridentModels, TridentShaftAndProngsMatchTheExtractedData) {
     const Bone* trident = opt->findBone("trident");
     ASSERT_NE(trident, nullptr);
 
-    // shaft: from [-6.5, 12.5, -10] to [-5.5, 13.5, 15]
+    // shaft: from [-6.5, 12.5, -15] to [-5.5, 13.5, 10] (the prongs point to -Z, the model's front)
     const Cube& shaft = trident->cubes[0];
     EXPECT_FLOAT_EQ(shaft.origin.x, -6.5f);
     EXPECT_FLOAT_EQ(shaft.origin.y, 12.5f);
-    EXPECT_FLOAT_EQ(shaft.origin.z, -10.0f);
+    EXPECT_FLOAT_EQ(shaft.origin.z, -15.0f);
     EXPECT_FLOAT_EQ(shaft.size.x, 1.0f);
     EXPECT_FLOAT_EQ(shaft.size.y, 1.0f);
     EXPECT_FLOAT_EQ(shaft.size.z, 25.0f);
 
-    // prongs reach z = 20 (centre prong), the side prongs stop at z = 18.5
+    // prongs reach z = -20 (centre prong), the side prongs stop at z = -18.5
     const Cube& centre = trident->cubes[2];
-    EXPECT_FLOAT_EQ(centre.origin.z + centre.size.z, 20.0f);
-    EXPECT_FLOAT_EQ(trident->cubes[3].origin.z + trident->cubes[3].size.z, 18.5f);
-    EXPECT_FLOAT_EQ(trident->cubes[4].origin.z + trident->cubes[4].size.z, 18.5f);
+    EXPECT_FLOAT_EQ(centre.origin.z, -20.0f);
+    EXPECT_FLOAT_EQ(trident->cubes[3].origin.z, -18.5f);
+    EXPECT_FLOAT_EQ(trident->cubes[4].origin.z, -18.5f);
 
-    // overall bounding box: cross bar widens to x -9..-3, prongs reach z = 20
+    // overall bounding box: cross bar widens to x -9..-3, prongs reach z = -20, the shaft butt stops at z = 10
     const Bounds b = boundsOf(*trident);
     EXPECT_FLOAT_EQ(b.min.x, -9.0f);
     EXPECT_FLOAT_EQ(b.max.x, -3.0f);
     EXPECT_FLOAT_EQ(b.min.y, 12.5f);
     EXPECT_FLOAT_EQ(b.max.y, 13.5f);
-    EXPECT_FLOAT_EQ(b.min.z, -10.0f);
-    EXPECT_FLOAT_EQ(b.max.z, 20.0f);
+    EXPECT_FLOAT_EQ(b.min.z, -20.0f);
+    EXPECT_FLOAT_EQ(b.max.z, 10.0f);
 }
 
 TEST(ElytraTridentModels, ElytraFileHasTwoWingsHangingFromTheUpperBody) {
@@ -119,7 +119,7 @@ TEST(ElytraTridentModels, ElytraFileHasTwoWingsHangingFromTheUpperBody) {
     EXPECT_EQ(right->parent, "upper");
     EXPECT_FLOAT_EQ(right->pivot.x, -1.0f);
     EXPECT_FLOAT_EQ(right->pivot.y, 23.0f);
-    EXPECT_FLOAT_EQ(right->pivot.z, -3.0f);
+    EXPECT_FLOAT_EQ(right->pivot.z, 3.0f);
     ASSERT_EQ(right->cubes.size(), 2u);
 
     const Bone* left = model.findBone("leftWing");
@@ -127,7 +127,7 @@ TEST(ElytraTridentModels, ElytraFileHasTwoWingsHangingFromTheUpperBody) {
     EXPECT_EQ(left->parent, "upper");
     EXPECT_FLOAT_EQ(left->pivot.x, 1.0f);
     EXPECT_FLOAT_EQ(left->pivot.y, 23.0f);
-    EXPECT_FLOAT_EQ(left->pivot.z, -3.0f);
+    EXPECT_FLOAT_EQ(left->pivot.z, 3.0f);
     ASSERT_EQ(left->cubes.size(), 2u);
 }
 

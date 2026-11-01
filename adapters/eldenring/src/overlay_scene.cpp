@@ -10,6 +10,46 @@ bool GameIsForeground() {
     return pid == GetCurrentProcessId();
 }
 
+
+namespace {
+
+const mc::model::EntityModel* PropModel(const char* name) {
+    auto it = g_mob_models.find(name);
+    return it == g_mob_models.end() ? nullptr : &it->second;
+}
+
+// Draws a Bedrock model (elytra wings, trident) attached to a Steve part. `delta` is the world-space motion of that
+// part since the rest pose; the model's own bone pivots line up with the Steve rig's (same Bedrock coordinates).
+void DrawProp(const char* name, const mc::model::EntityModel* model, const mc::rig::Mat4& delta, const SteveParams& sp,
+              const mc::rig::Mat4& vp, const SteveState& steve, D3D12_CPU_DESCRIPTOR_HANDLE rtv, float r, float g, float b,
+              float flap) {
+    if (model == nullptr || !g_steve.mobModelReady(name)) return;
+    const mc::Vec3 feet{steve.feet[0], steve.feet[1], steve.feet[2]};
+    std::vector<mc::Quat> extra(model->bones.size());
+    if (flap != 0.f) {
+        const mc::Quat right{std::sin(flap * 0.5f), 0.f, 0.f, std::cos(flap * 0.5f)};
+        const mc::Quat left{-std::sin(flap * 0.5f), 0.f, 0.f, std::cos(flap * 0.5f)};
+        for (size_t i = 0; i < model->bones.size(); ++i) {
+            if (model->bones[i].name == "rightWing") extra[i] = eldenring::render::hostQuat(right);
+            else if (model->bones[i].name == "leftWing") extra[i] = eldenring::render::hostQuat(left);
+        }
+    }
+    auto bones = mc::model::boneMatrices(*model, extra, feet, steve.yaw, eldenring::render::kBasis);
+    for (auto& bone : bones) bone = bone * delta;
+    SteveParams pp = sp;
+    pp.keep_depth = true;
+    pp.held_item = 0;
+    pp.held_table = {};
+    pp.offhand_item = 0;
+    pp.tint[0] = r;
+    pp.tint[1] = g;
+    pp.tint[2] = b;
+    pp.tint[3] = 1.f; // solid: the shader skips the skin alpha cut-out for a fully opaque tint
+    g_steve.drawMobModel(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, bones, pp, rtv, name);
+}
+
+} // namespace
+
 void RenderFrame(IDXGISwapChain* sc) {
     HudState hud;
     SteveState steve;
@@ -153,6 +193,16 @@ void RenderFrame(IDXGISwapChain* sc) {
             if (!anim_in.is_sleeping) {
                 g_head.update(steve.cam.forward.x, steve.cam.forward.y, steve.cam.forward.z, steve.yaw, anim_in);
             }
+            // Phase A debug triggers (mc_er_dbg_anim.txt): glide, riptide and the trident charge come from the
+            // debug keys, not from gameplay yet.
+            anim_in.is_gliding = steve.gliding;
+            anim_in.trident_charge = steve.trident_charge;
+            {
+                static float dbg_riptide_t = 0.f;
+                if (steve.riptide) dbg_riptide_t = std::fmod(dbg_riptide_t + dt, 0.6f);
+                else dbg_riptide_t = 0.f;
+                anim_in.riptide = steve.riptide ? (dbg_riptide_t / 0.6f) : 0.f;
+            }
             g_anim.update(dt, anim_in);
             if (g_trace_left.load() > 0) {
                 g_trace_left.fetch_sub(1);
@@ -165,7 +215,30 @@ void RenderFrame(IDXGISwapChain* sc) {
         } else {
             g_sleep_tracker.reset();
         }
-        auto parts = eldenring::render::posedMatrices(g_anim.getTransforms(), {steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw);
+        auto parts = eldenring::render::posedMatrices(g_anim.getTransforms(), g_anim.rootTransform(), g_anim.upperTransform(),
+                                                     {steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw);
+        // Phase A debug particles: a firework boost on End, the riptide water ring while it is active.
+        {
+            static uint32_t last_firework = 0;
+            if (steve.firework_seq != last_firework) {
+                last_firework = steve.firework_seq;
+                const float pos[3] = {steve.feet[0], steve.feet[1] + 1.0f, steve.feet[2]};
+                const float dir[3] = {steve.cam.forward.x, steve.cam.forward.y, steve.cam.forward.z};
+                SpawnFx(FxKind::Firework, pos, dir, 0);
+            }
+            if (steve.riptide) {
+                static float acc = 0.f;
+                static float phase = 0.f;
+                acc += dt;
+                if (acc >= 0.05f) {
+                    acc = 0.f;
+                    phase = std::fmod(phase + 0.1f, 1.f);
+                    const float pos[3] = {steve.feet[0], steve.feet[1] + 0.5f, steve.feet[2]};
+                    const float no_dir[3] = {0.f, 0.f, 0.f};
+                    SpawnFx(FxKind::Riptide, pos, no_dir, static_cast<int>(phase * 10.f));
+                }
+            }
+        }
         const float fall_frac = g_death_tracker.fallFraction();
         if (fall_frac > 0.f) {
             const mc::rig::Mat4 fall = eldenring::render::deathFallMatrix({steve.feet[0], steve.feet[1], steve.feet[2]}, steve.yaw, fall_frac);
@@ -212,6 +285,35 @@ void RenderFrame(IDXGISwapChain* sc) {
         if (g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
             g_steve.draw(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, parts, sp, f.rtv);
             g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr); // ImGui draws without a depth view
+        }
+        // Phase A debug props: the elytra wings follow the torso, the trident follows the right arm.
+        if (!steve.dead && (steve.gliding || steve.trident_charge > 0.f)) {
+            const mc::Vec3 feet_v{steve.feet[0], steve.feet[1], steve.feet[2]};
+            const mc::rig::Mat4 rest_body = mc::rig::partMatrix(mc::StevePart::Body, mc::Quat{}, feet_v, steve.yaw, eldenring::render::kBasis);
+            const mc::rig::Mat4 body_delta =
+                eldenring::render::inverseRigid(rest_body) * parts[static_cast<size_t>(mc::StevePart::Body)];
+            // The trident follows the hand's position but not the arm's rotation: the 12-part rig has no wrist, so
+            // inheriting the charge pose's 186-degree arm rotation would swing the shaft down the player's back.
+            // The prop mesh is baked at its rest pose and the trident bone's pivot sits exactly at the hand, so the
+            // delta has to carry that pivot from the rest hand to the posed one.
+            const mc::model::EntityModel* trident_model = PropModel("trident");
+            const mc::model::Bone* trident_bone = trident_model != nullptr ? trident_model->findBone("trident") : nullptr;
+            const mc::Vec3 trident_pivot =
+                trident_bone != nullptr ? mc::model::bonePivotHost(*trident_bone, eldenring::render::kBasis) : mc::Vec3{};
+            const mc::rig::Mat4 rest_arm = mc::rig::partMatrix(mc::StevePart::RightArm, mc::Quat{}, feet_v, steve.yaw, eldenring::render::kBasis);
+            const mc::Vec3 hand_rest = mc::rig::transformPoint(rest_arm, trident_pivot);
+            const mc::Vec3 hand_posed = mc::rig::transformPoint(parts[static_cast<size_t>(mc::StevePart::RightArm)], trident_pivot);
+            const mc::rig::Mat4 trident_delta = mc::rig::translation(hand_posed - hand_rest);
+            if (steve.gliding) {
+                static float flap_t = 0.f;
+                flap_t += dt;
+                DrawProp("elytra_wings", PropModel("elytra_wings"), body_delta, sp, vp, steve, f.rtv, 0.82f, 0.84f, 0.9f,
+                         0.35f * std::sin(flap_t * 8.f));
+            }
+            if (steve.trident_charge > 0.f) {
+                DrawProp("trident", PropModel("trident"), trident_delta, sp, vp, steve, f.rtv, 0.10f, 0.55f, 0.55f, 0.f);
+            }
+            g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
         }
         if (sp.mode > 2.5f) {
             static auto last_log = std::chrono::steady_clock::now();

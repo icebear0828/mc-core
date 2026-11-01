@@ -157,6 +157,7 @@ DWORD WINAPI LoaderThread(LPVOID) {
     CreateThread(nullptr, 0, KeyThread, nullptr, 0, nullptr);
     CreateThread(nullptr, 0, CrackTunerThread, nullptr, 0, nullptr);
     CreateThread(nullptr, 0, BuddyThread, nullptr, 0, nullptr);
+    CreateThread(nullptr, 0, AnimDebugThread, nullptr, 0, nullptr);
 
     for (;;) {
         Sleep(1000);
@@ -169,6 +170,45 @@ DWORD WINAPI LoaderThread(LPVOID) {
         }
         LogStatus();
     }
+}
+
+// Phase A: debug triggers for the elytra/trident animation slice. Off unless
+// mc_er_dbg_anim.txt exists, so a normal install never sees these keys.
+DWORD WINAPI AnimDebugThread(LPVOID) {
+    if (!FileExists(g_game_dir + "mc_er_dbg_anim.txt")) return 0;
+    Log("anim-debug: Insert=glide Delete=riptide Home=trident-charge End=firework");
+    auto& m = eldenring::RuntimeContext::Instance().mode();
+    bool p_ins = false, p_del = false, p_home = false, p_end = false;
+    for (;;) {
+        const bool fg = GameInForeground();
+        auto edge = [&](int vk, bool& prev) {
+            const bool down = fg && ((GetAsyncKeyState(vk) & 0x8000) != 0);
+            const bool hit = down && !prev;
+            prev = down;
+            return hit;
+        };
+        if (edge(VK_INSERT, p_ins)) {
+            const bool v = !m.dbg_glide.load();
+            m.dbg_glide.store(v);
+            Log("anim-debug: glide %s", v ? "on" : "off");
+        }
+        if (edge(VK_DELETE, p_del)) {
+            const bool v = !m.dbg_riptide.load();
+            m.dbg_riptide.store(v);
+            Log("anim-debug: riptide %s", v ? "on" : "off");
+        }
+        if (edge(VK_HOME, p_home)) {
+            const float v = m.dbg_trident_charge.load() > 0.5f ? 0.f : 1.f;
+            m.dbg_trident_charge.store(v);
+            Log("anim-debug: trident charge %.2f", v);
+        }
+        if (edge(VK_END, p_end)) {
+            m.dbg_firework_seq.fetch_add(1);
+            Log("anim-debug: firework");
+        }
+        Sleep(30);
+    }
+    return 0;
 }
 
 DWORD WINAPI KeyThread(LPVOID) {
