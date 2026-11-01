@@ -344,3 +344,17 @@ TEST(HudBridgeTest, PopulateHudStatePureMcDisablesCsMode) {
 }
 #endif
 
+TEST(HudBridgeTest, PopulateHudStateSuppressesMcAndCsUnderOwMode) {
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().ow_mode.store(true);
+    ctx.mode().mc_mode.store(true);
+    ctx.mode().cs_mode.store(true);
+
+    erov::HudState hud{};
+    PopulateHudStateFromContext(hud, ctx);
+
+    EXPECT_FALSE(hud.mc_mode);
+    EXPECT_FALSE(hud.cs_mode);
+}
+

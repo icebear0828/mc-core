@@ -10,6 +10,7 @@
 #include "eldenring_virtual_summon.hpp"
 #include "mc/entity_model.hpp"
 #include "mc/rig.hpp"
+#include "ow_viewmodel.hpp"
 
 #include <vector>
 
@@ -19,6 +20,7 @@ struct HudState {
     bool show{false};     // false: draw nothing this frame (title, menus, loading, fades...)
     bool mc_mode{false};  // F6 toggle: show the Minecraft HUD
     bool cs_mode{false};  // F1 toggle: show CS2 viewmodel and crosshair
+    bool ow_mode{false};  // Overwatch mode: draw the Doomfist gauntlet instead
     int hp{0};
     int max_hp{0};
     int selected_slot{0}; // 0..8
@@ -103,6 +105,11 @@ struct SteveConfig {
     bool depth_probe{false}; // record how the game uses its depth textures for three frames (depth_probe_d3d12.hpp); mc_er_depthprobe.txt switches it on
 };
 void SetSteveConfig(const SteveConfig& cfg);
+
+// Tuning read from mc_er_ow.txt (key=value lines): the gauntlet's own FOV,
+// scale and translation. Independent from the CS2/Steve config.
+using OwConfig = eldenring::ow::OwViewmodelConfig;
+void SetOwConfig(const OwConfig& cfg);
 // The Steve skin (RGBA8, 64x64) the loader decoded; call before the overlay is created. Without it the figure is flat grey-brown.
 void SetSteveSkin(const uint8_t* rgba, unsigned width, unsigned height);
 // The HUD atlas (RGBA8, 256x256, the locally extracted mc_hud_atlas.png); call before the overlay is created. Without it the HUD
@@ -124,8 +131,10 @@ void SetArrows(const std::vector<eldenring::summon::ArrowDraw>& arrows);
 
 // Combat particles (Minecraft's critical hit stars, damage hearts, sweep arc) at a world position (game metres); `count` is the
 // number of hearts for Damage. Thread safe; the overlay projects and draws them.
-enum class FxKind { Crit, Damage, Sweep, Spark, Dust };
+enum class FxKind { Crit, Damage, Sweep, Spark, Dust, Firework, Riptide };
 void SpawnFx(FxKind kind, const float world_pos[3], int count);
+// Same, with a direction of travel: Firework streams its sparks opposite `dir` (zero means straight up).
+void SpawnFx(FxKind kind, const float world_pos[3], const float dir[3], int count);
 // A CS hitscan tracer: a world-space segment (game metres) that fades out over `life_s`. Thread safe.
 void SpawnTracer(const float from[3], const float to[3], float life_s = 0.08f);
 #if ENABLE_CS2_VIEWMODEL
@@ -143,6 +152,8 @@ void SetTerrainCrackMesh(const mc::rig::RigMesh& mesh);
 void RequestScreenshot(const char* utf8_path);
 // Duration (seconds) of a clip in the active CS viewmodel, or 0 when unavailable.
 float CsClipDuration(const char* name);
+// Duration (seconds) of an authored Overwatch clip, or 0 when unavailable.
+float OwClipDuration(const char* name);
 // Debug: bind the next captured 1920x1080 R32G8X24 depth resource (the game creates several).
 void CycleDepthCandidate();
 

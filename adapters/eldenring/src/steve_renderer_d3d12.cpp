@@ -1,208 +1,41 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <d3dcompiler.h>
 
-#include <cstdio>
 #include <cstring>
 #include <vector>
 
-#include "eldenring_blockmesh.hpp"
 #include "eldenring_shadow.hpp"
-#include "mc/hud_atlas.hpp"
-#include "mc/item_model.hpp"
+#include "render/d3d12_pipeline_builder.hpp"
+#include "render/d3d12_util.hpp"
+#include "render/steve_mesh_factory.hpp"
+#include "render/steve_texture_cache.hpp"
 #include "steve_renderer_d3d12.hpp"
 
 namespace erov {
-namespace {
-// The whole 64x64 shield entity texture inside the HUD atlas: the 3D shield is mapped onto it like the game does.
-// The shield held with the arm raised (shield_blocking.json) is stored next to the idle one under this bit of the item id.
-constexpr uint16_t kBlockingKeyBit = 0x8000;
-
-mc::rig::UvRect ShieldSheet() {
-    return {mc::hud::kUV_ENTITY_SHIELD.u0, mc::hud::kUV_ENTITY_SHIELD.v0, mc::hud::kUV_ENTITY_SHIELD.u1, mc::hud::kUV_ENTITY_SHIELD.v1};
-}
-} // namespace
-
-namespace {
-
-constexpr char kShader[] = R"hlsl(
-cbuffer Root : register(b0) {
-    row_major float4x4 view_proj;
-    row_major float4x4 world;
-    float4 scene; // x: depth * view z constant, y: relative bias, z: absolute bias (metres), w: mode (0 off, 1 occlude, 2 debug colours)
-    float4 dims;  // x, y: depth texture size, z, w: back buffer size
-    float4 tint;  // rgb: colour the figure is mixed towards, a: how much (Minecraft's red hurt flash)
-};
-Texture2D<float2> scene_depth : register(t0);
-Texture2D<float4> skin : register(t1);
-SamplerState skin_sampler : register(s0); // point, clamp (static sampler)
-RWByteAddressBuffer stats : register(u1); // 64 log2 bins of K = depth * view z (u0 would collide with the pixel shader output) // [0] sum of K * 1e6, [4] pixel count, [8] max, [12] min (K = depth * view z)
-
-struct VSIn  { float3 pos : POSITION; float2 uv : TEXCOORD0; };
-struct VSOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; float3 wpos : TEXCOORD1; };
-
-VSOut VSMain(VSIn i) {
-    VSOut o;
-    float4 w = mul(float4(i.pos, 1.0), world);
-    o.pos = mul(w, view_proj);
-    o.uv = i.uv;
-    o.wpos = w.xyz;
-    return o;
-}
-
-struct FullOut { float4 pos : SV_POSITION; };
-
-FullOut VSFull(uint id : SV_VertexID) {
-    FullOut o;
-    float2 uv = float2((id << 1) & 2, id & 2);
-    o.pos = float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
-    return o;
-}
-
-// Debug: the scene depth as grey (scene.x is the gain, sqrt spreads the small reverse-Z values). Exactly zero (cleared,
-// or nothing drawn there) is dark blue.
-float4 PSDepthView(FullOut i) : SV_Target {
-    int2 texel = int2(i.pos.xy / dims.zw * dims.xy);
-    float gd = scene_depth.Load(int3(texel, 0)).r;
-    if (gd <= 0.0) return float4(0.0, 0.0, 0.25, 0.9);
-    float g = sqrt(saturate(gd * scene.x));
-    return float4(g, g, g, 0.9);
-}
-
-float4 PSMain(VSOut i) : SV_Target {
-    if (scene.w > 0.5) {
-        // Reverse-Z game depth: nearer = larger, 0 = far. SV_POSITION.w is view-space z in D3D12 pixel shader.
-        int2 texel = int2(i.pos.xy / dims.zw * dims.xy);
-        float gd = scene_depth.Load(int3(texel, 0)).r;
-        float steve_z = i.pos.w;
-        if (scene.w > 2.5) {
-            // Measurement: the constant K = depth * view z over the figure's pixels (the native character is drawn
-            // in the same place, so the scene depth here is its own distance).
-            if (gd > 0.0) {
-                float k = gd * steve_z;
-                uint bin = (uint)clamp((log2(k) - log2(0.0005)) * 8.0, 0.0, 63.0);
-                uint old;
-                stats.InterlockedAdd(bin * 4, 1, old);
-            }
-            return float4(1.0, 1.0, 0.0, 1.0);
-        }
-        if (scene.w > 1.5) {
-            // Calibration view: the scene's distance at this pixel (scene.x / depth) over the figure's own distance.
-            if (gd <= 0.0) return float4(1.0, 0.0, 1.0, 1.0);                 // magenta: no depth here (far plane or bad read)
-            float r = (scene.x / gd) / steve_z;
-            if (r < 0.5) return float4(1.0, 0.0, 0.0, 1.0);                   // red: the scene is much nearer
-            if (r < 0.92) return float4(1.0, 0.55, 0.0, 1.0);                 // orange: the scene is somewhat nearer
-            if (r < 1.08) return float4(1.0, 1.0, 0.0, 1.0);                  // yellow: same distance (the constant is right)
-            if (r < 2.0) return float4(0.0, 0.8, 0.2, 1.0);                   // green: the scene is farther
-            return float4(0.0, 0.4, 1.0, 1.0);                                // blue: far behind
-        }
-        // Mode 1.25 (the placed blocks): within 2.2 m of the camera nothing in the scene can hide a block. The game's depth there holds the
-        // player's own hidden body (first person looks down onto it), which would make a block under or next to the player vanish.
-        const float near_skip = (scene.w > 1.1 && scene.w < 1.4) ? 2.2 : 0.0;
-        if (steve_z > near_skip && gd > 0.0 && scene.x / gd < steve_z * (1.0 - scene.y) - scene.z) discard;
-    }
-    // Minecraft's fixed face shading (top 1.0, north/south 0.8, east/west 0.6), from the face normal.
-    float3 n = normalize(cross(ddx(i.wpos), ddy(i.wpos)));
-    float3 a = abs(n);
-    float face = a.y > 0.7 ? 1.0 : (a.z > a.x ? 0.82 : 0.68);
-    float4 texel = skin.Sample(skin_sampler, i.uv);
-    if (texel.a < 0.5) discard; // the hat / jacket layers are cut out of the skin
-    return float4(lerp(texel.rgb * face, tint.rgb, tint.a), 1.0);
-}
-
-// The blob shadow under a figure: a flat disc, uv = (x, z) of the unit circle, tint.a = strength. Hidden by the scene like the blocks.
-float4 PSShadow(VSOut i) : SV_Target {
-    if (scene.w > 0.5) {
-        int2 texel = int2(i.pos.xy / dims.zw * dims.xy);
-        float gd = scene_depth.Load(int3(texel, 0)).r;
-        float steve_z = i.pos.w;
-        const float near_skip = (scene.w > 1.1 && scene.w < 1.4) ? 2.2 : 0.0;
-        if (steve_z > near_skip && gd > 0.0 && scene.x / gd < steve_z * (1.0 - scene.y) - scene.z) discard;
-    }
-    float r2 = dot(i.uv, i.uv);
-    return float4(0.0, 0.0, 0.0, tint.a * saturate(1.0 - r2));
-}
-)hlsl";
-
-template <typename T>
-void Rel(T*& p) {
-    if (p) {
-        p->Release();
-        p = nullptr;
-    }
-}
-
-bool Compile(const char* entry, const char* profile, ID3DBlob** out, SteveRenderer::LogFn log) {
-    ID3DBlob* errors = nullptr;
-    const HRESULT hr = D3DCompile(kShader, sizeof(kShader) - 1, "steve.hlsl", nullptr, nullptr, entry, profile,
-                                  D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, out, &errors);
-    if (FAILED(hr)) {
-        if (log) log("steve: shader %s failed: %s", entry, errors ? static_cast<const char*>(errors->GetBufferPointer()) : "no message");
-        Rel(errors);
-        return false;
-    }
-    Rel(errors);
-    return true;
-}
-
-ID3D12Resource* UploadBuffer(ID3D12Device* device, const void* data, size_t size) {
-    D3D12_HEAP_PROPERTIES hp{};
-    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
-    D3D12_RESOURCE_DESC rd{};
-    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    rd.Width = size;
-    rd.Height = 1;
-    rd.DepthOrArraySize = 1;
-    rd.MipLevels = 1;
-    rd.SampleDesc.Count = 1;
-    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    ID3D12Resource* res = nullptr;
-    if (FAILED(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                                               IID_PPV_ARGS(&res)))) {
-        return nullptr;
-    }
-    void* mapped = nullptr;
-    D3D12_RANGE none{0, 0};
-    if (FAILED(res->Map(0, &none, &mapped))) {
-        res->Release();
-        return nullptr;
-    }
-    std::memcpy(mapped, data, size);
-    res->Unmap(0, nullptr);
-    return res;
-}
-
-} // namespace
+using d3d12::Rel;
 
 bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     release();
     // Geometry: 12 parts, vertices already in the game's axes and metres, feet at the origin.
-    std::vector<mc::rig::RigVertex> vertices;
-    std::vector<uint16_t> indices;
-    for (size_t p = 0; p < static_cast<size_t>(mc::StevePart::Count); ++p) {
-        const mc::rig::RigMesh mesh = mc::rig::buildPartMesh(static_cast<mc::StevePart>(p), eldenring::render::kBasis);
-        base_vertex_[p] = static_cast<int>(vertices.size());
-        first_index_[p] = static_cast<unsigned>(indices.size());
-        index_count_[p] = static_cast<unsigned>(mesh.indices.size());
-        vertices.insert(vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
-        indices.insert(indices.end(), mesh.indices.begin(), mesh.indices.end());
-    }
-    vertices_ = UploadBuffer(device, vertices.data(), vertices.size() * sizeof(mc::rig::RigVertex));
-    indices_ = UploadBuffer(device, indices.data(), indices.size() * sizeof(uint16_t));
-    if (!vertices_ || !indices_) {
+    const steve::RigCpuMesh rig = steve::BuildSteveRigMesh();
+    unsigned total_indices = 0;
+    if (!d3d12::UploadMesh(device, rig.vertices, rig.indices, vertices_, indices_, vbv_, ibv_, total_indices)) {
         if (log) log("steve: vertex/index buffers failed");
         release();
         return false;
     }
-    vbv_ = {vertices_->GetGPUVirtualAddress(), static_cast<UINT>(vertices.size() * sizeof(mc::rig::RigVertex)),
-            static_cast<UINT>(sizeof(mc::rig::RigVertex))};
-    ibv_ = {indices_->GetGPUVirtualAddress(), static_cast<UINT>(indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
+    (void)total_indices;
+    for (size_t p = 0; p < static_cast<size_t>(mc::StevePart::Count); ++p) {
+        base_vertex_[p] = rig.parts[p].base_vertex;
+        first_index_[p] = rig.parts[p].first_index;
+        index_count_[p] = rig.parts[p].index_count;
+    }
 
     // Statistics buffer for the calibration mode: default heap (UAV), an upload buffer with the initial values, readback.
     {
         const uint32_t init_values[64] = {};
-        stats_init_ = UploadBuffer(device, init_values, sizeof(init_values));
+        stats_init_ = d3d12::UploadBuffer(device, init_values, sizeof(init_values));
         D3D12_HEAP_PROPERTIES hd{};
         hd.Type = D3D12_HEAP_TYPE_DEFAULT;
         D3D12_HEAP_PROPERTIES hr_{};
@@ -218,144 +51,23 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
         D3D12_RESOURCE_DESC ud = rd;
         ud.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         device->CreateCommittedResource(&hd, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&stats_));
-        device->CreateCommittedResource(&hr_, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                        IID_PPV_ARGS(&stats_readback_));
+        device->CreateCommittedResource(&hr_, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&stats_readback_));
     }
 
-    // Root signature: 44 root constants (view_proj, world, scene, dims, tint) + a table with the depth SRV and the skin SRV.
-    D3D12_DESCRIPTOR_RANGE range{};
-    range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    range.NumDescriptors = 2; // t0: scene depth, t1: skin
-    range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-    D3D12_ROOT_PARAMETER params[3]{};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.Num32BitValues = 44;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[1].DescriptorTable.NumDescriptorRanges = 1;
-    params[1].DescriptorTable.pDescriptorRanges = &range;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    params[2].Descriptor.ShaderRegister = 1;
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    D3D12_ROOT_SIGNATURE_DESC rsd{};
-    rsd.NumParameters = 3;
-    rsd.pParameters = params;
-    D3D12_STATIC_SAMPLER_DESC point{};
-    point.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
-    point.AddressU = point.AddressV = point.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    point.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-    point.MaxLOD = D3D12_FLOAT32_MAX;
-    point.ShaderRegister = 0;
-    point.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    rsd.NumStaticSamplers = 1;
-    rsd.pStaticSamplers = &point;
-    rsd.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-    ID3DBlob* rs_blob = nullptr;
-    ID3DBlob* rs_err = nullptr;
-    if (FAILED(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &rs_blob, &rs_err)) ||
-        FAILED(device->CreateRootSignature(0, rs_blob->GetBufferPointer(), rs_blob->GetBufferSize(), IID_PPV_ARGS(&root_)))) {
-        if (log) log("steve: root signature failed: %s", rs_err ? static_cast<const char*>(rs_err->GetBufferPointer()) : "?");
-        Rel(rs_blob);
-        Rel(rs_err);
+    // Root signature + figure/depth-view/shadow pipelines.
+    if (!pipeline_.Create(device, rtv_format, log)) {
         release();
         return false;
     }
-    Rel(rs_blob);
-    Rel(rs_err);
 
-    ID3DBlob* vs = nullptr;
-    ID3DBlob* ps = nullptr;
-    if (!Compile("VSMain", "vs_5_0", &vs, log) || !Compile("PSMain", "ps_5_0", &ps, log)) {
-        Rel(vs);
-        Rel(ps);
-        release();
-        return false;
-    }
-    const D3D12_INPUT_ELEMENT_DESC layout[] = {
-        {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-    };
-    ID3DBlob* vs_full = nullptr;
-    ID3DBlob* ps_full = nullptr;
-    const bool full_ok = Compile("VSFull", "vs_5_0", &vs_full, log) && Compile("PSDepthView", "ps_5_0", &ps_full, log);
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
-    pd.pRootSignature = root_;
-    pd.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
-    pd.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
-    pd.InputLayout = {layout, 2};
-    pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    pd.SampleMask = UINT_MAX;
-    pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE; // 12 boxes: no need to trust the mesh winding
-    pd.RasterizerState.DepthClipEnable = TRUE;
-    // Occlusion by the game's scene is done in the pixel shader; the figure's own faces are sorted by its own depth buffer.
-    pd.DepthStencilState.DepthEnable = TRUE;
-    pd.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    pd.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
-    pd.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pd.NumRenderTargets = 1;
-    pd.RTVFormats[0] = rtv_format;
-    pd.SampleDesc.Count = 1;
-    const HRESULT hr = device->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso_));
-    Rel(vs);
-    Rel(ps);
-    if (SUCCEEDED(hr) && full_ok) {
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC fd = pd;
-        fd.VS = {vs_full->GetBufferPointer(), vs_full->GetBufferSize()};
-        fd.PS = {ps_full->GetBufferPointer(), ps_full->GetBufferSize()};
-        fd.InputLayout = {nullptr, 0};
-        fd.DepthStencilState.DepthEnable = FALSE; // the depth view overlay has no depth buffer
-        fd.DSVFormat = DXGI_FORMAT_UNKNOWN;
-        fd.BlendState.RenderTarget[0].BlendEnable = TRUE;
-        fd.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
-        fd.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
-        fd.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
-        fd.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
-        fd.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
-        fd.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
-        if (FAILED(device->CreateGraphicsPipelineState(&fd, IID_PPV_ARGS(&pso_depthview_))) && log) log("steve: depth view pipeline failed");
-    }
-    if (SUCCEEDED(hr)) {
-        ID3DBlob* vs_shadow = nullptr; // pd.VS points into `vs`, which was released above: the shadow pipeline needs its own copy
-        ID3DBlob* ps_shadow = nullptr;
-        if (Compile("VSMain", "vs_5_0", &vs_shadow, log) && Compile("PSShadow", "ps_5_0", &ps_shadow, log)) {
-            D3D12_GRAPHICS_PIPELINE_STATE_DESC sd = pd;
-            sd.VS = {vs_shadow->GetBufferPointer(), vs_shadow->GetBufferSize()};
-            sd.PS = {ps_shadow->GetBufferPointer(), ps_shadow->GetBufferSize()};
-            sd.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO; // shadows test against the blocks but never hide each other
-            sd.BlendState.RenderTarget[0].BlendEnable = TRUE;
-            sd.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
-            sd.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
-            sd.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
-            sd.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
-            sd.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
-            sd.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
-            const HRESULT shr = device->CreateGraphicsPipelineState(&sd, IID_PPV_ARGS(&pso_shadow_));
-            if (FAILED(shr) && log) log("steve: shadow pipeline failed (0x%08X)", static_cast<unsigned>(shr));
-        }
-        Rel(vs_shadow);
-        Rel(ps_shadow);
-        const mc::rig::RigMesh disc = eldenring::shadow::buildShadowDisc(kShadowSegments);
-        shadow_vertices_ = UploadBuffer(device, disc.vertices.data(), disc.vertices.size() * sizeof(mc::rig::RigVertex));
-        shadow_indices_ = UploadBuffer(device, disc.indices.data(), disc.indices.size() * sizeof(uint16_t));
-        if (shadow_vertices_ && shadow_indices_) {
-            shadow_vbv_ = {shadow_vertices_->GetGPUVirtualAddress(), static_cast<UINT>(disc.vertices.size() * sizeof(mc::rig::RigVertex)),
-                           static_cast<UINT>(sizeof(mc::rig::RigVertex))};
-            shadow_ibv_ = {shadow_indices_->GetGPUVirtualAddress(), static_cast<UINT>(disc.indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
-            shadow_index_count_ = static_cast<unsigned>(disc.indices.size());
-        } else {
-            Rel(shadow_vertices_);
-            Rel(shadow_indices_);
-        }
-    }
-    Rel(vs_full);
-    Rel(ps_full);
-    if (FAILED(hr)) {
-        if (log) log("steve: pipeline state failed (0x%08X)", static_cast<unsigned>(hr));
-        release();
-        return false;
+    // The blob shadow disc (one draw per visible shadow).
+    const mc::rig::RigMesh disc = steve::BuildShadowDisc(static_cast<unsigned>(kShadowSegments));
+    unsigned shadow_indices = 0;
+    if (d3d12::UploadMesh(device, disc.vertices, disc.indices, shadow_vertices_, shadow_indices_, shadow_vbv_, shadow_ibv_, shadow_indices)) {
+        shadow_index_count_ = shadow_indices;
+    } else {
+        Rel(shadow_vertices_);
+        Rel(shadow_indices_);
     }
     return true;
 }
@@ -366,6 +78,35 @@ void SteveRenderer::setBlocks(const mc::rig::RigMesh& mesh) {
     ++block_version_;
 }
 
+void SteveRenderer::beginPass(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_CPU_DESCRIPTOR_HANDLE rtv,
+                              unsigned width, unsigned height, ID3D12PipelineState* pso, bool clear_depth,
+                              const D3D12_VIEWPORT* viewport, const D3D12_RECT* scissor, const D3D12_RECT* clear_rect) {
+    d3d12::PassDesc pass;
+    pass.list = list;
+    pass.srv_heap = srv_heap;
+    pass.rtv = rtv;
+    pass.dsv = dsv_heap_ ? dsv_heap_->GetCPUDescriptorHandleForHeapStart() : D3D12_CPU_DESCRIPTOR_HANDLE{};
+    pass.width = width;
+    pass.height = height;
+    pass.pso = pso;
+    pass.root = pipeline_.root;
+    pass.clear_depth = clear_depth;
+    pass.viewport = viewport;
+    pass.scissor = scissor;
+    pass.clear_rect = clear_rect;
+    d3d12::BeginPass(pass);
+}
+
+void SteveRenderer::setConstants(ID3D12GraphicsCommandList* list, const mc::rig::Mat4& view_proj, const mc::rig::Mat4& world,
+                                 const SteveParams& params, unsigned width, unsigned height, const float tint[4]) {
+    list->SetGraphicsRoot32BitConstants(0, 16, view_proj.m.data(), 0);
+    list->SetGraphicsRoot32BitConstants(0, 16, world.m.data(), 16);
+    const float extra[8] = {params.depth_const, params.rel_bias, params.abs_bias, params.mode, params.depth_w, params.depth_h,
+                            static_cast<float>(width), static_cast<float>(height)};
+    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
+    list->SetGraphicsRoot32BitConstants(0, 4, tint, 40);
+}
+
 bool SteveRenderer::drawBlocks(ID3D12Device* device, ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
                                D3D12_GPU_DESCRIPTOR_HANDLE table, unsigned width, unsigned height, const mc::rig::Mat4& view_proj,
                                const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv, unsigned frame) {
@@ -374,40 +115,15 @@ bool SteveRenderer::drawBlocks(ID3D12Device* device, ID3D12GraphicsCommandList* 
     if (slot.version != block_version_ || !slot.vb) {
         Rel(slot.vb);
         Rel(slot.ib);
-        slot.vb = UploadBuffer(device, block_vertices_cpu_.data(), block_vertices_cpu_.size() * sizeof(mc::rig::RigVertex));
-        slot.ib = UploadBuffer(device, block_indices_cpu_.data(), block_indices_cpu_.size() * sizeof(uint16_t));
-        if (!slot.vb || !slot.ib) {
-            Rel(slot.vb);
-            Rel(slot.ib);
-            return false;
-        }
+        if (!d3d12::UploadMesh(device, block_vertices_cpu_, block_indices_cpu_, slot.vb, slot.ib, slot.vbv, slot.ibv, slot.index_count)) return false;
         slot.version = block_version_;
-        slot.index_count = static_cast<unsigned>(block_indices_cpu_.size());
-        slot.vbv = {slot.vb->GetGPUVirtualAddress(), static_cast<UINT>(block_vertices_cpu_.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
-        slot.ibv = {slot.ib->GetGPUVirtualAddress(), static_cast<UINT>(block_indices_cpu_.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
     }
-    D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
-    D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
-    list->RSSetViewports(1, &vp);
-    list->RSSetScissorRects(1, &sc);
-    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
-    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-    list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-    list->SetPipelineState(pso_);
-    list->SetGraphicsRootSignature(root_);
-    ID3D12DescriptorHeap* heaps[] = {srv_heap};
-    list->SetDescriptorHeaps(1, heaps);
+    beginPass(list, srv_heap, rtv, width, height, pipeline_.figure, true);
     list->SetGraphicsRootDescriptorTable(1, table);
-    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     list->IASetVertexBuffers(0, 1, &slot.vbv);
     list->IASetIndexBuffer(&slot.ibv);
-    list->SetGraphicsRoot32BitConstants(0, 16, view_proj.m.data(), 0);
-    const mc::rig::Mat4 identity = mc::rig::Mat4{};
-    list->SetGraphicsRoot32BitConstants(0, 16, identity.m.data(), 16);
-    const float extra[8] = {params.depth_const, params.rel_bias, params.abs_bias, params.mode, params.depth_w, params.depth_h, static_cast<float>(width), static_cast<float>(height)};
-    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
     const float no_tint[4] = {0.f, 0.f, 0.f, 0.f};
-    list->SetGraphicsRoot32BitConstants(0, 4, no_tint, 40);
+    setConstants(list, view_proj, mc::rig::Mat4{}, params, width, height, no_tint);
     list->DrawIndexedInstanced(slot.index_count, 1, 0, 0, 0);
     return true;
 }
@@ -426,40 +142,15 @@ bool SteveRenderer::drawTerrainCrack(ID3D12Device* device, ID3D12GraphicsCommand
     if (slot.version != crack_version_ || !slot.vb) {
         Rel(slot.vb);
         Rel(slot.ib);
-        slot.vb = UploadBuffer(device, crack_vertices_cpu_.data(), crack_vertices_cpu_.size() * sizeof(mc::rig::RigVertex));
-        slot.ib = UploadBuffer(device, crack_indices_cpu_.data(), crack_indices_cpu_.size() * sizeof(uint16_t));
-        if (!slot.vb || !slot.ib) {
-            Rel(slot.vb);
-            Rel(slot.ib);
-            return false;
-        }
+        if (!d3d12::UploadMesh(device, crack_vertices_cpu_, crack_indices_cpu_, slot.vb, slot.ib, slot.vbv, slot.ibv, slot.index_count)) return false;
         slot.version = crack_version_;
-        slot.index_count = static_cast<unsigned>(crack_indices_cpu_.size());
-        slot.vbv = {slot.vb->GetGPUVirtualAddress(), static_cast<UINT>(crack_vertices_cpu_.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
-        slot.ibv = {slot.ib->GetGPUVirtualAddress(), static_cast<UINT>(crack_indices_cpu_.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
     }
-    D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
-    D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
-    list->RSSetViewports(1, &vp);
-    list->RSSetScissorRects(1, &sc);
-    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
-    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-    if (!params.keep_depth) list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-    list->SetPipelineState(pso_);
-    list->SetGraphicsRootSignature(root_);
-    ID3D12DescriptorHeap* heaps[] = {srv_heap};
-    list->SetDescriptorHeaps(1, heaps);
+    beginPass(list, srv_heap, rtv, width, height, pipeline_.figure, !params.keep_depth);
     list->SetGraphicsRootDescriptorTable(1, table);
-    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     list->IASetVertexBuffers(0, 1, &slot.vbv);
     list->IASetIndexBuffer(&slot.ibv);
-    list->SetGraphicsRoot32BitConstants(0, 16, view_proj.m.data(), 0);
-    const mc::rig::Mat4 identity = mc::rig::Mat4{};
-    list->SetGraphicsRoot32BitConstants(0, 16, identity.m.data(), 16);
-    const float extra[8] = {params.depth_const, params.rel_bias, params.abs_bias, params.mode, params.depth_w, params.depth_h, static_cast<float>(width), static_cast<float>(height)};
-    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
     const float no_tint[4] = {0.f, 0.f, 0.f, 0.f};
-    list->SetGraphicsRoot32BitConstants(0, 4, no_tint, 40);
+    setConstants(list, view_proj, mc::rig::Mat4{}, params, width, height, no_tint);
     list->DrawIndexedInstanced(slot.index_count, 1, 0, 0, 0);
     return true;
 }
@@ -501,13 +192,10 @@ void SteveRenderer::release() {
     Rel(stats_);
     Rel(stats_init_);
     Rel(stats_readback_);
-    Rel(pso_);
-    Rel(pso_depthview_);
-    Rel(pso_shadow_);
+    pipeline_.Release();
     Rel(shadow_vertices_);
     Rel(shadow_indices_);
     shadow_index_count_ = 0;
-    Rel(root_);
     Rel(vertices_);
     Rel(indices_);
     Rel(held_vertices_);
@@ -537,55 +225,16 @@ bool SteveRenderer::initFirstPerson(ID3D12Device* device, const uint8_t* atlas_r
     Rel(fp_vertices_);
     Rel(fp_indices_);
     fp_items_.clear();
-    std::vector<mc::rig::RigVertex> vertices;
-    std::vector<uint16_t> indices;
-    auto add = [&](const mc::rig::RigMesh& mesh) {
-        FpDraw d;
-        d.base_vertex = static_cast<int>(vertices.size());
-        d.first_index = static_cast<unsigned>(indices.size());
-        d.index_count = static_cast<unsigned>(mesh.indices.size());
-        vertices.insert(vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
-        indices.insert(indices.end(), mesh.indices.begin(), mesh.indices.end());
-        return d;
-    };
-    // The arm in Minecraft's model space (blocks, y down, relative to the shoulder), then moved to the shoulder (-5, 2, 0) / 16 as
-    // ModelPart.render does before the cube.
-    const mc::rig::HostBasis model_basis{{0.f, 0.f, -1.f}, {1.f, 0.f, 0.f}, {0.f, -1.f, 0.f}, 1.0f / (mc::rig::kCmPerModelPixel * 16.0f)};
-    const mc::StevePart parts[2] = {mc::StevePart::RightArm, mc::StevePart::RightSleeve};
-    for (int i = 0; i < 2; ++i) {
-        mc::rig::RigMesh mesh = mc::rig::buildPartMesh(parts[i], model_basis);
-        const mc::Vec3 pivot = mc::rig::partPivot(parts[i], model_basis);
-        for (mc::rig::RigVertex& v : mesh.vertices) {
-            v.x = v.x - pivot.x + (-5.0f / 16.0f);
-            v.y = v.y - pivot.y + (2.0f / 16.0f);
-            v.z = v.z - pivot.z;
-        }
-        fp_arm_[i] = add(mesh);
-    }
-    if (atlas_rgba) {
-        for (const FpItemCell& cell : cells) {
-            const mc::BlockId block = eldenring::blocks::blockForItem(static_cast<mc::ItemId>(cell.item));
-            mc::rig::RigMesh mesh;
-            if (block != mc::BlockId::Air) {
-                mesh = eldenring::blocks::buildCubeMesh(block); // blocks are held as textured cubes, not as their GUI icon
-            } else if (static_cast<mc::ItemId>(cell.item) == mc::ItemId::Shield) {
-                mesh = mc::rig::buildShieldFirstPersonMesh(ShieldSheet()); // the real model, not the sprite pushed out one pixel
-            } else {
-                const mc::rig::ItemSprite sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
-                mesh = mc::rig::buildFlatItemMesh(sprite);
-            }
-            if (!mesh.vertices.empty()) fp_items_[cell.item] = add(mesh);
-        }
-    }
-    fp_vertices_ = UploadBuffer(device, vertices.data(), vertices.size() * sizeof(mc::rig::RigVertex));
-    fp_indices_ = UploadBuffer(device, indices.data(), indices.size() * sizeof(uint16_t));
-    if (!fp_vertices_ || !fp_indices_) {
+    const steve::FirstPersonMesh mesh = steve::BuildFirstPerson(atlas_rgba, atlas_w, atlas_h, cells);
+    unsigned index_count = 0;
+    if (!d3d12::UploadMesh(device, mesh.vertices, mesh.indices, fp_vertices_, fp_indices_, fp_vbv_, fp_ibv_, index_count)) {
         Rel(fp_vertices_);
         Rel(fp_indices_);
         return false;
     }
-    fp_vbv_ = {fp_vertices_->GetGPUVirtualAddress(), static_cast<UINT>(vertices.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
-    fp_ibv_ = {fp_indices_->GetGPUVirtualAddress(), static_cast<UINT>(indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
+    fp_arm_[0] = mesh.arm_ranges[0];
+    fp_arm_[1] = mesh.arm_ranges[1];
+    fp_items_ = mesh.items;
     return true;
 }
 
@@ -595,241 +244,33 @@ bool SteveRenderer::initHeldItems(ID3D12Device* device, const uint8_t* atlas_rgb
     Rel(held_indices_);
     held_items_.clear();
     if (!atlas_rgba) return false;
-    std::vector<mc::rig::RigVertex> vertices;
-    std::vector<uint16_t> indices;
-    for (const FpItemCell& cell : cells) {
-        const mc::ItemId item = static_cast<mc::ItemId>(cell.item);
-        const mc::BlockId block = eldenring::blocks::blockForItem(item);
-        mc::rig::RigMesh mesh;
-        if (block != mc::BlockId::Air) {
-            mesh = eldenring::blocks::buildHeldCubeMesh(block, eldenring::render::kBasis);
-        } else {
-            if (!mc::rig::isHeldAsFlatSprite(item)) continue;
-            const mc::rig::ItemSprite sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
-            mesh = item == mc::ItemId::Shield ? mc::rig::buildShieldMesh(ShieldSheet(), eldenring::render::kBasis, mc::rig::Hand::Right)
-                                              : mc::rig::buildHeldItemMesh(sprite, mc::rig::heldItemStyle(item), eldenring::render::kBasis);
-        }
-        if (mesh.vertices.empty()) continue;
-        FpDraw d;
-        d.base_vertex = static_cast<int>(vertices.size());
-        d.first_index = static_cast<unsigned>(indices.size());
-        d.index_count = static_cast<unsigned>(mesh.indices.size());
-        vertices.insert(vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
-        indices.insert(indices.end(), mesh.indices.begin(), mesh.indices.end());
-        held_items_[cell.item] = d;
-        if (item == mc::ItemId::Arrow) {
-            const mc::rig::ItemSprite arrow_sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
-            const mc::rig::RigMesh base_mesh = mc::rig::buildFlatItemMesh(arrow_sprite);
-            constexpr float inv_sqrt2 = 0.70710678f;
-            constexpr float scale = 0.55f;
-
-            std::vector<mc::rig::RigVertex> full_arrow_verts;
-            std::vector<uint16_t> full_arrow_indices;
-
-            if (!base_mesh.vertices.empty()) {
-                // Plane 1: Extruded horizontal profile (XZ plane)
-                const uint16_t base1 = static_cast<uint16_t>(full_arrow_verts.size());
-                for (auto v : base_mesh.vertices) {
-                    const float x1 = (v.x + v.y) * inv_sqrt2;
-                    const float y1 = (-v.x + v.y) * inv_sqrt2;
-                    const float z1 = v.z;
-                    v.x = y1 * scale;
-                    v.y = z1 * 2.0f;
-                    v.z = x1 * scale;
-                    full_arrow_verts.push_back(v);
-                }
-                for (uint16_t idx : base_mesh.indices) full_arrow_indices.push_back(static_cast<uint16_t>(base1 + idx));
-
-                // Plane 2: Extruded vertical profile (YZ plane), rotated 90 deg around flight axis (Z)
-                const uint16_t base2 = static_cast<uint16_t>(full_arrow_verts.size());
-                for (auto v : base_mesh.vertices) {
-                    const float x1 = (v.x + v.y) * inv_sqrt2;
-                    const float y1 = (-v.x + v.y) * inv_sqrt2;
-                    const float z1 = v.z;
-                    v.x = z1 * 2.0f;
-                    v.y = y1 * scale;
-                    v.z = x1 * scale;
-                    full_arrow_verts.push_back(v);
-                }
-                for (uint16_t idx : base_mesh.indices) full_arrow_indices.push_back(static_cast<uint16_t>(base2 + idx));
-
-                // Plane 3 & 4: Dual crossed billboard quads along length of shaft (XZ and YZ) for solid visibility at distance
-                const float u0 = static_cast<float>(cell.x) / static_cast<float>(atlas_w);
-                const float v0 = static_cast<float>(cell.y) / static_cast<float>(atlas_h);
-                const float u1 = static_cast<float>(cell.x + cell.w) / static_cast<float>(atlas_w);
-                const float v1 = static_cast<float>(cell.y + cell.h) / static_cast<float>(atlas_h);
-                constexpr float half_len = 0.38f;
-                constexpr float half_w = 0.055f;
-
-                // Horizontal billboard in XZ
-                const uint16_t b_h = static_cast<uint16_t>(full_arrow_verts.size());
-                full_arrow_verts.push_back({-half_w, 0.0f, -half_len, u0, v1});
-                full_arrow_verts.push_back({ half_w, 0.0f, -half_len, u1, v1});
-                full_arrow_verts.push_back({ half_w, 0.0f,  half_len, u1, v0});
-                full_arrow_verts.push_back({-half_w, 0.0f,  half_len, u0, v0});
-                full_arrow_indices.insert(full_arrow_indices.end(), {b_h, static_cast<uint16_t>(b_h + 1), static_cast<uint16_t>(b_h + 2),
-                                                                    b_h, static_cast<uint16_t>(b_h + 2), static_cast<uint16_t>(b_h + 3)});
-
-                // Vertical billboard in YZ
-                const uint16_t b_v = static_cast<uint16_t>(full_arrow_verts.size());
-                full_arrow_verts.push_back({0.0f, -half_w, -half_len, u0, v1});
-                full_arrow_verts.push_back({0.0f,  half_w, -half_len, u1, v1});
-                full_arrow_verts.push_back({0.0f,  half_w,  half_len, u1, v0});
-                full_arrow_verts.push_back({0.0f, -half_w,  half_len, u0, v0});
-                full_arrow_indices.insert(full_arrow_indices.end(), {b_v, static_cast<uint16_t>(b_v + 1), static_cast<uint16_t>(b_v + 2),
-                                                                    b_v, static_cast<uint16_t>(b_v + 2), static_cast<uint16_t>(b_v + 3)});
-            }
-
-            Rel(arrow_vertices_);
-            Rel(arrow_indices_);
-            arrow_index_count_ = 0;
-            if (!full_arrow_verts.empty()) {
-                arrow_vertices_ = UploadBuffer(device, full_arrow_verts.data(), full_arrow_verts.size() * sizeof(mc::rig::RigVertex));
-                arrow_indices_ = UploadBuffer(device, full_arrow_indices.data(), full_arrow_indices.size() * sizeof(uint16_t));
-                if (arrow_vertices_ && arrow_indices_) {
-                    arrow_index_count_ = static_cast<unsigned>(full_arrow_indices.size());
-                    arrow_vbv_ = {arrow_vertices_->GetGPUVirtualAddress(), static_cast<UINT>(full_arrow_verts.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
-                    arrow_ibv_ = {arrow_indices_->GetGPUVirtualAddress(), static_cast<UINT>(full_arrow_indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
-                }
-            }
-        }
-        if (item == mc::ItemId::Shield) { // the raised shield has its own display transform
-            const mc::rig::RigMesh up = mc::rig::buildShieldMesh(ShieldSheet(), eldenring::render::kBasis, mc::rig::Hand::Right, true);
-            FpDraw u;
-            u.base_vertex = static_cast<int>(vertices.size());
-            u.first_index = static_cast<unsigned>(indices.size());
-            u.index_count = static_cast<unsigned>(up.indices.size());
-            vertices.insert(vertices.end(), up.vertices.begin(), up.vertices.end());
-            indices.insert(indices.end(), up.indices.begin(), up.indices.end());
-            held_items_[static_cast<uint16_t>(cell.item | kBlockingKeyBit)] = u;
-        }
-    }
-    if (vertices.empty()) return false;
-    held_vertices_ = UploadBuffer(device, vertices.data(), vertices.size() * sizeof(mc::rig::RigVertex));
-    held_indices_ = UploadBuffer(device, indices.data(), indices.size() * sizeof(uint16_t));
-    if (!held_vertices_ || !held_indices_) {
+    const steve::HeldItemsMesh mesh = steve::BuildHeldItems(atlas_rgba, atlas_w, atlas_h, cells);
+    if (mesh.vertices.empty()) return false;
+    unsigned index_count = 0;
+    if (!d3d12::UploadMesh(device, mesh.vertices, mesh.indices, held_vertices_, held_indices_, held_vbv_, held_ibv_, index_count)) {
         Rel(held_vertices_);
         Rel(held_indices_);
         return false;
     }
-    held_vbv_ = {held_vertices_->GetGPUVirtualAddress(), static_cast<UINT>(vertices.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
-    held_ibv_ = {held_indices_->GetGPUVirtualAddress(), static_cast<UINT>(indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
+    held_items_ = mesh.draws;
 
-    // Offhand items (Left arm, mirrored or forearm-mounted shield)
+    Rel(arrow_vertices_);
+    Rel(arrow_indices_);
+    arrow_index_count_ = 0;
+    if (mesh.arrow_valid &&
+        d3d12::UploadMesh(device, mesh.arrow_vertices, mesh.arrow_indices, arrow_vertices_, arrow_indices_, arrow_vbv_, arrow_ibv_, index_count)) {
+        arrow_index_count_ = index_count;
+    }
+
+    // Offhand items (left arm, mirrored or forearm-mounted shield).
     Rel(offhand_vertices_);
     Rel(offhand_indices_);
     offhand_items_.clear();
-    std::vector<mc::rig::RigVertex> off_vertices;
-    std::vector<uint16_t> off_indices;
-    for (const FpItemCell& cell : cells) {
-        const mc::ItemId item = static_cast<mc::ItemId>(cell.item);
-        const mc::BlockId block = eldenring::blocks::blockForItem(item);
-        mc::rig::RigMesh mesh;
-        if (block != mc::BlockId::Air) {
-            mesh = eldenring::blocks::buildHeldCubeMesh(block, eldenring::render::kBasis);
-        } else {
-            if (!mc::rig::isHeldAsFlatSprite(item)) continue;
-            const mc::rig::ItemSprite sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
-            mesh = item == mc::ItemId::Shield ? mc::rig::buildShieldMesh(ShieldSheet(), eldenring::render::kBasis, mc::rig::Hand::Left)
-                                              : mc::rig::buildHeldItemMesh(sprite, mc::rig::heldItemStyle(item), eldenring::render::kBasis, mc::rig::Hand::Left);
-        }
-        if (mesh.vertices.empty()) continue;
-        FpDraw d;
-        d.base_vertex = static_cast<int>(off_vertices.size());
-        d.first_index = static_cast<unsigned>(off_indices.size());
-        d.index_count = static_cast<unsigned>(mesh.indices.size());
-        off_vertices.insert(off_vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
-        off_indices.insert(off_indices.end(), mesh.indices.begin(), mesh.indices.end());
-        offhand_items_[cell.item] = d;
-        if (item == mc::ItemId::Shield) {
-            const mc::rig::RigMesh up = mc::rig::buildShieldMesh(ShieldSheet(), eldenring::render::kBasis, mc::rig::Hand::Left, true);
-            FpDraw u;
-            u.base_vertex = static_cast<int>(off_vertices.size());
-            u.first_index = static_cast<unsigned>(off_indices.size());
-            u.index_count = static_cast<unsigned>(up.indices.size());
-            off_vertices.insert(off_vertices.end(), up.vertices.begin(), up.vertices.end());
-            off_indices.insert(off_indices.end(), up.indices.begin(), up.indices.end());
-            offhand_items_[static_cast<uint16_t>(cell.item | kBlockingKeyBit)] = u;
-        }
-    }
-    if (!off_vertices.empty()) {
-        offhand_vertices_ = UploadBuffer(device, off_vertices.data(), off_vertices.size() * sizeof(mc::rig::RigVertex));
-        offhand_indices_ = UploadBuffer(device, off_indices.data(), off_indices.size() * sizeof(uint16_t));
-        if (offhand_vertices_ && offhand_indices_) {
-            offhand_vbv_ = {offhand_vertices_->GetGPUVirtualAddress(), static_cast<UINT>(off_vertices.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
-            offhand_ibv_ = {offhand_indices_->GetGPUVirtualAddress(), static_cast<UINT>(off_indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
-        }
+    if (!mesh.off_vertices.empty() &&
+        d3d12::UploadMesh(device, mesh.off_vertices, mesh.off_indices, offhand_vertices_, offhand_indices_, offhand_vbv_, offhand_ibv_, index_count)) {
+        offhand_items_ = mesh.off_draws;
     }
     return true;
-}
-
-void SteveRenderer::drawFirstPerson(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE skin_table,
-                                    D3D12_GPU_DESCRIPTOR_HANDLE atlas_table, unsigned width, unsigned height, const mc::rig::Mat4& projection,
-                                    const mc::rig::Mat4& arm_world, const mc::rig::Mat4& item_world, uint16_t item, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
-    if (!ready() || !fp_vertices_ || !own_depth_ || !dsv_heap_) return;
-    const auto it = fp_items_.find(item);
-    if (item != 0 && it == fp_items_.end()) return; // an item without a sprite: nothing is shown
-    D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
-    D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
-    list->RSSetViewports(1, &vp);
-    list->RSSetScissorRects(1, &sc);
-    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
-    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-    list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr); // the view model is drawn over everything
-    list->SetPipelineState(pso_);
-    list->SetGraphicsRootSignature(root_);
-    ID3D12DescriptorHeap* heaps[] = {srv_heap};
-    list->SetDescriptorHeaps(1, heaps);
-    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    list->IASetVertexBuffers(0, 1, &fp_vbv_);
-    list->IASetIndexBuffer(&fp_ibv_);
-    list->SetGraphicsRoot32BitConstants(0, 16, projection.m.data(), 0);
-    const float extra[8] = {1.f, 0.f, 0.f, 0.f /* mode 0: no scene occlusion */, 1.f, 1.f, static_cast<float>(width), static_cast<float>(height)};
-    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
-    const float no_tint[4] = {0.f, 0.f, 0.f, 0.f};
-    list->SetGraphicsRoot32BitConstants(0, 4, no_tint, 40);
-    if (item == 0) {
-        list->SetGraphicsRootDescriptorTable(1, skin_table); // the arm is skinned
-        list->SetGraphicsRoot32BitConstants(0, 16, arm_world.m.data(), 16);
-        for (const FpDraw& d : fp_arm_) list->DrawIndexedInstanced(d.index_count, 1, d.first_index, d.base_vertex, 0);
-    } else {
-        list->SetGraphicsRootDescriptorTable(1, atlas_table); // the item is a cell of the atlas
-        list->SetGraphicsRoot32BitConstants(0, 16, item_world.m.data(), 16);
-        const FpDraw& d = it->second;
-        list->DrawIndexedInstanced(d.index_count, 1, d.first_index, d.base_vertex, 0);
-    }
-}
-
-void SteveRenderer::drawFirstPersonItem(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
-                                        D3D12_GPU_DESCRIPTOR_HANDLE atlas_table, unsigned width, unsigned height,
-                                        const mc::rig::Mat4& projection, const mc::rig::Mat4& item_world, uint16_t item,
-                                        D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
-    if (!ready() || !fp_vertices_ || !own_depth_ || !dsv_heap_) return;
-    const auto it = fp_items_.find(item);
-    if (item == 0 || it == fp_items_.end()) return;
-    D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
-    D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
-    list->RSSetViewports(1, &vp);
-    list->RSSetScissorRects(1, &sc);
-    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
-    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-    // Preserves depth buffer so offhand and mainhand items depth-test against each other correctly
-    list->SetPipelineState(pso_);
-    list->SetGraphicsRootSignature(root_);
-    ID3D12DescriptorHeap* heaps[] = {srv_heap};
-    list->SetDescriptorHeaps(1, heaps);
-    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    list->IASetVertexBuffers(0, 1, &fp_vbv_);
-    list->IASetIndexBuffer(&fp_ibv_);
-    list->SetGraphicsRoot32BitConstants(0, 16, projection.m.data(), 0);
-    const float extra[8] = {1.f, 0.f, 0.f, 0.f, 1.f, 1.f, static_cast<float>(width), static_cast<float>(height)};
-    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
-    const float no_tint[4] = {0.f, 0.f, 0.f, 0.f};
-    list->SetGraphicsRoot32BitConstants(0, 4, no_tint, 40);
-    list->SetGraphicsRootDescriptorTable(1, atlas_table);
-    list->SetGraphicsRoot32BitConstants(0, 16, item_world.m.data(), 16);
-    const FpDraw& d = it->second;
-    list->DrawIndexedInstanced(d.index_count, 1, d.first_index, d.base_vertex, 0);
 }
 
 bool SteveRenderer::ensureDepth(ID3D12Device* device, unsigned width, unsigned height) {
@@ -865,91 +306,12 @@ bool SteveRenderer::ensureDepth(ID3D12Device* device, unsigned width, unsigned h
     return true;
 }
 
-namespace {
-// (re)creates `s` as an RGBA8 texture of the given size with its SRV at `slot`; the pixels are copied by the first draw()
-bool CreateSkinTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot, SkinGpu& s) {
-    if (!device || !rgba || width == 0 || height == 0) return false;
-    Rel(s.tex);
-    Rel(s.upload);
-    s.pending = false;
-    D3D12_HEAP_PROPERTIES hd{};
-    hd.Type = D3D12_HEAP_TYPE_DEFAULT;
-    D3D12_RESOURCE_DESC td{};
-    td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    td.Width = width;
-    td.Height = height;
-    td.DepthOrArraySize = 1;
-    td.MipLevels = 1;
-    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    td.SampleDesc.Count = 1;
-    td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    if (FAILED(device->CreateCommittedResource(&hd, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&s.tex)))) {
-        return false;
-    }
-    UINT rows = 0;
-    UINT64 row_bytes = 0, total = 0;
-    device->GetCopyableFootprints(&td, 0, 1, 0, &s.footprint, &rows, &row_bytes, &total);
-    D3D12_HEAP_PROPERTIES hu{};
-    hu.Type = D3D12_HEAP_TYPE_UPLOAD;
-    D3D12_RESOURCE_DESC ud{};
-    ud.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    ud.Width = total;
-    ud.Height = 1;
-    ud.DepthOrArraySize = 1;
-    ud.MipLevels = 1;
-    ud.SampleDesc.Count = 1;
-    ud.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    void* mapped = nullptr;
-    D3D12_RANGE none{0, 0};
-    if (FAILED(device->CreateCommittedResource(&hu, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&s.upload))) ||
-        FAILED(s.upload->Map(0, &none, &mapped))) {
-        Rel(s.tex);
-        Rel(s.upload);
-        return false;
-    }
-    for (UINT y = 0; y < rows; ++y) {
-        std::memcpy(static_cast<uint8_t*>(mapped) + s.footprint.Offset + static_cast<size_t>(y) * s.footprint.Footprint.RowPitch,
-                    rgba + static_cast<size_t>(y) * width * 4, static_cast<size_t>(width) * 4);
-    }
-    s.upload->Unmap(0, nullptr);
-    D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
-    sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    sd.Texture2D.MipLevels = 1;
-    device->CreateShaderResourceView(s.tex, &sd, slot);
-    s.pending = true; // the copy is recorded into the first command list that draws the figure
-    return true;}
-
-// Records the pending upload of `s` into `list` (once).
-void RecordSkinUpload(ID3D12GraphicsCommandList* list, SkinGpu& s) {
-    if (!s.pending || !s.tex || !s.upload) return;
-    D3D12_TEXTURE_COPY_LOCATION dst{};
-    dst.pResource = s.tex;
-    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    dst.SubresourceIndex = 0;
-    D3D12_TEXTURE_COPY_LOCATION src{};
-    src.pResource = s.upload;
-    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    src.PlacedFootprint = s.footprint;
-    list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-    D3D12_RESOURCE_BARRIER b{};
-    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b.Transition.pResource = s.tex;
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    list->ResourceBarrier(1, &b);
-    s.pending = false;
-}
-} // namespace
-
 bool SteveRenderer::setSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
-    return CreateSkinTexture(device, rgba, width, height, slot, skin_);
+    return steve::CreateSkinTexture(device, rgba, width, height, slot, skin_);
 }
 
 bool SteveRenderer::setMobSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
-    return CreateSkinTexture(device, rgba, width, height, slot, mob_skin_);
+    return steve::CreateSkinTexture(device, rgba, width, height, slot, mob_skin_);
 }
 
 bool SteveRenderer::setMobSkin(ID3D12Device* device, std::string_view name, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
@@ -957,7 +319,7 @@ bool SteveRenderer::setMobSkin(ID3D12Device* device, std::string_view name, cons
     Rel(upload.tex);
     Rel(upload.upload);
     upload.pending = false;
-    return CreateSkinTexture(device, rgba, width, height, slot, upload);
+    return steve::CreateSkinTexture(device, rgba, width, height, slot, upload);
 }
 
 void SteveRenderer::setDepthView(ID3D12Device* device, ID3D12Resource* depth, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
@@ -972,13 +334,13 @@ void SteveRenderer::setDepthView(ID3D12Device* device, ID3D12Resource* depth, D3
 void SteveRenderer::drawDepthView(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
                                   D3D12_GPU_DESCRIPTOR_HANDLE depth_table, unsigned width, unsigned height, float gain, float depth_w,
                                   float depth_h) {
-    if (!pso_depthview_) return;
+    if (!pipeline_.depth_view) return;
     D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
     D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
     list->RSSetViewports(1, &vp);
     list->RSSetScissorRects(1, &sc);
-    list->SetPipelineState(pso_depthview_);
-    list->SetGraphicsRootSignature(root_);
+    list->SetPipelineState(pipeline_.depth_view);
+    list->SetGraphicsRootSignature(pipeline_.root);
     ID3D12DescriptorHeap* heaps[] = {srv_heap};
     list->SetDescriptorHeaps(1, heaps);
     list->SetGraphicsRootDescriptorTable(1, depth_table);
@@ -994,45 +356,23 @@ bool SteveRenderer::setMobModel(ID3D12Device* device, const mc::model::EntityMod
 
 bool SteveRenderer::setMobModel(ID3D12Device* device, std::string_view name, const mc::model::EntityModel& model) {
     if (!device || model.bones.empty()) return false;
-    std::vector<mc::rig::RigVertex> vertices;
-    std::vector<uint16_t> indices;
-    std::vector<BoneRange> ranges;
-    for (const mc::model::Bone& bone : model.bones) {
-        const mc::rig::RigMesh mesh = model.buildBoneMesh(bone, eldenring::render::kBasis);
-        BoneRange r;
-        r.base_vertex = static_cast<int>(vertices.size());
-        r.first_index = static_cast<unsigned>(indices.size());
-        r.index_count = static_cast<unsigned>(mesh.indices.size());
-        ranges.push_back(r);
-        vertices.insert(vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
-        indices.insert(indices.end(), mesh.indices.begin(), mesh.indices.end());
-    }
-    if (vertices.empty() || indices.empty()) {
-        return false;
-    }
-    ID3D12Resource* vb = UploadBuffer(device, vertices.data(), vertices.size() * sizeof(mc::rig::RigVertex));
-    ID3D12Resource* ib = UploadBuffer(device, indices.data(), indices.size() * sizeof(uint16_t));
-    if (!vb || !ib) {
-        Rel(vb);
-        Rel(ib);
-        return false;
-    }
+    const steve::MobCpuMesh cpu = steve::BuildMobMesh(model);
+    if (cpu.vertices.empty() || cpu.indices.empty()) return false;
     MobGpuMesh gpu;
-    gpu.vertices = vb;
-    gpu.indices = ib;
-    gpu.ranges = std::move(ranges);
-    gpu.vbv = {vb->GetGPUVirtualAddress(), static_cast<UINT>(vertices.size() * sizeof(mc::rig::RigVertex)), static_cast<UINT>(sizeof(mc::rig::RigVertex))};
-    gpu.ibv = {ib->GetGPUVirtualAddress(), static_cast<UINT>(indices.size() * sizeof(uint16_t)), DXGI_FORMAT_R16_UINT};
-    for (size_t i = 0; i < model.bones.size(); ++i) {
-        if (model.bones[i].name == "right_arm") gpu.right_arm_ix = static_cast<int>(i);
-        else if (model.bones[i].name == "left_arm") gpu.left_arm_ix = static_cast<int>(i);
+    unsigned index_count = 0;
+    if (!d3d12::UploadMesh(device, cpu.vertices, cpu.indices, gpu.vertices, gpu.indices, gpu.vbv, gpu.ibv, index_count)) {
+        Rel(gpu.vertices);
+        Rel(gpu.indices);
+        return false;
     }
-
+    gpu.ranges = cpu.bone_ranges;
+    gpu.right_arm_ix = cpu.right_arm_ix;
+    gpu.left_arm_ix = cpu.left_arm_ix;
     if (name.empty()) {
         Rel(mob_vertices_);
         Rel(mob_indices_);
-        mob_vertices_ = vb;
-        mob_indices_ = ib;
+        mob_vertices_ = gpu.vertices;
+        mob_indices_ = gpu.indices;
         mob_vbv_ = gpu.vbv;
         mob_ibv_ = gpu.ibv;
         mob_ranges_ = gpu.ranges;
@@ -1058,11 +398,9 @@ void SteveRenderer::drawMobModel(ID3D12GraphicsCommandList* list, ID3D12Descript
                                  unsigned height, const mc::rig::Mat4& view_proj, const std::vector<mc::rig::Mat4>& bones, const SteveParams& params,
                                  D3D12_CPU_DESCRIPTOR_HANDLE rtv, std::string_view model_type) {
     if (!ready() || !own_depth_ || !dsv_heap_) return;
-    RecordSkinUpload(list, skin_);
-    RecordSkinUpload(list, mob_skin_);
-    for (auto& [name, s] : mob_skins_map_) {
-        RecordSkinUpload(list, s);
-    }
+    steve::RecordUpload(list, skin_);
+    steve::RecordUpload(list, mob_skin_);
+    for (auto& [name, s] : mob_skins_map_) steve::RecordUpload(list, s);
     const MobGpuMesh* mesh = nullptr;
     if (!model_type.empty()) {
         auto it = mob_meshes_.find(std::string(model_type));
@@ -1073,39 +411,24 @@ void SteveRenderer::drawMobModel(ID3D12GraphicsCommandList* list, ID3D12Descript
     const std::vector<BoneRange>& ranges = mesh ? mesh->ranges : mob_ranges_;
     if (ranges.empty() || vbv->BufferLocation == 0 || ibv->BufferLocation == 0) return;
 
-    D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
-    D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
-    list->RSSetViewports(1, &vp);
-    list->RSSetScissorRects(1, &sc);
-    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
-    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-    if (!params.keep_depth) list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-    list->SetPipelineState(pso_);
-    list->SetGraphicsRootSignature(root_);
-    ID3D12DescriptorHeap* heaps[] = {srv_heap};
-    list->SetDescriptorHeaps(1, heaps);
+    beginPass(list, srv_heap, rtv, width, height, pipeline_.figure, !params.keep_depth);
     list->SetGraphicsRootDescriptorTable(1, depth_table);
-    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     list->IASetVertexBuffers(0, 1, vbv);
     list->IASetIndexBuffer(ibv);
-    list->SetGraphicsRoot32BitConstants(0, 16, view_proj.m.data(), 0);
-    const float extra[8] = {params.depth_const, params.rel_bias, params.abs_bias, params.mode, params.depth_w, params.depth_h, static_cast<float>(width), static_cast<float>(height)};
-    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
-    list->SetGraphicsRoot32BitConstants(0, 4, params.tint, 40);
     for (size_t i = 0; i < ranges.size() && i < bones.size(); ++i) {
         if (ranges[i].index_count == 0) continue;
-        list->SetGraphicsRoot32BitConstants(0, 16, bones[i].m.data(), 16);
+        setConstants(list, view_proj, bones[i], params, width, height, params.tint);
         list->DrawIndexedInstanced(ranges[i].index_count, 1, ranges[i].first_index, ranges[i].base_vertex, 0);
     }
     if (params.held_item != 0 && held_vertices_ && params.held_table.ptr != 0) {
-        int arm_ix = mesh ? mesh->right_arm_ix : -1;
+        const int arm_ix = mesh ? mesh->right_arm_ix : -1;
         if (arm_ix >= 0 && static_cast<size_t>(arm_ix) < bones.size()) {
             const auto it = held_items_.find(params.held_item);
             if (it != held_items_.end()) {
                 list->SetGraphicsRootDescriptorTable(1, params.held_table);
                 list->IASetVertexBuffers(0, 1, &held_vbv_);
                 list->IASetIndexBuffer(&held_ibv_);
-                list->SetGraphicsRoot32BitConstants(0, 16, bones[arm_ix].m.data(), 16);
+                list->SetGraphicsRoot32BitConstants(0, 16, bones[static_cast<size_t>(arm_ix)].m.data(), 16);
                 list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
             }
         }
@@ -1116,57 +439,29 @@ void SteveRenderer::drawShadows(ID3D12GraphicsCommandList* list, ID3D12Descripto
                                 unsigned height, const mc::rig::Mat4& view_proj, const std::vector<eldenring::shadow::Shadow>& shadows,
                                 const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
     if (!shadowReady() || !own_depth_ || !dsv_heap_ || shadows.empty()) return;
-    D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
-    D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
-    list->RSSetViewports(1, &vp);
-    list->RSSetScissorRects(1, &sc);
-    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
-    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-    if (!params.keep_depth) list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-    list->SetPipelineState(pso_shadow_);
-    list->SetGraphicsRootSignature(root_);
-    ID3D12DescriptorHeap* heaps[] = {srv_heap};
-    list->SetDescriptorHeaps(1, heaps);
+    beginPass(list, srv_heap, rtv, width, height, pipeline_.shadow, !params.keep_depth);
     list->SetGraphicsRootDescriptorTable(1, depth_table);
-    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     list->IASetVertexBuffers(0, 1, &shadow_vbv_);
     list->IASetIndexBuffer(&shadow_ibv_);
-    list->SetGraphicsRoot32BitConstants(0, 16, view_proj.m.data(), 0);
-    const float extra[8] = {params.depth_const, params.rel_bias, params.abs_bias, params.mode, params.depth_w, params.depth_h, static_cast<float>(width), static_cast<float>(height)};
-    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
     for (const eldenring::shadow::Shadow& s : shadows) {
         if (!s.visible) continue;
-        const mc::rig::Mat4 world = eldenring::shadow::shadowMatrix(s);
         const float tint[4] = {0.f, 0.f, 0.f, s.strength};
-        list->SetGraphicsRoot32BitConstants(0, 16, world.m.data(), 16);
-        list->SetGraphicsRoot32BitConstants(0, 4, tint, 40);
+        setConstants(list, view_proj, eldenring::shadow::shadowMatrix(s), params, width, height, tint);
         list->DrawIndexedInstanced(shadow_index_count_, 1, 0, 0, 0);
     }
 }
 
 void SteveRenderer::drawArrows(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
                                D3D12_GPU_DESCRIPTOR_HANDLE atlas_table, unsigned width, unsigned height,
-                               const mc::rig::Mat4& view_proj,
-                               const std::vector<mc::rig::Mat4>& arrow_matrices,
+                               const mc::rig::Mat4& view_proj, const std::vector<mc::rig::Mat4>& arrow_matrices,
                                const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
     if (!ready() || !own_depth_ || !dsv_heap_ || arrow_matrices.empty() || atlas_table.ptr == 0) return;
     const bool have_custom_arrow = (arrow_vertices_ != nullptr && arrow_indices_ != nullptr && arrow_index_count_ > 0);
     const auto it = held_items_.find(static_cast<uint16_t>(mc::ItemId::Arrow));
     if (!have_custom_arrow && it == held_items_.end()) return;
 
-    D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
-    D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
-    list->RSSetViewports(1, &vp);
-    list->RSSetScissorRects(1, &sc);
-    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
-    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-    if (!params.keep_depth) list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-    list->SetPipelineState(pso_);
-    list->SetGraphicsRootSignature(root_);
-    ID3D12DescriptorHeap* heaps[] = {srv_heap};
-    list->SetDescriptorHeaps(1, heaps);
+    beginPass(list, srv_heap, rtv, width, height, pipeline_.figure, !params.keep_depth);
     list->SetGraphicsRootDescriptorTable(1, atlas_table);
-    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     if (have_custom_arrow) {
         list->IASetVertexBuffers(0, 1, &arrow_vbv_);
         list->IASetIndexBuffer(&arrow_ibv_);
@@ -1174,17 +469,37 @@ void SteveRenderer::drawArrows(ID3D12GraphicsCommandList* list, ID3D12Descriptor
         list->IASetVertexBuffers(0, 1, &held_vbv_);
         list->IASetIndexBuffer(&held_ibv_);
     }
-    list->SetGraphicsRoot32BitConstants(0, 16, view_proj.m.data(), 0);
-    const float extra[8] = {params.depth_const, params.rel_bias, params.abs_bias, params.mode, params.depth_w, params.depth_h, static_cast<float>(width), static_cast<float>(height)};
-    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
     const float no_tint[4] = {0.f, 0.f, 0.f, 0.f};
-    list->SetGraphicsRoot32BitConstants(0, 4, no_tint, 40);
-
     for (const auto& mat : arrow_matrices) {
-        list->SetGraphicsRoot32BitConstants(0, 16, mat.m.data(), 16);
+        setConstants(list, view_proj, mat, params, width, height, no_tint);
         if (have_custom_arrow) {
             list->DrawIndexedInstanced(arrow_index_count_, 1, 0, 0, 0);
         } else {
+            list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
+        }
+    }
+}
+
+void SteveRenderer::drawAttachments(ID3D12GraphicsCommandList* list, const eldenring::render::PartMatrices& parts, const SteveParams& params) {
+    if (params.held_item != 0 && held_vertices_ && params.held_table.ptr != 0) {
+        const bool raised = params.held_item == static_cast<uint16_t>(mc::ItemId::Shield) && params.shield_blocking && !params.block_offhand;
+        const auto it = held_items_.find(static_cast<uint16_t>(params.held_item | (raised ? kBlockingKeyBit : 0)));
+        if (it != held_items_.end()) {
+            list->SetGraphicsRootDescriptorTable(1, params.held_table);
+            list->IASetVertexBuffers(0, 1, &held_vbv_);
+            list->IASetIndexBuffer(&held_ibv_);
+            list->SetGraphicsRoot32BitConstants(0, 16, parts[static_cast<size_t>(mc::StevePart::RightArm)].m.data(), 16);
+            list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
+        }
+    }
+    if (params.offhand_item != 0 && offhand_vertices_ && params.held_table.ptr != 0) {
+        const bool raised = params.offhand_item == static_cast<uint16_t>(mc::ItemId::Shield) && params.shield_blocking && params.block_offhand;
+        const auto it = offhand_items_.find(static_cast<uint16_t>(params.offhand_item | (raised ? kBlockingKeyBit : 0)));
+        if (it != offhand_items_.end()) {
+            list->SetGraphicsRootDescriptorTable(1, params.held_table);
+            list->IASetVertexBuffers(0, 1, &offhand_vbv_);
+            list->IASetIndexBuffer(&offhand_ibv_);
+            list->SetGraphicsRoot32BitConstants(0, 16, parts[static_cast<size_t>(mc::StevePart::LeftArm)].m.data(), 16);
             list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
         }
     }
@@ -1194,24 +509,11 @@ void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* 
                          unsigned width, unsigned height, const mc::rig::Mat4& view_proj,
                          const eldenring::render::PartMatrices& parts, const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
     if (!ready() || !own_depth_ || !dsv_heap_) return;
-    RecordSkinUpload(list, skin_);
-    RecordSkinUpload(list, mob_skin_);
-    for (auto& [name, s] : mob_skins_map_) {
-        RecordSkinUpload(list, s);
-    }
-    D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
-    D3D12_RECT sc{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
-    list->RSSetViewports(1, &vp);
-    list->RSSetScissorRects(1, &sc);
-    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
-    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-    if (!params.keep_depth) list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-    list->SetPipelineState(pso_);
-    list->SetGraphicsRootSignature(root_);
-    ID3D12DescriptorHeap* heaps[] = {srv_heap};
-    list->SetDescriptorHeaps(1, heaps);
+    steve::RecordUpload(list, skin_);
+    steve::RecordUpload(list, mob_skin_);
+    for (auto& [name, s] : mob_skins_map_) steve::RecordUpload(list, s);
+    beginPass(list, srv_heap, rtv, width, height, pipeline_.figure, !params.keep_depth);
     list->SetGraphicsRootDescriptorTable(1, depth_table);
-    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     list->IASetVertexBuffers(0, 1, &vbv_);
     list->IASetIndexBuffer(&ibv_);
     const bool measure = params.mode > 2.5f && stats_ && stats_init_ && stats_readback_;
@@ -1229,43 +531,11 @@ void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* 
         list->ResourceBarrier(1, &b);
         list->SetGraphicsRootUnorderedAccessView(2, stats_->GetGPUVirtualAddress());
     }
-    list->SetGraphicsRoot32BitConstants(0, 16, view_proj.m.data(), 0);
-    const float extra[8] = {params.depth_const,
-                            params.rel_bias,
-                            params.abs_bias,
-                            params.mode,
-                            params.depth_w,
-                            params.depth_h,
-                            static_cast<float>(width),
-                            static_cast<float>(height)};
-    list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
-    list->SetGraphicsRoot32BitConstants(0, 4, params.tint, 40);
     for (size_t p = 0; p < static_cast<size_t>(mc::StevePart::Count); ++p) {
-        list->SetGraphicsRoot32BitConstants(0, 16, parts[p].m.data(), 16);
+        setConstants(list, view_proj, parts[p], params, width, height, params.tint);
         list->DrawIndexedInstanced(index_count_[p], 1, first_index_[p], base_vertex_[p], 0);
     }
-    if (params.held_item != 0 && held_vertices_ && params.held_table.ptr != 0) {
-        const bool held_raised = params.held_item == static_cast<uint16_t>(mc::ItemId::Shield) && params.shield_blocking && !params.block_offhand;
-        const auto it = held_items_.find(static_cast<uint16_t>(params.held_item | (held_raised ? kBlockingKeyBit : 0)));
-        if (it != held_items_.end()) {
-            list->SetGraphicsRootDescriptorTable(1, params.held_table); // the item is a cell of the atlas, depth is the scene's
-            list->IASetVertexBuffers(0, 1, &held_vbv_);
-            list->IASetIndexBuffer(&held_ibv_);
-            list->SetGraphicsRoot32BitConstants(0, 16, parts[static_cast<size_t>(mc::StevePart::RightArm)].m.data(), 16);
-            list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
-        }
-    }
-    if (params.offhand_item != 0 && offhand_vertices_ && params.held_table.ptr != 0) {
-        const bool off_raised = params.offhand_item == static_cast<uint16_t>(mc::ItemId::Shield) && params.shield_blocking && params.block_offhand;
-        const auto it = offhand_items_.find(static_cast<uint16_t>(params.offhand_item | (off_raised ? kBlockingKeyBit : 0)));
-        if (it != offhand_items_.end()) {
-            list->SetGraphicsRootDescriptorTable(1, params.held_table);
-            list->IASetVertexBuffers(0, 1, &offhand_vbv_);
-            list->IASetIndexBuffer(&offhand_ibv_);
-            list->SetGraphicsRoot32BitConstants(0, 16, parts[static_cast<size_t>(mc::StevePart::LeftArm)].m.data(), 16);
-            list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
-        }
-    }
+    drawAttachments(list, parts, params);
     if (measure) {
         D3D12_RESOURCE_BARRIER b{};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -1282,60 +552,26 @@ void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* 
 }
 
 void SteveRenderer::drawInventoryPreview(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
-                                        D3D12_GPU_DESCRIPTOR_HANDLE skin_table, const D3D12_VIEWPORT& vp,
-                                        const D3D12_RECT& sc, const mc::rig::Mat4& view_proj,
-                                        const eldenring::render::PartMatrices& parts, const SteveParams& params,
-                                        D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
+                                         D3D12_GPU_DESCRIPTOR_HANDLE skin_table, const D3D12_VIEWPORT& vp,
+                                         const D3D12_RECT& sc, const mc::rig::Mat4& view_proj,
+                                         const eldenring::render::PartMatrices& parts, const SteveParams& params,
+                                         D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
     if (!ready() || !own_depth_ || !dsv_heap_) return;
-    RecordSkinUpload(list, skin_);
-    RecordSkinUpload(list, mob_skin_);
-    list->RSSetViewports(1, &vp);
-    list->RSSetScissorRects(1, &sc);
-    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
-    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-    list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 1, &sc);
-
-    list->SetPipelineState(pso_);
-    list->SetGraphicsRootSignature(root_);
-    ID3D12DescriptorHeap* heaps[] = {srv_heap};
-    list->SetDescriptorHeaps(1, heaps);
+    steve::RecordUpload(list, skin_);
+    steve::RecordUpload(list, mob_skin_);
+    beginPass(list, srv_heap, rtv, static_cast<unsigned>(vp.Width), static_cast<unsigned>(vp.Height), pipeline_.figure, true, &vp, &sc, &sc);
     list->SetGraphicsRootDescriptorTable(1, skin_table);
-    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     list->IASetVertexBuffers(0, 1, &vbv_);
     list->IASetIndexBuffer(&ibv_);
-
     list->SetGraphicsRoot32BitConstants(0, 16, view_proj.m.data(), 0);
-    const float extra[8] = {0.0501f, 0.f, 0.f, 0.f /* mode 0: no occlusion */, 0.f, 0.f, vp.Width, vp.Height};
+    const float extra[8] = {0.0501f, 0.f, 0.f, 0.f, 0.f, 0.f, vp.Width, vp.Height};
     list->SetGraphicsRoot32BitConstants(0, 8, extra, 32);
     list->SetGraphicsRoot32BitConstants(0, 4, params.tint, 40);
-
     for (size_t p = 0; p < static_cast<size_t>(mc::StevePart::Count); ++p) {
         list->SetGraphicsRoot32BitConstants(0, 16, parts[p].m.data(), 16);
         list->DrawIndexedInstanced(index_count_[p], 1, first_index_[p], base_vertex_[p], 0);
     }
-
-    if (params.held_item != 0 && held_vertices_ && params.held_table.ptr != 0) {
-        const bool held_raised = params.held_item == static_cast<uint16_t>(mc::ItemId::Shield) && params.shield_blocking && !params.block_offhand;
-        const auto it = held_items_.find(static_cast<uint16_t>(params.held_item | (held_raised ? kBlockingKeyBit : 0)));
-        if (it != held_items_.end()) {
-            list->SetGraphicsRootDescriptorTable(1, params.held_table);
-            list->IASetVertexBuffers(0, 1, &held_vbv_);
-            list->IASetIndexBuffer(&held_ibv_);
-            list->SetGraphicsRoot32BitConstants(0, 16, parts[static_cast<size_t>(mc::StevePart::RightArm)].m.data(), 16);
-            list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
-        }
-    }
-    if (params.offhand_item != 0 && offhand_vertices_ && params.held_table.ptr != 0) {
-        const bool off_raised = params.offhand_item == static_cast<uint16_t>(mc::ItemId::Shield) && params.shield_blocking && params.block_offhand;
-        const auto it = offhand_items_.find(static_cast<uint16_t>(params.offhand_item | (off_raised ? kBlockingKeyBit : 0)));
-        if (it != offhand_items_.end()) {
-            list->SetGraphicsRootDescriptorTable(1, params.held_table);
-            list->IASetVertexBuffers(0, 1, &offhand_vbv_);
-            list->IASetIndexBuffer(&offhand_ibv_);
-            list->SetGraphicsRoot32BitConstants(0, 16, parts[static_cast<size_t>(mc::StevePart::LeftArm)].m.data(), 16);
-            list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
-        }
-    }
+    drawAttachments(list, parts, params);
 }
 
 } // namespace erov

@@ -19,6 +19,8 @@ struct HotkeyCallbacks {
     std::function<void(const std::string&)> log;
     // Duration (seconds) of a clip in the active CS viewmodel, or 0 when absent.
     std::function<float(const char*)> clip_duration;
+    // Duration (seconds) of an Overwatch authored clip, or 0 when absent.
+    std::function<float(const char*)> ow_clip_duration;
 
     // DirectInput / input hook wrappers
     std::function<bool()> take_left_click;
@@ -47,6 +49,8 @@ struct HotkeyCallbacks {
     std::function<bool(float damage)> queue_bullet_fire;
     // CS hitscan: damage, cone spread (degrees), max range (metres), tracer every N rounds, weapon slot.
     std::function<bool(float damage, float spread_deg, float max_range_m, uint32_t tracer_frequency, uint8_t weapon_slot)> queue_cs_shot;
+    // Doomfist strike: 0 hand cannon, 1 rocket punch, 2 uppercut, 3 slam.
+    std::function<bool(int kind)> ow_strike;
     std::function<bool(const char* reason)> queue_summon;
     std::function<void(int& cursor)> cycle_hidden_slot;
     std::function<void(int& cursor)> reset_slot_probe;
@@ -114,6 +118,9 @@ private:
     bool prev_f1_{false};
     bool prev_gameplay_f_{false};
     bool prev_reload_r_{false};
+    bool prev_ow_e_{false};
+    bool prev_ow_q_{false};
+    bool ow_punch_released_{false}; // RMB hold-to-charge: true once the punch fired
     float cs_fire_cooldown_{0.f};
     float cs_since_shot_{10.f}; // seconds since the last CS round: the first shot is accurate
 };

@@ -97,12 +97,22 @@ private:
 };
 
 struct ModeConfig {
-#if ENABLE_CS2_VIEWMODEL
-    std::atomic<bool> mc_mode{false}; // CS2 build: MC mode is not available at runtime
-#else
+    // The three modes are independent: ENABLE_MC_MODE controls whether MC
+    // gameplay exists at all, and CS2/OW are separate compile-time subsystems.
+    // A combined build can therefore switch between all three at runtime.
+#if ENABLE_MC_MODE
     std::atomic<bool> mc_mode{true};
+#else
+    std::atomic<bool> mc_mode{false};
 #endif
     std::atomic<bool> cs_mode{false};
+    std::atomic<bool> ow_mode{false};
+    std::atomic<uint8_t> ow_state{0}; // 0: Idle, 2: Shoot, 3: Rocket Punch, 4: Uppercut, 5: Slam
+    std::atomic<float> ow_anim_time{0.f};
+    std::atomic<uint8_t> ow_action_variant{0};
+    std::atomic<float> ow_dash_distance{4.0f}; // mc_er_ow.txt: ow_dash_distance=<m> for the rocket punch
+    std::atomic<bool> ow_damage_enabled{true}; // mc_er_ow.txt: ow_damage=0 disables Doomfist strike damage
+    std::atomic<float> ow_damage_scale{1.0f};  // mc_er_ow.txt: ow_damage_scale=<multiplier>
     std::atomic<uint8_t> cs_knife_state{0}; // 0: Idle, 1: Inspect, 2: Primary, 3: Secondary, 4: Deploy, 5: Reload, 6: Backstab
     std::atomic<float> cs_knife_anim_time{0.f};
     std::atomic<bool> cs_knife_inspect{false};
@@ -279,8 +289,19 @@ public:
 
     void resetForTesting() {
         // Reset ModeConfig
+#if ENABLE_MC_MODE
         mode_.mc_mode.store(true);
+#else
+        mode_.mc_mode.store(false);
+#endif
         mode_.cs_mode.store(false);
+        mode_.ow_mode.store(false);
+        mode_.ow_state.store(0);
+        mode_.ow_anim_time.store(0.f);
+        mode_.ow_action_variant.store(0);
+        mode_.ow_dash_distance.store(4.0f);
+        mode_.ow_damage_enabled.store(true);
+        mode_.ow_damage_scale.store(1.0f);
         mode_.cs_knife_state.store(0);
         mode_.cs_knife_anim_time.store(0.f);
         mode_.cs_knife_inspect.store(false);
