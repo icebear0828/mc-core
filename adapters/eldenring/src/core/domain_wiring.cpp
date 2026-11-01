@@ -199,6 +199,7 @@ void SetupInput() {
         cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
         cb.clip_duration = [](const char* n) { return erov::CsClipDuration(n); };
         cb.ow_clip_duration = [](const char* n) { return erov::OwClipDuration(n); };
+        cb.adjust_cs_view = [](int axis, float delta) { erov::AdjustCsView(axis, delta); };
         cb.take_left_click = erin::TakeLeftClick;
         cb.take_right_click = erin::TakeRightClick;
         cb.left_held = erin::LeftHeld;

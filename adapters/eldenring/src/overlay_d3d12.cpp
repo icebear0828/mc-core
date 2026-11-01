@@ -133,6 +133,28 @@ float CsClipDuration(const char* name) {
 #endif
 }
 
+void AdjustCsView(int axis, float delta) {
+#if ENABLE_CS2_VIEWMODEL
+    auto cfg = g_cs.getViewmodelConfig();
+    switch (axis) {
+        case 0: cfg.offset_x += delta; break;
+        case 1: cfg.offset_y += delta; break;
+        case 2: cfg.offset_z += delta; break;
+        case 3: cfg.fov_deg = std::clamp(cfg.fov_deg + delta, 20.f, 140.f); break;
+        case 4: cfg.z_near = std::clamp(cfg.z_near + delta, 0.0001f, 0.5f); break;
+        default: return;
+    }
+    g_cs.setViewmodelConfig(cfg);
+    Logf("cs view: x=%.3f y=%.3f z=%.3f fov=%.1f near=%.4f",
+         static_cast<double>(cfg.offset_x), static_cast<double>(cfg.offset_y),
+         static_cast<double>(cfg.offset_z), static_cast<double>(cfg.fov_deg),
+         static_cast<double>(cfg.z_near));
+#else
+    (void)axis;
+    (void)delta;
+#endif
+}
+
 void SetBlockMesh(const mc::rig::RigMesh& mesh) {
     std::lock_guard<std::mutex> g(g_block_mutex);
     g_block_mesh = mesh;
