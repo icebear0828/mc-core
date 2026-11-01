@@ -90,6 +90,8 @@ add_executable(mc_tests
     test_control_policy.cpp
     test_eldenring_control_policy.cpp
     test_eldenring_mod_integration.cpp
+    test_eldenring_steve_mesh.cpp
+    test_eldenring_pipeline_desc.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/ui/inventory_controller.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/ui/hud_bridge.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/movement/player_locomotion.cpp
@@ -97,6 +99,7 @@ add_executable(mc_tests
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/combat/combat_service.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/input/hotkey_dispatcher.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/hooks/game_hooks.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/render/steve_mesh_factory.cpp
 )
 
 if(ENABLE_CS2_VIEWMODEL)
@@ -119,6 +122,7 @@ endif()
 
 
 target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source" MC_CORE_TESTS)
+target_include_directories(mc_tests PRIVATE ${CMAKE_SOURCE_DIR}/adapters/eldenring/src)
 
 target_link_libraries(mc_tests
     PRIVATE
