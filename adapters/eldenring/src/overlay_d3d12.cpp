@@ -48,10 +48,11 @@ void SetMobSkin(const uint8_t* rgba, unsigned width, unsigned height) {
 }
 
 void SetMobSkin(std::string_view name, const uint8_t* rgba, unsigned width, unsigned height) {
-    g_mob_rgba.assign(rgba, rgba + static_cast<size_t>(width) * height * 4);
-    g_mob_w = width;
-    g_mob_h = height;
-    if (!name.empty()) {
+    if (name.empty()) { // the unnamed call sets the fallback skin; a named one only serves its own model
+        g_mob_rgba.assign(rgba, rgba + static_cast<size_t>(width) * height * 4);
+        g_mob_w = width;
+        g_mob_h = height;
+    } else {
         MobSkinEntry entry;
         entry.rgba.assign(rgba, rgba + static_cast<size_t>(width) * height * 4);
         entry.w = width;

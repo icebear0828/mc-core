@@ -20,9 +20,10 @@ const mc::model::EntityModel* PropModel(const char* name) {
 
 // Draws a Bedrock model (elytra wings, trident) attached to a Steve part. `delta` is the world-space motion of that
 // part since the rest pose; the model's own bone pivots line up with the Steve rig's (same Bedrock coordinates).
+// `textured` draws the model's own skin (the elytra texture); otherwise the whole model is filled with `r, g, b`.
 void DrawProp(const char* name, const mc::model::EntityModel* model, const mc::rig::Mat4& delta, const SteveParams& sp,
               const mc::rig::Mat4& vp, const SteveState& steve, D3D12_CPU_DESCRIPTOR_HANDLE rtv, float r, float g, float b,
-              float flap) {
+              float flap, bool textured = false) {
     if (model == nullptr || !g_steve.mobModelReady(name)) return;
     const mc::Vec3 feet{steve.feet[0], steve.feet[1], steve.feet[2]};
     std::vector<mc::Quat> extra(model->bones.size());
@@ -41,11 +42,17 @@ void DrawProp(const char* name, const mc::model::EntityModel* model, const mc::r
     pp.held_item = 0;
     pp.held_table = {};
     pp.offhand_item = 0;
-    pp.tint[0] = r;
-    pp.tint[1] = g;
-    pp.tint[2] = b;
-    pp.tint[3] = 1.f; // solid: the shader skips the skin alpha cut-out for a fully opaque tint
-    g_steve.drawMobModel(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, bones, pp, rtv, name);
+    // A textured prop needs the descriptor table that pairs the depth view with its own skin (slots 8..15).
+    D3D12_GPU_DESCRIPTOR_HANDLE table = g_depth_gpu;
+    const auto skin = g_mob_tables_gpu.find(name);
+    const bool have_skin = textured && skin != g_mob_tables_gpu.end() && skin->second.ptr != 0;
+    if (have_skin) table = skin->second;
+    pp.tint[0] = have_skin ? 1.f : r;
+    pp.tint[1] = have_skin ? 1.f : g;
+    pp.tint[2] = have_skin ? 1.f : b;
+    // Solid fills skip the skin alpha cut-out; a textured prop keeps it and takes the texture's own colours.
+    pp.tint[3] = have_skin ? 0.f : 1.f;
+    g_steve.drawMobModel(g_s.list, g_s.srv_heap, table, g_s.width, g_s.height, vp, bones, pp, rtv, name);
 }
 
 } // namespace
@@ -275,7 +282,10 @@ void RenderFrame(IDXGISwapChain* sc) {
         sp.tint[1] = sp.tint[2] = 0.f;
         sp.tint[3] = 0.4f * (g_death_tracker.isDying() ? 1.0f : std::min(1.f, steve.hurt * 4.f));
         sp.keep_depth = blocks_drawn; // the blocks left their depth in the figure's buffer: the figure sorts against them
-        sp.held_item = static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.held_item), steve.bow_charge));
+        // A trident in the main hand is drawn as a 3D model in the hand (below), not as the flat sprite.
+        const bool holding_trident = !steve.dead && static_cast<mc::ItemId>(steve.held_item) == mc::ItemId::Trident;
+        sp.held_item = holding_trident ? 0
+                                       : static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.held_item), steve.bow_charge));
         // a bow in the offhand shows the drawn-bow sprite while it is drawn (the held item in the right hand stays what it is)
         sp.shield_blocking = steve.blocking;
         sp.block_offhand = steve.block_offhand;
@@ -286,31 +296,36 @@ void RenderFrame(IDXGISwapChain* sc) {
             g_steve.draw(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, parts, sp, f.rtv);
             g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr); // ImGui draws without a depth view
         }
-        // Phase A debug props: the elytra wings follow the torso, the trident follows the right arm.
-        if (!steve.dead && (steve.gliding || steve.trident_charge > 0.f)) {
+        // Props: the elytra wings follow the torso, the trident is the 3D model in the right hand.
+        if (!steve.dead && (steve.gliding || holding_trident)) {
             const mc::Vec3 feet_v{steve.feet[0], steve.feet[1], steve.feet[2]};
             const mc::rig::Mat4 rest_body = mc::rig::partMatrix(mc::StevePart::Body, mc::Quat{}, feet_v, steve.yaw, eldenring::render::kBasis);
             const mc::rig::Mat4 body_delta =
                 eldenring::render::inverseRigid(rest_body) * parts[static_cast<size_t>(mc::StevePart::Body)];
-            // The trident follows the hand's position but not the arm's rotation: the 12-part rig has no wrist, so
-            // inheriting the charge pose's 186-degree arm rotation would swing the shaft down the player's back.
-            // The prop mesh is baked at its rest pose and the trident bone's pivot sits exactly at the hand, so the
-            // delta has to carry that pivot from the rest hand to the posed one.
-            const mc::model::EntityModel* trident_model = PropModel("trident");
-            const mc::model::Bone* trident_bone = trident_model != nullptr ? trident_model->findBone("trident") : nullptr;
-            const mc::Vec3 trident_pivot =
-                trident_bone != nullptr ? mc::model::bonePivotHost(*trident_bone, eldenring::render::kBasis) : mc::Vec3{};
-            const mc::rig::Mat4 rest_arm = mc::rig::partMatrix(mc::StevePart::RightArm, mc::Quat{}, feet_v, steve.yaw, eldenring::render::kBasis);
-            const mc::Vec3 hand_rest = mc::rig::transformPoint(rest_arm, trident_pivot);
-            const mc::Vec3 hand_posed = mc::rig::transformPoint(parts[static_cast<size_t>(mc::StevePart::RightArm)], trident_pivot);
-            const mc::rig::Mat4 trident_delta = mc::rig::translation(hand_posed - hand_rest);
             if (steve.gliding) {
                 static float flap_t = 0.f;
                 flap_t += dt;
                 DrawProp("elytra_wings", PropModel("elytra_wings"), body_delta, sp, vp, steve, f.rtv, 0.82f, 0.84f, 0.9f,
-                         0.35f * std::sin(flap_t * 8.f));
+                         0.35f * std::sin(flap_t * 8.f), true);
             }
-            if (steve.trident_charge > 0.f) {
+            if (holding_trident) {
+                const mc::rig::Mat4 rest_arm =
+                    mc::rig::partMatrix(mc::StevePart::RightArm, mc::Quat{}, feet_v, steve.yaw, eldenring::render::kBasis);
+                const mc::rig::Mat4& posed_arm = parts[static_cast<size_t>(mc::StevePart::RightArm)];
+                // Not charging: the trident rides the arm exactly like the flat sprite does.
+                mc::rig::Mat4 trident_delta = eldenring::render::inverseRigid(rest_arm) * posed_arm;
+                if (steve.trident_charge > 0.f) {
+                    // Charging: the arm is raised by ~186 degrees and the 12-part rig has no wrist, so inheriting
+                    // that rotation would swing the shaft down the player's back. The trident keeps its rest
+                    // orientation and only its pivot (which sits at the hand) follows the hand.
+                    const mc::model::EntityModel* trident_model = PropModel("trident");
+                    const mc::model::Bone* trident_bone = trident_model != nullptr ? trident_model->findBone("trident") : nullptr;
+                    const mc::Vec3 trident_pivot =
+                        trident_bone != nullptr ? mc::model::bonePivotHost(*trident_bone, eldenring::render::kBasis) : mc::Vec3{};
+                    const mc::Vec3 hand_rest = mc::rig::transformPoint(rest_arm, trident_pivot);
+                    const mc::Vec3 hand_posed = mc::rig::transformPoint(posed_arm, trident_pivot);
+                    trident_delta = mc::rig::translation(hand_posed - hand_rest);
+                }
                 DrawProp("trident", PropModel("trident"), trident_delta, sp, vp, steve, f.rtv, 0.10f, 0.55f, 0.55f, 0.f);
             }
             g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);

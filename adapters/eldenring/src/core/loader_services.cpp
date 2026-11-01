@@ -176,9 +176,9 @@ DWORD WINAPI LoaderThread(LPVOID) {
 // mc_er_dbg_anim.txt exists, so a normal install never sees these keys.
 DWORD WINAPI AnimDebugThread(LPVOID) {
     if (!FileExists(g_game_dir + "mc_er_dbg_anim.txt")) return 0;
-    Log("anim-debug: Insert=glide Delete=riptide Home=trident-charge End=firework");
+    Log("anim-debug: Insert=glide Delete=riptide End=firework");
     auto& m = eldenring::RuntimeContext::Instance().mode();
-    bool p_ins = false, p_del = false, p_home = false, p_end = false;
+    bool p_ins = false, p_del = false, p_end = false;
     for (;;) {
         const bool fg = GameInForeground();
         auto edge = [&](int vk, bool& prev) {
@@ -196,11 +196,6 @@ DWORD WINAPI AnimDebugThread(LPVOID) {
             const bool v = !m.dbg_riptide.load();
             m.dbg_riptide.store(v);
             Log("anim-debug: riptide %s", v ? "on" : "off");
-        }
-        if (edge(VK_HOME, p_home)) {
-            const float v = m.dbg_trident_charge.load() > 0.5f ? 0.f : 1.f;
-            m.dbg_trident_charge.store(v);
-            Log("anim-debug: trident charge %.2f", v);
         }
         if (edge(VK_END, p_end)) {
             m.dbg_firework_seq.fetch_add(1);

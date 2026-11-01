@@ -83,6 +83,7 @@ add_library(mc_core STATIC
     src/ballistics.cpp
     src/combat.cpp
     src/consumables.cpp
+    src/trident.cpp
     src/elytra.cpp
     src/hud.cpp
     src/hud_layout.cpp
