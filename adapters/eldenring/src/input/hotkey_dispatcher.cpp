@@ -842,6 +842,24 @@ void HotkeyDispatcher::tick(float dt) {
         }
     }
     prev_f1_ = d1;
+
+    // CS viewmodel tuning keys. [ ] move the view along Z (forward / back),
+    // , . along X, ; ' along Y, - = change FOV. Shift gives a 5x step.
+    if (mode.cs_mode.load() && cb_.adjust_cs_view) {
+        static const int kVk[8] = {VK_OEM_4, VK_OEM_6, VK_OEM_COMMA, VK_OEM_PERIOD,
+                                   VK_OEM_1, VK_OEM_7, VK_OEM_MINUS, VK_OEM_PLUS};
+        static const int kAxis[8] = {2, 2, 0, 0, 1, 1, 3, 3};
+        static const float kDir[8] = {-1.f, 1.f, -1.f, 1.f, -1.f, 1.f, -1.f, 1.f};
+        const bool shift = queryKey(VK_SHIFT);
+        for (int i = 0; i < 8; ++i) {
+            const bool down = fg && queryKey(kVk[i]);
+            if (down && !prev_csview_keys_[i]) {
+                const float step = (kAxis[i] == 3) ? (shift ? 5.f : 1.f) : (shift ? 0.05f : 0.01f);
+                cb_.adjust_cs_view(kAxis[i], kDir[i] * step);
+            }
+            prev_csview_keys_[i] = down;
+        }
+    }
 #endif
 
     const bool d8 = fg && queryKey(VK_F8);

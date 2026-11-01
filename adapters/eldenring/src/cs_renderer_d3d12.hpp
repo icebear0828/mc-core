@@ -79,11 +79,18 @@ public:
                                const std::string& sleeve_norm_png = "",
                                const std::string& sleeve_pbr_png = "");
 
-    // Viewmodel projection & stance management
-    void setViewmodelConfig(const ViewmodelProjectionConfig& cfg) { vm_config_ = cfg; }
-    [[nodiscard]] const ViewmodelProjectionConfig& getViewmodelConfig() const { return vm_config_; }
+    // Viewmodel projection & stance management. The input thread can retune
+    // this at runtime (debug keys), so guard it against the render thread.
+    void setViewmodelConfig(const ViewmodelProjectionConfig& cfg) {
+        std::lock_guard<std::mutex> lock(vm_config_mutex_);
+        vm_config_ = cfg;
+    }
+    [[nodiscard]] ViewmodelProjectionConfig getViewmodelConfig() const {
+        std::lock_guard<std::mutex> lock(vm_config_mutex_);
+        return vm_config_;
+    }
     [[nodiscard]] mc::rig::Mat4 computeViewmodelProjection(unsigned width, unsigned height) const {
-        return eldenring::cs::computeViewmodelProjection(width, height, vm_config_);
+        return eldenring::cs::computeViewmodelProjection(width, height, getViewmodelConfig());
     }
 
     // Pose getters for verification and rendering
@@ -192,7 +199,19 @@ private:
     TextureGpu sleeve_normal_tex_;
     TextureGpu sleeve_pbr_tex_;
 
-    ViewmodelProjectionConfig vm_config_{};
+    // First-person sleeve tuning (user-tuned in game). The narrow viewmodel
+    // FOV crops the open shoulder end of the agent sleeve; the small offsets
+    // keep the gun centred. FOV 68 puts the shoulder back on screen.
+    static ViewmodelProjectionConfig defaultCsViewConfig() {
+        ViewmodelProjectionConfig cfg;
+        cfg.fov_deg = 32.0f;
+        cfg.offset_x = 0.000f;
+        cfg.offset_y = -0.010f;
+        cfg.offset_z = -0.030f;
+        return cfg;
+    }
+    ViewmodelProjectionConfig vm_config_{defaultCsViewConfig()};
+    mutable std::mutex vm_config_mutex_;
     eldenring::cs::CSWeaponDefinition active_weapon_def_{};
     bool has_active_weapon_{false};
 

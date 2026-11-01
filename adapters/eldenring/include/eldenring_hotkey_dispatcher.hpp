@@ -57,6 +57,8 @@ struct HotkeyCallbacks {
     std::function<void()> snapshot_native_parts;
     std::function<void(int frames)> request_frame_trace;
     std::function<void(const char* path)> request_screenshot;
+    // CS viewmodel tuning: axis 0=x, 1=y, 2=z, 3=fov, 4=near plane.
+    std::function<void(int axis, float delta)> adjust_cs_view;
     std::function<void()> cycle_depth_candidate;
     std::function<void(bool fg)> inventory_tick;
     std::function<void()> blocks_tick;
@@ -124,6 +126,7 @@ private:
     float cs_fire_cooldown_{0.f};
     float cs_since_shot_{10.f}; // seconds since the last CS round: the first shot is accurate
     int cs_reload_sound_stage_{0}; // 0..3: mag-out / mag-in / bolt pull already played
+    bool prev_csview_keys_[8]{};   // [ ] , . ; ' - = debug tuning keys
 };
 
 } // namespace eldenring::input

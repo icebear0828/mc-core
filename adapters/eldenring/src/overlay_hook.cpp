@@ -340,6 +340,41 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             const std::string& game_dir = eldenring::diagnostics::GetGameDir();
             g_cs_game_dir = game_dir;
 
+            // CS viewmodel projection tuning (mc_er_csview.txt). Moving the
+            // view forward (negative offset_z) pushes the open shoulder end of
+            // the first-person sleeve off screen without deforming the mesh.
+            {
+                auto cs_cfg = g_cs.getViewmodelConfig();
+                const std::string view_path = game_dir.empty() ? std::string() : (game_dir + "mc_er_csview.txt");
+                if (!view_path.empty() && std::filesystem::exists(view_path)) {
+                    std::ifstream in(view_path);
+                    std::string line;
+                    while (std::getline(in, line)) {
+                        const size_t eq = line.find('=');
+                        if (eq == std::string::npos) continue;
+                        const std::string key = line.substr(0, eq);
+                        const float value = static_cast<float>(atof(line.c_str() + eq + 1));
+                        if (key == "cs_fov") {
+                            cs_cfg.fov_deg = std::clamp(value, 20.f, 140.f);
+                        } else if (key == "cs_offset_x") {
+                            cs_cfg.offset_x = value;
+                        } else if (key == "cs_offset_y") {
+                            cs_cfg.offset_y = value;
+                        } else if (key == "cs_offset_z") {
+                            cs_cfg.offset_z = value;
+                        } else if (key == "cs_z_near") {
+                            cs_cfg.z_near = std::clamp(value, 0.0001f, 0.5f);
+                        }
+                    }
+                }
+                g_cs.setViewmodelConfig(cs_cfg);
+                Logf("cs view config: x=%.3f y=%.3f z=%.3f fov=%.1f near=%.4f (%s)",
+                     static_cast<double>(cs_cfg.offset_x), static_cast<double>(cs_cfg.offset_y),
+                     static_cast<double>(cs_cfg.offset_z), static_cast<double>(cs_cfg.fov_deg),
+                     static_cast<double>(cs_cfg.z_near),
+                     std::filesystem::exists(view_path) ? view_path.c_str() : "defaults");
+            }
+
             std::vector<std::string> model_candidates;
             if (!game_dir.empty()) {
                 model_candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "cs_butterfly_viewmodel.bin").string());
