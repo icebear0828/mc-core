@@ -40,6 +40,9 @@
 #include "cs_renderer_d3d12.hpp"
 #include "cs_impact_decals.hpp"
 #endif
+#if ENABLE_OW_VIEWMODEL
+#include "ow_renderer_d3d12.hpp"
+#endif
 #include "eldenring_runtime_context.hpp"
 #include "eldenring_inventory_preview.hpp"
 #include "eldenring_diagnostics.hpp"
@@ -78,6 +81,9 @@ using CreateDsvFn = void(STDMETHODCALLTYPE*)(ID3D12Device*, ID3D12Resource*, con
 CreateDsvFn g_create_dsv_orig = nullptr;
 
 SteveConfig g_steve_cfg;
+#if ENABLE_OW_VIEWMODEL
+OwConfig g_ow_cfg;
+#endif
 // The HUD atlas, enlarged 4x with nearest neighbour (ImGui's DX12 backend samples linearly), in heap slot 3.
 std::vector<uint8_t> g_atlas_rgba;
 unsigned g_atlas_w = 0, g_atlas_h = 0;
@@ -150,6 +156,17 @@ std::string g_cs_game_dir;
 std::string g_cs_knife_model_path;
 uint8_t g_cs_active_slot = 0;
 uint8_t g_cs_gun_table_slot = 0; // weapon slot whose maps are in g_cs_ak_table (0 = none)
+#endif
+
+#if ENABLE_OW_VIEWMODEL
+// Overwatch (Doomfist) first-person gauntlet. It owns a renderer, a descriptor
+// heap and a config of its own; nothing here touches the CS2 tables.
+erow::OwRenderer g_ow;
+ID3D12DescriptorHeap* g_ow_srv_heap = nullptr; // 3 SRVs: albedo, normal, ORM
+D3D12_GPU_DESCRIPTOR_HANDLE g_ow_table_gpu{};
+bool g_ow_initialized = false;
+bool g_ow_model_loaded = false;
+bool g_ow_load_failed = false;
 #endif
 mc::SteveAnimator g_anim;
 eldenring::render::SteveMotion g_motion;
@@ -326,6 +343,14 @@ void Teardown() {
     g_steve.release();
 #if ENABLE_CS2_VIEWMODEL
     g_cs.release();
+#endif
+#if ENABLE_OW_VIEWMODEL
+    g_ow.release();
+    SafeRelease(g_ow_srv_heap);
+    g_ow_table_gpu = {};
+    g_ow_initialized = false;
+    g_ow_model_loaded = false;
+    g_ow_load_failed = false;
 #endif
     if (g_s.imgui_ready) {
         ImGui_ImplDX12_Shutdown();
@@ -552,9 +577,12 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
         CreateCsDecalTexture(srv_inc);
 #endif
 #if ENABLE_CS2_VIEWMODEL
-        // The CS2 build is CS-only at runtime: never start in MC mode, even if
-        // a config file or a missing CS asset would otherwise fall back to it.
+        // A build without MC gameplay must never start in MC mode, even if a
+        // config file or a missing CS asset would otherwise fall back to it.
+        // A combined build keeps the configured startup mode (mc_er_mode.txt).
+#if !ENABLE_MC_MODE
         eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
+#endif
         if (!g_cs.init(g_s.device, g_s.format, g_log)) {
             Logf("overlay: CS viewmodel renderer unavailable");
         } else {
@@ -593,9 +621,15 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                     snprintf(cs_msg, sizeof(cs_msg), "overlay: CS viewmodel model loaded successfully from %s", p.c_str());
                     Logf(cs_msg);
                     g_cs_knife_model_path = p;
-                    eldenring::RuntimeContext::Instance().mode().cs_mode.store(true);
-                    eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
-                    eldenring::RuntimeContext::Instance().mode().first_person.store(true);
+                    // Auto-start CS only when no other mode is active. A
+                    // combined build keeps whatever mc_er_mode.txt selected
+                    // (mc by default), so deploying OW or MC never silently
+                    // switches the player into CS.
+                    auto& cs_mode_ref = eldenring::RuntimeContext::Instance().mode();
+                    if (!cs_mode_ref.ow_mode.load() && !cs_mode_ref.mc_mode.load()) {
+                        cs_mode_ref.cs_mode.store(true);
+                        cs_mode_ref.first_person.store(true);
+                    }
                     break;
                 }
             }
@@ -773,6 +807,25 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                 D3D12_CPU_DESCRIPTOR_HANDLE src{cs_table_cpu.ptr + static_cast<SIZE_T>(srv_inc) * shared};
                 D3D12_CPU_DESCRIPTOR_HANDLE dst{ak_table_cpu.ptr + static_cast<SIZE_T>(srv_inc) * shared};
                 g_s.device->CopyDescriptorsSimple(1, dst, src, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            }
+        }
+#endif
+#if ENABLE_OW_VIEWMODEL
+        {
+            // The gauntlet owns a three-slot SRV heap. It never shares a slot
+            // with the CS2 knife/gun tables, so either subsystem can be built
+            // without the other.
+            D3D12_DESCRIPTOR_HEAP_DESC ow_heap{};
+            ow_heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+            ow_heap.NumDescriptors = 3;
+            ow_heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+            if (SUCCEEDED(g_s.device->CreateDescriptorHeap(&ow_heap, IID_PPV_ARGS(&g_ow_srv_heap))) &&
+                g_ow.init(g_s.device, g_s.format, g_log)) {
+                g_ow_table_gpu = g_ow_srv_heap->GetGPUDescriptorHandleForHeapStart();
+                g_ow_initialized = true;
+                Logf("overlay: OW gauntlet renderer ready (dedicated 3-slot SRV heap)");
+            } else {
+                Logf("overlay: OW gauntlet renderer unavailable");
             }
         }
 #endif
@@ -1475,6 +1528,62 @@ void DrawInventory(const HudState& hud, float w, float h) {
 eldenring::live::HeartAnimator g_hearts;
 
 void DrawHud(const HudState& hud, float w, float h) {
+    if (hud.ow_mode) {
+        // Overwatch HUD: crosshair + ability legend. The MC hearts/hotbar must
+        // not leak into OW mode (the CS branch returns for the same reason).
+        ImDrawList* dl = ImGui::GetBackgroundDrawList();
+        const float cx = w * 0.5f, cy = h * 0.5f;
+        const float s = std::max(0.5f, h / 1080.f);
+        const ImU32 cyan = IM_COL32(120, 255, 220, 235);
+        const ImU32 shadow = IM_COL32(0, 0, 0, 190);
+        dl->AddCircleFilled({cx, cy}, 1.8f * s, shadow);
+        dl->AddCircleFilled({cx, cy}, 1.2f * s, cyan);
+        const float gap = 7.f * s, len = 9.f * s, th = 2.f * s;
+        auto tick = [&](float x0, float y0, float x1, float y1) {
+            dl->AddLine({x0, y0}, {x1, y1}, shadow, th + 2.f * s);
+            dl->AddLine({x0, y0}, {x1, y1}, cyan, th);
+        };
+        tick(cx - gap - len, cy, cx - gap, cy);
+        tick(cx + gap, cy, cx + gap + len, cy);
+        tick(cx, cy - gap - len, cx, cy - gap);
+        tick(cx, cy + gap, cx, cy + gap + len);
+
+        // Hit/kill feedback from the DamageQueue: the same diagonal ticks the
+        // CS branch uses. Without this an OW punch deals damage but the screen
+        // gives no confirmation.
+        if (hud.hit > 0.f) {
+            const float a = std::clamp(hud.hit, 0.f, 1.f);
+            const float hit_gap = (hud.hit_crit ? 8.f : 6.f) * s, hit_len = (hud.hit_crit ? 14.f : 10.f) * s;
+            const ImU32 col = hud.hit_crit ? IM_COL32(255, 170, 0, static_cast<int>(255 * a))
+                                           : IM_COL32(255, 255, 255, static_cast<int>(255 * a));
+            const float d = 0.70710678f;
+            for (int sx = -1; sx <= 1; sx += 2) {
+                for (int sy = -1; sy <= 1; sy += 2) {
+                    dl->AddLine({cx + sx * hit_gap * d, cy + sy * hit_gap * d},
+                                {cx + sx * (hit_gap + hit_len) * d, cy + sy * (hit_gap + hit_len) * d},
+                                col, 3.f * s);
+                }
+            }
+        }
+        if (hud.kill > 0.f) {
+            const float a = std::clamp(hud.kill, 0.f, 1.f);
+            const float kill_gap = 11.f * s, kill_len = 18.f * s;
+            const ImU32 col = IM_COL32(225, 40, 40, static_cast<int>(255 * a));
+            const float d = 0.70710678f;
+            dl->AddLine({cx - kill_gap * d, cy - kill_gap * d}, {cx + kill_len * d, cy + kill_len * d}, col, 3.f * s);
+            dl->AddLine({cx + kill_gap * d, cy - kill_gap * d}, {cx - kill_len * d, cy + kill_len * d}, col, 3.f * s);
+        }
+
+        const char* legend[4] = {"[LMB] Hand Cannon", "[RMB] Rocket Punch", "[Q] Seismic Slam", "[E] Rising Uppercut"};
+        const float fs = 15.f * s;
+        for (int i = 0; i < 4; ++i) {
+            const float px = 24.f * s;
+            const float py = h - (110.f - i * 24.f) * s;
+            dl->AddText(ImGui::GetFont(), fs, {px + s, py + s}, IM_COL32(0, 0, 0, 200), legend[i]);
+            dl->AddText(ImGui::GetFont(), fs, {px, py}, cyan, legend[i]);
+        }
+        return;
+    }
 #if ENABLE_CS2_VIEWMODEL
     if (hud.cs_mode) {
         ImDrawList* dl = ImGui::GetBackgroundDrawList();
@@ -1814,9 +1923,9 @@ void RenderFrame(IDXGISwapChain* sc) {
     HudState hud;
     SteveState steve;
 #if ENABLE_CS2_VIEWMODEL
-    if (!g_provider || !g_provider(hud, steve) || !hud.show || (!hud.mc_mode && !hud.cs_mode)) return;
+    if (!g_provider || !g_provider(hud, steve) || !hud.show || (!hud.mc_mode && !hud.cs_mode && !hud.ow_mode)) return;
 #else
-    if (!g_provider || !g_provider(hud, steve) || !hud.show || !hud.mc_mode) return;
+    if (!g_provider || !g_provider(hud, steve) || !hud.show || (!hud.mc_mode && !hud.ow_mode)) return;
 #endif
 
     if (g_depth_dirty.exchange(false)) {
@@ -2148,8 +2257,8 @@ void RenderFrame(IDXGISwapChain* sc) {
     } else {
         g_mob_registry.clear();
     }
+    [[maybe_unused]] auto& r_mode = eldenring::RuntimeContext::Instance().mode();
 #if ENABLE_CS2_VIEWMODEL
-    auto& r_mode = eldenring::RuntimeContext::Instance().mode();
     if (r_mode.cs_mode.load() && g_cs.ready()) {
         // A weapon switch releases the old VB/IB and textures; wait for the
         // GPU to finish the previous frame before replacing them.
@@ -2165,11 +2274,67 @@ void RenderFrame(IDXGISwapChain* sc) {
     const bool cs_active = false;
 #endif
     const bool mc_mode_on = eldenring::RuntimeContext::Instance().mode().mc_mode.load(std::memory_order_relaxed);
-    // Do not fall back to the MC first-person model while CS mode owns the view,
+    const bool ow_mode_on = eldenring::RuntimeContext::Instance().mode().ow_mode.load(std::memory_order_relaxed);
+    // Do not fall back to the MC first-person model while CS mode or OW mode owns the view,
     // or while MC mode is off.
-    const bool mc_fp_active = !cs_active && !cs_mode_on && mc_mode_on && steve.first_person && !steve.dead && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
+    const bool mc_fp_active = !cs_active && !cs_mode_on && !ow_mode_on && mc_mode_on && steve.first_person && !steve.dead && steve.cam_valid && g_steve.ready() && g_fp_built && g_steve.firstPersonReady() &&
         g_steve.ensureDepth(g_s.device, g_s.width, g_s.height);
 
+#if ENABLE_OW_VIEWMODEL
+    const bool ow_active = ow_mode_on && steve.first_person && !steve.dead && GameIsForeground() && g_ow_initialized;
+    if (ow_active) {
+        if (!g_ow_model_loaded && !g_ow_load_failed) {
+            const std::string& ow_game_dir = eldenring::diagnostics::GetGameDir();
+            std::vector<std::string> ow_model_candidates;
+            if (!ow_game_dir.empty()) {
+                ow_model_candidates.push_back((std::filesystem::path(ow_game_dir) / "mods" / "mc_adapter" / "ow_gauntlet.bin").string());
+            }
+            ow_model_candidates.push_back("mods\\mc_adapter\\ow_gauntlet.bin");
+            ow_model_candidates.push_back("ow_gauntlet.bin");
+            for (const auto& p : ow_model_candidates) {
+                if (std::filesystem::exists(p) && g_ow.loadModel(g_s.device, p)) {
+                    g_ow_model_loaded = true;
+                    Logf("overlay: OW gauntlet loaded from %s", p.c_str());
+                    break;
+                }
+            }
+            if (!g_ow_model_loaded) {
+                g_ow_load_failed = true;
+                Logf("overlay: OW gauntlet model not found");
+            } else {
+                auto firstExisting = [](const std::vector<std::string>& candidates) {
+                    for (const auto& p : candidates) {
+                        if (std::filesystem::exists(p)) return p;
+                    }
+                    return std::string();
+                };
+                std::vector<std::string> albedo, normal, pbr;
+                if (!ow_game_dir.empty()) {
+                    albedo.push_back((std::filesystem::path(ow_game_dir) / "mods" / "mc_adapter" / "ow_gauntlet.png").string());
+                    normal.push_back((std::filesystem::path(ow_game_dir) / "mods" / "mc_adapter" / "ow_gauntlet_normal.png").string());
+                    pbr.push_back((std::filesystem::path(ow_game_dir) / "mods" / "mc_adapter" / "ow_gauntlet_pbr.png").string());
+                }
+                albedo.push_back("mods\\mc_adapter\\ow_gauntlet.png");
+                normal.push_back("mods\\mc_adapter\\ow_gauntlet_normal.png");
+                pbr.push_back("mods\\mc_adapter\\ow_gauntlet_pbr.png");
+                if (g_ow.loadTextures(g_s.device, firstExisting(albedo), firstExisting(normal), firstExisting(pbr),
+                                      g_ow_srv_heap->GetCPUDescriptorHandleForHeapStart())) {
+                    Logf("overlay: OW gauntlet textures loaded");
+                } else {
+                    Logf("overlay: OW gauntlet textures missing");
+                }
+            }
+        }
+        if (g_ow_model_loaded) {
+            g_ow.setConfig(g_ow_cfg);
+            const mc::rig::Mat4 proj = g_ow.computeProjection(g_s.width, g_s.height);
+            g_ow.tick(dt, r_mode.ow_state.load(), r_mode.ow_anim_time.load(), r_mode.ow_action_variant.load());
+            const D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_steve.ready() ? g_steve.dsvHandle() : D3D12_CPU_DESCRIPTOR_HANDLE{};
+            g_ow.draw(g_s.list, g_ow_srv_heap, g_ow_table_gpu, g_s.width, g_s.height, proj, f.rtv, dsv);
+            g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
+        }
+    } else
+#endif
 #if ENABLE_CS2_VIEWMODEL
     if (cs_active && !steve.dead) {
         const mc::rig::Mat4 proj = g_cs.computeViewmodelProjection(g_s.width, g_s.height);
@@ -2467,6 +2632,22 @@ bool ResolveTargets(void*& present, void*& resize, void*& execute, void*& create
 } // namespace
 
 void SetSteveConfig(const SteveConfig& cfg) { g_steve_cfg = cfg; }
+void SetOwConfig(const OwConfig& cfg) {
+#if ENABLE_OW_VIEWMODEL
+    g_ow_cfg = cfg;
+#else
+    (void)cfg;
+#endif
+}
+
+float OwClipDuration(const char* name) {
+#if ENABLE_OW_VIEWMODEL
+    return g_ow.clipDuration(name);
+#else
+    (void)name;
+    return 0.f;
+#endif
+}
 
 void RequestFrameTrace(int frames) { g_trace_left.store(frames); }
 

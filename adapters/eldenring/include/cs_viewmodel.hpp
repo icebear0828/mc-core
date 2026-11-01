@@ -711,18 +711,56 @@ public:
             return;
         }
 
-        if (state == 2) { // Knife light attack: procedural forward slash
-            const float p = std::clamp(anim_time / 0.35f, 0.f, 1.f);
-            const float slash_rot = -30.f + p * 60.f;
-            const float forward = -std::sin(p * 3.14159f) * 0.08f;
+        if (state == 2) { // Primary attack: punch jab / hand cannon blast
+            const float p = std::clamp(anim_time / 0.40f, 0.f, 1.f);
+            float forward = 0.f;
+            float roll = 0.f;
+            if (p < 0.375f) {
+                const float pp = p / 0.375f;
+                forward = -0.16f * std::sin(pp * 1.570796f);
+                roll = 10.f * pp;
+            } else {
+                const float rp = (p - 0.375f) / 0.625f;
+                forward = -0.16f * (1.0f - rp);
+                roll = 10.f * (1.0f - rp);
+            }
             eldenring::fp::M4 slash_base = eldenring::fp::mul(base, eldenring::fp::translate(0.f, 0.f, forward));
-            slash_base = eldenring::fp::mul(slash_base, eldenring::fp::rotZ(slash_rot));
+            slash_base = eldenring::fp::mul(slash_base, eldenring::fp::rotZ(roll));
             pose_.blade_pose = slash_base;
             pose_.handle_front_pose = slash_base;
             pose_.handle_rear_pose = slash_base;
             pose_.lock_pose = slash_base;
             pose_.base_pose = slash_base;
             pose_.arms_pose = slash_base;
+        }
+
+        if (state == 3) { // Secondary attack / Rocket punch: windup and explosive heavy thrust
+            const float p = std::clamp(anim_time / 0.80f, 0.f, 1.f);
+            float thrust = 0.f;
+            float heave = 0.f;
+            if (p < 0.25f) {
+                // Wind up: gauntlet pulls back
+                const float wp = p / 0.25f;
+                thrust = 0.04f * std::sin(wp * 1.570796f);
+            } else if (p < 0.60f) {
+                // Explosive punch forward with upward heave
+                const float pp = (p - 0.25f) / 0.35f;
+                thrust = 0.04f - 0.28f * std::sin(pp * 1.570796f);
+                heave = 0.07f * std::sin(pp * 3.14159265f);
+            } else {
+                // Recovery back to rest
+                const float rp = (p - 0.60f) / 0.40f;
+                thrust = -0.24f * (1.0f - rp);
+                heave = 0.f;
+            }
+            eldenring::fp::M4 heavy_base = eldenring::fp::mul(base, eldenring::fp::translate(0.01f, heave, thrust));
+            heavy_base = eldenring::fp::mul(heavy_base, eldenring::fp::rotX(heave * 60.f));
+            pose_.blade_pose = heavy_base;
+            pose_.handle_front_pose = heavy_base;
+            pose_.handle_rear_pose = heavy_base;
+            pose_.lock_pose = heavy_base;
+            pose_.base_pose = heavy_base;
+            pose_.arms_pose = heavy_base;
         }
         // Idle / any state without an authored clip keeps the resting stance.
     }

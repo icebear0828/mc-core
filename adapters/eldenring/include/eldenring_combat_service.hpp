@@ -25,6 +25,12 @@
 #include "eldenring_entity_manager.hpp"
 #include "eldenring_combat_callbacks.hpp"
 #include "eldenring_projectile_service.hpp"
+#if ENABLE_CS2_VIEWMODEL
+#include "cs_ballistics.hpp"
+#endif
+#if ENABLE_OW_VIEWMODEL
+#include "eldenring_ow_combat.hpp"
+#endif
 #include "mc/combat.hpp"
 #include "mc/inventory.hpp"
 
@@ -73,6 +79,19 @@ struct ForcedDamage {
     bool applied{false};
     int32_t engine_value{0};
 };
+
+#if ENABLE_OW_VIEWMODEL
+// One Doomfist strike. `hits` is > 1 for the seismic slam's radial damage.
+struct OwStrikeResult {
+    bool fired{false};
+    bool hit{false};
+    int hits{0};
+    int total_er_damage{0};
+    uintptr_t victim_chr{0};
+    float distance{0.f};
+    int er_damage{0};
+};
+#endif
 
 class CombatService {
 public:
@@ -150,10 +169,14 @@ public:
         return ProjectileService::Instance().fireCsShot(params, queue, tick, ctx);
     }
 #endif
+#if ENABLE_OW_VIEWMODEL
+    // Doomfist strikes: hand cannon, rocket punch, uppercut and slam. Enqueues
+    // the damage in the same DamageQueue the CS bullets and MC melee use.
+    OwStrikeResult fireOwStrike(eldenring::ow::OwStrikeKind kind, DamageQueue& queue, uint64_t tick, RuntimeContext& ctx);
+#endif
     void aimCalStart(uint64_t manager, uint32_t handle, const float dir[3]) { ProjectileService::Instance().aimCalStart(manager, handle, dir); }
     void aimCalTick() { ProjectileService::Instance().aimCalTick(); }
     const AimCalState& aimCalState() const { return ProjectileService::Instance().aimCalState(); }
-
     // Forced damage override tracking (used during queue drainage / vfunc[7])
     bool isForcedDamageArmed() const;
     void handleForcedDamage(uint8_t* ctx);

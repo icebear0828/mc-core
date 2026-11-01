@@ -51,10 +51,25 @@ if(WIN32)
         target_compile_options(imgui_dx12 PRIVATE /W3 /WX-)
     endif()
 
+    # The Steve HLSL lives in shaders/steve.hlsl. Embed it at configure time so the runtime D3DCompile path
+    # stays byte-identical and needs no external shader files or fxc/dxc build step.
+    set(MC_STEVE_HLSL_FILE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/steve.hlsl")
+    file(READ "${MC_STEVE_HLSL_FILE}" MC_STEVE_HLSL_SOURCE)
+    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/shaders/steve_shader_source.hpp.in"
+                   "${CMAKE_CURRENT_BINARY_DIR}/generated/steve_shader_source.hpp" @ONLY)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${MC_STEVE_HLSL_FILE}")
+
     set(ELDENRING_ADAPTER_SRCS
         src/loader.cpp
         src/overlay_d3d12.cpp
         src/steve_renderer_d3d12.cpp
+        src/steve_draw_first_person.cpp
+        src/render/d3d12_util.cpp
+        src/render/d3d12_shader_lib.cpp
+        src/render/d3d12_pipeline_builder.cpp
+        src/render/steve_pipeline.cpp
+        src/render/steve_mesh_factory.cpp
+        src/render/steve_texture_cache.cpp
         src/input_hook.cpp
         src/png_wic.cpp
         src/audio_xaudio2.cpp
@@ -77,6 +92,11 @@ if(WIN32)
             src/cs_weapon_registry.cpp)
     endif()
 
+    if(ENABLE_OW_VIEWMODEL)
+        list(APPEND ELDENRING_ADAPTER_SRCS
+            src/ow_renderer_d3d12.cpp)
+    endif()
+
     add_library(eldenring_adapter SHARED ${ELDENRING_ADAPTER_SRCS})
     set_target_properties(eldenring_adapter PROPERTIES
         OUTPUT_NAME dinput8
@@ -86,7 +106,10 @@ if(WIN32)
         RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/bin/eldenring"
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON)
-    target_include_directories(eldenring_adapter PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include")
+    target_include_directories(eldenring_adapter PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated")
     target_link_libraries(eldenring_adapter PRIVATE eldenring_live mc_core minhook imgui_dx12 psapi d3d12 dxgi dxguid d3dcompiler windowscodecs ole32 xaudio2)
     if(MSVC)
         target_compile_options(eldenring_adapter PRIVATE /W4 /WX /permissive- /utf-8)
