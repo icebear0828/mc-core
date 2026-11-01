@@ -27,6 +27,19 @@ inline FaceCells faceCellsFor(mc::BlockId id) {
         case mc::BlockId::CraftingTable:
             return {&mc::hud::kUV_BLOCK_CRAFTING_TABLE_TOP, &mc::hud::kUV_BLOCK_CRAFTING_TABLE_FRONT,
                     &mc::hud::kUV_BLOCK_CRAFTING_TABLE_TOP};
+        case mc::BlockId::Sand: return {&mc::hud::kUV_BLOCK_SAND, &mc::hud::kUV_BLOCK_SAND, &mc::hud::kUV_BLOCK_SAND};
+        case mc::BlockId::Gravel:
+            return {&mc::hud::kUV_BLOCK_GRAVEL, &mc::hud::kUV_BLOCK_GRAVEL, &mc::hud::kUV_BLOCK_GRAVEL};
+        case mc::BlockId::WoodPlanks:
+            return {&mc::hud::kUV_BLOCK_PLANKS, &mc::hud::kUV_BLOCK_PLANKS, &mc::hud::kUV_BLOCK_PLANKS};
+        case mc::BlockId::StoneBricks:
+            return {&mc::hud::kUV_BLOCK_STONE_BRICKS, &mc::hud::kUV_BLOCK_STONE_BRICKS, &mc::hud::kUV_BLOCK_STONE_BRICKS};
+        case mc::BlockId::Bricks:
+            return {&mc::hud::kUV_BLOCK_BRICKS, &mc::hud::kUV_BLOCK_BRICKS, &mc::hud::kUV_BLOCK_BRICKS};
+        case mc::BlockId::WhiteWool:
+            return {&mc::hud::kUV_BLOCK_WHITE_WOOL, &mc::hud::kUV_BLOCK_WHITE_WOOL, &mc::hud::kUV_BLOCK_WHITE_WOOL};
+        case mc::BlockId::Anvil:
+            return {&mc::hud::kUV_BLOCK_ANVIL_TOP, &mc::hud::kUV_BLOCK_ANVIL_SIDE, &mc::hud::kUV_BLOCK_ANVIL_TOP};
         default: return {&mc::hud::kUV_BLOCK_DIRT, &mc::hud::kUV_BLOCK_DIRT, &mc::hud::kUV_BLOCK_DIRT};
     }
 }

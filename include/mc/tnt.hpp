@@ -17,6 +17,13 @@ inline constexpr float BlockBlastResistance(BlockId block) noexcept {
         case BlockId::Dirt: return 0.5f;
         case BlockId::Wood: return 2.0f;
         case BlockId::CraftingTable: return 2.5f;
+        case BlockId::Sand: return 0.5f;
+        case BlockId::Gravel: return 0.6f;
+        case BlockId::WoodPlanks: return 3.0f;
+        case BlockId::StoneBricks: return 6.0f;
+        case BlockId::Bricks: return 6.0f;
+        case BlockId::WhiteWool: return 0.8f;
+        case BlockId::Anvil: return 1200.0f;
         case BlockId::Stone: return 6.0f;
         case BlockId::Obsidian: return 1200.0f;
         default: return 1.0f;

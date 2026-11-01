@@ -304,6 +304,9 @@ HUD_KEYS = [
     "item_stick", "item_iron_ingot", "item_gold_ingot", "item_netherite_ingot",
     "item_string", "item_gunpowder", "item_flint", "item_apple",
     "block_crafting_table_top", "block_crafting_table_side", "block_crafting_table_front",
+    "block_sand", "block_gravel", "block_planks", "block_stone_bricks", "block_bricks", "block_white_wool",
+    "item_gravel", "item_stone_bricks", "item_bricks", "item_white_wool",
+    "block_anvil_top", "block_anvil_side",
 ]
 
 HUD_SIZES = {

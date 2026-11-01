@@ -36,6 +36,13 @@ inline mc::BlockId blockForItem(mc::ItemId item) {
         case mc::ItemId::BlockWood: return mc::BlockId::Wood;
         case mc::ItemId::BlockObsidian: return mc::BlockId::Obsidian;
         case mc::ItemId::CraftingTable: return mc::BlockId::CraftingTable;
+        case mc::ItemId::Sand: return mc::BlockId::Sand;
+        case mc::ItemId::BlockGravel: return mc::BlockId::Gravel;
+        case mc::ItemId::WoodPlanks: return mc::BlockId::WoodPlanks;
+        case mc::ItemId::BlockStoneBricks: return mc::BlockId::StoneBricks;
+        case mc::ItemId::BlockBricks: return mc::BlockId::Bricks;
+        case mc::ItemId::BlockWhiteWool: return mc::BlockId::WhiteWool;
+        case mc::ItemId::Anvil: return mc::BlockId::Anvil;
         default: return mc::BlockId::Air;
     }
 }
@@ -49,6 +56,13 @@ inline mc::ItemId itemForBlock(mc::BlockId block) {
         case mc::BlockId::Wood: return mc::ItemId::BlockWood;
         case mc::BlockId::Obsidian: return mc::ItemId::BlockObsidian;
         case mc::BlockId::CraftingTable: return mc::ItemId::CraftingTable;
+        case mc::BlockId::Sand: return mc::ItemId::Sand;
+        case mc::BlockId::Gravel: return mc::ItemId::BlockGravel;
+        case mc::BlockId::WoodPlanks: return mc::ItemId::WoodPlanks;
+        case mc::BlockId::StoneBricks: return mc::ItemId::BlockStoneBricks;
+        case mc::BlockId::Bricks: return mc::ItemId::BlockBricks;
+        case mc::BlockId::WhiteWool: return mc::ItemId::BlockWhiteWool;
+        case mc::BlockId::Anvil: return mc::ItemId::Anvil;
         default: return mc::ItemId::None;
     }
 }

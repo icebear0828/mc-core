@@ -63,6 +63,40 @@ TEST(BlockMesh, CraftingTableUsesItsOwnTopAndFrontFaces) {
     EXPECT_EQ(front, 16); // four sides
 }
 
+TEST(BlockMesh, BuildableBlocksUseTheirOwnFaceCells) {
+    struct Case {
+        mc::BlockId id;
+        const mc::hud::HudUV* uv;
+    };
+    const Case cases[] = {{mc::BlockId::Sand, &mc::hud::kUV_BLOCK_SAND},
+                          {mc::BlockId::Gravel, &mc::hud::kUV_BLOCK_GRAVEL},
+                          {mc::BlockId::WoodPlanks, &mc::hud::kUV_BLOCK_PLANKS},
+                          {mc::BlockId::StoneBricks, &mc::hud::kUV_BLOCK_STONE_BRICKS},
+                          {mc::BlockId::Bricks, &mc::hud::kUV_BLOCK_BRICKS},
+                          {mc::BlockId::WhiteWool, &mc::hud::kUV_BLOCK_WHITE_WOOL}};
+    for (const Case& c : cases) {
+        BlockGrid g;
+        g.place({0, 0, 0}, c.id);
+        const mc::rig::RigMesh m = buildBlockMesh(g);
+        EXPECT_EQ(m.vertices.size(), 24u) << static_cast<int>(c.id);
+        for (const mc::rig::RigVertex& v : m.vertices) EXPECT_TRUE(inside(*c.uv, v)) << static_cast<int>(c.id);
+    }
+}
+
+TEST(BlockMesh, AnvilUsesItsTopAndSideFaces) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::Anvil);
+    const mc::rig::RigMesh m = buildBlockMesh(g);
+    EXPECT_EQ(m.vertices.size(), 24u);
+    int top = 0, side = 0;
+    for (const mc::rig::RigVertex& v : m.vertices) {
+        if (inside(mc::hud::kUV_BLOCK_ANVIL_TOP, v)) ++top;
+        else if (inside(mc::hud::kUV_BLOCK_ANVIL_SIDE, v)) ++side;
+    }
+    EXPECT_EQ(top, 8);   // top and bottom
+    EXPECT_EQ(side, 16); // four sides
+}
+
 TEST(BlockMesh, TheTopFaceIsAtTheTopOfTheCell) {
     BlockGrid g;
     g.place({3, 7, -2}, mc::BlockId::Dirt);

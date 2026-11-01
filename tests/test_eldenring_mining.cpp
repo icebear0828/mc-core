@@ -87,6 +87,44 @@ TEST(EldenRingMiningTest, CraftingTableBreaksLikeWoodAndDropsItself) {
     EXPECT_EQ(MiningController::blockDrop(mc::BlockId::CraftingTable, mc::ItemId::None, true), mc::ItemId::None);
 }
 
+TEST(EldenRingMiningTest, BuildableBlocksBreakAndDropLikeVanilla) {
+    // Sand, gravel, planks and wool drop themselves with an empty hand.
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Sand, mc::ItemId::None, false), 0.75f);
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Gravel, mc::ItemId::None, false), 0.75f);
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::WoodPlanks, mc::ItemId::None, false), 3.0f);
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::WhiteWool, mc::ItemId::None, false), 0.8f);
+    EXPECT_TRUE(MiningController::canHarvest(mc::BlockId::Sand, mc::ItemId::None, false));
+    EXPECT_TRUE(MiningController::canHarvest(mc::BlockId::Gravel, mc::ItemId::None, false));
+    EXPECT_TRUE(MiningController::canHarvest(mc::BlockId::WoodPlanks, mc::ItemId::None, false));
+    EXPECT_TRUE(MiningController::canHarvest(mc::BlockId::WhiteWool, mc::ItemId::None, false));
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Sand, mc::ItemId::None, false), mc::ItemId::Sand);
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Gravel, mc::ItemId::None, false), mc::ItemId::BlockGravel);
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::WoodPlanks, mc::ItemId::None, false), mc::ItemId::WoodPlanks);
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::WhiteWool, mc::ItemId::None, false), mc::ItemId::BlockWhiteWool);
+
+    // Stone bricks and bricks need a pickaxe, like stone.
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::StoneBricks, mc::ItemId::IronPickaxe, false), 0.4f);
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Bricks, mc::ItemId::None, false), 7.5f);
+    EXPECT_TRUE(MiningController::canHarvest(mc::BlockId::StoneBricks, mc::ItemId::WoodenPickaxe, false));
+    EXPECT_TRUE(MiningController::canHarvest(mc::BlockId::Bricks, mc::ItemId::DiamondPickaxe, false));
+    EXPECT_FALSE(MiningController::canHarvest(mc::BlockId::StoneBricks, mc::ItemId::None, false));
+    EXPECT_FALSE(MiningController::canHarvest(mc::BlockId::Bricks, mc::ItemId::DiamondSword, false));
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::StoneBricks, mc::ItemId::IronPickaxe, false),
+              mc::ItemId::BlockStoneBricks);
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Bricks, mc::ItemId::IronPickaxe, false), mc::ItemId::BlockBricks);
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::StoneBricks, mc::ItemId::None, false), mc::ItemId::None);
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Bricks, mc::ItemId::None, false), mc::ItemId::None);
+}
+
+TEST(EldenRingMiningTest, AnvilNeedsAPickaxeAndDropsItself) {
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Anvil, mc::ItemId::IronPickaxe, false), 1.35f);
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Anvil, mc::ItemId::None, false), 25.0f);
+    EXPECT_TRUE(MiningController::canHarvest(mc::BlockId::Anvil, mc::ItemId::WoodenPickaxe, false));
+    EXPECT_FALSE(MiningController::canHarvest(mc::BlockId::Anvil, mc::ItemId::None, false));
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Anvil, mc::ItemId::IronPickaxe, false), mc::ItemId::Anvil);
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Anvil, mc::ItemId::None, false), mc::ItemId::None);
+}
+
 TEST(EldenRingMiningTest, StoneBreakTimeScalesWithPickaxeTier) {
     EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Stone, mc::ItemId::WoodenPickaxe, false), 1.15f);
     EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Stone, mc::ItemId::StonePickaxe, false), 0.6f);

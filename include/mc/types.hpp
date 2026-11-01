@@ -65,7 +65,14 @@ enum class BlockId : uint8_t {
     Wood,
     Obsidian,
     Cobblestone, // appended: every id above keeps its value
-    CraftingTable
+    CraftingTable,
+    Sand,
+    Gravel,
+    WoodPlanks,
+    StoneBricks,
+    Bricks,
+    WhiteWool,
+    Anvil
 };
 
 enum class ItemId : uint16_t {
@@ -133,7 +140,12 @@ enum class ItemId : uint16_t {
     Gunpowder,
     Sand,
     Flint,
-    Apple
+    Apple,
+    // Buildable blocks (appended so every id above keeps its value).
+    BlockGravel,
+    BlockStoneBricks,
+    BlockBricks,
+    BlockWhiteWool
 };
 
 inline constexpr bool isSpawnEgg(ItemId item) noexcept {

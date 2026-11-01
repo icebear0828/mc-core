@@ -146,6 +146,10 @@ const char* HudEngine::getItemDisplayName(ItemId item) {
         case ItemId::String: return "String";
         case ItemId::Gunpowder: return "Gunpowder";
         case ItemId::Sand: return "Sand";
+        case ItemId::BlockGravel: return "Gravel";
+        case ItemId::BlockStoneBricks: return "Stone Bricks";
+        case ItemId::BlockBricks: return "Bricks";
+        case ItemId::BlockWhiteWool: return "White Wool";
         case ItemId::Flint: return "Flint";
         case ItemId::Apple: return "Apple";
         case ItemId::None:

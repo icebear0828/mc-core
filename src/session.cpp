@@ -38,6 +38,13 @@ BlockId blockForItem(ItemId item) {
         case ItemId::BlockWood: return BlockId::Wood;
         case ItemId::BlockObsidian: return BlockId::Obsidian;
         case ItemId::CraftingTable: return BlockId::CraftingTable;
+        case ItemId::Sand: return BlockId::Sand;
+        case ItemId::BlockGravel: return BlockId::Gravel;
+        case ItemId::WoodPlanks: return BlockId::WoodPlanks;
+        case ItemId::BlockStoneBricks: return BlockId::StoneBricks;
+        case ItemId::BlockBricks: return BlockId::Bricks;
+        case ItemId::BlockWhiteWool: return BlockId::WhiteWool;
+        case ItemId::Anvil: return BlockId::Anvil;
         default: return BlockId::Air;
     }
 }
