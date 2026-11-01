@@ -65,6 +65,7 @@ add_executable(mc_tests
     test_eldenring_pixel.cpp
     test_eldenring_depth.cpp
     test_eldenring_d3dstate.cpp
+    test_eldenring_overlay_state.cpp
     test_tnt.cpp
     test_eldenring_tnt.cpp
     test_eldenring_mining.cpp
@@ -83,7 +84,9 @@ add_executable(mc_tests
     test_eldenring_hud_bridge.cpp
     test_eldenring_locomotion.cpp
     test_eldenring_world_runtime.cpp
+    test_eldenring_sneak.cpp
     test_eldenring_combat_service.cpp
+    test_eldenring_projectile_service.cpp
     test_eldenring_virtual_summon.cpp
     test_eldenring_hotkey_dispatcher.cpp
     test_eldenring_game_hooks.cpp
@@ -91,13 +94,17 @@ add_executable(mc_tests
     test_control_policy.cpp
     test_eldenring_control_policy.cpp
     test_eldenring_mod_integration.cpp
+    test_eldenring_steve_mesh.cpp
+    test_eldenring_pipeline_desc.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/ui/inventory_controller.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/ui/hud_bridge.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/movement/player_locomotion.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/world/voxel_world_runtime.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/combat/combat_service.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/combat/projectile_service.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/input/hotkey_dispatcher.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/hooks/game_hooks.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/render/steve_mesh_factory.cpp
 )
 
 if(ENABLE_CS2_VIEWMODEL)
@@ -109,9 +116,18 @@ if(ENABLE_CS2_VIEWMODEL)
     )
 endif()
 
+if(ENABLE_OW_VIEWMODEL)
+    target_sources(mc_tests PRIVATE
+        test_ow_viewmodel.cpp
+        test_ow_dash.cpp
+        test_eldenring_ow_combat.cpp
+    )
+endif()
+
 
 
 target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source" MC_CORE_TESTS)
+target_include_directories(mc_tests PRIVATE ${CMAKE_SOURCE_DIR}/adapters/eldenring/src)
 
 target_link_libraries(mc_tests
     PRIVATE

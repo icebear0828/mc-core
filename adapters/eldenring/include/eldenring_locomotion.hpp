@@ -91,6 +91,8 @@ public:
     void stepGroundSprint(float dt, RuntimeContext& ctx);
     void stepJump(float dt, uint64_t now_ms, RuntimeContext& ctx);
     void stepFlight(float dt, uint64_t now_ms, RuntimeContext& ctx);
+    // OW rocket punch: forward displacement during state 3's thrust window.
+    void stepOwRocketPunch(float dt, RuntimeContext& ctx);
 
     // Getters and Setters for configuration / state
     bool isFlying() const { return flying_.load(std::memory_order_relaxed); }
