@@ -9,151 +9,13 @@
 #include "eldenring_runtime_context.hpp"
 #include "eldenring_state.hpp"
 #include "eldenring_creative.hpp"
-#include "eldenring_audio_data.hpp"
-#include "eldenring_bow.hpp"
-#include "eldenring_shield.hpp"
 #include "eldenring_roll.hpp"
 #include "eldenring_flight.hpp"
-#include "eldenring_ow_dash.hpp"
-#include "eldenring_ow_feel.hpp"
-#include "ow_viewmodel.hpp"
-#include "cs_weapon_registry.hpp"
-#include <algorithm>
-#include <cmath>
-#include <cstring>
+#include "input_keys.hpp"
+
 #include <iterator>
+#include <mutex>
 #include <span>
-#include <string>
-
-#ifndef VK_SPACE
-#define VK_SPACE 0x20
-#endif
-#ifndef VK_CONTROL
-#define VK_CONTROL 0x11
-#endif
-#ifndef VK_LBUTTON
-#define VK_LBUTTON 0x01
-#endif
-#ifndef VK_RBUTTON
-#define VK_RBUTTON 0x02
-#endif
-#ifndef VK_F1
-#define VK_F1 0x70
-#endif
-#ifndef VK_F2
-#define VK_F2 0x71
-#endif
-#ifndef VK_F3
-#define VK_F3 0x72
-#endif
-#ifndef VK_F4
-#define VK_F4 0x73
-#endif
-#ifndef VK_F5
-#define VK_F5 0x74
-#endif
-#ifndef VK_F6
-#define VK_F6 0x75
-#endif
-#ifndef VK_F7
-#define VK_F7 0x76
-#endif
-#ifndef VK_F8
-#define VK_F8 0x77
-#endif
-#ifndef VK_F9
-#define VK_F9 0x78
-#endif
-#ifndef VK_F10
-#define VK_F10 0x79
-#endif
-#ifndef VK_F11
-#define VK_F11 0x7A
-#endif
-#ifndef VK_F12
-#define VK_F12 0x7B
-#endif
-#ifndef VK_PRIOR
-#define VK_PRIOR 0x21
-#endif
-#ifndef VK_NEXT
-#define VK_NEXT 0x22
-#endif
-
-namespace {
-
-// Enumerate the CS2 clip ids for a state in priority order. CS2 ships two
-// takes for most actions and three inspect takes; the runtime alternates them.
-template <typename Fn>
-void forEachCsClip(uint8_t state, uint8_t variant, bool hit, bool knife, Fn&& fn) {
-    const bool alt = (variant & 1u) != 0u;
-    switch (state) {
-        case 1: { // Inspect: lookat01/02/03
-            const uint8_t take = static_cast<uint8_t>(variant % 3u);
-            if (take == 2) fn("inspect3");
-            else if (take == 1) fn("inspect2");
-            fn("inspect");
-            break;
-        }
-        case 2: // Primary: gun fire, or knife light hit/miss
-            if (knife) {
-                if (hit) {
-                    if (alt) fn("light_hit2");
-                    fn("light_hit");
-                } else {
-                    if (alt) fn("light_miss2");
-                    fn("light_miss");
-                    fn("light_hit");
-                }
-            } else {
-                fn("fire");
-            }
-            break;
-        case 3: // Secondary: knife heavy hit/miss (guns have no secondary clip)
-            if (knife) {
-                if (hit) {
-                    fn("heavy_hit");
-                    fn("backstab");
-                } else {
-                    fn("heavy_miss");
-                    fn("heavy_hit");
-                }
-            }
-            break;
-        case 4: // Deploy/draw
-            if (alt) fn("deploy2");
-            fn("deploy");
-            fn("draw");
-            break;
-        case 5: // Reload
-            fn("reload");
-            break;
-        case 6: // Backstab
-            if (alt) fn("backstab_light2");
-            fn("backstab_light");
-            fn("backstab");
-            break;
-        case 0:
-        default:
-            fn("idle");
-            break;
-    }
-}
-
-// Used when no clip-duration callback is wired (headless tests, asset missing).
-float fallbackCsDuration(uint8_t state, bool knife) {
-    switch (state) {
-        case 1: return 4.1f;   // lookat01
-        case 2: return knife ? 1.167f : 0.767f;
-        case 3: return 1.167f;
-        case 4: return 1.0f;
-        case 5: return 2.433f;
-        case 6: return 1.167f;
-        default: return 0.f;
-    }
-}
-
-} // namespace
 
 namespace eldenring::input {
 
@@ -162,52 +24,22 @@ HotkeyDispatcher& HotkeyDispatcher::Instance() {
     return s_instance;
 }
 
-HotkeyDispatcher::HotkeyDispatcher() = default;
+HotkeyDispatcher::HotkeyDispatcher() : debug_(ow_) {}
 
 void HotkeyDispatcher::setCallbacks(const HotkeyCallbacks& cb) {
     cb_ = cb;
 }
 
 void HotkeyDispatcher::resetKeyStates() {
-    prev8_ = false;
-    prev6_ = false;
-    prev7_ = false;
-    for (int i = 0; i < 9; ++i) prev_digit_[i] = false;
-    prev_space_ = false;
-    prev9_ = false;
-    prev10_ = false;
-    prev11_ = false;
-    prev12_ = false;
-    prev5_ = false;
-    prev4_ = false;
-    prev_f3_ = false;
-    prev_f2_ = false;
-    prev_f1_ = false;
-    prev_gameplay_f_ = false;
-    prev_reload_r_ = false;
-    prev_ow_e_ = false;
-    prev_ow_q_ = false;
-    ow_punch_released_ = false;
-    cs_fire_cooldown_ = 0.f;
-    ow_fire_cooldown_ = 0.f;
-    ow_punch_cooldown_left_ = 0.f;
-    ow_uppercut_cooldown_left_ = 0.f;
-    ow_slam_cooldown_left_ = 0.f;
-    ow_hitstop_left_ = 0.f;
-    ow_since_shot_ = 10.f;
-    for (bool& key : prev_owview_keys_) key = false;
+    cs_.reset();
+    ow_.reset();
+    mc_.reset();
+    movement_.reset();
+    debug_.reset();
 }
 
 bool HotkeyDispatcher::queryKey(int vk) const {
-    if (cb_.is_key_down) {
-        return cb_.is_key_down(vk);
-    }
-#ifdef _WIN32
-    return (GetAsyncKeyState(vk) & 0x8000) != 0;
-#else
-    (void)vk;
-    return false;
-#endif
+    return queryKeyDown(cb_, vk);
 }
 
 void HotkeyDispatcher::stop() {
@@ -215,20 +47,24 @@ void HotkeyDispatcher::stop() {
 }
 
 void HotkeyDispatcher::tick(float dt) {
-    auto& ctx = RuntimeContext::Instance();
-    auto& mode = ctx.mode();
-    auto& player = ctx.player();
-    auto& combat = ctx.combat();
-    auto& ui = ctx.ui();
+    auto& runtime = RuntimeContext::Instance();
+    auto& mode = runtime.mode();
+    auto& player = runtime.player();
+    auto& combat = runtime.combat();
+    auto& ui = runtime.ui();
 
-    const bool fg = cb_.is_game_in_foreground ? cb_.is_game_in_foreground() : true;
-    const bool want_suppress = cb_.want_suppress ? cb_.want_suppress() : false;
-    const bool is_dead = cb_.is_player_dead ? cb_.is_player_dead() : false;
-    const bool inv_open = ui.inv_open.load(std::memory_order_relaxed);
-    const bool mc_on = mode.mc_mode.load(std::memory_order_relaxed);
+    InputTickContext ctx;
+    ctx.dt = dt;
+    ctx.cb = &cb_;
+    ctx.slot_cursor = &slot_cursor_;
+    ctx.fg = cb_.is_game_in_foreground ? cb_.is_game_in_foreground() : true;
+    ctx.want_suppress = cb_.want_suppress ? cb_.want_suppress() : false;
+    ctx.is_dead = cb_.is_player_dead ? cb_.is_player_dead() : false;
+    ctx.inv_open = ui.inv_open.load(std::memory_order_relaxed);
+    ctx.mc_on = mode.mc_mode.load(std::memory_order_relaxed);
 
     // Tick all pluggable mods
-    ctx.mods().tick(dt);
+    runtime.mods().tick(dt);
 
     // Melee & Feedback tick
     {
@@ -237,50 +73,8 @@ void HotkeyDispatcher::tick(float dt) {
         combat.feedback.tick(dt);
     }
 
-    // Sprinting update (MC only: OW/CS do not own the Steve sprint state)
-    if (mc_on && fg) {
-        const bool key_w = queryKey('W');
-        const bool key_s = queryKey('S');
-        const bool key_ctrl = queryKey(VK_CONTROL);
-        int food_lvl = 20;
-        {
-            std::lock_guard<std::mutex> g(combat.melee_mutex);
-            food_lvl = player.hunger.food();
-        }
-        const bool blocking = mode.shield_blocking.load(std::memory_order_relaxed);
-        player.sprint.update(dt, key_w, key_s, key_ctrl, food_lvl, blocking);
-    } else {
-        player.sprint.reset();
-    }
-    player.sprint_active.store(player.sprint.isSprinting(), std::memory_order_relaxed);
-    player.sprint_fov.store(player.sprint.fovMultiplier(), std::memory_order_relaxed);
-    player.sprint_anim.store(player.sprint.animSpeedMultiplier(), std::memory_order_relaxed);
-
-    // Footsteps
-    if (mc_on && fg && cb_.get_player_chr && cb_.read_physics_pos) {
-        static float prev_pos[3] = {};
-        static bool have_prev = false;
-        static audio::StepClock steps;
-        const uintptr_t player_chr = cb_.get_player_chr();
-        float pos[3] = {};
-        if (player_chr != 0 && cb_.read_physics_pos(player_chr, pos)) {
-            if (have_prev && dt > 0.f) {
-                const float dx = pos[0] - prev_pos[0], dz = pos[2] - prev_pos[2];
-                const float step_len = std::sqrt(dx * dx + dz * dz);
-                const bool grounded = cb_.is_player_airborne ? !cb_.is_player_airborne() : true;
-                mode.walk_speed.store(step_len < 1.5f ? step_len / dt : 0.f);
-                mode.on_ground.store(grounded);
-                if (step_len < 1.5f && steps.update(step_len / dt, dt, grounded) && want_suppress) {
-                    if (cb_.play_sound) cb_.play_sound("block.grass.step", 0.9f);
-                }
-                if (step_len >= 1.5f) steps = audio::StepClock{};
-            }
-            std::memcpy(prev_pos, pos, sizeof(pos));
-            have_prev = true;
-        } else {
-            have_prev = false;
-        }
-    }
+    movement_.tickSprint(ctx);
+    movement_.tickFootsteps(ctx);
 
     // Regeneration, hunger, and eating
     {
@@ -302,7 +96,7 @@ void HotkeyDispatcher::tick(float dt) {
                 if (e.play_burp_sound && cb_.play_sound) cb_.play_sound("entity.player.burp", 1.0f);
                 player.survival.apply(e.effects);
                 player.hunger.eat(meal);
-                if (creative::consumesItems(ctx.currentGameMode())) {
+                if (creative::consumesItems(runtime.currentGameMode())) {
                     combat.melee.consumeAt(combat.melee.selectedSlot());
                 }
             }
@@ -311,7 +105,7 @@ void HotkeyDispatcher::tick(float dt) {
     }
 
     // Subsystem ticks
-    if (cb_.inventory_tick) cb_.inventory_tick(fg);
+    if (cb_.inventory_tick) cb_.inventory_tick(ctx.fg);
     if (cb_.blocks_tick) cb_.blocks_tick();
     if (cb_.mc_flags_step) cb_.mc_flags_step();
 
@@ -321,12 +115,13 @@ void HotkeyDispatcher::tick(float dt) {
     // inventory_tick above may have just opened/closed the inventory, so read the
     // state again instead of using the stale value captured at the top of the tick.
     const bool inv_open_for_policy = ui.inv_open.load(std::memory_order_relaxed);
+    ctx.inv_open_policy = inv_open_for_policy;
     eldenring::control::ModeInputs control_inputs;
-    control_inputs.foreground = fg;
+    control_inputs.foreground = ctx.fg;
     control_inputs.input_enabled = mode.input_enabled.load(std::memory_order_relaxed);
     control_inputs.inventory_open = inv_open_for_policy;
-    control_inputs.native_input_allowed = want_suppress;
-    control_inputs.mc_mode = mc_on;
+    control_inputs.native_input_allowed = ctx.want_suppress;
+    control_inputs.mc_mode = ctx.mc_on;
     control_inputs.cs_mode = mode.cs_mode.load(std::memory_order_relaxed);
     control_inputs.first_person = mode.first_person.load(std::memory_order_relaxed);
     control_inputs.mc_jump = mode.mc_jump.load(std::memory_order_relaxed);
@@ -334,14 +129,14 @@ void HotkeyDispatcher::tick(float dt) {
     control_inputs.flying = mode.flying.load(std::memory_order_relaxed);
 
     roll::RollMaskResult roll_mask{};
-    if (control_inputs.disable_vanilla_roll && mc_on && fg && !inv_open_for_policy) {
+    if (control_inputs.disable_vanilla_roll && ctx.mc_on && ctx.fg && !inv_open_for_policy) {
         roll_mask = roll::computeRollMask(true, true, mode.roll_vk.load(std::memory_order_relaxed));
     }
     control_inputs.roll_keys = std::span<const int>(roll_mask.scancodes, roll_mask.count);
     control_inputs.flight_keys = std::span<const int>(flight::kHiddenKeys, std::size(flight::kHiddenKeys));
 
 #ifdef _WIN32
-    if (control_inputs.mc_jump && mc_on && fg && !inv_open_for_policy) {
+    if (control_inputs.mc_jump && ctx.mc_on && ctx.fg && !inv_open_for_policy) {
         control_inputs.mc_jump_scan = static_cast<int>(MapVirtualKeyW(
             static_cast<UINT>(mode.mc_jump_vk.load(std::memory_order_relaxed)), MAPVK_VK_TO_VSC));
     }
@@ -352,7 +147,7 @@ void HotkeyDispatcher::tick(float dt) {
     // while reloading and 1-4 select vanilla quick slots.
     int cs_scans[6] = {};
     size_t cs_scan_count = 0;
-    if (control_inputs.cs_mode && fg && !inv_open_for_policy) {
+    if (control_inputs.cs_mode && ctx.fg && !inv_open_for_policy) {
         const int cs_keys[] = {'R', 'F', '1', '2', '3', '4'};
         for (const int vk : cs_keys) {
             const int sc = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC));
@@ -366,7 +161,7 @@ void HotkeyDispatcher::tick(float dt) {
     control_inputs.ow_mode = mode.ow_mode.load(std::memory_order_relaxed);
     int ow_scans[12] = {};
     size_t ow_scan_count = 0;
-    if (control_inputs.ow_mode && fg && !inv_open_for_policy) {
+    if (control_inputs.ow_mode && ctx.fg && !inv_open_for_policy) {
         // Mask both Shift keys: VK_SHIFT alone maps to DIK_LSHIFT, and the native
         // sprint/roll still fires from DIK_RSHIFT. R and the quick slots are
         // native-only actions and must not fire while the gauntlet is out.
@@ -386,335 +181,34 @@ void HotkeyDispatcher::tick(float dt) {
         cb_.set_masked_keys(control_plan.masked_keys.data(), control_plan.masked_key_count);
     }
 
-    // Right-click interaction cascade
+    // Right-click interaction cascade: OW, then CS, then MC. Each handler
+    // reports whether it owned the click so the chain keeps the original
+    // if / else-if / else semantics.
     const bool input_enabled = mode.input_enabled.load(std::memory_order_relaxed);
-    const bool right_edge = !inv_open && input_enabled && cb_.take_right_click && cb_.take_right_click();
+    ctx.input_enabled = input_enabled;
+    const bool right_edge = !ctx.inv_open && input_enabled && cb_.take_right_click && cb_.take_right_click();
+    ctx.right_edge = right_edge;
+
+    bool right_consumed = false;
 #if ENABLE_OW_VIEWMODEL
-    if (mode.ow_mode.load() && fg && !is_dead && right_edge && eldenring::ow::owReady(ow_punch_cooldown_left_)) {
-        // RMB: Rocket Punch charge. The authored controller starts the charge
-        // on press and fires the straight punch on release, so the state stays
-        // in the windup until the button comes up (see the timer block).
-        mode.ow_state.store(3);
-        mode.ow_anim_time.store(0.f);
-        mode.ow_action_variant.store(static_cast<uint8_t>((mode.ow_action_variant.load() + 1u) & 1u));
-        ow_punch_released_ = false;
-        ow_charge_looping_ = true;
-        if (cb_.play_sound_loop) cb_.play_sound_loop("ow.punch.charge", 1.0f);
-        else if (cb_.play_sound) cb_.play_sound("ow.punch.charge", 1.0f);
-    } else
+    right_consumed = ow_.tickRightClick(ctx);
 #endif
 #if ENABLE_CS2_VIEWMODEL
-    if (mode.cs_mode.load() && fg && !is_dead && right_edge) {
-        // RMB is the knife's heavy attack. Guns consume the click but have no
-        // secondary action yet (AWP scope is a separate HUD feature).
-        if (mode.cs_weapon_slot.load() == 0) {
-            mode.cs_knife_state.store(3); // Heavy attack
-            mode.cs_knife_inspect.store(false);
-            mode.cs_action_hit.store(true);
-            mode.cs_knife_anim_time.store(0.f);
-            if (cb_.play_sound) cb_.play_sound("cs.knife.hit", 1.0f);
-        }
-    } else
+    if (!right_consumed) right_consumed = cs_.tickRightClick(ctx);
 #endif
-    if (right_edge && fg && want_suppress && !is_dead) {
-        bool handled = false;
-        if (cb_.try_ignite_tnt && cb_.try_ignite_tnt()) handled = true;
-        else if (cb_.try_ignite_creeper && cb_.try_ignite_creeper()) handled = true;
-        else if (cb_.try_place_block && cb_.try_place_block()) handled = true;
-        else if (mc_on && cb_.try_use_spawn_egg && cb_.try_use_spawn_egg()) handled = true;
-        else {
-            std::lock_guard<std::mutex> g(combat.melee_mutex);
-            const mc::ItemId item = combat.melee.heldItem();
-            if (!player.eating.isEating() && combat.melee.countAt(combat.melee.selectedSlot()) > 0 &&
-                player.hunger.canEat(item) && player.eating.startEating(item)) {
-                if (cb_.log) cb_.log("SURVIVAL: started eating item " + std::to_string(static_cast<int>(item)));
-            }
-        }
-        (void)handled;
-    }
+    if (!right_consumed) mc_.tickRightClick(ctx);
 
-    // Bow update
-    {
-        static bow::BowController s_bow;
-        bool usable = false;
-        {
-            std::lock_guard<std::mutex> g(combat.melee_mutex);
-            combat.melee.select(combat.melee.selectedSlot());
-            const bool in_offhand = bow::bowInOffhand(combat.melee.heldItem(), combat.melee.countAt(combat.melee.selectedSlot()),
-                                                      combat.melee.offhandItem(), combat.melee.offhandCount());
-            mode.bow_offhand.store(in_offhand, std::memory_order_relaxed);
-            usable = bow::bowHandUsable(combat.melee.heldItem(), combat.melee.countAt(combat.melee.selectedSlot()),
-                                        combat.melee.offhandItem(), combat.melee.offhandCount()) &&
-                     (!creative::consumesItems(ctx.currentGameMode()) || combat.melee.has(mc::ItemId::Arrow));
-        }
-        usable = usable && mode.bullet_fire_enabled.load() && mc_on && fg && want_suppress && !inv_open && input_enabled && !is_dead;
-        const bool right_held = input_enabled && ((cb_.right_held && cb_.right_held()) || queryKey(VK_RBUTTON));
-        const bow::Update u = s_bow.update(dt, right_held, usable);
-        mode.bow_power.store(s_bow.power(), std::memory_order_relaxed);
-        mode.bow_ticks.store(s_bow.ticks(), std::memory_order_relaxed);
-        if (u.released) {
-            const float damage = bow::damageForPower(u.power);
-            if (cb_.queue_bullet_fire && cb_.queue_bullet_fire(damage)) {
-                if (creative::consumesItems(ctx.currentGameMode())) {
-                    std::lock_guard<std::mutex> g(combat.melee_mutex);
-                    combat.melee.consumeFirst(mc::ItemId::Arrow);
-                }
-                if (cb_.play_sound) cb_.play_sound("entity.arrow.shoot", 1.0f);
-            }
-        }
-    }
+    mc_.tickBow(ctx);
+    mc_.tickShield(ctx);
+    mc_.tickWheel(ctx);
 
-    // Shield update
-    {
-        static shield::ShieldController s_shield;
-        bool has_shield = false;
-        bool shield_in_offhand = false;
-        {
-            std::lock_guard<std::mutex> g(combat.melee_mutex);
-            has_shield = combat.melee.holds(mc::ItemId::Shield);
-            shield_in_offhand = !(combat.melee.heldItem() == mc::ItemId::Shield && combat.melee.countAt(combat.melee.selectedSlot()) > 0);
-        }
-        mode.shield_offhand.store(shield_in_offhand, std::memory_order_relaxed);
-        const bool right_held = input_enabled && ((cb_.right_held && cb_.right_held()) || queryKey(VK_RBUTTON)) &&
-                                fg && want_suppress && !inv_open && !is_dead && mc_on;
-        const bool is_drawing_bow = mode.bow_ticks.load(std::memory_order_relaxed) > 0;
-        const bool is_eating = player.eating.isEating();
-        const bool shield_usable = has_shield && !is_drawing_bow && !is_eating;
-        s_shield.update(dt, right_held, shield_usable);
-        combat.shield.update(dt, right_held, shield_usable);
-        const bool prev_blocking = mode.shield_blocking.load(std::memory_order_relaxed);
-        const bool now_blocking = s_shield.isBlocking();
-        if (!prev_blocking && now_blocking) {
-            player.sprint.cancel();
-            player.sprint_active.store(false, std::memory_order_relaxed);
-        }
-        mode.shield_blocking.store(now_blocking, std::memory_order_relaxed);
-    }
-
-    // Mouse wheel slot selection (MC hotbar only; CS mode suppresses the wheel). While the
-    // inventory is open the wheel belongs to the palette pager, so do not drain it here.
-    if (input_enabled && mc_on && !inv_open_for_policy && cb_.take_wheel_notches) {
-        const int notches = cb_.take_wheel_notches();
-        if (notches != 0 && fg && want_suppress) {
-            std::lock_guard<std::mutex> g(combat.melee_mutex);
-            combat.melee.scroll(-notches);
-        }
-    }
-
-#if ENABLE_CS2_VIEWMODEL
-    // CS action timer advance. The end time comes from the loaded clip, so a
-    // new authored take never needs a matching C++ constant.
-    if (mode.cs_mode.load()) {
-        const uint8_t state = mode.cs_knife_state.load();
-        const uint8_t variant = mode.cs_action_variant.load();
-        const bool hit = mode.cs_action_hit.load();
-        const float t = mode.cs_knife_anim_time.load() + dt;
-        auto durationFor = [this, &mode](uint8_t s, uint8_t v, bool h) -> float {
-            const bool is_knife = mode.cs_weapon_slot.load() == 0;
-            float duration = 0.f;
-            if (cb_.clip_duration) {
-                forEachCsClip(s, v, h, is_knife, [&](const char* name) {
-                    if (duration <= 0.f) {
-                        const float d = cb_.clip_duration(name);
-                        if (d > 0.f) duration = d;
-                    }
-                });
-            }
-            return duration > 0.f ? duration : fallbackCsDuration(s, is_knife);
-        };
-        const float max_t = (state != 0) ? durationFor(state, variant, hit) : 0.f;
-        if (state != 0 && max_t > 0.f && t >= max_t) {
-            if (state == 5) { // Reload finished: move rounds from reserve to magazine
-                const uint32_t mag = mode.cs_mag_capacity.load();
-                const uint32_t ammo = mode.cs_ammo.load();
-                const uint32_t reserve = mode.cs_reserve.load();
-                const uint32_t need = (mag > ammo) ? (mag - ammo) : 0;
-                const uint32_t take = std::min(need, reserve);
-                mode.cs_ammo.store(ammo + take);
-                mode.cs_reserve.store(reserve - take);
-                cs_reload_sound_stage_ = 0;
-            }
-            mode.cs_knife_state.store(0); // Return to Idle
-            mode.cs_knife_inspect.store(false);
-            mode.cs_knife_anim_time.store(0.f);
-        } else {
-            mode.cs_knife_anim_time.store(t);
-            if (state == 5 && mode.cs_weapon_slot.load() == 1 && max_t > 0.f) {
-                // Reload audio follows the animation instead of one sound at
-                // t=0: mag out at frame 13, mag in at frame 24, bolt pull at
-                // frame 48 of the 74-frame reload clip.
-                const float d = max_t;
-                if (cs_reload_sound_stage_ == 0 && t >= d * 0.176f) {
-                    if (cb_.play_sound) cb_.play_sound("cs.ak47.magout", 1.0f);
-                    cs_reload_sound_stage_ = 1;
-                }
-                if (cs_reload_sound_stage_ == 1 && t >= d * 0.324f) {
-                    if (cb_.play_sound) cb_.play_sound("cs.ak47.magin", 1.0f);
-                    cs_reload_sound_stage_ = 2;
-                }
-                if (cs_reload_sound_stage_ == 2 && t >= d * 0.649f) {
-                    if (cb_.play_sound) cb_.play_sound("cs.ak47.bolt", 1.0f);
-                    cs_reload_sound_stage_ = 3;
-                }
-            }
-        }
-    }
-#endif
-
-    // OW action timer advance
-#if ENABLE_OW_VIEWMODEL
-    if (mode.ow_mode.load()) {
-        ow_fire_cooldown_ = std::max(0.f, ow_fire_cooldown_ - dt);
-        ow_punch_cooldown_left_ = std::max(0.f, ow_punch_cooldown_left_ - dt);
-        ow_uppercut_cooldown_left_ = std::max(0.f, ow_uppercut_cooldown_left_ - dt);
-        ow_slam_cooldown_left_ = std::max(0.f, ow_slam_cooldown_left_ - dt);
-        ow_since_shot_ += dt;
-        mode.ow_since_shot.store(ow_since_shot_);
-
-        const uint8_t state = mode.ow_state.load();
-        const float prev_t = mode.ow_anim_time.load();
-        // Idle keeps its authored loop rate; attacks honour ow_anim_speed and
-        // freeze for ow_hitstop seconds when the strike connects.
-        float step = (state == 0) ? dt : dt * mode.ow_anim_speed.load();
-        if (ow_hitstop_left_ > 0.f) {
-            ow_hitstop_left_ = std::max(0.f, ow_hitstop_left_ - dt);
-            step = 0.f;
-        }
-        const float t = prev_t + step;
-        if ((state != 3 || is_dead || !fg) && ow_charge_looping_) {
-            ow_charge_looping_ = false;
-            if (cb_.stop_sound_loop) cb_.stop_sound_loop("ow.punch.charge");
-        }
-        if (state == 5 && !ow_slam_impact_played_ && t >= 1.45f) {
-            ow_slam_impact_played_ = true;
-            if (cb_.play_sound) cb_.play_sound("ow.slam.impact", 1.0f);
-        }
-        const bool holding = cb_.right_held ? cb_.right_held() : true;
-        float max_t = 0.f;
-        if (state != 0) {
-            const char* clip = eldenring::ow::owClipNameForState(state);
-            if (cb_.ow_clip_duration && clip != nullptr) max_t = cb_.ow_clip_duration(clip);
-            if (max_t <= 0.f) max_t = eldenring::ow::owClipDurationFallback(state);
-        }
-
-        if (state == 3) {
-            // Authored controller flow: hold RMB to coil the punch, release to
-            // fire. The windup holds at the release frame while the button is
-            // down; letting go jumps to that frame and plays the strike.
-            const float release_time = eldenring::ow::kRocketPunchReleaseTime;
-            if (!ow_punch_released_) {
-                if (holding) {
-                    mode.ow_anim_time.store(std::min(t, release_time));
-                } else {
-                    mode.ow_anim_time.store(release_time);
-                    ow_punch_released_ = true;
-                    ow_punch_cooldown_left_ = mode.ow_punch_cooldown.load();
-                    if (ow_charge_looping_) {
-                        ow_charge_looping_ = false;
-                        if (cb_.stop_sound_loop) cb_.stop_sound_loop("ow.punch.charge");
-                    }
-                    if (cb_.play_sound) cb_.play_sound("ow.punch.release", 1.0f);
-                    if (cb_.ow_strike && cb_.ow_strike(1)) {
-                        ow_hitstop_left_ = mode.ow_hitstop.load();
-                        if (cb_.play_sound) cb_.play_sound("ow.punch.impact", 1.0f);
-                    }
-                }
-            } else if (t >= eldenring::ow::rocketPunchStateEnd(release_time, mode.ow_punch_tail.load(), max_t)) {
-                mode.ow_state.store(0);
-                mode.ow_anim_time.store(0.f);
-                ow_punch_released_ = false;
-            } else {
-                mode.ow_anim_time.store(t);
-            }
-        } else if (state != 0 && max_t > 0.f && t >= max_t) {
-            mode.ow_state.store(0); // Return to Idle
-            mode.ow_anim_time.store(0.f);
-        } else {
-            mode.ow_anim_time.store(t);
-        }
-    }
-#endif
+    cs_.tickActionTimer(ctx);
+    ow_.tickActionTimer(ctx);
 
     // F key (inspect in CS mode / swap offhand in MC) & Digits 1-9 (slot select / deploy)
-    if (fg && !inv_open && want_suppress) {
-        const bool f_down = queryKey('F');
-        if (f_down && !prev_gameplay_f_) {
-#if ENABLE_CS2_VIEWMODEL
-            if (mode.cs_mode.load()) {
-                const uint8_t take = static_cast<uint8_t>((mode.cs_action_variant.load() + 1u) % 3u);
-                mode.cs_action_variant.store(take);
-                mode.cs_knife_state.store(1); // Inspect!
-                mode.cs_knife_inspect.store(true);
-                mode.cs_knife_anim_time.store(0.f);
-                const uint8_t slot = mode.cs_weapon_slot.load();
-                if (cb_.play_sound) cb_.play_sound(slot == 1 ? "cs.ak47.inspect" : "cs.knife.inspect", 1.0f);
-                if (cb_.log) cb_.log(slot == 0 ? "CS: Butterfly Knife Inspect (Flower Spin)" : "CS: weapon inspect");
-            } else
-#endif
-            if (mc_on)
-            {
-                mc::contracts::ModInputEvent f_ev{'F', true};
-                if (!ctx.mods().dispatchInput(f_ev)) {
-                    std::lock_guard<std::mutex> g(combat.melee_mutex);
-                    combat.melee.inventory().swapMainAndOffhand(combat.melee.selectedSlot());
-                    if (cb_.log) cb_.log("inventory: swapped main and offhand via F key");
-                }
-            }
-        }
-        prev_gameplay_f_ = f_down;
-
-        for (int i = 0; i < 9; ++i) {
-            const bool d = queryKey('1' + i);
-            if (d && !prev_digit_[i]) {
-#if ENABLE_CS2_VIEWMODEL
-                if (mode.cs_mode.load() && i < 4) {
-                    // CS arsenal slots: 1 = AK-47, 2 = AWP, 3 = butterfly knife, 4 = M4A1-S
-                    const uint8_t slot = (i == 0) ? 1 : (i == 1) ? 2 : (i == 2) ? 0 : 3;
-                    mode.cs_weapon_slot.store(slot);
-                    if (slot == 0) {
-                        mode.cs_ammo.store(0);
-                        mode.cs_reserve.store(0);
-                        mode.cs_mag_capacity.store(0);
-                    } else {
-                        const char* id = (slot == 1) ? "weapon_ak47"
-                                       : (slot == 2) ? "weapon_awp"
-                                       : "weapon_m4a1_silencer";
-                        if (const auto* def = eldenring::cs::CSWeaponRegistry::instance().findWeapon(id)) {
-                            mode.cs_ammo.store(def->ballistics.magazine_capacity);
-                            mode.cs_reserve.store(def->ballistics.reserve_capacity);
-                            mode.cs_mag_capacity.store(def->ballistics.magazine_capacity);
-                        }
-                    }
-                    mode.cs_knife_state.store(4); // Deploy!
-                    mode.cs_knife_inspect.store(false);
-                    mode.cs_action_variant.store(static_cast<uint8_t>((mode.cs_action_variant.load() + 1u) & 1u));
-                    mode.cs_action_hit.store(true);
-                    mode.cs_knife_anim_time.store(0.f);
-                    if (cb_.play_sound) cb_.play_sound(slot == 1 ? "cs.ak47.draw" : "cs.knife.deploy", 1.0f);
-                } else
-#endif
-                {
-                    if (mc_on) {
-                        std::lock_guard<std::mutex> g(combat.melee_mutex);
-                        combat.melee.select(i);
-                    }
-                }
-            }
-            prev_digit_[i] = d;
-        }
-
-#if ENABLE_CS2_VIEWMODEL
-        // R: reload the active gun (state 5). Knife has no reload.
-        const bool r_down = queryKey('R');
-        if (r_down && !prev_reload_r_ && mode.cs_mode.load() && mode.cs_weapon_slot.load() != 0) {
-            mode.cs_knife_state.store(5); // Reload
-            mode.cs_knife_inspect.store(false);
-            mode.cs_knife_anim_time.store(0.f);
-            cs_reload_sound_stage_ = 0;
-            if (cb_.log) cb_.log("CS: reload");
-        }
-        prev_reload_r_ = r_down;
-#endif
+    if (ctx.fg && !ctx.inv_open && ctx.want_suppress) {
+        cs_.tickGameplayKeys(ctx);
+        mc_.tickGameplayKeys(ctx);
     }
 
     if (input_enabled && cb_.set_suppress_mouse_buttons) {
@@ -731,119 +225,19 @@ void HotkeyDispatcher::tick(float dt) {
     }
 
     // Space key (Jump & Exhaustion)
-    const bool space = fg && queryKey(VK_SPACE);
-    const bool airborne = cb_.is_player_airborne ? cb_.is_player_airborne() : false;
-    player.jump.update(dt, space && !prev_space_, mc_on && airborne);
-    if (space && !prev_space_ && mc_on && !airborne) {
-        std::lock_guard<std::mutex> g(combat.melee_mutex);
-        player.hunger.addExhaustion(0.05f);
-    }
-    prev_space_ = space;
+    movement_.tickJump(ctx);
 
     // Left click / Mining vs Click Attack
-    const bool alive = !is_dead;
-    const bool click_edge = !inv_open && input_enabled && cb_.take_left_click && cb_.take_left_click() && alive;
-    const bool left_held = !inv_open && input_enabled && ((cb_.left_held && cb_.left_held()) || queryKey(VK_LBUTTON)) && alive;
-    const bool want_suppress_click = (click_edge || left_held) ? want_suppress : false;
+    const bool alive = !ctx.is_dead;
+    const bool click_edge = !ctx.inv_open && input_enabled && cb_.take_left_click && cb_.take_left_click() && alive;
+    const bool left_held = !ctx.inv_open && input_enabled &&
+                           ((cb_.left_held && cb_.left_held()) || queryKey(VK_LBUTTON)) && alive;
+    ctx.click_edge = click_edge;
+    ctx.left_held = left_held;
+    ctx.want_suppress_click = (click_edge || left_held) ? ctx.want_suppress : false;
 
-    // OW mode attack triggers: hand cannon, rocket punch (right click, above),
-    // rising uppercut (E) and seismic slam (Q).
-#if ENABLE_OW_VIEWMODEL
-    if (mode.ow_mode.load() && fg && alive) {
-        const float hitstop = mode.ow_hitstop.load();
-        if (click_edge && eldenring::ow::owReady(ow_fire_cooldown_)) {
-            mode.ow_state.store(2); // Hand cannon
-            mode.ow_action_variant.store(static_cast<uint8_t>((mode.ow_action_variant.load() + 1u) & 1u));
-            mode.ow_anim_time.store(0.f);
-            ow_fire_cooldown_ = mode.ow_fire_interval.load();
-            ow_since_shot_ = 0.f;
-            if (cb_.play_sound) cb_.play_sound("ow.cannon.fire", 1.0f);
-            if (cb_.ow_strike && cb_.ow_strike(0)) {
-                ow_hitstop_left_ = hitstop;
-                if (cb_.play_sound) cb_.play_sound("ow.cannon.hit", 1.0f);
-            }
-        }
-
-        const bool gameplay_key = !inv_open && input_enabled;
-        const bool e_down = gameplay_key && queryKey('E');
-        const bool q_down = gameplay_key && queryKey('Q');
-        if (e_down && !prev_ow_e_ && eldenring::ow::owReady(ow_uppercut_cooldown_left_)) {
-            mode.ow_state.store(4); // Rising uppercut
-            mode.ow_anim_time.store(0.f);
-            ow_uppercut_cooldown_left_ = mode.ow_uppercut_cooldown.load();
-            if (cb_.play_sound) cb_.play_sound("ow.uppercut.start", 1.0f);
-            if (cb_.ow_strike && cb_.ow_strike(2)) {
-                ow_hitstop_left_ = hitstop;
-                if (cb_.play_sound) cb_.play_sound("ow.uppercut.hit", 1.0f);
-            }
-        }
-        if (q_down && !prev_ow_q_ && eldenring::ow::owReady(ow_slam_cooldown_left_)) {
-            mode.ow_state.store(5); // Seismic slam
-            mode.ow_anim_time.store(0.f);
-            ow_slam_cooldown_left_ = mode.ow_slam_cooldown.load();
-            ow_slam_impact_played_ = false;
-            if (cb_.play_sound) cb_.play_sound("ow.slam.flight", 1.0f);
-            const bool hit = cb_.ow_strike ? cb_.ow_strike(3) : false;
-            if (hit) ow_hitstop_left_ = hitstop;
-            if (cb_.ow_shake) cb_.ow_shake(mode.ow_slam_shake.load());
-        }
-        prev_ow_e_ = e_down;
-        prev_ow_q_ = q_down;
-    } else {
-        prev_ow_e_ = false;
-        prev_ow_q_ = false;
-    }
-#endif
-
-#if ENABLE_CS2_VIEWMODEL
-    cs_fire_cooldown_ = std::max(0.f, cs_fire_cooldown_ - dt);
-    cs_since_shot_ += dt;
-    // CS mode attack triggers: knife slash, or gun fire (automatic aware).
-    if (mode.cs_mode.load() && fg && alive) {
-        const uint8_t slot = mode.cs_weapon_slot.load();
-        if (slot == 0) {
-            if (click_edge) {
-                mode.cs_knife_state.store(2); // Primary light attack
-                mode.cs_knife_inspect.store(false);
-                mode.cs_action_variant.store(static_cast<uint8_t>((mode.cs_action_variant.load() + 1u) & 1u));
-                mode.cs_action_hit.store(true);
-                mode.cs_knife_anim_time.store(0.f);
-                if (cb_.play_sound) cb_.play_sound("cs.knife.slash", 1.0f);
-            }
-        } else {
-            const char* id = (slot == 1) ? "weapon_ak47"
-                           : (slot == 2) ? "weapon_awp"
-                           : "weapon_m4a1_silencer";
-            const auto* def = eldenring::cs::CSWeaponRegistry::instance().findWeapon(id);
-            const float rpm = (def && def->ballistics.fire_rate_rpm > 1.f) ? def->ballistics.fire_rate_rpm : 600.f;
-            const bool automatic = def ? def->ballistics.is_automatic : true;
-            const bool trigger = automatic ? left_held : click_edge;
-            if (trigger && cs_fire_cooldown_ <= 0.f) {
-                if (mode.cs_ammo.load() > 0) {
-                    mode.cs_ammo.fetch_sub(1);
-                    mode.cs_knife_state.store(2); // Fire
-                    mode.cs_knife_inspect.store(false);
-                    mode.cs_knife_anim_time.store(0.f);
-                    cs_fire_cooldown_ = 60.f / rpm;
-                    if (cb_.queue_cs_shot) {
-                        const float damage = def ? def->ballistics.damage : 36.f;
-                        // CS: the first shot after a pause is perfectly accurate; sustained fire spreads.
-                        const float spread = (cs_since_shot_ > 0.25f)
-                            ? 0.f
-                            : (def ? def->ballistics.spread_deg : 0.45f);
-                        const float range = def ? def->ballistics.max_range_meters : 300.f;
-                        const uint32_t tracer = def ? def->ballistics.tracer_frequency : 3u;
-                        cb_.queue_cs_shot(damage, spread, range, tracer, slot);
-                        cs_since_shot_ = 0.f;
-                    }
-                    if (cb_.play_sound) cb_.play_sound("cs.ak47.fire", 1.0f); // placeholder until AWP/M4 fire sounds are extracted
-                } else if (click_edge && cb_.log) {
-                    cb_.log("CS: empty magazine - press R to reload");
-                }
-            }
-        }
-    }
-#endif
+    ow_.tickAttack(ctx);
+    cs_.tickAttack(ctx);
 
     // The generic MC swing belongs to MC mode, and to the CS knife (which shares
     // the melee path for its hit/miss take). OW owns its own attacks.
@@ -853,274 +247,14 @@ void HotkeyDispatcher::tick(float dt) {
     cs_gun_equipped = mode.cs_mode.load() && mode.cs_weapon_slot.load() != 0;
     cs_knife_owns_melee = mode.cs_mode.load() && mode.cs_weapon_slot.load() == 0;
 #endif
-    const bool mc_melee_owner = mc_on || cs_knife_owns_melee;
-    const bool mining_consumed = mc_on && fg && mode.click_attack.load() && want_suppress_click && cb_.step_mining && cb_.step_mining(dt, left_held);
-    if (mc_melee_owner && !mining_consumed && !cs_gun_equipped && click_edge && fg && mode.click_attack.load() && want_suppress_click) {
-        float charged = 1.0f;
-        {
-            std::lock_guard<std::mutex> g(combat.melee_mutex);
-            charged = combat.melee.startSwing();
-            player.hunger.addExhaustion(0.1f);
-        }
-        bool hit = true;
-        if (mode.damage_enabled.load() && cb_.click_attack) {
-            hit = cb_.click_attack(charged);
-        }
-#if ENABLE_CS2_VIEWMODEL
-        // The knife shares the MC melee path; use its result for the hit/miss take.
-        if (mode.cs_mode.load() && mode.cs_weapon_slot.load() == 0) {
-            mode.cs_action_hit.store(hit);
-        }
-#endif
-    }
+    ctx.cs_gun_equipped = cs_gun_equipped;
+    ctx.cs_knife_owns_melee = cs_knife_owns_melee;
+    ctx.mc_melee_owner = ctx.mc_on || cs_knife_owns_melee;
 
-#if ENABLE_CS2_VIEWMODEL
-    // Function keys: F1 for CS mode toggle
-    const bool d1 = fg && queryKey(VK_F1);
-    if (d1 && !prev_f1_) {
-        const bool new_cs = !mode.cs_mode.load();
-        mode.cs_mode.store(new_cs);
-        if (new_cs) {
-            // CS mode is standalone: stop every MC and OW behaviour while it is active.
-            mode.mc_mode.store(false);
-            mode.ow_mode.store(false);
-            mode.first_person.store(true);
-            mode.cs_knife_state.store(4); // Deploy
-            mode.cs_knife_inspect.store(false);
-            mode.cs_action_variant.store(0);
-            mode.cs_action_hit.store(true);
-            mode.cs_knife_anim_time.store(0.f);
-            if (cb_.play_sound) cb_.play_sound("cs.knife.deploy", 1.0f);
-            if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: ACTIVE (MC/OW mode off)");
-        } else {
-            mode.cs_knife_state.store(0);
-            mode.cs_knife_inspect.store(false);
-            mode.cs_action_variant.store(0);
-            mode.cs_action_hit.store(true);
-            mode.cs_knife_anim_time.store(0.f);
-#if ENABLE_MC_MODE
-            // Combined build: leaving CS returns to the MC mode it replaced.
-            mode.mc_mode.store(true);
-#endif
-            if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: OFF");
-        }
-    }
-    prev_f1_ = d1;
+    mc_.tickMelee(ctx);
 
-    // CS viewmodel tuning keys. [ ] move the view along Z (forward / back),
-    // , . along X, ; ' along Y, - = change FOV. Shift gives a 5x step.
-    if (mode.cs_mode.load() && cb_.adjust_cs_view) {
-        static const int kVk[8] = {VK_OEM_4, VK_OEM_6, VK_OEM_COMMA, VK_OEM_PERIOD,
-                                   VK_OEM_1, VK_OEM_7, VK_OEM_MINUS, VK_OEM_PLUS};
-        static const int kAxis[8] = {2, 2, 0, 0, 1, 1, 3, 3};
-        static const float kDir[8] = {-1.f, 1.f, -1.f, 1.f, -1.f, 1.f, -1.f, 1.f};
-        const bool shift = queryKey(VK_SHIFT);
-        for (int i = 0; i < 8; ++i) {
-            const bool down = fg && queryKey(kVk[i]);
-            if (down && !prev_csview_keys_[i]) {
-                const float step = (kAxis[i] == 3) ? (shift ? 5.f : 1.f) : (shift ? 0.05f : 0.01f);
-                cb_.adjust_cs_view(kAxis[i], kDir[i] * step);
-            }
-            prev_csview_keys_[i] = down;
-        }
-    }
-#endif
-
-    // OW viewmodel tuning keys, mirroring the CS set: [ ] move along Z, , . along
-    // X, ; ' along Y, - = change FOV, \ / change scale. Shift gives a 5x step.
-#if ENABLE_OW_VIEWMODEL
-    if (mode.ow_mode.load() && cb_.adjust_ow_view) {
-        static const int kVk[10] = {VK_OEM_4, VK_OEM_6, VK_OEM_COMMA, VK_OEM_PERIOD,
-                                    VK_OEM_1, VK_OEM_7, VK_OEM_MINUS, VK_OEM_PLUS,
-                                    VK_OEM_5, VK_OEM_2};
-        static const int kAxis[10] = {2, 2, 0, 0, 1, 1, 3, 3, 4, 4};
-        static const float kDir[10] = {-1.f, 1.f, -1.f, 1.f, -1.f, 1.f, -1.f, 1.f, -1.f, 1.f};
-        const bool shift = queryKey(VK_SHIFT);
-        for (int i = 0; i < 10; ++i) {
-            const bool down = fg && queryKey(kVk[i]);
-            if (down && !prev_owview_keys_[i]) {
-                const float step = (kAxis[i] == 3) ? (shift ? 5.f : 1.f)
-                                 : (kAxis[i] == 4) ? (shift ? 0.1f : 0.02f)
-                                 : (shift ? 0.05f : 0.01f);
-                cb_.adjust_ow_view(kAxis[i], kDir[i] * step);
-            }
-            prev_owview_keys_[i] = down;
-        }
-    }
-
-    // OW muzzle-flash debug: PageUp toggles the additive pass depth test,
-    // PageDown cycles the flash scale. Live, no rebuild or file edits.
-    if (mode.ow_mode.load() && fg) {
-        static const float kScales[] = {0.002f, 0.004f, 0.006f, 0.008f, 0.012f};
-        const bool vfx_depth_key = queryKey(VK_PRIOR);
-        if (vfx_depth_key && !prev_owvfx_keys_[0]) {
-            const bool nodepth = !mode.ow_vfx_nodepth.load();
-            mode.ow_vfx_nodepth.store(nodepth);
-            if (cb_.log) cb_.log(nodepth ? "OW VFX depth: off" : "OW VFX depth: on");
-        }
-        prev_owvfx_keys_[0] = vfx_depth_key;
-        const bool vfx_scale_key = queryKey(VK_NEXT);
-        if (vfx_scale_key && !prev_owvfx_keys_[1]) {
-            const float current = mode.ow_vfx_scale.load();
-            size_t idx = 0;
-            for (size_t i = 0; i < std::size(kScales); ++i) {
-                if (std::fabs(kScales[i] - current) < 1e-5f) {
-                    idx = i;
-                    break;
-                }
-            }
-            idx = (idx + 1) % std::size(kScales);
-            mode.ow_vfx_scale.store(kScales[idx]);
-            if (cb_.log) {
-                char msg[64];
-                snprintf(msg, sizeof(msg), "OW VFX scale: %.4f", kScales[idx]);
-                cb_.log(msg);
-            }
-        }
-        prev_owvfx_keys_[1] = vfx_scale_key;
-    }
-#endif
-
-    const bool d8 = fg && queryKey(VK_F8);
-    if (d8 && !prev8_ && mode.damage_enabled.load() && cb_.enqueue_nearest_hostile) {
-        cb_.enqueue_nearest_hostile();
-    }
-    prev8_ = d8;
-
-    const bool d5 = fg && queryKey(VK_F5);
-    if (d5 && !prev5_) {
-        const auto next_mode = creative::toggled(ctx.currentGameMode());
-        mode.game_mode.store(static_cast<uint8_t>(next_mode));
-#ifdef _WIN32
-        mode.mode_toast_ms.store(GetTickCount64());
-#endif
-        if (cb_.log) cb_.log(std::string("F5: ") + creative::modeName(next_mode));
-    }
-    prev5_ = d5;
-
-    const bool d6 = fg && queryKey(VK_F6);
-    if (d6 && !prev6_) {
-        if (mode.ow_mode.load()) {
-            // F6 leaves OW without silently turning another mode on.
-            mode.ow_mode.store(false);
-            mode.ow_state.store(0);
-            mode.ow_anim_time.store(0.f);
-            if (ow_charge_looping_) {
-                ow_charge_looping_ = false;
-                if (cb_.stop_sound_loop) cb_.stop_sound_loop("ow.punch.charge");
-            }
-            if (cb_.log) cb_.log("[MODE] Overwatch Mode: OFF (via F6)");
-        } else if (mode.cs_mode.load()) {
-#if ENABLE_CS2_VIEWMODEL
-            mode.cs_mode.store(false);
-            mode.cs_knife_state.store(0);
-            mode.cs_knife_inspect.store(false);
-            mode.cs_action_variant.store(0);
-            mode.cs_action_hit.store(true);
-            mode.cs_knife_anim_time.store(0.f);
-#if ENABLE_MC_MODE
-            mode.mc_mode.store(true);
-#endif
-            if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: OFF (via F6)");
-#endif
-        } else {
-#if ENABLE_MC_MODE
-            const bool new_mc = !mode.mc_mode.load();
-            mode.mc_mode.store(new_mc);
-            if (cb_.log) cb_.log(std::string("F6: MC mode ") + (new_mc ? "on" : "off"));
-            if (cb_.reset_slot_probe) cb_.reset_slot_probe(slot_cursor_);
-#endif
-        }
-    }
-    prev6_ = d6;
-
-    const bool d3 = fg && queryKey(VK_F3);
-    if (d3 && !prev_f3_ && cb_.queue_bullet_fire) {
-        cb_.queue_bullet_fire(10.0f);
-    }
-    prev_f3_ = d3;
-
-    const bool d2 = fg && queryKey(VK_F2);
-    if (d2 && !prev_f2_ && cb_.queue_summon) {
-        cb_.queue_summon("F2");
-    }
-    prev_f2_ = d2;
-
-    const bool d9 = fg && queryKey(VK_F9);
-    if (d9 && !prev9_ && mode.hide_native.load() && cb_.cycle_hidden_slot) {
-        cb_.cycle_hidden_slot(slot_cursor_);
-    }
-    prev9_ = d9;
-
-    const bool d12 = fg && queryKey(VK_F12);
-    if (d12 && !prev12_ && cb_.request_frame_trace) {
-        cb_.request_frame_trace(240);
-    }
-    prev12_ = d12;
-
-    const bool d11 = fg && queryKey(VK_F11);
-    if (d11 && !prev11_ && cb_.snapshot_native_parts) {
-        cb_.snapshot_native_parts();
-    }
-    prev11_ = d11;
-
-    const bool d10 = fg && queryKey(VK_F10);
-    if (d10 && !prev10_) {
-        mode.first_person.store(!mode.first_person.load());
-        if (cb_.reset_slot_probe) cb_.reset_slot_probe(slot_cursor_);
-    }
-    prev10_ = d10;
-
-    const bool d4 = fg && queryKey(VK_F4);
-    if (d4 && !prev4_ && cb_.request_screenshot) {
-        static unsigned shot_no = 0;
-        char name[64];
-        snprintf(name, sizeof(name), "mc_er_shot_%03u.png", ++shot_no);
-        cb_.request_screenshot(name);
-    }
-    prev4_ = d4;
-
-    const bool shift_down = fg && (queryKey(VK_SHIFT) || queryKey(VK_LSHIFT) || queryKey(VK_RSHIFT));
-    const bool d7 = fg && queryKey(VK_F7);
-    if (d7 && !prev7_) {
-        if (shift_down) {
-#if ENABLE_OW_VIEWMODEL
-            const bool new_ow = !mode.ow_mode.load();
-            mode.ow_mode.store(new_ow);
-            if (new_ow) {
-                mode.mc_mode.store(false);
-                mode.cs_mode.store(false);
-                mode.first_person.store(true);
-                mode.ow_state.store(0);
-                mode.ow_anim_time.store(0.f);
-                ow_fire_cooldown_ = 0.f;
-                ow_punch_cooldown_left_ = 0.f;
-                ow_uppercut_cooldown_left_ = 0.f;
-                ow_slam_cooldown_left_ = 0.f;
-                ow_hitstop_left_ = 0.f;
-                ow_since_shot_ = 10.f;
-                ow_slam_impact_played_ = false;
-                ow_charge_looping_ = false;
-                if (cb_.log) cb_.log("[MODE] Overwatch Doomfist Mode: ACTIVE (MC/CS mode off)");
-            } else {
-                mode.ow_state.store(0);
-                mode.ow_anim_time.store(0.f);
-                if (ow_charge_looping_) {
-                    ow_charge_looping_ = false;
-                    if (cb_.stop_sound_loop) cb_.stop_sound_loop("ow.punch.charge");
-                }
-                if (cb_.log) cb_.log("[MODE] Overwatch Doomfist Mode: OFF");
-            }
-#endif
-        } else if (mode.ow_mode.load()) {
-            const bool new_fp = !mode.first_person.load();
-            mode.first_person.store(new_fp);
-            if (cb_.log) cb_.log(new_fp ? "[OW] First-Person View (F7)" : "[OW] Third-Person View (F7)");
-        } else if (cb_.cycle_depth_candidate) {
-            cb_.cycle_depth_candidate();
-        }
-    }
-    prev7_ = d7;
+    // Function keys, CS/OW view tuning and mode toggles.
+    debug_.tick(ctx);
 
     if (cb_.check_summon_watch) {
         cb_.check_summon_watch(0);

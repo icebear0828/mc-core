@@ -106,6 +106,11 @@ add_executable(mc_tests
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/combat/combat_service.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/combat/projectile_service.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/input/hotkey_dispatcher.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/input/cs_gunplay_handler.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/input/ow_hero_skill_handler.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/input/mc_interaction_handler.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/input/mc_movement_handler.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/input/debug_tuning_handler.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/hooks/game_hooks.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/render/steve_mesh_factory.cpp
 )
