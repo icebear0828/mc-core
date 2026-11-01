@@ -70,6 +70,10 @@ add_library(mc_core STATIC
     include/mc/mining.hpp
     include/mc/loot_table.hpp
     include/mc/recipe.hpp
+    include/mc/crafting_session.hpp
+    include/mc/crafting_table_layout.hpp
+    include/mc/inventory.hpp
+    include/mc/inventory_layout.hpp
     include/mc/ground_mining.hpp
     include/mc/shield.hpp
     include/mc/contracts/physics_adapter.hpp
@@ -93,6 +97,7 @@ add_library(mc_core STATIC
     src/entity_model.cpp
     src/tnt.cpp
     src/recipe.cpp
+    src/crafting_session.cpp
 )
 
 target_include_directories(mc_core

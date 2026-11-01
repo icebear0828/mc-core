@@ -420,6 +420,8 @@ void SendBlockMesh(const std::optional<blocks::MiningOverlay>& mining = std::nul
                    const std::optional<blocks::TerrainMiningOverlay>& terrain_mining = std::nullopt);
 bool AimRay(float eye[3], float dir[3]);
 BlockTarget FindBlockTarget();
+// True when the aim ray hits a placed crafting table (used to open its 3x3 screen).
+bool AimingAtCraftingTable();
 const char* BlockSound(mc::BlockId id);
 bool TryUseSpawnEgg();
 bool TryIgniteTnt();

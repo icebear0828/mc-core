@@ -24,6 +24,9 @@ inline FaceCells faceCellsFor(mc::BlockId id) {
         case mc::BlockId::Wood: return {&mc::hud::kUV_BLOCK_WOOD_TOP, &mc::hud::kUV_BLOCK_WOOD_SIDE, &mc::hud::kUV_BLOCK_WOOD_TOP};
         case mc::BlockId::Obsidian: return {&mc::hud::kUV_BLOCK_OBSIDIAN, &mc::hud::kUV_BLOCK_OBSIDIAN, &mc::hud::kUV_BLOCK_OBSIDIAN};
         case mc::BlockId::Tnt: return {&mc::hud::kUV_BLOCK_TNT_TOP, &mc::hud::kUV_BLOCK_TNT_SIDE, &mc::hud::kUV_BLOCK_TNT_BOTTOM};
+        case mc::BlockId::CraftingTable:
+            return {&mc::hud::kUV_BLOCK_CRAFTING_TABLE_TOP, &mc::hud::kUV_BLOCK_CRAFTING_TABLE_FRONT,
+                    &mc::hud::kUV_BLOCK_CRAFTING_TABLE_TOP};
         default: return {&mc::hud::kUV_BLOCK_DIRT, &mc::hud::kUV_BLOCK_DIRT, &mc::hud::kUV_BLOCK_DIRT};
     }
 }

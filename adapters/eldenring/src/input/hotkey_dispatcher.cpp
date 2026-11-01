@@ -474,10 +474,11 @@ void HotkeyDispatcher::tick(float dt) {
         mode.shield_blocking.store(now_blocking, std::memory_order_relaxed);
     }
 
-    // Mouse wheel slot selection (MC hotbar only; CS mode suppresses the wheel).
-    if (input_enabled && mc_on && cb_.take_wheel_notches) {
+    // Mouse wheel slot selection (MC hotbar only; CS mode suppresses the wheel). While the
+    // inventory is open the wheel belongs to the palette pager, so do not drain it here.
+    if (input_enabled && mc_on && !inv_open_for_policy && cb_.take_wheel_notches) {
         const int notches = cb_.take_wheel_notches();
-        if (notches != 0 && fg && !inv_open && want_suppress) {
+        if (notches != 0 && fg && want_suppress) {
             std::lock_guard<std::mutex> g(combat.melee_mutex);
             combat.melee.scroll(-notches);
         }

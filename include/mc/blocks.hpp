@@ -35,6 +35,7 @@ inline mc::BlockId blockForItem(mc::ItemId item) {
         case mc::ItemId::BlockCobblestone: return mc::BlockId::Cobblestone;
         case mc::ItemId::BlockWood: return mc::BlockId::Wood;
         case mc::ItemId::BlockObsidian: return mc::BlockId::Obsidian;
+        case mc::ItemId::CraftingTable: return mc::BlockId::CraftingTable;
         default: return mc::BlockId::Air;
     }
 }
@@ -47,6 +48,7 @@ inline mc::ItemId itemForBlock(mc::BlockId block) {
         case mc::BlockId::Cobblestone: return mc::ItemId::BlockCobblestone;
         case mc::BlockId::Wood: return mc::ItemId::BlockWood;
         case mc::BlockId::Obsidian: return mc::ItemId::BlockObsidian;
+        case mc::BlockId::CraftingTable: return mc::ItemId::CraftingTable;
         default: return mc::ItemId::None;
     }
 }

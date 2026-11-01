@@ -37,8 +37,15 @@ struct HudState {
     int slot_probe{-1};   // >= 0: the F9 part-slot probe is on, this is the only hidden part slot
     // The inventory screen (all 36 slots, hotbar first, the stack on the cursor and the virtual mouse in screen pixels).
     bool inv_open{false};
+    bool craft_open{false}; // the crafting table screen (3x3) instead of the inventory
+    int inv_page{0};        // creative palette page
+    int inv_page_count{1};
     uint16_t inv_item[36]{};
     uint8_t inv_count[36]{};
+    uint16_t craft_item[9]{}; // the 3x3 crafting grid, row-major
+    uint8_t craft_count[9]{};
+    uint16_t craft_result_item{0};
+    uint8_t craft_result_count{0};
     uint16_t cursor_item{0};
     uint8_t cursor_count{0};
     uint16_t offhand_item{0};

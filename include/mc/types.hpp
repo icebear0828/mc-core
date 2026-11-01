@@ -64,7 +64,8 @@ enum class BlockId : uint8_t {
     Tnt,
     Wood,
     Obsidian,
-    Cobblestone // appended: every id above keeps its value
+    Cobblestone, // appended: every id above keeps its value
+    CraftingTable
 };
 
 enum class ItemId : uint16_t {

@@ -299,6 +299,11 @@ HUD_KEYS = [
     "block_cobblestone",
     "block_wood_top", "block_wood_side", "block_obsidian",
     "item_wood", "item_obsidian",
+    "item_wooden_sword", "item_stone_sword", "item_iron_sword", "item_netherite_sword",
+    "item_crafting_table", "item_anvil", "item_wood_planks", "item_sand",
+    "item_stick", "item_iron_ingot", "item_gold_ingot", "item_netherite_ingot",
+    "item_string", "item_gunpowder", "item_flint", "item_apple",
+    "block_crafting_table_top", "block_crafting_table_side", "block_crafting_table_front",
 ]
 
 HUD_SIZES = {

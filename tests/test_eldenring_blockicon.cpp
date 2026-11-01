@@ -66,6 +66,16 @@ TEST(BlockIcon, CobblestoneUsesItsOwnFaceTexture) {
     }
 }
 
+TEST(BlockIcon, CraftingTableUsesTheTopAndSideBlockCells) {
+    const IconCube icon = blockIcon(mc::BlockId::CraftingTable);
+    ASSERT_EQ(icon.count, 3);
+    for (int i = 0; i < icon.count; ++i) {
+        const mc::hud::HudUV& want = icon.faces[i].is_top ? mc::hud::kUV_BLOCK_CRAFTING_TABLE_TOP
+                                                          : mc::hud::kUV_BLOCK_CRAFTING_TABLE_SIDE;
+        EXPECT_FLOAT_EQ(icon.faces[i].uv.u0, want.u0);
+    }
+}
+
 TEST(BlockIcon, WoodUsesTopAndSideCellsAndObsidianUsesItsCell) {
     const IconCube wood = blockIcon(mc::BlockId::Wood);
     ASSERT_EQ(wood.count, 3);

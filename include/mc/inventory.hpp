@@ -76,6 +76,16 @@ public:
         slots_[static_cast<size_t>(i)] = s;
     }
     [[nodiscard]] const ItemStack& cursor() const { return cursor_; }
+    // Container screens outside the 36 slots (the crafting grid) move the stack on the cursor with these.
+    [[nodiscard]] ItemStack takeCursor() {
+        ItemStack s = cursor_;
+        cursor_ = {};
+        return s;
+    }
+    void setCursor(ItemStack s) {
+        if (s.empty()) s = {};
+        cursor_ = s;
+    }
 
     [[nodiscard]] const ItemStack& armor(int i) const {
         return armor_[static_cast<size_t>(std::clamp(i, 0, kArmorSlots - 1))];
