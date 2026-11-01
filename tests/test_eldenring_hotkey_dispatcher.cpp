@@ -650,6 +650,48 @@ TEST_F(HotkeyDispatcherTest, CsModeDigitKeysSelectWeaponSlotsAndRReloads) {
     EXPECT_EQ(ctx.mode().cs_ammo.load(), 0u);
 }
 
+TEST_F(HotkeyDispatcherTest, CsReloadAudioFollowsTheAnimationTimeline) {
+    auto& ctx = RuntimeContext::Instance();
+
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    setKey('1', true);
+    dispatcher_->tick(0.016f);
+    setKey('1', false);
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 1);
+
+    // Let the deploy take finish, then start from a clean sound log.
+    dispatcher_->tick(1.1f);
+    ASSERT_EQ(ctx.mode().cs_knife_state.load(), 0);
+    played_sounds_.clear();
+
+    setKey('R', true);
+    dispatcher_->tick(0.016f);
+    setKey('R', false);
+    ASSERT_EQ(ctx.mode().cs_knife_state.load(), 5);
+    // The old code fired one reload sound at t=0; the timeline has none there.
+    EXPECT_EQ(std::count(played_sounds_.begin(), played_sounds_.end(), "cs.ak47.magout"), 0);
+
+    auto tick_until = [&](float t) {
+        while (ctx.mode().cs_knife_anim_time.load() < t) dispatcher_->tick(0.05f);
+    };
+    auto count = [&](const char* name) {
+        return std::count(played_sounds_.begin(), played_sounds_.end(), name);
+    };
+
+    tick_until(0.40f); // frame 12: magazine still seated
+    EXPECT_EQ(count("cs.ak47.magout"), 0);
+    tick_until(0.45f); // frame 13
+    EXPECT_EQ(count("cs.ak47.magout"), 1);
+    tick_until(0.80f); // frame 24
+    EXPECT_EQ(count("cs.ak47.magin"), 1);
+    tick_until(1.60f); // frame 48
+    EXPECT_EQ(count("cs.ak47.bolt"), 1);
+}
+
 TEST_F(HotkeyDispatcherTest, CsDigit4SelectsTheM4A1S) {
     auto& ctx = RuntimeContext::Instance();
     setKey(VK_F1, true);
