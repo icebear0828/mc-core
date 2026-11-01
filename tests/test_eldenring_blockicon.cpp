@@ -76,6 +76,37 @@ TEST(BlockIcon, CraftingTableUsesTheTopAndSideBlockCells) {
     }
 }
 
+TEST(BlockIcon, BuildableBlocksUseTheirOwnFaceCells) {
+    struct Case {
+        mc::BlockId id;
+        const mc::hud::HudUV* uv;
+    };
+    const Case cases[] = {{mc::BlockId::Sand, &mc::hud::kUV_BLOCK_SAND},
+                          {mc::BlockId::Gravel, &mc::hud::kUV_BLOCK_GRAVEL},
+                          {mc::BlockId::WoodPlanks, &mc::hud::kUV_BLOCK_PLANKS},
+                          {mc::BlockId::StoneBricks, &mc::hud::kUV_BLOCK_STONE_BRICKS},
+                          {mc::BlockId::Bricks, &mc::hud::kUV_BLOCK_BRICKS},
+                          {mc::BlockId::WhiteWool, &mc::hud::kUV_BLOCK_WHITE_WOOL}};
+    for (const Case& c : cases) {
+        const IconCube icon = blockIcon(c.id);
+        ASSERT_EQ(icon.count, 3) << static_cast<int>(c.id);
+        for (int i = 0; i < icon.count; ++i) {
+            EXPECT_FLOAT_EQ(icon.faces[i].uv.u0, c.uv->u0) << static_cast<int>(c.id);
+            EXPECT_FLOAT_EQ(icon.faces[i].uv.v1, c.uv->v1) << static_cast<int>(c.id);
+        }
+    }
+}
+
+TEST(BlockIcon, AnvilUsesItsTopAndSideFaces) {
+    const IconCube icon = blockIcon(mc::BlockId::Anvil);
+    ASSERT_EQ(icon.count, 3);
+    for (int i = 0; i < icon.count; ++i) {
+        const mc::hud::HudUV& want =
+            icon.faces[i].is_top ? mc::hud::kUV_BLOCK_ANVIL_TOP : mc::hud::kUV_BLOCK_ANVIL_SIDE;
+        EXPECT_FLOAT_EQ(icon.faces[i].uv.u0, want.u0);
+    }
+}
+
 TEST(BlockIcon, WoodUsesTopAndSideCellsAndObsidianUsesItsCell) {
     const IconCube wood = blockIcon(mc::BlockId::Wood);
     ASSERT_EQ(wood.count, 3);

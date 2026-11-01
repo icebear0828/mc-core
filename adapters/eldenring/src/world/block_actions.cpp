@@ -109,8 +109,14 @@ bool AimingAtCraftingTable() {
 const char* BlockSound(mc::BlockId id) {
     switch (id) {
         case mc::BlockId::Stone: return "block.stone.step";
+        case mc::BlockId::StoneBricks:
+        case mc::BlockId::Bricks:
+        case mc::BlockId::Anvil: return "block.stone.step";
         case mc::BlockId::Dirt: return "block.gravel.step";
+        case mc::BlockId::Gravel: return "block.gravel.step";
+        case mc::BlockId::Sand: return "block.sand.step";
         case mc::BlockId::Wood:
+        case mc::BlockId::WoodPlanks:
         case mc::BlockId::CraftingTable: return "block.wood.step";
         default: return "block.grass.step";
     }

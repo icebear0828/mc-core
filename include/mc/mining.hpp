@@ -30,7 +30,7 @@ public:
         if (block_id == BlockId::Tnt) {
             return 0.05f; // Extremely fast / near-instant break
         }
-        if (block_id == BlockId::Wood || block_id == BlockId::CraftingTable) {
+        if (block_id == BlockId::Wood || block_id == BlockId::CraftingTable || block_id == BlockId::WoodPlanks) {
             return held_tool == ItemId::None ? 3.0f : 1.5f; // no axes in the mod: any tool speeds it up
         }
         if (block_id == BlockId::Obsidian) {
@@ -38,7 +38,8 @@ public:
             if (held_tool == ItemId::NetheritePickaxe) return 8.35f;
             return 30.0f; // cannot be harvested without diamond/netherite
         }
-        if (block_id == BlockId::Stone || block_id == BlockId::Cobblestone) {
+        if (block_id == BlockId::Stone || block_id == BlockId::Cobblestone || block_id == BlockId::StoneBricks ||
+            block_id == BlockId::Bricks) {
             switch (toolTier(held_tool)) {
                 case ToolTier::Wood: return 1.15f;
                 case ToolTier::Stone: return 0.6f;
@@ -49,8 +50,22 @@ public:
                 default: return 7.5f;
             }
         }
-        if (block_id == BlockId::Dirt) {
+        if (block_id == BlockId::Anvil) {
+            switch (toolTier(held_tool)) {
+                case ToolTier::Wood: return 3.8f;
+                case ToolTier::Stone: return 2.0f;
+                case ToolTier::Iron: return 1.35f;
+                case ToolTier::Gold: return 0.7f;
+                case ToolTier::Diamond: return 1.0f;
+                case ToolTier::Netherite: return 0.85f;
+                default: return 25.0f;
+            }
+        }
+        if (block_id == BlockId::Dirt || block_id == BlockId::Sand || block_id == BlockId::Gravel) {
             return 0.75f;
+        }
+        if (block_id == BlockId::WhiteWool) {
+            return 0.8f;
         }
         return 1.0f;
     }
@@ -59,11 +74,13 @@ public:
         if (is_creative) {
             return false; // Creative mode breaks blocks without dropping items
         }
-        if (block_id == BlockId::Stone || block_id == BlockId::Cobblestone) {
+        if (block_id == BlockId::Stone || block_id == BlockId::Cobblestone || block_id == BlockId::StoneBricks ||
+            block_id == BlockId::Bricks || block_id == BlockId::Anvil) {
             return isPickaxe(held_tool);
         }
         if (block_id == BlockId::Dirt || block_id == BlockId::Tnt || block_id == BlockId::Wood ||
-            block_id == BlockId::CraftingTable) {
+            block_id == BlockId::CraftingTable || block_id == BlockId::Sand || block_id == BlockId::Gravel ||
+            block_id == BlockId::WoodPlanks || block_id == BlockId::WhiteWool) {
             return true;
         }
         if (block_id == BlockId::Obsidian) {
@@ -83,6 +100,13 @@ public:
             case BlockId::Tnt: return ItemId::BlockTnt;
             case BlockId::Wood: return ItemId::BlockWood;
             case BlockId::CraftingTable: return ItemId::CraftingTable;
+            case BlockId::Sand: return ItemId::Sand;
+            case BlockId::Gravel: return ItemId::BlockGravel;
+            case BlockId::WoodPlanks: return ItemId::WoodPlanks;
+            case BlockId::StoneBricks: return isPickaxe(held_tool) ? ItemId::BlockStoneBricks : ItemId::None;
+            case BlockId::Bricks: return isPickaxe(held_tool) ? ItemId::BlockBricks : ItemId::None;
+            case BlockId::WhiteWool: return ItemId::BlockWhiteWool;
+            case BlockId::Anvil: return isPickaxe(held_tool) ? ItemId::Anvil : ItemId::None;
             case BlockId::Obsidian:
                 return (held_tool == ItemId::DiamondPickaxe || held_tool == ItemId::NetheritePickaxe) ? ItemId::BlockObsidian : ItemId::None;
             default: return ItemId::None;

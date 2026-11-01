@@ -105,6 +105,18 @@ using ::mc::hud::kUV_ITEM_STRING;
 using ::mc::hud::kUV_ITEM_GUNPOWDER;
 using ::mc::hud::kUV_ITEM_FLINT;
 using ::mc::hud::kUV_ITEM_APPLE;
+using ::mc::hud::kUV_ITEM_GRAVEL;
+using ::mc::hud::kUV_ITEM_STONE_BRICKS;
+using ::mc::hud::kUV_ITEM_BRICKS;
+using ::mc::hud::kUV_ITEM_WHITE_WOOL;
+using ::mc::hud::kUV_BLOCK_SAND;
+using ::mc::hud::kUV_BLOCK_GRAVEL;
+using ::mc::hud::kUV_BLOCK_PLANKS;
+using ::mc::hud::kUV_BLOCK_STONE_BRICKS;
+using ::mc::hud::kUV_BLOCK_BRICKS;
+using ::mc::hud::kUV_BLOCK_WHITE_WOOL;
+using ::mc::hud::kUV_BLOCK_ANVIL_TOP;
+using ::mc::hud::kUV_BLOCK_ANVIL_SIDE;
 
 } // namespace eldenring::hudtex
 
@@ -176,6 +188,10 @@ inline const mc::hud::HudUV* uvForItem(mc::ItemId item) {
         case ItemId::Gunpowder: return &mc::hud::kUV_ITEM_GUNPOWDER;
         case ItemId::Flint: return &mc::hud::kUV_ITEM_FLINT;
         case ItemId::Apple: return &mc::hud::kUV_ITEM_APPLE;
+        case ItemId::BlockGravel: return &mc::hud::kUV_ITEM_GRAVEL;
+        case ItemId::BlockStoneBricks: return &mc::hud::kUV_ITEM_STONE_BRICKS;
+        case ItemId::BlockBricks: return &mc::hud::kUV_ITEM_BRICKS;
+        case ItemId::BlockWhiteWool: return &mc::hud::kUV_ITEM_WHITE_WOOL;
         default: return nullptr;
     }
 }

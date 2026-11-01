@@ -136,7 +136,9 @@ TEST(InventoryLayout, PaletteListsEveryUsableItemOnce) {
     }
     // The mining loot and the crafting materials must be reachable in creative.
     for (ItemId id : {ItemId::Coal, ItemId::RawIron, ItemId::Diamond, ItemId::NetheriteScrap, ItemId::WoodenPickaxe,
-                      ItemId::BlockCobblestone, ItemId::Stick, ItemId::CraftingTable}) {
+                      ItemId::BlockCobblestone, ItemId::Stick, ItemId::CraftingTable, ItemId::Sand,
+                      ItemId::BlockGravel, ItemId::BlockStoneBricks, ItemId::BlockBricks, ItemId::BlockWhiteWool,
+                      ItemId::Anvil}) {
         EXPECT_NE(std::find(items.begin(), items.end(), id), items.end());
     }
 }

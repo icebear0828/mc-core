@@ -36,6 +36,13 @@ inline IconCube blockIcon(mc::BlockId id) {
             top_uv = &mc::hud::kUV_BLOCK_CRAFTING_TABLE_TOP;
             side_uv = &mc::hud::kUV_BLOCK_CRAFTING_TABLE_SIDE;
             break;
+        case mc::BlockId::Sand: top_uv = side_uv = &mc::hud::kUV_BLOCK_SAND; break;
+        case mc::BlockId::Gravel: top_uv = side_uv = &mc::hud::kUV_BLOCK_GRAVEL; break;
+        case mc::BlockId::WoodPlanks: top_uv = side_uv = &mc::hud::kUV_BLOCK_PLANKS; break;
+        case mc::BlockId::StoneBricks: top_uv = side_uv = &mc::hud::kUV_BLOCK_STONE_BRICKS; break;
+        case mc::BlockId::Bricks: top_uv = side_uv = &mc::hud::kUV_BLOCK_BRICKS; break;
+        case mc::BlockId::WhiteWool: top_uv = side_uv = &mc::hud::kUV_BLOCK_WHITE_WOOL; break;
+        case mc::BlockId::Anvil: top_uv = &mc::hud::kUV_BLOCK_ANVIL_TOP; side_uv = &mc::hud::kUV_BLOCK_ANVIL_SIDE; break;
         default: top_uv = side_uv = &mc::hud::kUV_BLOCK_DIRT; break;
     }
     constexpr float kDeg = 3.14159265358979f / 180.f;

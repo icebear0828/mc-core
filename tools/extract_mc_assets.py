@@ -388,6 +388,12 @@ _PLACEHOLDER_ITEM_COLORS = {
     # The crafting table's block faces (the item icon above is the isometric cube).
     "block_crafting_table_top": (160, 120, 70), "block_crafting_table_side": (140, 100, 50),
     "block_crafting_table_front": (150, 110, 55),
+    # Buildable blocks: face textures and item icons.
+    "block_sand": (220, 210, 160), "block_gravel": (130, 130, 130), "block_planks": (160, 120, 70),
+    "block_stone_bricks": (120, 120, 120), "block_bricks": (150, 70, 60), "block_white_wool": (230, 230, 230),
+    "item_gravel": (130, 130, 130), "item_stone_bricks": (120, 120, 120), "item_bricks": (150, 70, 60),
+    "item_white_wool": (230, 230, 230),
+    "block_anvil_top": (80, 80, 85), "block_anvil_side": (70, 70, 75),
 }
 
 
@@ -916,6 +922,20 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("block_crafting_table_top", (16, 16)),
     ("block_crafting_table_side", (16, 16)),
     ("block_crafting_table_front", (16, 16)),
+    # Buildable block faces and item icons, appended so every earlier UV stays exactly where it was.
+    ("block_sand", (16, 16)),
+    ("block_gravel", (16, 16)),
+    ("block_planks", (16, 16)),
+    ("block_stone_bricks", (16, 16)),
+    ("block_bricks", (16, 16)),
+    ("block_white_wool", (16, 16)),
+    ("item_gravel", (16, 16)),
+    ("item_stone_bricks", (16, 16)),
+    ("item_bricks", (16, 16)),
+    ("item_white_wool", (16, 16)),
+    # The anvil's block faces (the item icon above is the isometric cube).
+    ("block_anvil_top", (16, 16)),
+    ("block_anvil_side", (16, 16)),
 ]
 
 
@@ -1016,6 +1036,15 @@ _JAR_HUD_SPRITES = {
     "block_crafting_table_top": "block/crafting_table_top.png",
     "block_crafting_table_side": "block/crafting_table_side.png",
     "block_crafting_table_front": "block/crafting_table_front.png",
+    # Buildable block faces
+    "block_sand": "block/sand.png",
+    "block_gravel": "block/gravel.png",
+    "block_planks": "block/oak_planks.png",
+    "block_stone_bricks": "block/stone_bricks.png",
+    "block_bricks": "block/bricks.png",
+    "block_white_wool": "block/white_wool.png",
+    "block_anvil_top": "block/anvil_top.png",
+    "block_anvil_side": "block/anvil.png",
 }
 
 
@@ -1044,6 +1073,11 @@ _JAR_BLOCK_ITEMS = {
     "item_anvil": ("block/anvil_top.png", "block/anvil.png"),
     "item_wood_planks": ("block/oak_planks.png", "block/oak_planks.png"),
     "item_sand": ("block/sand.png", "block/sand.png"),
+    # Buildable block item icons
+    "item_gravel": ("block/gravel.png", "block/gravel.png"),
+    "item_stone_bricks": ("block/stone_bricks.png", "block/stone_bricks.png"),
+    "item_bricks": ("block/bricks.png", "block/bricks.png"),
+    "item_white_wool": ("block/white_wool.png", "block/white_wool.png"),
 }
 _CUBE_SHADE = {"top": 1.0, "left": 0.78, "right": 0.6}
 

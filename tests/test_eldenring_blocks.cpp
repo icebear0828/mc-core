@@ -175,12 +175,26 @@ TEST(Blocks, ItemsMapToBlocks) {
     EXPECT_EQ(blockForItem(mc::ItemId::BlockWood), mc::BlockId::Wood);
     EXPECT_EQ(blockForItem(mc::ItemId::BlockObsidian), mc::BlockId::Obsidian);
     EXPECT_EQ(blockForItem(mc::ItemId::CraftingTable), mc::BlockId::CraftingTable);
+    EXPECT_EQ(blockForItem(mc::ItemId::Sand), mc::BlockId::Sand);
+    EXPECT_EQ(blockForItem(mc::ItemId::BlockGravel), mc::BlockId::Gravel);
+    EXPECT_EQ(blockForItem(mc::ItemId::WoodPlanks), mc::BlockId::WoodPlanks);
+    EXPECT_EQ(blockForItem(mc::ItemId::BlockStoneBricks), mc::BlockId::StoneBricks);
+    EXPECT_EQ(blockForItem(mc::ItemId::BlockBricks), mc::BlockId::Bricks);
+    EXPECT_EQ(blockForItem(mc::ItemId::BlockWhiteWool), mc::BlockId::WhiteWool);
+    EXPECT_EQ(blockForItem(mc::ItemId::Anvil), mc::BlockId::Anvil);
     EXPECT_EQ(blockForItem(mc::ItemId::DiamondSword), mc::BlockId::Air);
     EXPECT_EQ(itemForBlock(mc::BlockId::Stone), mc::ItemId::BlockStone);
     EXPECT_EQ(itemForBlock(mc::BlockId::Cobblestone), mc::ItemId::BlockCobblestone);
     EXPECT_EQ(itemForBlock(mc::BlockId::Wood), mc::ItemId::BlockWood);
     EXPECT_EQ(itemForBlock(mc::BlockId::Obsidian), mc::ItemId::BlockObsidian);
     EXPECT_EQ(itemForBlock(mc::BlockId::CraftingTable), mc::ItemId::CraftingTable);
+    EXPECT_EQ(itemForBlock(mc::BlockId::Sand), mc::ItemId::Sand);
+    EXPECT_EQ(itemForBlock(mc::BlockId::Gravel), mc::ItemId::BlockGravel);
+    EXPECT_EQ(itemForBlock(mc::BlockId::WoodPlanks), mc::ItemId::WoodPlanks);
+    EXPECT_EQ(itemForBlock(mc::BlockId::StoneBricks), mc::ItemId::BlockStoneBricks);
+    EXPECT_EQ(itemForBlock(mc::BlockId::Bricks), mc::ItemId::BlockBricks);
+    EXPECT_EQ(itemForBlock(mc::BlockId::WhiteWool), mc::ItemId::BlockWhiteWool);
+    EXPECT_EQ(itemForBlock(mc::BlockId::Anvil), mc::ItemId::Anvil);
 }
 
 TEST(Blocks, FallingThroughABlockTopIsCaughtAndStandsOnIt) {
