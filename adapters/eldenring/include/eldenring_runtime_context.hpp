@@ -113,6 +113,11 @@ struct ModeConfig {
     std::atomic<float> ow_dash_distance{4.0f}; // mc_er_ow.txt: ow_dash_distance=<m> for the rocket punch
     std::atomic<bool> ow_damage_enabled{true}; // mc_er_ow.txt: ow_damage=0 disables Doomfist strike damage
     std::atomic<float> ow_damage_scale{1.0f};  // mc_er_ow.txt: ow_damage_scale=<multiplier>
+    // Phase A debug animation state (mc_er_dbg_anim.txt + Insert/Delete/Home/End).
+    std::atomic<bool> dbg_glide{false};
+    std::atomic<bool> dbg_riptide{false};
+    std::atomic<float> dbg_trident_charge{0.f};
+    std::atomic<uint32_t> dbg_firework_seq{0};
     std::atomic<uint8_t> cs_knife_state{0}; // 0: Idle, 1: Inspect, 2: Primary, 3: Secondary, 4: Deploy, 5: Reload, 6: Backstab
     std::atomic<float> cs_knife_anim_time{0.f};
     std::atomic<bool> cs_knife_inspect{false};
@@ -302,6 +307,10 @@ public:
         mode_.ow_dash_distance.store(4.0f);
         mode_.ow_damage_enabled.store(true);
         mode_.ow_damage_scale.store(1.0f);
+        mode_.dbg_glide.store(false);
+        mode_.dbg_riptide.store(false);
+        mode_.dbg_trident_charge.store(0.f);
+        mode_.dbg_firework_seq.store(0);
         mode_.cs_knife_state.store(0);
         mode_.cs_knife_anim_time.store(0.f);
         mode_.cs_knife_inspect.store(false);

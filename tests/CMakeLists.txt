@@ -59,6 +59,7 @@ add_executable(mc_tests
     test_eldenring_orientation.cpp
     test_eldenring_roll.cpp
     test_entity_model.cpp
+    test_elytra_trident_models.cpp
     test_eldenring_shield.cpp
     test_eldenring_flags.cpp
     test_eldenring_pixel.cpp

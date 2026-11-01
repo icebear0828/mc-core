@@ -50,6 +50,53 @@ inline PartMatrices posedMatrices(const mc::SteveAnimator::PartTransforms& t, co
     return out;
 }
 
+// Inverse of a rigid (rotation + translation) row-vector matrix.
+inline mc::rig::Mat4 inverseRigid(const mc::rig::Mat4& a) {
+    mc::rig::Mat4 r;
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3; ++col) r.m[static_cast<size_t>(row * 4 + col)] = a.at(col, row);
+    }
+    const float tx = a.at(3, 0), ty = a.at(3, 1), tz = a.at(3, 2);
+    r.m[12] = -(tx * r.m[0] + ty * r.m[4] + tz * r.m[8]);
+    r.m[13] = -(tx * r.m[1] + ty * r.m[5] + tz * r.m[9]);
+    r.m[14] = -(tx * r.m[2] + ty * r.m[6] + tz * r.m[10]);
+    return r;
+}
+
+// The parts that follow the torso (the legs stay on the root): head, hat, body, jacket, arms, sleeves.
+inline bool followsUpperBody(mc::StevePart part) {
+    switch (part) {
+        case mc::StevePart::Head: case mc::StevePart::Hat:
+        case mc::StevePart::Body: case mc::StevePart::Jacket:
+        case mc::StevePart::RightArm: case mc::StevePart::LeftArm:
+        case mc::StevePart::RightSleeve: case mc::StevePart::LeftSleeve: return true;
+        default: return false;
+    }
+}
+
+// Same, with the animator's whole-body transforms: `root` rotates every part about the hip and translates the
+// rig; `upper` rotates the torso (and everything above it) about the same hip. Canonical cm / quaternions.
+inline PartMatrices posedMatrices(const mc::SteveAnimator::PartTransforms& t, const mc::Transform& root,
+                                  const mc::Transform& upper, const mc::Vec3& feet, float yaw) {
+    PartMatrices out;
+    // The animator's root/upper rotations live in the rig frame (canonical axes before the character's yaw). A
+    // world-space rotation about the hip must therefore use the character's local axes: conjugate by the yaw.
+    const mc::rig::Mat4 yaw_m = mc::rig::rotationAboutAxis(kBasis.up, yaw);
+    const mc::Vec3 hip_rig = kBasis.fromCanonical(mc::Vec3{0.f, 0.f, 67.5f}); // the rig's hip, canonical cm
+    const mc::Vec3 hip = feet + mc::rig::transformPoint(yaw_m, hip_rig);
+    const mc::rig::Mat4 root_rot = inverseRigid(yaw_m) * mc::rig::rotationFromQuat(hostQuat(root.rot)) * yaw_m;
+    const mc::rig::Mat4 upper_rot = inverseRigid(yaw_m) * mc::rig::rotationFromQuat(hostQuat(upper.rot)) * yaw_m;
+    const mc::rig::Mat4 root_m = mc::rig::translation(mc::Vec3{-hip.x, -hip.y, -hip.z}) * root_rot * mc::rig::translation(hip) *
+                                 mc::rig::translation(mc::rig::transformPoint(yaw_m, kBasis.fromCanonical(root.pos)));
+    const mc::rig::Mat4 upper_m = mc::rig::translation(mc::Vec3{-hip.x, -hip.y, -hip.z}) * upper_rot * mc::rig::translation(hip);
+    for (size_t i = 0; i < out.size(); ++i) {
+        const auto part = static_cast<mc::StevePart>(i);
+        out[i] = mc::rig::partMatrix(part, hostQuat(t[i].rot), t[i].pos, feet, yaw, kBasis) * root_m;
+        if (followsUpperBody(part)) out[i] = out[i] * upper_m;
+    }
+    return out;
+}
+
 using mc::deathFlipFraction;
 using mc::rig::deathFallMatrix;
 using mc::sleepTransitionFraction;

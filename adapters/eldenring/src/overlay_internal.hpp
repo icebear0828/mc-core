@@ -125,6 +125,7 @@ struct FxEvent {
     FxKind kind;
     float pos[3];
     int count;
+    float dir[3];
 };
 inline std::mutex g_fx_mutex;
 inline std::vector<FxEvent> g_fx_events;

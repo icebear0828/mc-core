@@ -42,6 +42,11 @@ struct SteveAnimInput {
     bool is_gliding{false};
     float roll_angle{0.f};    // radians (banking roll when turning during flight)
     bool is_sleeping{false};
+    // Issue #64: riptide dash progress in [0, 1] over the 0.6 s loop (0 = not riptiding).
+    float riptide{0.f};
+    // Issue #65: elytra wing-flap phase in [0, 1] (0 = wings at rest). Reserved for the #38/#39 wing
+    // props; the 12-part rig has no wing bones, so it does not affect the pose yet.
+    float elytra_wing_flap{0.f};
 };
 
 class SteveAnimator {
@@ -54,11 +59,22 @@ public:
     void update(float dt, const SteveAnimInput& input);
     [[nodiscard]] const PartTransforms& getTransforms() const { return transforms_; }
 
+    // Whole-body pose that the flat 12-part rig cannot express on its own (the parts have no parent/child
+    // links). `rootTransform()` is the root translation plus the rig rotation about the hip;
+    // `upperTransform()` is the torso rotation about the same hip. Both are canonical centimetres /
+    // canonical quaternions. A consumer post-multiplies them in world space (upper for the torso parts,
+    // root for every part) exactly like the death/sleep poses.
+    [[nodiscard]] const Transform& rootTransform() const { return root_; }
+    [[nodiscard]] const Transform& upperTransform() const { return upper_; }
+
     void reset();
 
 private:
     float age_{0.f};
     float stride_{0.f};
+    float glide_age_{0.f}; // seconds spent in the elytra glide; drives the 1.6 s bob
+    Transform root_{};
+    Transform upper_{};
     PartTransforms transforms_{};
 };
 

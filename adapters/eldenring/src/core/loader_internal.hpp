@@ -332,6 +332,7 @@ std::span<const mc::ZoneRule> DefaultZoneAreaRules();
 DWORD WINAPI LoaderThread(LPVOID);
 HRESULT WINAPI DirectInput8CreateImpl(HINSTANCE hinst, DWORD version, REFIID riid, LPVOID* out, LPUNKNOWN outer);
 DWORD WINAPI KeyThread(LPVOID);
+DWORD WINAPI AnimDebugThread(LPVOID);
 DWORD WINAPI CrackTunerThread(LPVOID);
 
 // ---- services ------------------------------------------------------------------------------

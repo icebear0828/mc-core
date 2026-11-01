@@ -2,6 +2,7 @@
 #include "mc/elytra.hpp"
 #include "mc/animator.hpp"
 #include "mc/contracts/physics_adapter.hpp"
+#include <cmath>
 
 namespace {
 
@@ -124,16 +125,17 @@ TEST(ElytraFlightTest, SteveAnimatorGlidingPoseDiffersFromWalking) {
     mc::SteveAnimInput walking_input;
     walking_input.forward_speed = 4.0f;
     animator.update(0.1f, walking_input);
-    const auto walking_transforms = animator.getTransforms();
+    const auto walking_root = animator.rootTransform();
 
     mc::SteveAnimInput gliding_input;
     gliding_input.is_gliding = true;
     gliding_input.look_pitch = -0.3f;
     gliding_input.roll_angle = 0.2f;
     animator.update(0.1f, gliding_input);
-    const auto gliding_transforms = animator.getTransforms();
+    const auto gliding_root = animator.rootTransform();
 
-    // Body orientation must reflect gliding pose
-    EXPECT_NE(walking_transforms[static_cast<size_t>(mc::StevePart::Body)].rot.w,
-              gliding_transforms[static_cast<size_t>(mc::StevePart::Body)].rot.w);
+    // The whole-body glide pose now lives in rootTransform(): the body leans forward to ~80 degrees.
+    EXPECT_NE(walking_root.rot.w, gliding_root.rot.w);
+    const float glide_pitch = 2.f * std::atan2(gliding_root.rot.y, gliding_root.rot.w);
+    EXPECT_NEAR(glide_pitch, 80.f * 3.14159265358979323846f / 180.f, 0.05f);
 }

@@ -130,6 +130,13 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
             last = now;
         }
     }
+    {
+        const auto& dbg = eldenring::RuntimeContext::Instance().mode();
+        steve.gliding = dbg.dbg_glide.load(std::memory_order_relaxed);
+        steve.riptide = dbg.dbg_riptide.load(std::memory_order_relaxed);
+        steve.trident_charge = dbg.dbg_trident_charge.load(std::memory_order_relaxed);
+        steve.firework_seq = dbg.dbg_firework_seq.load(std::memory_order_relaxed);
+    }
     return true;
 }
 
@@ -303,6 +310,18 @@ void SetupOverlay() {
                     Log("mobs: skin %s (%ux%u)", mob.c_str(), zw, zh);
                 } else {
                     Log("mobs: skin %s missing or not 64x64/64x32 at %s", mob.c_str(), skin_path.c_str());
+                }
+            }
+        }
+        {   // Phase A debug props: elytra wings and trident (drawn only when the debug keys turn them on).
+            for (const char* prop : {"elytra_wings", "trident"}) {
+                const std::string model_path = g_game_dir + "mods\\mc_adapter\\models\\" + prop + ".geo.json";
+                std::vector<uint8_t> json;
+                if (!ReadFileAll(model_path, json)) continue;
+                auto model = mc::model::EntityModel::fromJson(std::string_view(reinterpret_cast<const char*>(json.data()), json.size()));
+                if (model && !model->bones.empty()) {
+                    erov::RegisterModel(prop, *model);
+                    Log("props: model %s (%zu bones)", prop, model->bones.size());
                 }
             }
         }

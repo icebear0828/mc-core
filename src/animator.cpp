@@ -7,6 +7,11 @@ namespace mc {
 
 namespace {
 constexpr float kPi = std::numbers::pi_v<float>;
+constexpr float kDeg = kPi / 180.0f;
+constexpr float kCmPerModelPixel = 5.625f; // 180 cm / 32 model pixels (matches mc::rig::kCmPerModelPixel)
+
+float clamp01(float v) { return std::clamp(v, 0.f, 1.f); }
+float lerp(float a, float b, float t) { return a + (b - a) * t; }
 
 // Conversion from Euler angles (pitch, yaw, roll in radians) to Quat
 Quat fromEuler(float pitch, float yaw, float roll) {
@@ -24,6 +29,25 @@ Quat fromEuler(float pitch, float yaw, float roll) {
     q.z = cr * cp * sy - sr * sp * cy;
     return q;
 }
+
+// Whole-body rotations follow the Blockbench app's Three.js Euler 'XYZ' order
+// (R = Rx * Ry * Rz), which in the animator's canonical axes is q_pitch * q_yaw * q_roll.
+// Only the sign of the pitch*yaw cross term differs from fromEuler() above.
+Quat fromEulerXyz(float pitch, float yaw, float roll) {
+    const float cp = std::cos(pitch * 0.5f);
+    const float sp = std::sin(pitch * 0.5f);
+    const float cy = std::cos(yaw * 0.5f);
+    const float sy = std::sin(yaw * 0.5f);
+    const float cr = std::cos(roll * 0.5f);
+    const float sr = std::sin(roll * 0.5f);
+
+    Quat q;
+    q.x = cp * cy * sr + sp * sy * cr;
+    q.y = sp * cy * cr + cp * sy * sr;
+    q.z = cp * sy * cr - sp * cy * sr;
+    q.w = cp * cy * cr - sp * sy * sr;
+    return q;
+}
 } // namespace
 
 SteveAnimator::SteveAnimator() {
@@ -33,6 +57,9 @@ SteveAnimator::SteveAnimator() {
 void SteveAnimator::reset() {
     age_ = 0.f;
     stride_ = 0.f;
+    glide_age_ = 0.f;
+    root_ = Transform{};
+    upper_ = Transform{};
     for (auto& t : transforms_) {
         t = Transform{};
     }
@@ -59,6 +86,34 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
     const float body_yaw = (input.swing_progress > 0.0f)
         ? std::sin(std::sqrt(input.swing_progress) * kPi * 2.0f) * 0.2f
         : 0.0f;
+
+    // Issue #64/#65 state precedence: sleeping > riptide > gliding > normal.
+    const bool riptiding = !input.is_sleeping && input.riptide > 0.0f;
+    const bool gliding = !input.is_sleeping && !riptiding && input.is_gliding;
+    glide_age_ = gliding ? glide_age_ + dt : 0.0f;
+
+    root_ = Transform{};
+    upper_ = Transform{};
+
+    float glide_phase = 0.f;
+    float glide_s = 0.f;
+    if (riptiding) {
+        // anim_data.js riptide: rig pitch 65 deg, yaw 360 * progress; root pos (0, 16, 0) model px.
+        root_.pos = Vec3{0.f, 0.f, 16.0f * kCmPerModelPixel};
+        root_.rot = fromEulerXyz(65.0f * kDeg, 360.0f * kDeg * input.riptide, 0.f);
+    } else if (gliding) {
+        // anim_data.js elytra_fly: rig pitch 80 + 3 sin(phase), roll 2 cos(phase) + bank;
+        // root pos (0, 14 + sin(phase), 0) model px.
+        glide_phase = 2.0f * kPi * glide_age_ / 1.6f;
+        glide_s = std::sin(glide_phase);
+        root_.pos = Vec3{0.f, 0.f, (14.0f + glide_s) * kCmPerModelPixel};
+        root_.rot = fromEulerXyz((80.0f + 3.0f * glide_s) * kDeg, 0.f,
+                                 2.0f * kDeg * std::cos(glide_phase) + input.roll_angle);
+    } else if (!input.is_sleeping && input.trident_charge > 0.0f) {
+        // anim_data.js trident_charge: upper pitch lerp(0, -4, t), yaw lerp(0, -14, t).
+        const float t = clamp01(input.trident_charge / 0.9f);
+        upper_.rot = fromEulerXyz(-4.0f * kDeg * t, -14.0f * kDeg * t, 0.f);
+    }
 
     for (size_t i = 0; i < kPartCount; ++i) {
         const auto part = static_cast<StevePart>(i);
@@ -108,39 +163,66 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                 default:
                     break;
             }
-        } else if (input.is_gliding) {
+        } else if (riptiding) {
+            // anim_data.js riptide: the rig spins/pitches via rootTransform(); only local limbs move here.
             switch (part) {
                 case StevePart::Head:
                 case StevePart::Hat:
-                    pitch = 0.8f + head_pitch * 0.5f;
-                    yaw = head_yaw;
-                    roll = input.roll_angle * 0.3f;
+                    pitch = -30.0f * kDeg;
                     break;
                 case StevePart::Body:
                 case StevePart::Jacket:
-                    pitch = -1.4f + input.look_pitch;
-                    yaw = body_yaw;
-                    roll = input.roll_angle;
-                    break;
-                case StevePart::RightLeg:
-                case StevePart::RightPants:
-                    pitch = 0.1f;
-                    roll = 0.05f;
-                    break;
-                case StevePart::LeftLeg:
-                case StevePart::LeftPants:
-                    pitch = 0.1f;
-                    roll = -0.05f;
-                    break;
+                    break; // the root carries the torso
                 case StevePart::RightArm:
                 case StevePart::RightSleeve:
-                    pitch = 0.2f;
-                    roll = 0.1f;
+                    pitch = -178.0f * kDeg;
+                    roll = -6.0f * kDeg;
                     break;
                 case StevePart::LeftArm:
                 case StevePart::LeftSleeve:
-                    pitch = 0.2f;
-                    roll = -0.1f;
+                    pitch = -178.0f * kDeg;
+                    roll = 6.0f * kDeg;
+                    break;
+                case StevePart::RightLeg:
+                case StevePart::RightPants:
+                    roll = 1.0f * kDeg;
+                    break;
+                case StevePart::LeftLeg:
+                case StevePart::LeftPants:
+                    roll = -1.0f * kDeg;
+                    break;
+                default:
+                    break;
+            }
+        } else if (gliding) {
+            // anim_data.js elytra_fly: the rig pitch/roll and the root bob live in rootTransform().
+            switch (part) {
+                case StevePart::Head:
+                case StevePart::Hat:
+                    pitch = -72.0f * kDeg;
+                    break;
+                case StevePart::Body:
+                case StevePart::Jacket:
+                    break; // the root carries the torso
+                case StevePart::RightArm:
+                case StevePart::RightSleeve:
+                    pitch = 14.0f * kDeg;
+                    roll = (-10.0f + 3.0f * glide_s) * kDeg;
+                    break;
+                case StevePart::LeftArm:
+                case StevePart::LeftSleeve:
+                    pitch = 14.0f * kDeg;
+                    roll = (10.0f - 3.0f * glide_s) * kDeg;
+                    break;
+                case StevePart::RightLeg:
+                case StevePart::RightPants:
+                    pitch = 6.0f * kDeg;
+                    roll = -2.0f * kDeg;
+                    break;
+                case StevePart::LeftLeg:
+                case StevePart::LeftPants:
+                    pitch = 6.0f * kDeg;
+                    roll = 2.0f * kDeg;
                     break;
                 default:
                     break;
@@ -151,7 +233,12 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                 case StevePart::Hat:
                     pitch = head_pitch;
                     yaw = head_yaw;
-                    if (input.is_crouching) {
+                    if (input.trident_charge > 0.0f) {
+                        // anim_data.js trident_charge head: pitch 0, yaw lerp(0, 14, t) relative to upper.
+                        const float t = clamp01(input.trident_charge / 0.9f);
+                        pitch = 0.0f;
+                        yaw = 14.0f * kDeg * t;
+                    } else if (input.is_crouching) {
                         // Minecraft ModelBiped: bipedHead.rotationPointY = 1.0F (+1 model pixel down = -5.625 cm canonical Z)
                         pos.z = -5.625f;
                     } else if (input.is_sprinting) {
@@ -162,6 +249,10 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
 
                 case StevePart::Body:
                 case StevePart::Jacket:
+                    if (input.trident_charge > 0.0f) {
+                        // The torso rotation is carried by upperTransform(); keep the part neutral.
+                        break;
+                    }
                     yaw = body_yaw;
                     if (input.is_crouching) {
                         pitch = 0.5f;
@@ -209,7 +300,14 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                         pitch = -kPi * 0.5f + head_pitch;
                         yaw = -0.1f + head_yaw - (input.bow_offhand ? 0.4f : 0.0f);
                     } else if (input.trident_charge > 0.0f) {
-                        pitch = pitch * 0.5f - kPi;
+                        // anim_data.js trident_charge rightArm: pitch lerp(-150, -192, t) + shake, roll -4.
+                        const float t = clamp01(input.trident_charge / 0.9f);
+                        const float n = input.trident_charge > 0.9f
+                            ? std::sin(input.trident_charge * 55.0f) * 1.2f
+                            : 0.0f;
+                        pitch = (lerp(-150.0f, -192.0f, t) + n) * kDeg;
+                        yaw = 0.0f;
+                        roll = -4.0f * kDeg;
                     } else if (input.eating_progress > 0.0f) {
                         pitch = -1.7f + std::abs(std::sin(age_ * 1.5f)) * 0.15f;
                         yaw = -0.3f;
@@ -226,7 +324,7 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                         // Idle breathing oscillation
                         roll += std::sin(age_ * 0.067f) * 0.05f;
                     }
-                    if (input.is_crouching) {
+                    if (input.is_crouching && input.trident_charge <= 0.0f) {
                         pitch += 0.4f;
                     }
                     break;
@@ -247,13 +345,19 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                     } else if (input.bow_charge > 0.0f) {
                         pitch = -kPi * 0.5f + head_pitch;
                         yaw = 0.1f + head_yaw + (input.bow_offhand ? 0.0f : 0.4f);
+                    } else if (input.trident_charge > 0.0f) {
+                        // anim_data.js trident_charge leftArm: pitch lerp(0, -25, t), roll +8.
+                        const float t = clamp01(input.trident_charge / 0.9f);
+                        pitch = lerp(0.0f, -25.0f, t) * kDeg;
+                        yaw = 0.0f;
+                        roll = 8.0f * kDeg;
                     } else if (input.swing_progress > 0.0f) {
                         yaw += body_yaw;
                         pitch += body_yaw;
                     } else {
                         roll -= std::sin(age_ * 0.067f) * 0.05f;
                     }
-                    if (input.is_crouching) {
+                    if (input.is_crouching && input.trident_charge <= 0.0f) {
                         pitch += 0.4f;
                     }
                     break;

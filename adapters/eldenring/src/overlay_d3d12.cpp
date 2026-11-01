@@ -37,6 +37,12 @@ void SetMobModel(std::string_view name, const mc::model::EntityModel& model) {
     }
 }
 
+void RegisterModel(std::string_view name, const mc::model::EntityModel& model) {
+    if (name.empty() || model.bones.empty()) return;
+    g_mob_models[std::string(name)] = model;
+    g_mob_registry.registerModel(name, &g_mob_models[std::string(name)]);
+}
+
 void SetMobSkin(const uint8_t* rgba, unsigned width, unsigned height) {
     SetMobSkin("", rgba, width, height);
 }
@@ -65,7 +71,12 @@ void SetArrows(const std::vector<eldenring::summon::ArrowDraw>& arrows) {
 }
 
 void SpawnFx(FxKind kind, const float world_pos[3], int count) {
-    FxEvent e{kind, {world_pos[0], world_pos[1], world_pos[2]}, count};
+    const float no_dir[3] = {0.f, 0.f, 0.f};
+    SpawnFx(kind, world_pos, no_dir, count);
+}
+
+void SpawnFx(FxKind kind, const float world_pos[3], const float dir[3], int count) {
+    FxEvent e{kind, {world_pos[0], world_pos[1], world_pos[2]}, count, {dir[0], dir[1], dir[2]}};
     std::lock_guard<std::mutex> g(g_fx_mutex);
     if (g_fx_events.size() < 64) g_fx_events.push_back(e);
 }

@@ -1,0 +1,35 @@
+{
+  "format_version": "1.12.0",
+  "source": "Custom Blockbench recreation, not a Mojang asset. Extracted from 'replicate-steve-animations-in-blockbench (1)/dist/index.html' (see re_data_cache/model_data.js, bone 'trident'). Coordinates are Bedrock model pixels.",
+  "minecraft:geometry": [
+    {
+      "description": {
+        "identifier": "geometry.trident",
+        "texture_width": 64,
+        "texture_height": 64,
+        "visible_bounds_width": 2,
+        "visible_bounds_height": 2,
+        "visible_bounds_offset": [0, 1, 0]
+      },
+      "bones": [
+        {
+          "name": "rightArm",
+          "pivot": [-5, 22, 0],
+          "cubes": []
+        },
+        {
+          "name": "trident",
+          "parent": "rightArm",
+          "pivot": [-6, 13, 0],
+          "cubes": [
+            {"origin": [-6.5, 12.5, -15], "size": [1, 1, 25], "color": "teal"},
+            {"origin": [-9, 12.5, -15], "size": [6, 1, 1], "color": "tealLight"},
+            {"origin": [-6.5, 12.5, -20], "size": [1, 1, 5], "color": "tealLight"},
+            {"origin": [-9, 12.5, -18.5], "size": [1, 1, 3.5], "color": "tealLight"},
+            {"origin": [-4, 12.5, -18.5], "size": [1, 1, 3.5], "color": "tealLight"}
+          ]
+        }
+      ]
+    }
+  ]
+}
