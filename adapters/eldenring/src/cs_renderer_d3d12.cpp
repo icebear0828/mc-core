@@ -572,6 +572,9 @@ void CsRenderer::release() {
     glove_normal_tex_.release();
     knife_pbr_tex_.release();
     glove_pbr_tex_.release();
+    gun_tex_.release();
+    gun_normal_tex_.release();
+    gun_pbr_tex_.release();
     bare_tex_.release();
     bare_normal_tex_.release();
     bare_pbr_tex_.release();
@@ -694,6 +697,18 @@ bool CsRenderer::setKnifePbrTexture(ID3D12Device* device, const uint8_t* rgba, u
 
 bool CsRenderer::setGlovePbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
     return glove_pbr_tex_.create(device, rgba, width, height, slot);
+}
+
+bool CsRenderer::setGunTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    return gun_tex_.create(device, rgba, width, height, slot, /*srgb=*/true);
+}
+
+bool CsRenderer::setGunNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    return gun_normal_tex_.create(device, rgba, width, height, slot);
+}
+
+bool CsRenderer::setGunPbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    return gun_pbr_tex_.create(device, rgba, width, height, slot);
 }
 
 bool CsRenderer::setBareArmTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
@@ -1135,18 +1150,18 @@ bool CsRenderer::loadWeaponTextures(ID3D12Device* device,
     unsigned width = 0, height = 0;
 
     if (DecodePngCached(def.albedo_tex_path, rgba, width, height)) {
-        setKnifeTexture(device, rgba, width, height, weapon_slot);
+        setGunTexture(device, rgba, width, height, weapon_slot);
         any_loaded = true;
         if (log_) log_("cs_render: weapon albedo %s (%ux%u)", def.albedo_tex_path.c_str(), width, height);
     } else {
         // A missing map must still leave a valid descriptor: the shader samples
         // this slot on every weapon draw.
         std::vector<uint8_t> fallback(16 * 16 * 4, 210);
-        setKnifeTexture(device, fallback.data(), 16, 16, weapon_slot);
+        setGunTexture(device, fallback.data(), 16, 16, weapon_slot);
         if (log_) log_("cs_render: weapon albedo missing, using fallback");
     }
     if (DecodePngCached(def.normal_tex_path, rgba, width, height)) {
-        setKnifeNormalTexture(device, rgba, width, height, normal_slot);
+        setGunNormalTexture(device, rgba, width, height, normal_slot);
         any_loaded = true;
         if (log_) log_("cs_render: weapon normal %s (%ux%u)", def.normal_tex_path.c_str(), width, height);
     } else {
@@ -1154,10 +1169,10 @@ bool CsRenderer::loadWeaponTextures(ID3D12Device* device,
         for (size_t p = 0; p < flat_norm.size(); p += 4) {
             flat_norm[p] = 128; flat_norm[p + 1] = 128; flat_norm[p + 2] = 255; flat_norm[p + 3] = 255;
         }
-        setKnifeNormalTexture(device, flat_norm.data(), 16, 16, normal_slot);
+        setGunNormalTexture(device, flat_norm.data(), 16, 16, normal_slot);
     }
     if (DecodePngCached(def.pbr_tex_path, rgba, width, height)) {
-        setKnifePbrTexture(device, rgba, width, height, pbr_slot);
+        setGunPbrTexture(device, rgba, width, height, pbr_slot);
         any_loaded = true;
         if (log_) log_("cs_render: weapon ORM %s (%ux%u)", def.pbr_tex_path.c_str(), width, height);
     } else {
@@ -1165,7 +1180,7 @@ bool CsRenderer::loadWeaponTextures(ID3D12Device* device,
         for (size_t p = 0; p < fallback.size(); p += 4) {
             fallback[p] = 255; fallback[p + 1] = 200; fallback[p + 2] = 0; fallback[p + 3] = 255;
         }
-        setKnifePbrTexture(device, fallback.data(), 16, 16, pbr_slot);
+        setGunPbrTexture(device, fallback.data(), 16, 16, pbr_slot);
     }
     return any_loaded;
 }
@@ -1255,6 +1270,9 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
     glove_normal_tex_.recordUpload(list);
     knife_pbr_tex_.recordUpload(list);
     glove_pbr_tex_.recordUpload(list);
+    gun_tex_.recordUpload(list);
+    gun_normal_tex_.recordUpload(list);
+    gun_pbr_tex_.recordUpload(list);
     bare_tex_.recordUpload(list);
     bare_normal_tex_.recordUpload(list);
     bare_pbr_tex_.recordUpload(list);
