@@ -107,6 +107,21 @@ bool FireCsShot(float damage, float spread, float range, uint32_t tracer_frequen
 #endif
 }
 
+// Doomfist strike: 0 hand cannon, 1 rocket punch, 2 uppercut, 3 slam. Runs on
+// the input thread and enqueues the damage for the game-thread drain.
+bool FireOwStrike(int kind) {
+#if ENABLE_OW_VIEWMODEL
+    if (kind < 0 || kind > 3) return false;
+    return eldenring::combat::CombatService::Instance()
+        .fireOwStrike(static_cast<eldenring::ow::OwStrikeKind>(kind), g_queue, NowTick(),
+                      eldenring::RuntimeContext::Instance())
+        .fired;
+#else
+    (void)kind;
+    return false;
+#endif
+}
+
 void SetupBulletLog() {
     const bool proj_log = FileExists(g_game_dir + "mc_er_bulletlog.txt");
     const bool arrow_dmg = FileExists(g_game_dir + "mc_er_arrowdmg.txt");

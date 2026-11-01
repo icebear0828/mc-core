@@ -13,7 +13,11 @@ void EnemiesBlockCollisionStep(const float player_feet[3]) {
 #else
     const bool cs_on = false;
 #endif
-    if (!mc_on && !cs_on) return;
+    // OW strikes trace against the same cached enemy list. Without this the
+    // cache is only refreshed for MC/CS, and a punch in an OW-only build finds
+    // no targets at all.
+    const bool ow_on = eldenring::RuntimeContext::Instance().mode().ow_mode.load(std::memory_order_relaxed);
+    if (!mc_on && !cs_on && !ow_on) return;
 
     std::vector<EnemyInfo> enemies;
     if (!enumerateEnemies(g_reader, g_img.base, enemies, 512)) {
@@ -21,7 +25,7 @@ void EnemiesBlockCollisionStep(const float player_feet[3]) {
         return;
     }
 
-    // The CS hitscan reads this cache on the input thread.
+    // The CS hitscan and the OW strikes read this cache on the input thread.
     EntityManager::instance().updateCacheFromGameThread(enemies);
 
     if (!mc_on) return;

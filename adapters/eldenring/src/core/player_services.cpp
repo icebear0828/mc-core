@@ -155,11 +155,8 @@ bool KillChr(uintptr_t chr) {
 }
 
 bool WantSuppress() {
-#if ENABLE_CS2_VIEWMODEL
-    if (!g_mc_mode.load() && !eldenring::RuntimeContext::Instance().mode().cs_mode.load()) return false;
-#else
-    if (!g_mc_mode.load()) return false;
-#endif
+    const auto& mode = eldenring::RuntimeContext::Instance().mode();
+    if (!g_mc_mode.load() && !mode.cs_mode.load() && !mode.ow_mode.load()) return false;
     MenuState ms;
     LoadingState ls;
     if (!readMenuState(g_reader, readSingleton(g_reader, g_img.base, g_rva_menu, sigs::kCSMenuMan), ms) ||

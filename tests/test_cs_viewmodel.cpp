@@ -1378,4 +1378,49 @@ TEST(CSViewModelTest, AnimationSamplingRejectsNonFiniteFrames) {
     EXPECT_NEAR(out.m[0], good.m[0], 1e-4f);
 }
 
+TEST(CSViewModelTest, OwDoomfistPrimaryAttackAnimationForwardThrustAndReturn) {
+    CSViewModelAnimator anim;
+    // Without an authored clip, State 2 (Primary Attack / Punch Jab) must provide
+    // procedural forward thrust and return to rest at duration.
+    anim.tick(0.016f, 0, 0.0f, 0, true);
+    const float idle_z = anim.basePose().m[11];
+
+    // Peak strike at t ~ 0.15s: gauntlet thrusts forward (negative Z in viewmodel space)
+    anim.tick(0.016f, 2, 0.15f, 0, true);
+    const float peak_z = anim.basePose().m[11];
+    EXPECT_LT(peak_z - idle_z, -0.10f) << "Primary punch must thrust forward by at least 10cm";
+
+    // End of punch at t >= 0.4s: gauntlet returns to resting position
+    anim.tick(0.016f, 2, 0.40f, 0, true);
+    const float end_z = anim.basePose().m[11];
+    EXPECT_NEAR(end_z, idle_z, 0.01f) << "Gauntlet must return to rest position after attack";
+}
+
+TEST(CSViewModelTest, OwDoomfistSecondaryAttackAnimationWindupAndHeavyThrust) {
+    CSViewModelAnimator anim;
+    // State 3 (Secondary Attack: Rocket Punch / Uppercut)
+    anim.tick(0.016f, 0, 0.0f, 0, true);
+    const float idle_y = anim.basePose().m[7];
+    const float idle_z = anim.basePose().m[11];
+
+    // Windup at t ~ 0.1s: pulls back (+Z)
+    anim.tick(0.016f, 3, 0.10f, 0, true);
+    const float windup_z = anim.basePose().m[11];
+    EXPECT_GT(windup_z - idle_z, 0.02f) << "Rocket punch must windup and pull back";
+
+    // Explosive release at t ~ 0.4s: deep forward thrust (Z <= -0.2m) with upward heave (Y >= +0.05m)
+    anim.tick(0.016f, 3, 0.40f, 0, true);
+    const float strike_y = anim.basePose().m[7];
+    const float strike_z = anim.basePose().m[11];
+    EXPECT_LE(strike_z - idle_z, -0.20f) << "Heavy strike must thrust forward at least 20cm";
+    EXPECT_GE(strike_y - idle_y, 0.05f) << "Heavy strike must have upward heave at least 5cm";
+
+    // Recovery at t >= 0.8s: gauntlet returns to resting position
+    anim.tick(0.016f, 3, 0.80f, 0, true);
+    const float recovery_y = anim.basePose().m[7];
+    const float recovery_z = anim.basePose().m[11];
+    EXPECT_NEAR(recovery_y, idle_y, 0.015f);
+    EXPECT_NEAR(recovery_z, idle_z, 0.015f);
+}
+
 } // namespace

@@ -43,8 +43,22 @@ void BlocksCollisionStep() {
     eldenring::world::VoxelWorldRuntime::Instance().stepPlayerBlockCollision(g_ctx);
 }
 
+// First-person sneak eye height: stepped every camera update, independent of block collision (which can early-return)
+// and of how many blocks are placed, so the 1.65 m <-> 1.27 m transition also works on native terrain.
+void SneakEyeHeightStep(float dt) {
+    eldenring::world::VoxelWorldRuntime::Instance().stepSneakEyeHeight(dt, g_ctx);
+}
+
 void GroundSprintStep(float dt) {
     eldenring::movement::PlayerLocomotion::Instance().stepGroundSprint(dt, g_ctx);
+}
+
+void OwRocketPunchStep(float dt) {
+#if ENABLE_OW_VIEWMODEL
+    eldenring::movement::PlayerLocomotion::Instance().stepOwRocketPunch(dt, g_ctx);
+#else
+    (void)dt;
+#endif
 }
 
 void McJumpStep() {

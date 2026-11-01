@@ -22,6 +22,7 @@ struct ModeInputs {
     bool native_input_allowed{false}; // WantSuppress(): no menu/loading screen
     bool mc_mode{false};
     bool cs_mode{false};
+    bool ow_mode{false}; // Overwatch mode (Doomfist)
     bool first_person{false};
 
     bool mc_jump{false};
@@ -34,10 +35,34 @@ struct ModeInputs {
     std::span<const int> flight_keys{}; // DirectInput scan codes
 
     std::span<const int> cs_keys{}; // DirectInput scan codes owned by CS mode
+    std::span<const int> ow_keys{}; // DirectInput scan codes owned by OW mode
 };
 
 inline mc::ControlPlan buildControlPlan(const ModeInputs& in) {
     mc::ControlResolver resolver;
+
+    // Strict Mode Isolation:
+    // When OW mode is active, it runs completely isolated from MC and CS modes.
+    if (in.ow_mode && in.foreground) {
+        // OW owns the wheel too: the native quick-slot must not switch items
+        // while the gauntlet is out.
+        resolver.request(mc::ControlDomain::MouseWheel, mc::ControlAuthority::Mod, 100, 0, "ow mode");
+        if (in.input_enabled && in.native_input_allowed) {
+            mc::requestMinecraftCombat(resolver);
+        }
+        if (!in.inventory_open) {
+            for (const int key : in.ow_keys) {
+                if (key > 0) resolver.request(mc::ControlDomain::Key, mc::ControlAuthority::Mod, 100, key, "ow mode");
+            }
+        }
+        if (in.first_person) {
+            mc::requestFirstPerson(resolver);
+        }
+        if (in.inventory_open) {
+            mc::requestInventory(resolver);
+        }
+        return resolver.resolve();
+    }
 
     // MC / CS combat owns the mouse while the game has no menu or loading screen.
     if ((in.mc_mode || in.cs_mode) && in.foreground && in.input_enabled && in.native_input_allowed) {

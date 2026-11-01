@@ -1,0 +1,4 @@
+#pragma once
+// Generated at CMake configure time from adapters/eldenring/shaders/steve.hlsl. Do not edit.
+// The runtime still compiles this source with D3DCompile, so no external fxc/dxc is needed to build.
+inline constexpr char kSteveHlsl[] = R"hlsl(@MC_STEVE_HLSL_SOURCE@)hlsl";

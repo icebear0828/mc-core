@@ -14,6 +14,8 @@
 #include "eldenring_shield.hpp"
 #include "eldenring_roll.hpp"
 #include "eldenring_flight.hpp"
+#include "eldenring_ow_dash.hpp"
+#include "ow_viewmodel.hpp"
 #include "cs_weapon_registry.hpp"
 #include <algorithm>
 #include <cmath>
@@ -176,6 +178,9 @@ void HotkeyDispatcher::resetKeyStates() {
     prev_f1_ = false;
     prev_gameplay_f_ = false;
     prev_reload_r_ = false;
+    prev_ow_e_ = false;
+    prev_ow_q_ = false;
+    ow_punch_released_ = false;
     cs_fire_cooldown_ = 0.f;
 }
 
@@ -218,8 +223,8 @@ void HotkeyDispatcher::tick(float dt) {
         combat.feedback.tick(dt);
     }
 
-    // Sprinting update
-    if (fg) {
+    // Sprinting update (MC only: OW/CS do not own the Steve sprint state)
+    if (mc_on && fg) {
         const bool key_w = queryKey('W');
         const bool key_s = queryKey('S');
         const bool key_ctrl = queryKey(VK_CONTROL);
@@ -343,6 +348,23 @@ void HotkeyDispatcher::tick(float dt) {
     control_inputs.cs_keys = std::span<const int>(cs_scans, cs_scan_count);
 #endif
 
+#if defined(_WIN32) && ENABLE_OW_VIEWMODEL
+    control_inputs.ow_mode = mode.ow_mode.load(std::memory_order_relaxed);
+    int ow_scans[12] = {};
+    size_t ow_scan_count = 0;
+    if (control_inputs.ow_mode && fg && !inv_open_for_policy) {
+        // Mask both Shift keys: VK_SHIFT alone maps to DIK_LSHIFT, and the native
+        // sprint/roll still fires from DIK_RSHIFT. R and the quick slots are
+        // native-only actions and must not fire while the gauntlet is out.
+        const int ow_keys[] = {VK_SHIFT, VK_LSHIFT, VK_RSHIFT, 'E', 'Q', 'R', '1', '2', '3', '4', VK_F7};
+        for (const int vk : ow_keys) {
+            const int sc = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC));
+            if (sc > 0) ow_scans[ow_scan_count++] = sc;
+        }
+    }
+    control_inputs.ow_keys = std::span<const int>(ow_scans, ow_scan_count);
+#endif
+
     const mc::ControlPlan control_plan = eldenring::control::buildControlPlan(control_inputs);
     mode.control_authority_bits.store(control_plan.packedAuthorities(), std::memory_order_relaxed);
 
@@ -353,6 +375,17 @@ void HotkeyDispatcher::tick(float dt) {
     // Right-click interaction cascade
     const bool input_enabled = mode.input_enabled.load(std::memory_order_relaxed);
     const bool right_edge = !inv_open && input_enabled && cb_.take_right_click && cb_.take_right_click();
+#if ENABLE_OW_VIEWMODEL
+    if (mode.ow_mode.load() && fg && !is_dead && right_edge) {
+        // RMB: Rocket Punch charge. The authored controller starts the charge
+        // on press and fires the straight punch on release, so the state stays
+        // in the windup until the button comes up (see the timer block).
+        mode.ow_state.store(3);
+        mode.ow_anim_time.store(0.f);
+        mode.ow_action_variant.store(static_cast<uint8_t>((mode.ow_action_variant.load() + 1u) & 1u));
+        ow_punch_released_ = false;
+    } else
+#endif
 #if ENABLE_CS2_VIEWMODEL
     if (mode.cs_mode.load() && fg && !is_dead && right_edge) {
         // RMB is the knife's heavy attack. Guns consume the click but have no
@@ -494,6 +527,50 @@ void HotkeyDispatcher::tick(float dt) {
     }
 #endif
 
+    // OW action timer advance
+#if ENABLE_OW_VIEWMODEL
+    if (mode.ow_mode.load()) {
+        const uint8_t state = mode.ow_state.load();
+        const float prev_t = mode.ow_anim_time.load();
+        const float t = prev_t + dt;
+        const bool holding = cb_.right_held ? cb_.right_held() : true;
+        float max_t = 0.f;
+        if (state != 0) {
+            const char* clip = eldenring::ow::owClipNameForState(state);
+            if (cb_.ow_clip_duration && clip != nullptr) max_t = cb_.ow_clip_duration(clip);
+            if (max_t <= 0.f) max_t = eldenring::ow::owClipDurationFallback(state);
+        }
+
+        if (state == 3) {
+            // Authored controller flow: hold RMB to coil the punch, release to
+            // fire. The windup holds at the release frame while the button is
+            // down; letting go jumps to that frame and plays the strike.
+            const float release_time = eldenring::ow::kRocketPunchReleaseTime;
+            if (!ow_punch_released_) {
+                if (holding) {
+                    mode.ow_anim_time.store(std::min(t, release_time));
+                } else {
+                    mode.ow_anim_time.store(release_time);
+                    ow_punch_released_ = true;
+                    if (cb_.play_sound) cb_.play_sound("ow.punch.release", 1.0f);
+                    if (cb_.ow_strike) cb_.ow_strike(1);
+                }
+            } else if (max_t > 0.f && t >= max_t) {
+                mode.ow_state.store(0);
+                mode.ow_anim_time.store(0.f);
+                ow_punch_released_ = false;
+            } else {
+                mode.ow_anim_time.store(t);
+            }
+        } else if (state != 0 && max_t > 0.f && t >= max_t) {
+            mode.ow_state.store(0); // Return to Idle
+            mode.ow_anim_time.store(0.f);
+        } else {
+            mode.ow_anim_time.store(t);
+        }
+    }
+#endif
+
     // F key (inspect in CS mode / swap offhand in MC) & Digits 1-9 (slot select / deploy)
     if (fg && !inv_open && want_suppress) {
         const bool f_down = queryKey('F');
@@ -510,6 +587,7 @@ void HotkeyDispatcher::tick(float dt) {
                 if (cb_.log) cb_.log(slot == 0 ? "CS: Butterfly Knife Inspect (Flower Spin)" : "CS: weapon inspect");
             } else
 #endif
+            if (mc_on)
             {
                 mc::contracts::ModInputEvent f_ev{'F', true};
                 if (!ctx.mods().dispatchInput(f_ev)) {
@@ -604,6 +682,39 @@ void HotkeyDispatcher::tick(float dt) {
     const bool left_held = !inv_open && input_enabled && ((cb_.left_held && cb_.left_held()) || queryKey(VK_LBUTTON)) && alive;
     const bool want_suppress_click = (click_edge || left_held) ? want_suppress : false;
 
+    // OW mode attack triggers: hand cannon, rocket punch (right click, above),
+    // rising uppercut (E) and seismic slam (Q).
+#if ENABLE_OW_VIEWMODEL
+    if (mode.ow_mode.load() && fg && alive) {
+        if (click_edge) {
+            mode.ow_state.store(2); // Hand cannon
+            mode.ow_action_variant.store(static_cast<uint8_t>((mode.ow_action_variant.load() + 1u) & 1u));
+            mode.ow_anim_time.store(0.f);
+            if (cb_.play_sound) cb_.play_sound("ow.cannon.fire", 1.0f);
+            if (cb_.ow_strike) cb_.ow_strike(0);
+        }
+
+        const bool gameplay_key = !inv_open && input_enabled;
+        const bool e_down = gameplay_key && queryKey('E');
+        const bool q_down = gameplay_key && queryKey('Q');
+        if (e_down && !prev_ow_e_) {
+            mode.ow_state.store(4); // Rising uppercut
+            mode.ow_anim_time.store(0.f);
+            if (cb_.ow_strike) cb_.ow_strike(2);
+        }
+        if (q_down && !prev_ow_q_) {
+            mode.ow_state.store(5); // Seismic slam
+            mode.ow_anim_time.store(0.f);
+            if (cb_.ow_strike) cb_.ow_strike(3);
+        }
+        prev_ow_e_ = e_down;
+        prev_ow_q_ = q_down;
+    } else {
+        prev_ow_e_ = false;
+        prev_ow_q_ = false;
+    }
+#endif
+
 #if ENABLE_CS2_VIEWMODEL
     cs_fire_cooldown_ = std::max(0.f, cs_fire_cooldown_ - dt);
     cs_since_shot_ += dt;
@@ -654,13 +765,17 @@ void HotkeyDispatcher::tick(float dt) {
     }
 #endif
 
-    // A CS gun owns the left click: the generic MC swing must not fire too.
+    // The generic MC swing belongs to MC mode, and to the CS knife (which shares
+    // the melee path for its hit/miss take). OW owns its own attacks.
     bool cs_gun_equipped = false;
+    bool cs_knife_owns_melee = false;
 #if ENABLE_CS2_VIEWMODEL
     cs_gun_equipped = mode.cs_mode.load() && mode.cs_weapon_slot.load() != 0;
+    cs_knife_owns_melee = mode.cs_mode.load() && mode.cs_weapon_slot.load() == 0;
 #endif
-    const bool mining_consumed = fg && mode.click_attack.load() && want_suppress_click && cb_.step_mining && cb_.step_mining(dt, left_held);
-    if (!mining_consumed && !cs_gun_equipped && click_edge && fg && mode.click_attack.load() && want_suppress_click) {
+    const bool mc_melee_owner = mc_on || cs_knife_owns_melee;
+    const bool mining_consumed = mc_on && fg && mode.click_attack.load() && want_suppress_click && cb_.step_mining && cb_.step_mining(dt, left_held);
+    if (mc_melee_owner && !mining_consumed && !cs_gun_equipped && click_edge && fg && mode.click_attack.load() && want_suppress_click) {
         float charged = 1.0f;
         {
             std::lock_guard<std::mutex> g(combat.melee_mutex);
@@ -686,8 +801,9 @@ void HotkeyDispatcher::tick(float dt) {
         const bool new_cs = !mode.cs_mode.load();
         mode.cs_mode.store(new_cs);
         if (new_cs) {
-            // CS mode is standalone: stop every MC behaviour while it is active.
+            // CS mode is standalone: stop every MC and OW behaviour while it is active.
             mode.mc_mode.store(false);
+            mode.ow_mode.store(false);
             mode.first_person.store(true);
             mode.cs_knife_state.store(4); // Deploy
             mode.cs_knife_inspect.store(false);
@@ -695,13 +811,17 @@ void HotkeyDispatcher::tick(float dt) {
             mode.cs_action_hit.store(true);
             mode.cs_knife_anim_time.store(0.f);
             if (cb_.play_sound) cb_.play_sound("cs.knife.deploy", 1.0f);
-            if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: ACTIVE (MC mode off)");
+            if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: ACTIVE (MC/OW mode off)");
         } else {
             mode.cs_knife_state.store(0);
             mode.cs_knife_inspect.store(false);
             mode.cs_action_variant.store(0);
             mode.cs_action_hit.store(true);
             mode.cs_knife_anim_time.store(0.f);
+#if ENABLE_MC_MODE
+            // Combined build: leaving CS returns to the MC mode it replaced.
+            mode.mc_mode.store(true);
+#endif
             if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: OFF");
         }
     }
@@ -727,26 +847,33 @@ void HotkeyDispatcher::tick(float dt) {
 
     const bool d6 = fg && queryKey(VK_F6);
     if (d6 && !prev6_) {
+        if (mode.ow_mode.load()) {
+            // F6 leaves OW without silently turning another mode on.
+            mode.ow_mode.store(false);
+            mode.ow_state.store(0);
+            mode.ow_anim_time.store(0.f);
+            if (cb_.log) cb_.log("[MODE] Overwatch Mode: OFF (via F6)");
+        } else if (mode.cs_mode.load()) {
 #if ENABLE_CS2_VIEWMODEL
-        // The CS2 build is CS-only at runtime: F6 can leave CS mode but never
-        // enables MC mode.
-        if (mode.cs_mode.load()) {
             mode.cs_mode.store(false);
             mode.cs_knife_state.store(0);
             mode.cs_knife_inspect.store(false);
             mode.cs_action_variant.store(0);
             mode.cs_action_hit.store(true);
             mode.cs_knife_anim_time.store(0.f);
+#if ENABLE_MC_MODE
+            mode.mc_mode.store(true);
+#endif
             if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: OFF (via F6)");
-        }
-#else
-        {
+#endif
+        } else {
+#if ENABLE_MC_MODE
             const bool new_mc = !mode.mc_mode.load();
             mode.mc_mode.store(new_mc);
             if (cb_.log) cb_.log(std::string("F6: MC mode ") + (new_mc ? "on" : "off"));
             if (cb_.reset_slot_probe) cb_.reset_slot_probe(slot_cursor_);
-        }
 #endif
+        }
     }
     prev6_ = d6;
 
@@ -796,9 +923,33 @@ void HotkeyDispatcher::tick(float dt) {
     }
     prev4_ = d4;
 
+    const bool shift_down = fg && (queryKey(VK_SHIFT) || queryKey(VK_LSHIFT) || queryKey(VK_RSHIFT));
     const bool d7 = fg && queryKey(VK_F7);
-    if (d7 && !prev7_ && cb_.cycle_depth_candidate) {
-        cb_.cycle_depth_candidate();
+    if (d7 && !prev7_) {
+        if (shift_down) {
+#if ENABLE_OW_VIEWMODEL
+            const bool new_ow = !mode.ow_mode.load();
+            mode.ow_mode.store(new_ow);
+            if (new_ow) {
+                mode.mc_mode.store(false);
+                mode.cs_mode.store(false);
+                mode.first_person.store(true);
+                mode.ow_state.store(0);
+                mode.ow_anim_time.store(0.f);
+                if (cb_.log) cb_.log("[MODE] Overwatch Doomfist Mode: ACTIVE (MC/CS mode off)");
+            } else {
+                mode.ow_state.store(0);
+                mode.ow_anim_time.store(0.f);
+                if (cb_.log) cb_.log("[MODE] Overwatch Doomfist Mode: OFF");
+            }
+#endif
+        } else if (mode.ow_mode.load()) {
+            const bool new_fp = !mode.first_person.load();
+            mode.first_person.store(new_fp);
+            if (cb_.log) cb_.log(new_fp ? "[OW] First-Person View (F7)" : "[OW] Third-Person View (F7)");
+        } else if (cb_.cycle_depth_candidate) {
+            cb_.cycle_depth_candidate();
+        }
     }
     prev7_ = d7;
 

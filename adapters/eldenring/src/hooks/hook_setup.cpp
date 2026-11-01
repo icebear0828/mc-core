@@ -59,9 +59,11 @@ void SetupGameHooksCallbacks() {
             RunBulletFire();
         }
         FlightStep();
+        SneakEyeHeightStep(dt);
         BlocksCollisionStep();
         McJumpStep();
         GroundSprintStep(dt);
+        OwRocketPunchStep(dt);
         ShadowGroundStep();
         RestoreCamKeep();
         {

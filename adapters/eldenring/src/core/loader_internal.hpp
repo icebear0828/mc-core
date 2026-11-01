@@ -386,6 +386,8 @@ void RunBulletFire();
 void AimCalTick();
 void AimCalStart(uint64_t manager, uint32_t handle, const float dir[3]);
 bool FireCsShot(float damage, float spread, float range, uint32_t tracer_frequency, uint8_t weapon_slot);
+// Doomfist strike (0 hand cannon, 1 rocket punch, 2 uppercut, 3 slam); enqueues damage for the game-thread drain.
+bool FireOwStrike(int kind);
 void LogBulletRequest(void* manager, const void* request, const void* r9, void* ret_addr, uint32_t handle);
 void SaveBulletTemplate(const uint8_t* body);
 void LoadBulletTemplate();
@@ -441,7 +443,9 @@ void ResetFallTimer(uintptr_t chr);
 void LandFallTimer(uintptr_t chr);
 void ShadowGroundStep();
 void BlocksCollisionStep();
+void SneakEyeHeightStep(float dt);
 void GroundSprintStep(float dt);
+void OwRocketPunchStep(float dt);
 void McJumpStep();
 void FlightStep();
 void InventoryTick(bool fg);

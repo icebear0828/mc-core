@@ -8,22 +8,21 @@
 
 #include <cstdint>
 #include <map>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "eldenring_shadow.hpp"
 #include "eldenring_steve.hpp"
 #include "mc/entity_model.hpp"
 #include "mc/rig.hpp"
+#include "render/steve_pipeline.hpp"
+#include "render/steve_texture_cache.hpp"
+#include "render/steve_types.hpp"
 
 namespace erov {
 
-// A skin texture, its upload buffer and whether the pixels still have to be copied to the GPU.
-struct SkinGpu {
-    ID3D12Resource* tex{nullptr};
-    ID3D12Resource* upload{nullptr};
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
-    bool pending{false};
-};
+using steve::SkinGpu;
 
 struct SteveParams {
     float mode{1.f}; // 0: no depth test, 1: hide behind the scene, 2: calibration colours
@@ -42,11 +41,11 @@ struct SteveParams {
 
 class SteveRenderer {
 public:
-    using LogFn = void (*)(const char* fmt, ...);
+    using LogFn = erov::LogFn;
 
     bool init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log);
     void release();
-    [[nodiscard]] bool ready() const { return pso_ != nullptr; }
+    [[nodiscard]] bool ready() const { return pipeline_.figure != nullptr; }
 
     // Creates the skin texture (RGBA8, usually 64x64) and its SRV at `slot`, which must directly follow the depth SRV in the
     // heap (the two share one descriptor table: t0 depth, t1 skin). The pixels are copied to the GPU by the first draw().
@@ -74,10 +73,7 @@ public:
     // Records the draw calls. `srv_heap` must be the heap that holds the depth SRV at `depth_table` (GPU handle).
     // First person: the bare right arm (with its sleeve) and the held item as a flat extruded sprite, drawn in front of the camera
     // in Minecraft's view-model space. `cells` are the atlas cells of the items, in atlas pixels.
-    struct FpItemCell {
-        uint16_t item;
-        int x, y, w, h;
-    };
+    using FpItemCell = steve::FpItemCell;
     bool initFirstPerson(ID3D12Device* device, const uint8_t* atlas_rgba, unsigned atlas_w, unsigned atlas_h, const std::vector<FpItemCell>& cells);
     // `skin_table`: descriptor table (depth, skin); `atlas_table`: (any, atlas). `item` 0 draws the bare arm, otherwise that item.
     void drawFirstPerson(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE skin_table,
@@ -130,7 +126,7 @@ public:
 
     // The blob shadows (flat black discs with a soft edge, eldenring_shadow.hpp) on the ground under the figures. Uses the figure's own depth buffer
     // (cleared unless params.keep_depth) so placed blocks hide them; the scene's depth hides them the way it hides the figure. Draw before the figure.
-    [[nodiscard]] bool shadowReady() const { return pso_shadow_ != nullptr && shadow_vertices_ != nullptr; }
+    [[nodiscard]] bool shadowReady() const { return pipeline_.shadow != nullptr && shadow_vertices_ != nullptr; }
     void drawShadows(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_GPU_DESCRIPTOR_HANDLE depth_table, unsigned width, unsigned height,
                      const mc::rig::Mat4& view_proj, const std::vector<eldenring::shadow::Shadow>& shadows, const SteveParams& params,
                      D3D12_CPU_DESCRIPTOR_HANDLE rtv);
@@ -144,16 +140,25 @@ public:
 
 private:
     static constexpr int kShadowSegments = 24;
-    ID3D12PipelineState* pso_shadow_{nullptr};
+
+    // Common pass setup (viewport, render target, optional depth clear, pipeline, root, heap, topology).
+    void beginPass(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap, D3D12_CPU_DESCRIPTOR_HANDLE rtv,
+                   unsigned width, unsigned height, ID3D12PipelineState* pso, bool clear_depth,
+                   const D3D12_VIEWPORT* viewport = nullptr, const D3D12_RECT* scissor = nullptr,
+                   const D3D12_RECT* clear_rect = nullptr);
+    // Uploads the 44 root constants (view_proj, world, scene/dims, tint).
+    static void setConstants(ID3D12GraphicsCommandList* list, const mc::rig::Mat4& view_proj, const mc::rig::Mat4& world,
+                             const SteveParams& params, unsigned width, unsigned height, const float tint[4]);
+    // Draws the held and offhand items with the arm matrices already set up by the caller.
+    void drawAttachments(ID3D12GraphicsCommandList* list, const eldenring::render::PartMatrices& parts, const SteveParams& params);
+
+    steve::Pipeline pipeline_;
     ID3D12Resource* shadow_vertices_{nullptr};
     ID3D12Resource* shadow_indices_{nullptr};
     D3D12_VERTEX_BUFFER_VIEW shadow_vbv_{};
     D3D12_INDEX_BUFFER_VIEW shadow_ibv_{};
     unsigned shadow_index_count_{0};
-    struct BoneRange {
-        unsigned index_count{0}, first_index{0};
-        int base_vertex{0};
-    };
+    using BoneRange = steve::DrawRange;
     struct MobGpuMesh {
         ID3D12Resource* vertices{nullptr};
         ID3D12Resource* indices{nullptr};
@@ -170,16 +175,10 @@ private:
     std::vector<BoneRange> mob_ranges_;
     std::map<std::string, MobGpuMesh> mob_meshes_;
     std::map<std::string, SkinGpu> mob_skins_map_;
-    ID3D12RootSignature* root_{nullptr};
-    ID3D12PipelineState* pso_{nullptr};
-    ID3D12PipelineState* pso_depthview_{nullptr};
     ID3D12Resource* stats_{nullptr};
     ID3D12Resource* stats_init_{nullptr};
     ID3D12Resource* stats_readback_{nullptr};
-    struct FpDraw {
-        unsigned index_count{0}, first_index{0};
-        int base_vertex{0};
-    };
+    using FpDraw = steve::DrawRange;
     ID3D12Resource* fp_vertices_{nullptr};
     ID3D12Resource* fp_indices_{nullptr};
     D3D12_VERTEX_BUFFER_VIEW fp_vbv_{};

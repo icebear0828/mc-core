@@ -52,12 +52,14 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     out.max_hp = v.max_hp;
     out.show = have_state && !ms.menu_focused && !ms.popup_open && !ls.screen_loading && fade < 0.02f;
 
-    if (g_hide_native.load()) {
-        // Hide the native body in MC and CS mode. The collector in
+    const bool ow_fp = eldenring::RuntimeContext::Instance().mode().ow_mode.load(std::memory_order_relaxed) &&
+                       g_first_person.load(std::memory_order_relaxed);
+    if (g_hide_native.load() || out.mc_mode || out.cs_mode || ow_fp) {
+        // Hide the native body in MC, CS, and OW first-person modes. The collector in
         // hud_bridge.cpp is RTTI-validated, so a weapon switch that leaves a
         // stale part pointer cannot turn a display-flag write into a vtable
         // overwrite (the 0x200000001 crash).
-        const bool want_hidden = (out.mc_mode || out.cs_mode) && have_state && !ls.screen_loading;
+        const bool want_hidden = (out.mc_mode || out.cs_mode || ow_fp) && have_state && !ls.screen_loading;
         g_native_hide_wanted.store(want_hidden);
         UpdateNativeModel(static_cast<uintptr_t>(player), want_hidden);
         static uint64_t last_report_ms = 0;
@@ -75,10 +77,13 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     steve.cam_valid = false;
     CameraPose cam;
     float feet[3], q[4];
+    const bool ow_view = eldenring::RuntimeContext::Instance().mode().ow_mode.load(std::memory_order_relaxed);
     if (g_steve_enabled.load() && readCamera(g_reader, g_img.base, world, cam) &&
         detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(player), feet) &&
         detail::readPhysicsOrientation(g_reader, g_img.base, static_cast<uintptr_t>(player), q)) {
-        steve.draw = true;
+        // OW hides Steve, but the combat particles (hit sparks, damage
+        // numbers) still need a valid world camera to project into.
+        steve.draw = !ow_view;
         steve.cam_valid = true;
         steve.cam.right = {cam.right[0], cam.right[1], cam.right[2]};
         steve.cam.up = {cam.up[0], cam.up[1], cam.up[2]};
@@ -105,7 +110,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     }
     {
         static bool was_dead = false;
-        if (steve.dead && !was_dead) eraudio::Play("entity.player.death");
+        if (steve.dead && !was_dead && g_mc_mode.load(std::memory_order_relaxed)) eraudio::Play("entity.player.death");
         was_dead = steve.dead;
     }
     if (steve.sleeping) {
@@ -178,10 +183,22 @@ void SetupOverlay() {
                 else if (key == "mc_jump") g_mc_jump.store(value != 0.f);
                 else if (key == "mc_jump_key") g_mc_jump_vk.store(static_cast<int>(value));
                 else if (key == "mc_mode") {
-#if ENABLE_CS2_VIEWMODEL
-                    g_mc_mode.store(false); // CS2 build: MC mode is not available
-#else
+#if ENABLE_MC_MODE
                     g_mc_mode.store(value != 0.f);
+#else
+                    g_mc_mode.store(false); // built without MC gameplay
+#endif
+                }
+                else if (key == "ow_mode") {
+#if ENABLE_OW_VIEWMODEL
+                    const bool ow = (value != 0.f);
+                    eldenring::RuntimeContext::Instance().mode().ow_mode.store(ow);
+                    if (ow) {
+                        g_mc_mode.store(false);
+                        eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
+                        eldenring::RuntimeContext::Instance().mode().cs_mode.store(false);
+                        eldenring::RuntimeContext::Instance().mode().first_person.store(true);
+                    }
 #endif
                 }
                 else if (key == "mc_gravity") g_mc_gravity.store(std::clamp(value, 5.f, 80.f));
@@ -294,6 +311,94 @@ void SetupOverlay() {
         g_hide_slots.load());
         Log("steve: enabled (occlusion=%d depth_const=%.4f rel_bias=%.3f abs_bias=%.3f scene_height=%.0f yaw_offset=%.1f deg)",
             cfg.occlusion ? 1 : 0, cfg.depth_const, cfg.rel_bias, cfg.abs_bias, cfg.scene_height, g_steve_yaw_offset * 180.f / 3.14159265f);
+    }
+#if ENABLE_OW_VIEWMODEL
+    {
+        // OW has its own config file: the gauntlet's FOV, scale and offset are
+        // independent from the Steve/CS tuning in mc_er_steve.txt, and load
+        // even when that file is absent.
+        erov::OwConfig ow_cfg;
+        std::vector<uint8_t> ow_bytes;
+        if (FileExists(g_game_dir + "mc_er_ow.txt") && ReadFileAll(g_game_dir + "mc_er_ow.txt", ow_bytes)) {
+            const std::string text(ow_bytes.begin(), ow_bytes.end());
+            size_t pos = 0;
+            while (pos < text.size()) {
+                size_t end = text.find('\n', pos);
+                if (end == std::string::npos) end = text.size();
+                const std::string line = text.substr(pos, end - pos);
+                pos = end + 1;
+                const size_t eq = line.find('=');
+                if (eq == std::string::npos) continue;
+                const std::string key = line.substr(0, eq);
+                const float value = static_cast<float>(atof(line.c_str() + eq + 1));
+                if (key == "ow_mode") {
+                    const bool ow = (value != 0.f);
+                    eldenring::RuntimeContext::Instance().mode().ow_mode.store(ow);
+                    if (ow) {
+                        g_mc_mode.store(false);
+                        eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
+                        eldenring::RuntimeContext::Instance().mode().cs_mode.store(false);
+                        eldenring::RuntimeContext::Instance().mode().first_person.store(true);
+                    }
+                } else if (key == "ow_fov") {
+                    ow_cfg.fov_deg = std::clamp(value, 20.f, 140.f);
+                } else if (key == "ow_scale") {
+                    ow_cfg.scale = std::clamp(value, 0.05f, 10.f);
+                } else if (key == "ow_offset_x") {
+                    ow_cfg.offset_x = value;
+                } else if (key == "ow_offset_y") {
+                    ow_cfg.offset_y = value;
+                } else if (key == "ow_offset_z") {
+                    ow_cfg.offset_z = value;
+                } else if (key == "ow_dash_distance") {
+                    eldenring::RuntimeContext::Instance().mode().ow_dash_distance.store(std::clamp(value, 0.f, 15.f));
+                } else if (key == "ow_damage") {
+                    eldenring::RuntimeContext::Instance().mode().ow_damage_enabled.store(value != 0.f);
+                } else if (key == "ow_damage_scale") {
+                    eldenring::RuntimeContext::Instance().mode().ow_damage_scale.store(std::clamp(value, 0.f, 10.f));
+                } else if (key == "ow_shoot_motion") {
+                    ow_cfg.shoot_motion = std::clamp(value, 0.f, 1.f);
+                }
+            }
+            Log("ow config: %s", (g_game_dir + "mc_er_ow.txt").c_str());
+        }
+        erov::SetOwConfig(ow_cfg);
+    }
+#endif
+    // Startup mode: tools/deploy_modes.py writes mc_er_mode.txt with
+    // `start_mode=mc|cs|ow`. It selects the active mode on launch; hotkeys still
+    // switch between every mode this build contains. A deployment that installs
+    // only one mode writes that mode, so an OW-only install never starts in CS
+    // or MC.
+    {
+        std::vector<uint8_t> mode_bytes;
+        if (FileExists(g_game_dir + "mc_er_mode.txt") && ReadFileAll(g_game_dir + "mc_er_mode.txt", mode_bytes)) {
+            const std::string text(mode_bytes.begin(), mode_bytes.end());
+            std::string start = "mc";
+            const size_t key_pos = text.find("start_mode");
+            if (key_pos != std::string::npos) {
+                const size_t eq = text.find('=', key_pos);
+                if (eq != std::string::npos) {
+                    size_t begin = eq + 1;
+                    size_t end = text.find_first_of("\r\n", begin);
+                    if (end == std::string::npos) end = text.size();
+                    while (begin < end && (text[begin] == ' ' || text[begin] == '\t')) ++begin;
+                    while (end > begin && (text[end - 1] == ' ' || text[end - 1] == '\t')) --end;
+                    start = text.substr(begin, end - begin);
+                }
+            }
+            auto& m = eldenring::RuntimeContext::Instance().mode();
+            const bool want_mc = start == "mc";
+            const bool want_cs = start == "cs";
+            const bool want_ow = start == "ow";
+            m.mc_mode.store(want_mc && ENABLE_MC_MODE != 0);
+            m.cs_mode.store(want_cs && ENABLE_CS2_VIEWMODEL != 0);
+            m.ow_mode.store(want_ow && ENABLE_OW_VIEWMODEL != 0);
+            g_mc_mode.store(want_mc && ENABLE_MC_MODE != 0);
+            if (want_cs || want_ow) m.first_person.store(true);
+            Log("start mode: %s (mc=%d cs=%d ow=%d)", start.c_str(), m.mc_mode.load() ? 1 : 0,
+                m.cs_mode.load() ? 1 : 0, m.ow_mode.load() ? 1 : 0);
+        }
     }
     erov::Install(&HudProvider, [](const char* fmt, ...) {
         char msg[512];

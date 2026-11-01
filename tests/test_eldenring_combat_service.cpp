@@ -228,6 +228,57 @@ TEST(EldenRingCombatService, PlayerHitSurvivalAbsorbsDamageAndPopsTotemAtLethalD
     EXPECT_LT(final_dmg, 20);
 }
 
+TEST(EldenRingCombatService, PlayerHitSurvivalIsInertOutsideMcMode) {
+    auto& svc = CombatService::Instance();
+    svc.resetForTesting();
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(false);
+    ctx.mode().ow_mode.store(true);
+
+    TestCombatMem mem;
+    const uintptr_t kP = 0x1000;
+    const uintptr_t kModule = 0x5000;
+    const uintptr_t kHitCtx = 0x7000;
+    mem.region(kModule, 0x100);
+    mem.region(kHitCtx, 0x300);
+    mem.put<uint64_t>(kModule + layout::kOwnerInDataModule, kP);
+    int32_t incoming_dmg = 50;
+    mem.put<int32_t>(kHitCtx + layout::kHitDamage, incoming_dmg);
+
+    CombatCallbacks cb{};
+    cb.get_player_chr = [&]() { return kP; };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.read(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.read_vitals = [&](uintptr_t chr, Vitals& v) {
+        if (chr == kP) { v.hp = 20; v.max_hp = 20; return true; }
+        return false;
+    };
+    std::string last_sound;
+    cb.play_sound = [&](const char* snd, float) { last_sound = snd; };
+    svc.setCallbacks(cb);
+
+    mc::MeleeController melee;
+    melee.inventory().setOffhand({mc::ItemId::TotemOfUndying, 1});
+    SurvivalState survival;
+    HitFeedback feedback;
+    HungerModel hunger;
+
+    uint32_t popped_heal_target = 0;
+    const bool popped = svc.playerHitSurvival(reinterpret_cast<void*>(kModule), nullptr,
+                                              reinterpret_cast<uint8_t*>(kHitCtx), 0,
+                                              popped_heal_target, melee, survival, feedback, hunger, ctx);
+
+    EXPECT_FALSE(popped);
+    EXPECT_EQ(melee.inventory().offhand().item, mc::ItemId::TotemOfUndying);
+    EXPECT_TRUE(last_sound.empty()) << "MC hurt sound must not play in OW/CS mode";
+    EXPECT_FLOAT_EQ(feedback.hurt(), 0.f) << "MC hurt flash must not play in OW/CS mode";
+    int32_t final_dmg = 0;
+    mem.read(kHitCtx + layout::kHitDamage, &final_dmg, sizeof(final_dmg));
+    EXPECT_EQ(final_dmg, incoming_dmg) << "native damage must pass through untouched";
+}
+
 TEST(EldenRingCombatService, DamageQueueDrainEnforcesLineOfSightAndDamageApplication) {
     auto& svc = CombatService::Instance();
     svc.resetForTesting();
@@ -464,6 +515,63 @@ TEST(EldenRingCombatService, ClickAttackTargetsCrosshairEnemyAndCalculatesSweep)
     EXPECT_NE(std::find(victims.begin(), victims.end(), e2.chr), victims.end());
 }
 
+#if ENABLE_CS2_VIEWMODEL
+TEST(EldenRingCombatService, CsKnifeHitsCarryTheCsTag) {
+    auto& svc = CombatService::Instance();
+    svc.resetForTesting();
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(false);
+    ctx.mode().cs_mode.store(true);
+    ctx.mode().damage_scale.store(20.0f);
+    ctx.mode().damage_hp_percent.store(0.02f);
+
+    TestCombatMem mem = makeTestWorld();
+    const uintptr_t kP = kPlayer;
+    float p_feet[3] = {0.f, 0.f, 0.f};
+
+    CombatCallbacks cb{};
+    cb.get_player_chr = [&]() { return kP; };
+    cb.read_physics_pos = [&](uintptr_t chr, float out_pos[3]) {
+        if (chr == kP) { std::memcpy(out_pos, p_feet, sizeof(p_feet)); return true; }
+        return false;
+    };
+    cb.read_camera = [](CameraPose& cam) {
+        cam.forward[0] = 0.f; cam.forward[1] = 0.f; cam.forward[2] = 1.f;
+        cam.position[0] = 0.f; cam.position[1] = 1.6f; cam.position[2] = 0.f;
+        return true;
+    };
+    cb.reader = &mem;
+    cb.image_base = kBase;
+    svc.setCallbacks(cb);
+
+    EnemyInfo e{};
+    e.chr = 0x7101;
+    e.hp = 100;
+    e.max_hp = 100;
+    e.hostile = true;
+    e.rel_x = 0.f; e.rel_y = 0.f; e.rel_z = 2.f;
+    EntityManager::instance().updateCacheFromGameThread({e});
+
+    mc::MeleeController melee;
+    melee.inventory().setSlot(0, {mc::ItemId::DiamondSword, 1});
+    TestCombatPort port;
+    mc::CombatEngine engine(port);
+    DamageQueue queue;
+    svc.clickAttack(1.0f, melee, engine, queue, ctx);
+
+    DrainContext dc;
+    dc.reader = &mem;
+    dc.image_base = kBase;
+    dc.on_game_thread = true;
+    dc.max_per_drain = 10;
+    dc.invoke = [](uintptr_t, uintptr_t, void*) {};
+    const auto drained = queue.drain(dc);
+    ASSERT_EQ(drained.size(), 1u);
+    EXPECT_NE(drained[0].request.tag & eldenring::cs::kCsShotTag, 0u);
+}
+#endif
+
 TEST(EldenRingCombatService, EnqueueNearestHostilePicksClosestTarget) {
     auto& svc = CombatService::Instance();
     svc.resetForTesting();
@@ -507,6 +615,109 @@ TEST(EldenRingCombatService, EnqueueNearestHostilePicksClosestTarget) {
     EXPECT_EQ(drained[0].request.victim_chr, near_e.chr);
     EXPECT_EQ(drained[0].request.base_damage, 50);
 }
+
+#if ENABLE_OW_VIEWMODEL
+TEST(EldenRingCombatService, FireOwStrikeEnqueuesTaggedDamage) {
+    auto& svc = CombatService::Instance();
+    svc.resetForTesting();
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(false);
+    ctx.mode().ow_mode.store(true);
+
+    TestCombatMem mem = makeTestWorld();
+    float p_feet[3] = {0.f, 0.f, 0.f};
+
+    CombatCallbacks cb{};
+    cb.get_player_chr = []() { return kPlayer; };
+    cb.read_physics_pos = [&](uintptr_t chr, float out_pos[3]) {
+        if (chr == kPlayer) { std::memcpy(out_pos, p_feet, sizeof(p_feet)); return true; }
+        return false;
+    };
+    cb.read_camera = [](CameraPose& cam) {
+        cam.position[0] = 0.f; cam.position[1] = 1.6f; cam.position[2] = 0.f;
+        cam.forward[0] = 0.f; cam.forward[1] = 0.f; cam.forward[2] = 1.f;
+        return true;
+    };
+    cb.reader = &mem;
+    cb.image_base = kBase;
+    svc.setCallbacks(cb);
+
+    EnemyInfo target{};
+    target.chr = 0x9001;
+    target.hp = 100;
+    target.max_hp = 100;
+    target.hostile = true;
+    target.rel_x = 0.f; target.rel_y = 0.f; target.rel_z = 2.f;
+    EntityManager::instance().updateCacheFromGameThread({target});
+
+    DamageQueue queue;
+    const OwStrikeResult res =
+        svc.fireOwStrike(eldenring::ow::OwStrikeKind::HandCannon, queue, 100, ctx);
+    EXPECT_TRUE(res.fired);
+    EXPECT_TRUE(res.hit);
+    EXPECT_EQ(res.hits, 1);
+    EXPECT_GT(res.total_er_damage, 0);
+    EXPECT_EQ(queue.pending(), 1u);
+
+    DrainContext dc;
+    dc.reader = &mem;
+    dc.image_base = kBase;
+    dc.on_game_thread = true;
+    dc.max_per_drain = 10;
+    dc.invoke = [](uintptr_t, uintptr_t, void*) {};
+    const auto drained = queue.drain(dc);
+    ASSERT_EQ(drained.size(), 1u);
+    EXPECT_EQ(drained[0].request.victim_chr, target.chr);
+    EXPECT_NE(drained[0].request.tag & eldenring::ow::kOwStrikeTag, 0u);
+}
+
+TEST(EldenRingCombatService, FireOwStrikeSlamHitsTheWholeCluster) {
+    auto& svc = CombatService::Instance();
+    svc.resetForTesting();
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(false);
+    ctx.mode().ow_mode.store(true);
+
+    TestCombatMem mem = makeTestWorld();
+    float p_feet[3] = {0.f, 0.f, 0.f};
+
+    CombatCallbacks cb{};
+    cb.get_player_chr = []() { return kPlayer; };
+    cb.read_physics_pos = [&](uintptr_t chr, float out_pos[3]) {
+        if (chr == kPlayer) { std::memcpy(out_pos, p_feet, sizeof(p_feet)); return true; }
+        return false;
+    };
+    cb.read_camera = [](CameraPose& cam) {
+        cam.position[0] = 0.f; cam.position[1] = 1.6f; cam.position[2] = 0.f;
+        cam.forward[0] = 0.f; cam.forward[1] = 0.f; cam.forward[2] = 1.f;
+        return true;
+    };
+    cb.reader = &mem;
+    cb.image_base = kBase;
+    svc.setCallbacks(cb);
+
+    EnemyInfo a{};
+    a.chr = 0x9101; a.hp = 100; a.max_hp = 100; a.hostile = true;
+    a.rel_x = 1.f; a.rel_y = 0.f; a.rel_z = 1.f;
+    EnemyInfo b{};
+    b.chr = 0x9102; b.hp = 100; b.max_hp = 100; b.hostile = true;
+    b.rel_x = 4.f; b.rel_y = 0.f; b.rel_z = 0.f;
+    EnemyInfo outside{};
+    outside.chr = 0x9103; outside.hp = 100; outside.max_hp = 100; outside.hostile = true;
+    outside.rel_x = 20.f; outside.rel_y = 0.f; outside.rel_z = 0.f;
+    EntityManager::instance().updateCacheFromGameThread({a, b, outside});
+
+    DamageQueue queue;
+    const OwStrikeResult res =
+        svc.fireOwStrike(eldenring::ow::OwStrikeKind::Slam, queue, 100, ctx);
+    EXPECT_TRUE(res.fired);
+    EXPECT_EQ(res.hits, 2);
+    EXPECT_EQ(queue.pending(), 2u);
+}
+
+#endif
 
 TEST(EldenRingCombatService, HandleProjectileHitDetectsPlayerShotAndOverridesDamage) {
     auto& svc = CombatService::Instance();

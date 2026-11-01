@@ -198,6 +198,7 @@ void SetupInput() {
         cb.play_sound = [](const char* s, float v) { eraudio::Play(s, v); };
         cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
         cb.clip_duration = [](const char* n) { return erov::CsClipDuration(n); };
+        cb.ow_clip_duration = [](const char* n) { return erov::OwClipDuration(n); };
         cb.take_left_click = erin::TakeLeftClick;
         cb.take_right_click = erin::TakeRightClick;
         cb.left_held = erin::LeftHeld;
@@ -218,6 +219,7 @@ void SetupInput() {
         cb.enqueue_nearest_hostile = EnqueueNearestHostile;
         cb.queue_bullet_fire = [](float dmg) { return QueueBulletFire(dmg); };
         cb.queue_cs_shot = [](float damage, float spread, float range, uint32_t tracer, uint8_t slot) { return FireCsShot(damage, spread, range, tracer, slot); };
+        cb.ow_strike = [](int kind) { return FireOwStrike(kind); };
         cb.queue_summon = [](const char* src) { return QueueSummon(src); };
         cb.cycle_hidden_slot = [](int& cur) { CycleHiddenSlot(cur); };
         cb.reset_slot_probe = [](int& cur) { ResetSlotProbe(cur); };
