@@ -2,6 +2,7 @@
 
 #include "eldenring_inventory_controller.hpp"
 #include "eldenring_runtime_context.hpp"
+#include "mc/crafting_table_layout.hpp"
 #include "mc/inventory.hpp"
 
 using namespace eldenring;
@@ -245,3 +246,182 @@ TEST_F(InventoryControllerTest, IsToggleKeyMatchesBothEAndIAndCustomConfiguredKe
     EXPECT_FALSE(InventoryController::isToggleKey(0, 73));
 }
 
+
+TEST_F(InventoryControllerTest, OpensCraftingTableWhenHoldingOne) {
+    auto& ctx = RuntimeContext::Instance();
+    inv_.setSlot(0, mc::ItemStack{mc::ItemId::CraftingTable, 1});
+
+    InventoryInputState input{};
+    input.fg = true;
+    input.want_suppress = true;
+    input.key_down = true;
+    input.screen_width = 1920.f;
+    input.screen_height = 1080.f;
+    controller_.tickWithInput(input, inv_, ctx);
+
+    EXPECT_TRUE(ctx.ui().inv_open.load());
+    EXPECT_TRUE(ctx.ui().craft_open.load());
+    EXPECT_TRUE(controller_.isOpen(ctx));
+
+    input.key_down = false;
+    input.esc_down = true;
+    controller_.tickWithInput(input, inv_, ctx);
+    EXPECT_FALSE(ctx.ui().inv_open.load());
+    EXPECT_FALSE(ctx.ui().craft_open.load());
+}
+
+TEST_F(InventoryControllerTest, CraftsASwordThroughTheCraftingTableClicks) {
+    auto& ctx = RuntimeContext::Instance();
+    inv_.setSlot(0, mc::ItemStack{mc::ItemId::CraftingTable, 1});
+
+    InventoryInputState input{};
+    input.fg = true;
+    input.want_suppress = true;
+    input.key_down = true;
+    input.screen_width = 1920.f;
+    input.screen_height = 1080.f;
+    controller_.tickWithInput(input, inv_, ctx);
+    ASSERT_TRUE(ctx.ui().craft_open.load());
+    input.key_down = false;
+
+    const mc::CraftingTableLayout lay(1920.f, 1080.f);
+    auto hover = [&](const mc::HudRect& r) {
+        ctx.ui().inv_mx.store(r.x + r.w * 0.5f);
+        ctx.ui().inv_my.store(r.y + r.h * 0.5f);
+    };
+    auto right_click = [&](const mc::HudRect& r) {
+        hover(r);
+        input.right_click = true;
+        controller_.tickWithInput(input, inv_, ctx);
+        input.right_click = false;
+        controller_.tickWithInput(input, inv_, ctx);
+    };
+
+    // Two planks in the left column, a stick below: the 1x3 sword pattern.
+    inv_.setCursor(mc::ItemStack{mc::ItemId::WoodPlanks, 2});
+    right_click(lay.gridSlot(0));
+    right_click(lay.gridSlot(3));
+    inv_.setCursor(mc::ItemStack{});
+    inv_.setCursor(mc::ItemStack{mc::ItemId::Stick, 1});
+    right_click(lay.gridSlot(6));
+    inv_.setCursor(mc::ItemStack{});
+    EXPECT_TRUE(ctx.ui().craft.hasResult());
+
+    hover(lay.resultSlot());
+    input.left_click = true;
+    controller_.tickWithInput(input, inv_, ctx);
+    input.left_click = false;
+
+    int swords = 0;
+    for (int i = 0; i < mc::Inventory::kSlots; ++i) {
+        if (inv_.slot(i).item == mc::ItemId::WoodenSword) swords += static_cast<int>(inv_.slot(i).count);
+    }
+    EXPECT_EQ(swords, 1);
+    EXPECT_FALSE(ctx.ui().craft.hasResult());
+}
+
+TEST_F(InventoryControllerTest, WheelChangesTheCreativePalettePageAndWraps) {
+    auto& ctx = RuntimeContext::Instance();
+    ctx.mode().game_mode.store(static_cast<uint8_t>(eldenring::creative::GameMode::Creative));
+    inv_.setSlot(0, mc::ItemStack{mc::ItemId::DiamondSword, 1});
+
+    InventoryInputState input{};
+    input.fg = true;
+    input.want_suppress = true;
+    input.key_down = true;
+    input.screen_width = 1920.f;
+    input.screen_height = 1080.f;
+    controller_.tickWithInput(input, inv_, ctx);
+    ASSERT_TRUE(ctx.ui().inv_open.load());
+    ASSERT_FALSE(ctx.ui().craft_open.load());
+    input.key_down = false;
+
+    input.wheel_notches = 1;
+    controller_.tickWithInput(input, inv_, ctx);
+    EXPECT_EQ(ctx.ui().inv_page.load(), 1);
+    controller_.tickWithInput(input, inv_, ctx);
+    EXPECT_EQ(ctx.ui().inv_page.load(), 2);
+    controller_.tickWithInput(input, inv_, ctx);
+    EXPECT_EQ(ctx.ui().inv_page.load(), 0); // wrapped
+
+    input.wheel_notches = -1;
+    controller_.tickWithInput(input, inv_, ctx);
+    EXPECT_EQ(ctx.ui().inv_page.load(), mc::palettePageCount() - 1);
+}
+
+TEST_F(InventoryControllerTest, PaletteClicksUseTheCurrentPage) {
+    auto& ctx = RuntimeContext::Instance();
+    ctx.mode().game_mode.store(static_cast<uint8_t>(eldenring::creative::GameMode::Creative));
+    inv_.setSlot(0, mc::ItemStack{mc::ItemId::DiamondSword, 1});
+
+    InventoryInputState input{};
+    input.fg = true;
+    input.want_suppress = true;
+    input.key_down = true;
+    input.screen_width = 1920.f;
+    input.screen_height = 1080.f;
+    controller_.tickWithInput(input, inv_, ctx);
+    ASSERT_TRUE(ctx.ui().inv_open.load());
+    input.key_down = false;
+
+    ctx.ui().inv_page.store(1);
+    const mc::InventoryLayout lay(1920.f, 1080.f, true);
+    const mc::HudRect slot = lay.paletteSlot(0);
+    ctx.ui().inv_mx.store(slot.x + slot.w * 0.5f);
+    ctx.ui().inv_my.store(slot.y + slot.h * 0.5f);
+    input.left_click = true;
+    controller_.tickWithInput(input, inv_, ctx);
+
+    EXPECT_EQ(inv_.cursor().item, mc::paletteItemAt(1, 0));
+    EXPECT_NE(inv_.cursor().item, mc::ItemId::None);
+}
+
+TEST_F(InventoryControllerTest, PaletteArrowClicksChangeThePage) {
+    auto& ctx = RuntimeContext::Instance();
+    ctx.mode().game_mode.store(static_cast<uint8_t>(eldenring::creative::GameMode::Creative));
+    inv_.setSlot(0, mc::ItemStack{mc::ItemId::DiamondSword, 1});
+
+    InventoryInputState input{};
+    input.fg = true;
+    input.want_suppress = true;
+    input.key_down = true;
+    input.screen_width = 1920.f;
+    input.screen_height = 1080.f;
+    controller_.tickWithInput(input, inv_, ctx);
+    ASSERT_TRUE(ctx.ui().inv_open.load());
+    input.key_down = false;
+    ASSERT_EQ(ctx.ui().inv_page.load(), 0);
+
+    const mc::InventoryLayout lay(1920.f, 1080.f, true);
+    const mc::HudRect next = lay.paletteNextButton();
+    ctx.ui().inv_mx.store(next.x + next.w * 0.5f);
+    ctx.ui().inv_my.store(next.y + next.h * 0.5f);
+    input.left_click = true;
+    controller_.tickWithInput(input, inv_, ctx);
+    input.left_click = false;
+    EXPECT_EQ(ctx.ui().inv_page.load(), 1);
+
+    const mc::HudRect prev = lay.palettePrevButton();
+    ctx.ui().inv_mx.store(prev.x + prev.w * 0.5f);
+    ctx.ui().inv_my.store(prev.y + prev.h * 0.5f);
+    input.left_click = true;
+    controller_.tickWithInput(input, inv_, ctx);
+    EXPECT_EQ(ctx.ui().inv_page.load(), 0);
+}
+
+TEST_F(InventoryControllerTest, AimingAtAPlacedCraftingTableOpensTheTable) {
+    auto& ctx = RuntimeContext::Instance();
+    inv_.setSlot(0, mc::ItemStack{mc::ItemId::DiamondSword, 1});
+    ctx.ui().craft_table_targeted.store(true);
+
+    InventoryInputState input{};
+    input.fg = true;
+    input.want_suppress = true;
+    input.key_down = true;
+    input.screen_width = 1920.f;
+    input.screen_height = 1080.f;
+    controller_.tickWithInput(input, inv_, ctx);
+
+    EXPECT_TRUE(ctx.ui().inv_open.load());
+    EXPECT_TRUE(ctx.ui().craft_open.load());
+}

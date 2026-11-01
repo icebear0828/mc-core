@@ -380,6 +380,14 @@ TEST_F(HotkeyDispatcherTest, MouseWheelScrollsHotbarSlots) {
     EXPECT_EQ(melee.selectedSlot(), 0);
 }
 
+TEST_F(HotkeyDispatcherTest, InventoryOpenLeavesTheWheelForThePalettePager) {
+    auto& ctx = RuntimeContext::Instance();
+    ctx.ui().inv_open.store(true);
+    wheel_notches_ = 3;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(wheel_notches_, 3); // the inventory controller drains it for page changes
+}
+
 TEST_F(HotkeyDispatcherTest, InputDisabledShortCircuitsClickAttackAndInteractions) {
     auto& ctx = RuntimeContext::Instance();
     // Simulate regression where SetupInput failed to enable input

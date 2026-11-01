@@ -22,6 +22,7 @@
 #include "mc/consumables.hpp"
 #include "mc/contracts/mod_manager.hpp"
 #include "mc/control_policy.hpp"
+#include "mc/crafting_session.hpp"
 
 namespace eldenring {
 
@@ -249,10 +250,16 @@ struct CombatSystems {
 
 struct UiSystems {
     std::atomic<bool> inv_open{false};
+    std::atomic<bool> craft_open{false};
+    std::atomic<bool> craft_table_targeted{false}; // the aim ray is on a placed crafting table
+    std::atomic<int> inv_page{0};
     std::atomic<float> inv_mx{0.f};
     std::atomic<float> inv_my{0.f};
     std::atomic<int> inv_vk{'I'};
     std::atomic<float> inv_sens{1.f};
+    // The crafting table screen's 3x3 grid. Written by the input thread and read by the render thread.
+    mutable std::mutex craft_mutex;
+    mc::CraftingSession craft;
     std::atomic<unsigned> isblocked_forced{0};
     std::atomic<unsigned> menufreeze_forced{0};
     std::atomic<int> slot_probe{-1};
@@ -430,6 +437,13 @@ public:
 
         // Reset Ui
         ui_.inv_open.store(false);
+        ui_.craft_open.store(false);
+        ui_.craft_table_targeted.store(false);
+        ui_.inv_page.store(0);
+        {
+            std::lock_guard<std::mutex> lock(ui_.craft_mutex);
+            ui_.craft.clear();
+        }
         ui_.inv_mx.store(0.f);
         ui_.inv_my.store(0.f);
         ui_.inv_vk.store('I');

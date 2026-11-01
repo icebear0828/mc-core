@@ -64,7 +64,8 @@ enum class BlockId : uint8_t {
     Tnt,
     Wood,
     Obsidian,
-    Cobblestone // appended: every id above keeps its value
+    Cobblestone, // appended: every id above keeps its value
+    CraftingTable
 };
 
 enum class ItemId : uint16_t {
@@ -115,7 +116,24 @@ enum class ItemId : uint16_t {
     GoldenPickaxe,
     NetheritePickaxe,
     BlockWood,
-    BlockObsidian
+    BlockObsidian,
+    // Crafting (issue #67). Appended so every id above keeps its value.
+    WoodenSword,
+    StoneSword,
+    IronSword,
+    NetheriteSword,
+    CraftingTable,
+    Anvil,
+    WoodPlanks,
+    Stick,
+    IronIngot,
+    GoldIngot,
+    NetheriteIngot,
+    String,
+    Gunpowder,
+    Sand,
+    Flint,
+    Apple
 };
 
 inline constexpr bool isSpawnEgg(ItemId item) noexcept {

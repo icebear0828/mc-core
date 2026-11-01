@@ -32,6 +32,10 @@ inline IconCube blockIcon(mc::BlockId id) {
         case mc::BlockId::Wood: top_uv = &mc::hud::kUV_BLOCK_WOOD_TOP; side_uv = &mc::hud::kUV_BLOCK_WOOD_SIDE; break;
         case mc::BlockId::Obsidian: top_uv = side_uv = &mc::hud::kUV_BLOCK_OBSIDIAN; break;
         case mc::BlockId::Tnt: top_uv = &mc::hud::kUV_BLOCK_TNT_TOP; side_uv = &mc::hud::kUV_BLOCK_TNT_SIDE; break;
+        case mc::BlockId::CraftingTable:
+            top_uv = &mc::hud::kUV_BLOCK_CRAFTING_TABLE_TOP;
+            side_uv = &mc::hud::kUV_BLOCK_CRAFTING_TABLE_SIDE;
+            break;
         default: top_uv = side_uv = &mc::hud::kUV_BLOCK_DIRT; break;
     }
     constexpr float kDeg = 3.14159265358979f / 180.f;

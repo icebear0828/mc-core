@@ -85,6 +85,10 @@ Vec3 spriteToModel(const Vec3& p, const Display& d, HeldItemStyle style, Hand ha
 bool isHeldAsFlatSprite(ItemId item) {
     switch (item) {
         case ItemId::DiamondSword:
+        case ItemId::WoodenSword:
+        case ItemId::StoneSword:
+        case ItemId::IronSword:
+        case ItemId::NetheriteSword:
         case ItemId::DiamondPickaxe:
         case ItemId::WoodenPickaxe:
         case ItemId::StonePickaxe:
@@ -108,7 +112,19 @@ bool isHeldAsFlatSprite(ItemId item) {
         case ItemId::BowPulling0:
         case ItemId::BowPulling1:
         case ItemId::BowPulling2:
-        case ItemId::Shield: return true;
+        case ItemId::Shield:
+        case ItemId::CraftingTable:
+        case ItemId::Anvil:
+        case ItemId::WoodPlanks:
+        case ItemId::Sand:
+        case ItemId::Stick:
+        case ItemId::IronIngot:
+        case ItemId::GoldIngot:
+        case ItemId::NetheriteIngot:
+        case ItemId::String:
+        case ItemId::Gunpowder:
+        case ItemId::Flint:
+        case ItemId::Apple: return true;
         default: return false; // None, blocks, elytra
     }
 }
@@ -116,6 +132,10 @@ bool isHeldAsFlatSprite(ItemId item) {
 HeldItemStyle heldItemStyle(ItemId item) {
     switch (item) {
         case ItemId::DiamondSword:
+        case ItemId::WoodenSword:
+        case ItemId::StoneSword:
+        case ItemId::IronSword:
+        case ItemId::NetheriteSword:
         case ItemId::DiamondPickaxe:
         case ItemId::WoodenPickaxe:
         case ItemId::StonePickaxe:

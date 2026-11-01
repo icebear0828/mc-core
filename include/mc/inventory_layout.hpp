@@ -11,21 +11,60 @@
 
 namespace mc {
 
-// The items offered by the palette, in display order.
+inline constexpr int kPaletteColumns = 9;
+inline constexpr int kPaletteRows = 3;
+inline constexpr int kPaletteSlots = kPaletteColumns * kPaletteRows;
+
+// The items offered by the palette, in display order. More than one page: the screen shows
+// kPaletteSlots at a time and the wheel changes the page.
 inline const std::vector<ItemId>& paletteItems() {
     static const std::vector<ItemId> items = {
-        ItemId::DiamondSword, ItemId::DiamondPickaxe, ItemId::Bow,         ItemId::Arrow,        ItemId::Trident,
-        ItemId::FlintAndSteel, ItemId::EnderPearl,    ItemId::GoldenApple, ItemId::EnchantedGoldenApple, ItemId::Bread,
-        ItemId::CookedBeef,   ItemId::TotemOfUndying, ItemId::Shield,      ItemId::Elytra,      ItemId::FireworkRocket,
-        ItemId::BlockDirt,    ItemId::BlockStone,     ItemId::BlockTnt,    ItemId::ZombieSpawnEgg,
-        ItemId::CreeperSpawnEgg, ItemId::SkeletonSpawnEgg,
+        // Tools and weapons.
+        ItemId::DiamondSword, ItemId::WoodenSword, ItemId::StoneSword, ItemId::IronSword, ItemId::NetheriteSword,
+        ItemId::DiamondPickaxe, ItemId::WoodenPickaxe, ItemId::StonePickaxe, ItemId::IronPickaxe, ItemId::GoldenPickaxe,
+        ItemId::NetheritePickaxe, ItemId::Bow, ItemId::Arrow, ItemId::Trident, ItemId::Shield, ItemId::Elytra,
+        // Food and utility.
+        ItemId::GoldenApple, ItemId::EnchantedGoldenApple, ItemId::Bread, ItemId::CookedBeef, ItemId::TotemOfUndying,
+        ItemId::EnderPearl, ItemId::FireworkRocket, ItemId::FlintAndSteel,
+        // Armor.
         ItemId::DiamondHelmet, ItemId::DiamondChestplate, ItemId::DiamondLeggings, ItemId::DiamondBoots,
-        ItemId::BlockWood, ItemId::BlockObsidian};
+        // Blocks.
+        ItemId::BlockDirt, ItemId::BlockStone, ItemId::BlockCobblestone, ItemId::BlockWood, ItemId::BlockObsidian,
+        ItemId::BlockTnt, ItemId::WoodPlanks, ItemId::CraftingTable, ItemId::Anvil, ItemId::Sand,
+        // Materials.
+        ItemId::Coal, ItemId::RawCopper, ItemId::RawIron, ItemId::RawGold, ItemId::Redstone, ItemId::LapisLazuli,
+        ItemId::AmethystShard, ItemId::Diamond, ItemId::Emerald, ItemId::NetheriteScrap, ItemId::IronIngot,
+        ItemId::GoldIngot, ItemId::NetheriteIngot, ItemId::Stick, ItemId::String, ItemId::Gunpowder, ItemId::Flint,
+        ItemId::Apple,
+        // Spawn eggs.
+        ItemId::ZombieSpawnEgg, ItemId::CreeperSpawnEgg, ItemId::SkeletonSpawnEgg};
     return items;
 }
 
+inline int palettePageCount() {
+    const int n = static_cast<int>(paletteItems().size());
+    return std::max(1, (n + kPaletteSlots - 1) / kPaletteSlots);
+}
+
+// The item on a page's slot, or None when the page/slot has no item.
+inline ItemId paletteItemAt(int page, int slot) {
+    if (page < 0 || slot < 0 || slot >= kPaletteSlots) return ItemId::None;
+    const size_t index = static_cast<size_t>(page * kPaletteSlots + slot);
+    const auto& items = paletteItems();
+    return index < items.size() ? items[index] : ItemId::None;
+}
+
+// The page that holds `item`, or 0 when it is not in the palette.
+inline int palettePageFor(ItemId item) {
+    const auto& items = paletteItems();
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (items[i] == item) return static_cast<int>(i) / kPaletteSlots;
+    }
+    return 0;
+}
+
 struct SlotRef {
-    enum class Kind { None, Panel, Palette, Inventory, Offhand, Armor, Crafting, CraftResult };
+    enum class Kind { None, Panel, Palette, PalettePrev, PaletteNext, Inventory, Offhand, Armor, Crafting, CraftResult };
     Kind kind{Kind::None};
     int index{-1}; // palette slot 0..26, inventory slot 0..35, offhand 0, armor 0..3, crafting 0..3, craft result 0
 };
@@ -34,7 +73,7 @@ class InventoryLayout {
 public:
     static constexpr int kPanelW = 176;
     static constexpr int kPanelH = 166;
-    static constexpr int kPaletteSlots = 27;
+    static constexpr int kPaletteSlots = mc::kPaletteSlots;
     static constexpr int kTopHeight = 71;
 
     // palette = false (survival): the item palette is not offered, its slots only belong to the panel.
@@ -49,6 +88,9 @@ public:
     [[nodiscard]] HudRect panel() const { return panel_; }
     // 16x16 GUI px item area of a slot.
     [[nodiscard]] HudRect paletteSlot(int i) const { return slotAt(8 + 18 * (i % 9), 18 + 18 * (i / 9)); }
+    // Page arrows in the free strip above the palette slots (y = 0..17), next to the "Items" title.
+    [[nodiscard]] HudRect palettePrevButton() const { return slotAt(122, 3, 12.f, 12.f); }
+    [[nodiscard]] HudRect paletteNextButton() const { return slotAt(158, 3, 12.f, 12.f); }
     [[nodiscard]] HudRect invSlot(int i) const {
         if (i < 9) return slotAt(8 + 18 * i, 142);
         const int m = i - 9;
@@ -87,6 +129,10 @@ public:
             if (inside(craftResultSlot(), x, y)) return {SlotRef::Kind::CraftResult, 0};
         }
         if (x < panel_.x || y < panel_.y || x >= panel_.x + panel_.w || y >= panel_.y + panel_.h) return {};
+        if (palette_) {
+            if (inside(palettePrevButton(), x, y)) return {SlotRef::Kind::PalettePrev, 0};
+            if (inside(paletteNextButton(), x, y)) return {SlotRef::Kind::PaletteNext, 0};
+        }
         for (int i = 0; palette_ && i < kPaletteSlots; ++i) {
             if (inside(paletteSlot(i), x, y)) return {SlotRef::Kind::Palette, i};
         }

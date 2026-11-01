@@ -56,6 +56,8 @@ public:
 
     void open(float screen_w, float screen_h, RuntimeContext& ctx);
     void close(const char* why, mc::Inventory& inv, RuntimeContext& ctx);
+    void openCraft(float screen_w, float screen_h, RuntimeContext& ctx);
+    void closeCraft(const char* why, mc::Inventory& inv, RuntimeContext& ctx);
 
     bool isOpen(const RuntimeContext& ctx) const {
         return ctx.ui().inv_open.load(std::memory_order_relaxed);

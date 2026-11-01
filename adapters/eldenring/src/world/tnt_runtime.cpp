@@ -76,6 +76,7 @@ void BlocksTick() {
     }
 
     SendBlockMesh();
+    g_ctx.ui().craft_table_targeted.store(WantSuppress() && AimingAtCraftingTable(), std::memory_order_relaxed);
     if (!g_camstep_installed.load()) BlocksCollisionStep(); // without the camera hook the collision runs here (less smooth)
 }
 

@@ -79,6 +79,14 @@ TEST(EldenRingMiningTest, WoodAndObsidianRules) {
     EXPECT_FALSE(MiningController::canHarvest(mc::BlockId::Obsidian, mc::ItemId::None, false));
 }
 
+TEST(EldenRingMiningTest, CraftingTableBreaksLikeWoodAndDropsItself) {
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::CraftingTable, mc::ItemId::None, false), 3.0f);
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::CraftingTable, mc::ItemId::DiamondPickaxe, false), 1.5f);
+    EXPECT_TRUE(MiningController::canHarvest(mc::BlockId::CraftingTable, mc::ItemId::None, false));
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::CraftingTable, mc::ItemId::None, false), mc::ItemId::CraftingTable);
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::CraftingTable, mc::ItemId::None, true), mc::ItemId::None);
+}
+
 TEST(EldenRingMiningTest, StoneBreakTimeScalesWithPickaxeTier) {
     EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Stone, mc::ItemId::WoodenPickaxe, false), 1.15f);
     EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Stone, mc::ItemId::StonePickaxe, false), 0.6f);

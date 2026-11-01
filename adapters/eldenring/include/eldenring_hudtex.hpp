@@ -89,6 +89,22 @@ using ::mc::hud::kHudAtlasWidth;
 using ::mc::hud::kHudAtlasHeight;
 using ::mc::hud::kHudAtlasPngSize;
 using ::mc::hud::kHudAtlasPngData;
+using ::mc::hud::kUV_ITEM_WOODEN_SWORD;
+using ::mc::hud::kUV_ITEM_STONE_SWORD;
+using ::mc::hud::kUV_ITEM_IRON_SWORD;
+using ::mc::hud::kUV_ITEM_NETHERITE_SWORD;
+using ::mc::hud::kUV_ITEM_CRAFTING_TABLE;
+using ::mc::hud::kUV_ITEM_ANVIL;
+using ::mc::hud::kUV_ITEM_WOOD_PLANKS;
+using ::mc::hud::kUV_ITEM_SAND;
+using ::mc::hud::kUV_ITEM_STICK;
+using ::mc::hud::kUV_ITEM_IRON_INGOT;
+using ::mc::hud::kUV_ITEM_GOLD_INGOT;
+using ::mc::hud::kUV_ITEM_NETHERITE_INGOT;
+using ::mc::hud::kUV_ITEM_STRING;
+using ::mc::hud::kUV_ITEM_GUNPOWDER;
+using ::mc::hud::kUV_ITEM_FLINT;
+using ::mc::hud::kUV_ITEM_APPLE;
 
 } // namespace eldenring::hudtex
 
@@ -144,6 +160,22 @@ inline const mc::hud::HudUV* uvForItem(mc::ItemId item) {
         case ItemId::IronPickaxe: return &mc::hud::kUV_ITEM_IRON_PICKAXE;
         case ItemId::GoldenPickaxe: return &mc::hud::kUV_ITEM_GOLDEN_PICKAXE;
         case ItemId::NetheritePickaxe: return &mc::hud::kUV_ITEM_NETHERITE_PICKAXE;
+        case ItemId::WoodenSword: return &mc::hud::kUV_ITEM_WOODEN_SWORD;
+        case ItemId::StoneSword: return &mc::hud::kUV_ITEM_STONE_SWORD;
+        case ItemId::IronSword: return &mc::hud::kUV_ITEM_IRON_SWORD;
+        case ItemId::NetheriteSword: return &mc::hud::kUV_ITEM_NETHERITE_SWORD;
+        case ItemId::CraftingTable: return &mc::hud::kUV_ITEM_CRAFTING_TABLE;
+        case ItemId::Anvil: return &mc::hud::kUV_ITEM_ANVIL;
+        case ItemId::WoodPlanks: return &mc::hud::kUV_ITEM_WOOD_PLANKS;
+        case ItemId::Sand: return &mc::hud::kUV_ITEM_SAND;
+        case ItemId::Stick: return &mc::hud::kUV_ITEM_STICK;
+        case ItemId::IronIngot: return &mc::hud::kUV_ITEM_IRON_INGOT;
+        case ItemId::GoldIngot: return &mc::hud::kUV_ITEM_GOLD_INGOT;
+        case ItemId::NetheriteIngot: return &mc::hud::kUV_ITEM_NETHERITE_INGOT;
+        case ItemId::String: return &mc::hud::kUV_ITEM_STRING;
+        case ItemId::Gunpowder: return &mc::hud::kUV_ITEM_GUNPOWDER;
+        case ItemId::Flint: return &mc::hud::kUV_ITEM_FLINT;
+        case ItemId::Apple: return &mc::hud::kUV_ITEM_APPLE;
         default: return nullptr;
     }
 }

@@ -132,6 +132,22 @@ const char* HudEngine::getItemDisplayName(ItemId item) {
         case ItemId::IronPickaxe: return "Iron Pickaxe";
         case ItemId::GoldenPickaxe: return "Golden Pickaxe";
         case ItemId::NetheritePickaxe: return "Netherite Pickaxe";
+        case ItemId::WoodenSword: return "Wooden Sword";
+        case ItemId::StoneSword: return "Stone Sword";
+        case ItemId::IronSword: return "Iron Sword";
+        case ItemId::NetheriteSword: return "Netherite Sword";
+        case ItemId::CraftingTable: return "Crafting Table";
+        case ItemId::Anvil: return "Anvil";
+        case ItemId::WoodPlanks: return "Wood Planks";
+        case ItemId::Stick: return "Stick";
+        case ItemId::IronIngot: return "Iron Ingot";
+        case ItemId::GoldIngot: return "Gold Ingot";
+        case ItemId::NetheriteIngot: return "Netherite Ingot";
+        case ItemId::String: return "String";
+        case ItemId::Gunpowder: return "Gunpowder";
+        case ItemId::Sand: return "Sand";
+        case ItemId::Flint: return "Flint";
+        case ItemId::Apple: return "Apple";
         case ItemId::None:
         default: return "";
     }

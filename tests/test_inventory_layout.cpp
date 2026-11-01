@@ -126,14 +126,62 @@ TEST(InventoryLayout, CreativeModeHitTestExcludesArmorAndOffhand) {
     EXPECT_NE(roff.kind, SlotRef::Kind::Armor);
 }
 
-TEST(InventoryLayout, PaletteListsEveryItemOnce) {
+TEST(InventoryLayout, PaletteListsEveryUsableItemOnce) {
     const auto& items = paletteItems();
-    EXPECT_EQ(items.size(), 27u); // 21 + 4 diamond armor items + wood/obsidian
+    EXPECT_GT(items.size(), static_cast<size_t>(InventoryLayout::kPaletteSlots));
     EXPECT_EQ(items.front(), ItemId::DiamondSword);
     for (size_t i = 0; i < items.size(); ++i) {
         EXPECT_NE(items[i], ItemId::None);
         for (size_t j = i + 1; j < items.size(); ++j) EXPECT_NE(items[i], items[j]);
     }
-    EXPECT_LE(items.size(), static_cast<size_t>(InventoryLayout::kPaletteSlots));
+    // The mining loot and the crafting materials must be reachable in creative.
+    for (ItemId id : {ItemId::Coal, ItemId::RawIron, ItemId::Diamond, ItemId::NetheriteScrap, ItemId::WoodenPickaxe,
+                      ItemId::BlockCobblestone, ItemId::Stick, ItemId::CraftingTable}) {
+        EXPECT_NE(std::find(items.begin(), items.end(), id), items.end());
+    }
+}
+
+TEST(InventoryLayout, PalettePagesCoverTheListWithoutOverlap) {
+    const auto& items = paletteItems();
+    EXPECT_EQ(palettePageCount(), (static_cast<int>(items.size()) + kPaletteSlots - 1) / kPaletteSlots);
+    size_t seen = 0;
+    for (int page = 0; page < palettePageCount(); ++page) {
+        for (int slot = 0; slot < kPaletteSlots; ++slot) {
+            const ItemId id = paletteItemAt(page, slot);
+            const size_t index = static_cast<size_t>(page * kPaletteSlots + slot);
+            if (index < items.size()) {
+                EXPECT_EQ(id, items[index]);
+                ++seen;
+            } else {
+                EXPECT_EQ(id, ItemId::None);
+            }
+        }
+    }
+    EXPECT_EQ(seen, items.size());
+    EXPECT_EQ(paletteItemAt(-1, 0), ItemId::None);
+    EXPECT_EQ(paletteItemAt(palettePageCount(), 0), ItemId::None);
+    EXPECT_EQ(paletteItemAt(0, kPaletteSlots), ItemId::None);
+}
+
+TEST(InventoryLayout, PalettePageArrowsAreHitTested) {
+    InventoryLayout creative(1920.f, 1080.f, true);
+    const SlotRef prev = creative.hitTest(creative.palettePrevButton().x + 2.f, creative.palettePrevButton().y + 2.f);
+    EXPECT_EQ(prev.kind, SlotRef::Kind::PalettePrev);
+    const SlotRef next = creative.hitTest(creative.paletteNextButton().x + 2.f, creative.paletteNextButton().y + 2.f);
+    EXPECT_EQ(next.kind, SlotRef::Kind::PaletteNext);
+
+    InventoryLayout survival(1920.f, 1080.f, false);
+    EXPECT_NE(survival.hitTest(survival.palettePrevButton().x + 2.f, survival.palettePrevButton().y + 2.f).kind,
+              SlotRef::Kind::PalettePrev);
+}
+
+TEST(InventoryLayout, PalettePageForFindsEveryItem) {
+    const auto& items = paletteItems();
+    for (size_t i = 0; i < items.size(); ++i) {
+        const int page = palettePageFor(items[i]);
+        EXPECT_EQ(page, static_cast<int>(i) / kPaletteSlots);
+        EXPECT_EQ(paletteItemAt(page, static_cast<int>(i) % kPaletteSlots), items[i]);
+    }
+    EXPECT_EQ(palettePageFor(ItemId::None), 0);
 }
 

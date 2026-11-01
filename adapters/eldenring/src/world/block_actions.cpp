@@ -98,10 +98,20 @@ BlockTarget FindBlockTarget() {
     return t;
 }
 
+bool AimingAtCraftingTable() {
+    float eye[3], dir[3];
+    if (!AimRay(eye, dir)) return false;
+    std::lock_guard<std::mutex> g(g_blocks_mutex);
+    const std::optional<blocks::GridHit> hit = blocks::raycastGrid(g_blocks, eye, dir, g_reach.load());
+    return hit.has_value() && g_blocks.get(hit->cell) == mc::BlockId::CraftingTable;
+}
+
 const char* BlockSound(mc::BlockId id) {
     switch (id) {
         case mc::BlockId::Stone: return "block.stone.step";
         case mc::BlockId::Dirt: return "block.gravel.step";
+        case mc::BlockId::Wood:
+        case mc::BlockId::CraftingTable: return "block.wood.step";
         default: return "block.grass.step";
     }
 }

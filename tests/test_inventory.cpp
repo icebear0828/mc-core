@@ -215,7 +215,7 @@ TEST(SpawnEggs, StackTo64AndAreOfferedByThePalette) {
         for (ItemId id : paletteItems()) found = found || id == egg;
         EXPECT_TRUE(found);
     }
-    EXPECT_LE(paletteItems().size(), static_cast<size_t>(InventoryLayout::kPaletteSlots));
+    EXPECT_GE(palettePageCount(), 1);
 }
 
 TEST(ShieldItem, IsOfferedByThePaletteAndStacksToOne) {
@@ -223,7 +223,7 @@ TEST(ShieldItem, IsOfferedByThePaletteAndStacksToOne) {
     bool found = false;
     for (ItemId id : paletteItems()) found = found || id == ItemId::Shield;
     EXPECT_TRUE(found);
-    EXPECT_LE(paletteItems().size(), static_cast<size_t>(InventoryLayout::kPaletteSlots));
+    EXPECT_GE(palettePageCount(), 1);
 }
 
 TEST(Inventory, ClickOffhandFollowsVanillaRules) {

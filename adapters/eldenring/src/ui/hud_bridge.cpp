@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <mutex>
+
+#include "mc/inventory_layout.hpp"
 
 #include "eldenring_model.hpp"
 #include "eldenring_chrscan.hpp"
@@ -27,6 +30,20 @@ void PopulateHudStateFromContext(erov::HudState& out, const RuntimeContext& ctx)
 #endif
     out.slot_probe = ctx.ui().slot_probe.load(std::memory_order_relaxed);
     out.inv_open = ctx.ui().inv_open.load(std::memory_order_relaxed);
+    out.craft_open = ctx.ui().craft_open.load(std::memory_order_relaxed);
+    out.inv_page = ctx.ui().inv_page.load(std::memory_order_relaxed);
+    out.inv_page_count = mc::palettePageCount();
+    {
+        std::lock_guard<std::mutex> lock(ctx.ui().craft_mutex);
+        const mc::CraftingGrid& grid = ctx.ui().craft.grid();
+        for (int i = 0; i < mc::kCraftCellCount; ++i) {
+            out.craft_item[i] = static_cast<uint16_t>(grid.cells[static_cast<size_t>(i)].item);
+            out.craft_count[i] = static_cast<uint8_t>(std::min(255u, grid.cells[static_cast<size_t>(i)].count));
+        }
+        const mc::ItemStack result = ctx.ui().craft.resultStack();
+        out.craft_result_item = static_cast<uint16_t>(result.item);
+        out.craft_result_count = static_cast<uint8_t>(std::min(255u, result.count));
+    }
     out.mouse_x = ctx.ui().inv_mx.load(std::memory_order_relaxed);
     out.mouse_y = ctx.ui().inv_my.load(std::memory_order_relaxed);
     out.absorption_mc = ctx.player().survival.absorptionMc();

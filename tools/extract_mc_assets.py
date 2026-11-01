@@ -376,6 +376,18 @@ _PLACEHOLDER_ITEM_COLORS = {
     "block_wood_top": (160, 120, 70), "block_wood_side": (120, 85, 45),
     "block_obsidian": (35, 25, 50),
     "item_wood": (140, 100, 50), "item_obsidian": (45, 35, 65),
+    # Crafting items (issue #67): flat placeholders, replaced by the client.jar icons.
+    "item_wooden_sword": (140, 100, 50), "item_stone_sword": (130, 130, 130),
+    "item_iron_sword": (210, 210, 215), "item_netherite_sword": (80, 70, 75),
+    "item_crafting_table": (160, 120, 70), "item_anvil": (80, 80, 85),
+    "item_wood_planks": (160, 120, 70), "item_sand": (220, 210, 160),
+    "item_stick": (140, 100, 50), "item_iron_ingot": (210, 210, 215),
+    "item_gold_ingot": (250, 210, 60), "item_netherite_ingot": (80, 70, 75),
+    "item_string": (220, 220, 220), "item_gunpowder": (90, 90, 90),
+    "item_flint": (60, 60, 65), "item_apple": (220, 30, 30),
+    # The crafting table's block faces (the item icon above is the isometric cube).
+    "block_crafting_table_top": (160, 120, 70), "block_crafting_table_side": (140, 100, 50),
+    "block_crafting_table_front": (150, 110, 55),
 }
 
 
@@ -882,6 +894,28 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     ("block_obsidian", (16, 16)),
     ("item_wood", (16, 16)),
     ("item_obsidian", (16, 16)),
+    # Crafting items (issue #67), appended so every earlier UV stays exactly where it was.
+    # The four block items are drawn as isometric cubes from their block textures.
+    ("item_wooden_sword", (16, 16)),
+    ("item_stone_sword", (16, 16)),
+    ("item_iron_sword", (16, 16)),
+    ("item_netherite_sword", (16, 16)),
+    ("item_crafting_table", (16, 16)),
+    ("item_anvil", (16, 16)),
+    ("item_wood_planks", (16, 16)),
+    ("item_sand", (16, 16)),
+    ("item_stick", (16, 16)),
+    ("item_iron_ingot", (16, 16)),
+    ("item_gold_ingot", (16, 16)),
+    ("item_netherite_ingot", (16, 16)),
+    ("item_string", (16, 16)),
+    ("item_gunpowder", (16, 16)),
+    ("item_flint", (16, 16)),
+    ("item_apple", (16, 16)),
+    # The crafting table's block faces, appended so every earlier UV stays exactly where it was.
+    ("block_crafting_table_top", (16, 16)),
+    ("block_crafting_table_side", (16, 16)),
+    ("block_crafting_table_front", (16, 16)),
 ]
 
 
@@ -965,6 +999,23 @@ _JAR_HUD_SPRITES = {
     "block_wood_top": "block/oak_log_top.png",
     "block_wood_side": "block/oak_log.png",
     "block_obsidian": "block/obsidian.png",
+    # Crafting items (issue #67)
+    "item_wooden_sword": "item/wooden_sword.png",
+    "item_stone_sword": "item/stone_sword.png",
+    "item_iron_sword": "item/iron_sword.png",
+    "item_netherite_sword": "item/netherite_sword.png",
+    "item_stick": "item/stick.png",
+    "item_iron_ingot": "item/iron_ingot.png",
+    "item_gold_ingot": "item/gold_ingot.png",
+    "item_netherite_ingot": "item/netherite_ingot.png",
+    "item_string": "item/string.png",
+    "item_gunpowder": "item/gunpowder.png",
+    "item_flint": "item/flint.png",
+    "item_apple": "item/apple.png",
+    # The crafting table's block faces
+    "block_crafting_table_top": "block/crafting_table_top.png",
+    "block_crafting_table_side": "block/crafting_table_side.png",
+    "block_crafting_table_front": "block/crafting_table_front.png",
 }
 
 
@@ -988,6 +1039,11 @@ _JAR_BLOCK_ITEMS = {
     "item_cobblestone": ("block/cobblestone.png", "block/cobblestone.png"),
     "item_wood": ("block/oak_log_top.png", "block/oak_log.png"),
     "item_obsidian": ("block/obsidian.png", "block/obsidian.png"),
+    # Crafting items (issue #67)
+    "item_crafting_table": ("block/crafting_table_top.png", "block/crafting_table_front.png"),
+    "item_anvil": ("block/anvil_top.png", "block/anvil.png"),
+    "item_wood_planks": ("block/oak_planks.png", "block/oak_planks.png"),
+    "item_sand": ("block/sand.png", "block/sand.png"),
 }
 _CUBE_SHADE = {"top": 1.0, "left": 0.78, "right": 0.6}
 

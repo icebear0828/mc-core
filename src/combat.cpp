@@ -24,12 +24,20 @@ HitIntent CombatEngine::calculateMeleeHit(
 
     // Base damage according to MC Java weapon table
     float base_damage = 1.0f; // Bare hand
-    if (weapon == ItemId::DiamondSword) {
-        base_damage = 7.0f;
-    } else if (weapon == ItemId::DiamondPickaxe) {
-        base_damage = 5.0f;
-    } else if (weapon == ItemId::Trident) {
-        base_damage = 9.0f;
+    switch (weapon) {
+        case ItemId::WoodenSword: base_damage = 4.0f; break;
+        case ItemId::StoneSword: base_damage = 5.0f; break;
+        case ItemId::IronSword: base_damage = 6.0f; break;
+        case ItemId::DiamondSword: base_damage = 7.0f; break;
+        case ItemId::NetheriteSword: base_damage = 8.0f; break;
+        case ItemId::WoodenPickaxe: base_damage = 2.0f; break;
+        case ItemId::StonePickaxe: base_damage = 3.0f; break;
+        case ItemId::IronPickaxe: base_damage = 4.0f; break;
+        case ItemId::GoldenPickaxe: base_damage = 2.0f; break;
+        case ItemId::DiamondPickaxe: base_damage = 5.0f; break;
+        case ItemId::NetheritePickaxe: base_damage = 6.0f; break;
+        case ItemId::Trident: base_damage = 9.0f; break;
+        default: break;
     }
 
     // Cooldown scaling
@@ -42,14 +50,23 @@ HitIntent CombatEngine::calculateMeleeHit(
         damage *= 1.5f;
     }
 
-    // Sweeping edge condition: diamond sword, on ground, full cooldown
-    if (weapon == ItemId::DiamondSword && is_on_ground && attack_cooldown > 0.9f && !intent.is_critical) {
+    const bool sword = weapon == ItemId::WoodenSword || weapon == ItemId::StoneSword || weapon == ItemId::IronSword ||
+                       weapon == ItemId::DiamondSword || weapon == ItemId::NetheriteSword;
+    // Sweeping edge condition: a sword, on ground, full cooldown
+    if (sword && is_on_ground && attack_cooldown > 0.9f && !intent.is_critical) {
         intent.is_sweeping = true;
     }
 
     intent.damage = damage;
-    // Percentage damage for robust boss scaling (e.g., 7% per diamond sword hit)
-    intent.max_hp_percent = (weapon == ItemId::DiamondSword) ? 0.05f : 0.02f;
+    // Percentage damage for robust boss scaling, following the sword ladder (diamond stays at 5%).
+    switch (weapon) {
+        case ItemId::WoodenSword: intent.max_hp_percent = 0.03f; break;
+        case ItemId::StoneSword: intent.max_hp_percent = 0.035f; break;
+        case ItemId::IronSword: intent.max_hp_percent = 0.04f; break;
+        case ItemId::DiamondSword: intent.max_hp_percent = 0.05f; break;
+        case ItemId::NetheriteSword: intent.max_hp_percent = 0.06f; break;
+        default: intent.max_hp_percent = 0.02f; break;
+    }
     intent.knockback_force = (intent.is_critical ? 1200.f : 800.f) * cooldown_factor;
 
     return intent;

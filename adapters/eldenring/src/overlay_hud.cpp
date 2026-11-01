@@ -1,5 +1,7 @@
 #include "overlay_internal.hpp"
 
+#include "mc/crafting_table_layout.hpp"
+
 namespace erov {
 namespace detail {
 
@@ -285,16 +287,36 @@ void DrawInventory(const HudState& hud, float w, float h) {
         dl->AddText(ImGui::GetFont(), fs, pos, IM_COL32(85, 255, 255, 255), arm_label);
     }
 
-    const auto& palette = mc::paletteItems();
-
     if (hud.creative) {
-        // Creative mode palette on top
+        // Creative mode palette on top, one page at a time (the wheel changes the page).
         dl->AddText(ImGui::GetFont(), fs, {lay.titleItems().x, lay.titleItems().y}, label, "Items");
         for (int i = 0; i < mc::InventoryLayout::kPaletteSlots; ++i) {
             drawSlotBox(lay.paletteSlot(i));
         }
-        for (size_t i = 0; i < palette.size() && i < mc::InventoryLayout::kPaletteSlots; ++i) {
-            icon(lay.paletteSlot(static_cast<int>(i)), palette[i]);
+        for (int i = 0; i < mc::InventoryLayout::kPaletteSlots; ++i) {
+            const mc::ItemId item = mc::paletteItemAt(hud.inv_page, i);
+            if (item != mc::ItemId::None) icon(lay.paletteSlot(i), item);
+        }
+        if (hud.inv_page_count > 1) {
+            const mc::HudRect prev = lay.palettePrevButton();
+            const mc::HudRect next = lay.paletteNextButton();
+            for (const mc::HudRect& b : {prev, next}) {
+                dl->AddRectFilled({b.x, b.y}, {b.x + b.w, b.y + b.h}, IM_COL32(170, 170, 170, 255));
+                dl->AddRect({b.x, b.y}, {b.x + b.w, b.y + b.h}, IM_COL32(85, 85, 85, 255), 0.f, 0, gs);
+            }
+            auto center_text = [&](const mc::HudRect& r, const char* text) {
+                const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, 1e9f, 0.f, text);
+                dl->AddText(ImGui::GetFont(), fs, {r.x + (r.w - sz.x) * 0.5f, r.y + (r.h - sz.y) * 0.5f},
+                            IM_COL32(40, 40, 40, 255), text);
+            };
+            center_text(prev, "<");
+            center_text(next, ">");
+            char page_label[32];
+            snprintf(page_label, sizeof(page_label), "%d/%d", hud.inv_page + 1, hud.inv_page_count);
+            const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, 1e9f, 0.f, page_label);
+            dl->AddText(ImGui::GetFont(), fs,
+                        {prev.x + prev.w + (next.x - prev.x - prev.w - sz.x) * 0.5f, prev.y + (prev.h - sz.y) * 0.5f},
+                        label, page_label);
         }
     } else {
         // Vanilla Minecraft Survival layout:
@@ -352,6 +374,21 @@ void DrawInventory(const HudState& hud, float w, float h) {
         dl->AddText(ImGui::GetFont(), fs, {lay.titleCrafting().x, lay.titleCrafting().y}, label, "Crafting");
         for (int i = 0; i < 4; ++i) drawSlotBox(lay.craftSlot(i));
         drawSlotBox(lay.craftResultSlot());
+        for (int i = 0; i < 4; ++i) {
+            const int gi = (i / 2) * 3 + (i % 2); // the top-left 2x2 cells of the 3x3 session grid
+            const mc::ItemId item = static_cast<mc::ItemId>(hud.craft_item[gi]);
+            if (item == mc::ItemId::None) continue;
+            const mc::HudRect r = lay.craftSlot(i);
+            const mc::HudRect ir{r.x + gs, r.y + gs, 16.f * gs, 16.f * gs};
+            icon(ir, item);
+            stackCount(ir, hud.craft_count[gi]);
+        }
+        if (hud.craft_result_item != 0) {
+            const mc::HudRect r = lay.craftResultSlot();
+            const mc::HudRect ir{r.x + gs, r.y + gs, 16.f * gs, 16.f * gs};
+            icon(ir, static_cast<mc::ItemId>(hud.craft_result_item));
+            stackCount(ir, hud.craft_result_count);
+        }
         // Crafting arrow
         dl->AddLine({p.x + 135.f * gs, p.y + 37.f * gs}, {p.x + 148.f * gs, p.y + 37.f * gs}, IM_COL32(139, 139, 139, 255), 2.f * gs);
         dl->AddTriangleFilled({p.x + 148.f * gs, p.y + 33.f * gs}, {p.x + 148.f * gs, p.y + 41.f * gs}, {p.x + 152.f * gs, p.y + 37.f * gs}, IM_COL32(139, 139, 139, 255));
@@ -409,8 +446,8 @@ void DrawInventory(const HudState& hud, float w, float h) {
     mc::ItemId hovered = mc::ItemId::None;
     mc::HudRect hover_r{};
     bool show_hover = false;
-    if (hover.kind == mc::SlotRef::Kind::Palette && static_cast<size_t>(hover.index) < palette.size()) {
-        hovered = palette[static_cast<size_t>(hover.index)];
+    if (hover.kind == mc::SlotRef::Kind::Palette) {
+        hovered = mc::paletteItemAt(hud.inv_page, hover.index);
         hover_r = lay.paletteSlot(hover.index);
         show_hover = true;
     } else if (hover.kind == mc::SlotRef::Kind::Inventory && hover.index >= 0 && hover.index < 36) {
@@ -426,9 +463,12 @@ void DrawInventory(const HudState& hud, float w, float h) {
         hover_r = lay.armorSlot(hover.index);
         show_hover = true;
     } else if (hover.kind == mc::SlotRef::Kind::Crafting && hover.index >= 0 && hover.index < 4) {
+        const int gi = (hover.index / 2) * 3 + (hover.index % 2);
+        hovered = static_cast<mc::ItemId>(hud.craft_item[gi]);
         hover_r = lay.craftSlot(hover.index);
         show_hover = true;
     } else if (hover.kind == mc::SlotRef::Kind::CraftResult) {
+        hovered = static_cast<mc::ItemId>(hud.craft_result_item);
         hover_r = lay.craftResultSlot();
         show_hover = true;
     }
@@ -452,6 +492,115 @@ void DrawInventory(const HudState& hud, float w, float h) {
         dl->AddText(ImGui::GetFont(), fs, {tx, ty}, IM_COL32(255, 255, 255, 255), name);
     }
     // the pointer (the game's own cursor is not shown while the mouse is captured)
+    const float u = std::max(1.f, gs);
+    const ImVec2 m{hud.mouse_x, hud.mouse_y};
+    dl->AddTriangleFilled(m, {m.x, m.y + 11.f * u}, {m.x + 7.f * u, m.y + 8.f * u}, IM_COL32(255, 255, 255, 255));
+    dl->AddTriangle(m, {m.x, m.y + 11.f * u}, {m.x + 7.f * u, m.y + 8.f * u}, IM_COL32(0, 0, 0, 255), 1.f);
+}
+
+// The crafting table screen: the 3x3 grid, the result slot and the player's 27 + 9 slots.
+void DrawCraftingTable(const HudState& hud, float w, float h) {
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    const ImTextureID atlas = reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(g_atlas_gpu.ptr));
+    dl->AddRectFilled({0.f, 0.f}, {w, h}, IM_COL32(16, 16, 16, 150));
+    const mc::CraftingTableLayout lay(w, h);
+    const mc::HudRect p = lay.panel();
+    const float gs = static_cast<float>(lay.scale());
+    const float fs = 8.f * gs;
+    const ImU32 label = IM_COL32(64, 64, 64, 255);
+
+    auto drawSlotBox = [&](const mc::HudRect& r) {
+        dl->AddLine({r.x, r.y}, {r.x + r.w, r.y}, IM_COL32(55, 55, 55, 255), gs);
+        dl->AddLine({r.x, r.y}, {r.x, r.y + r.h}, IM_COL32(55, 55, 55, 255), gs);
+        dl->AddLine({r.x, r.y + r.h}, {r.x + r.w, r.y + r.h}, IM_COL32(255, 255, 255, 200), gs);
+        dl->AddLine({r.x + r.w, r.y}, {r.x + r.w, r.y + r.h}, IM_COL32(255, 255, 255, 200), gs);
+        dl->AddRectFilled({r.x + gs, r.y + gs}, {r.x + r.w - gs, r.y + r.h - gs}, IM_COL32(139, 139, 139, 255));
+    };
+    auto stackCount = [&](const mc::HudRect& r, unsigned n) {
+        if (n <= 1) return;
+        char cnt[8];
+        snprintf(cnt, sizeof(cnt), "%u", n);
+        const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, 1e9f, 0.f, cnt);
+        const ImVec2 pos{r.x + 17.f * gs - sz.x, r.y + 9.f * gs};
+        dl->AddText(ImGui::GetFont(), fs, {pos.x + gs, pos.y + gs}, IM_COL32(40, 40, 40, 255), cnt);
+        dl->AddText(ImGui::GetFont(), fs, pos, IM_COL32(255, 255, 255, 255), cnt);
+    };
+    auto icon = [&](const mc::HudRect& r, mc::ItemId item) { DrawItemIcon(dl, atlas, r, item); };
+
+    dl->AddRectFilled({p.x, p.y}, {p.x + p.w, p.y + p.h}, IM_COL32(198, 198, 198, 255));
+    dl->AddLine({p.x, p.y}, {p.x + p.w, p.y}, IM_COL32(255, 255, 255, 255), 2.f * gs);
+    dl->AddLine({p.x, p.y}, {p.x, p.y + p.h}, IM_COL32(255, 255, 255, 255), 2.f * gs);
+    dl->AddLine({p.x, p.y + p.h}, {p.x + p.w, p.y + p.h}, IM_COL32(85, 85, 85, 255), 2.f * gs);
+    dl->AddLine({p.x + p.w, p.y}, {p.x + p.w, p.y + p.h}, IM_COL32(85, 85, 85, 255), 2.f * gs);
+
+    dl->AddText(ImGui::GetFont(), fs, {lay.titleCrafting().x, lay.titleCrafting().y}, label, "Crafting");
+    for (int i = 0; i < mc::CraftingTableLayout::kGridSlots; ++i) {
+        const mc::HudRect r = lay.gridSlot(i);
+        drawSlotBox(r);
+        const mc::ItemId item = static_cast<mc::ItemId>(hud.craft_item[i]);
+        if (item == mc::ItemId::None) continue;
+        const mc::HudRect ir{r.x + gs, r.y + gs, 16.f * gs, 16.f * gs};
+        icon(ir, item);
+        stackCount(ir, hud.craft_count[i]);
+    }
+    const mc::HudRect out = lay.resultSlot();
+    drawSlotBox(out);
+    if (hud.craft_result_item != 0) {
+        const mc::HudRect ir{out.x + gs, out.y + gs, 16.f * gs, 16.f * gs};
+        icon(ir, static_cast<mc::ItemId>(hud.craft_result_item));
+        stackCount(ir, hud.craft_result_count);
+    }
+    // The vanilla arrow from the grid to the result.
+    dl->AddLine({p.x + 90.f * gs, p.y + 35.f * gs}, {p.x + 118.f * gs, p.y + 35.f * gs}, IM_COL32(139, 139, 139, 255), 2.f * gs);
+    dl->AddTriangleFilled({p.x + 118.f * gs, p.y + 31.f * gs}, {p.x + 118.f * gs, p.y + 39.f * gs},
+                          {p.x + 122.f * gs, p.y + 35.f * gs}, IM_COL32(139, 139, 139, 255));
+
+    dl->AddText(ImGui::GetFont(), fs, {lay.titleInventory().x, lay.titleInventory().y}, label, "Inventory");
+    for (int i = 0; i < 36; ++i) {
+        const mc::HudRect r = lay.invSlot(i);
+        drawSlotBox(r);
+        const mc::ItemId item = static_cast<mc::ItemId>(hud.inv_item[i]);
+        if (item == mc::ItemId::None) continue;
+        const mc::HudRect ir{r.x + gs, r.y + gs, 16.f * gs, 16.f * gs};
+        icon(ir, item);
+        stackCount(ir, hud.inv_count[i]);
+    }
+
+    const mc::SlotRef hover = lay.hitTest(hud.mouse_x, hud.mouse_y);
+    mc::ItemId hovered = mc::ItemId::None;
+    mc::HudRect hover_r{};
+    bool show_hover = false;
+    if (hover.kind == mc::SlotRef::Kind::Crafting && hover.index >= 0 && hover.index < mc::CraftingTableLayout::kGridSlots) {
+        hovered = static_cast<mc::ItemId>(hud.craft_item[hover.index]);
+        hover_r = lay.gridSlot(hover.index);
+        show_hover = true;
+    } else if (hover.kind == mc::SlotRef::Kind::CraftResult) {
+        hovered = static_cast<mc::ItemId>(hud.craft_result_item);
+        hover_r = lay.resultSlot();
+        show_hover = true;
+    } else if (hover.kind == mc::SlotRef::Kind::Inventory && hover.index >= 0 && hover.index < 36) {
+        hovered = static_cast<mc::ItemId>(hud.inv_item[hover.index]);
+        hover_r = lay.invSlot(hover.index);
+        show_hover = true;
+    }
+    if (show_hover) {
+        dl->AddRectFilled({hover_r.x, hover_r.y}, {hover_r.x + hover_r.w, hover_r.y + hover_r.h}, IM_COL32(255, 255, 255, 128));
+    }
+
+    const mc::ItemId held = static_cast<mc::ItemId>(hud.cursor_item);
+    if (held != mc::ItemId::None) {
+        const mc::HudRect r{hud.mouse_x - 8.f * gs, hud.mouse_y - 8.f * gs, 16.f * gs, 16.f * gs};
+        icon(r, held);
+        stackCount(r, hud.cursor_count);
+    } else if (hovered != mc::ItemId::None) {
+        const char* name = mc::HudEngine::getItemDisplayName(hovered);
+        const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, 1e9f, 0.f, name);
+        const float pad = 3.f * gs;
+        const float tx = std::min(hud.mouse_x + 12.f * gs, w - sz.x - 2.f * pad), ty = hud.mouse_y - 12.f * gs;
+        dl->AddRectFilled({tx - pad, ty - pad}, {tx + sz.x + pad, ty + sz.y + pad}, IM_COL32(16, 0, 16, 230));
+        dl->AddRect({tx - pad, ty - pad}, {tx + sz.x + pad, ty + sz.y + pad}, IM_COL32(80, 0, 160, 255), 0.f, 0, gs);
+        dl->AddText(ImGui::GetFont(), fs, {tx, ty}, IM_COL32(255, 255, 255, 255), name);
+    }
     const float u = std::max(1.f, gs);
     const ImVec2 m{hud.mouse_x, hud.mouse_y};
     dl->AddTriangleFilled(m, {m.x, m.y + 11.f * u}, {m.x + 7.f * u, m.y + 8.f * u}, IM_COL32(255, 255, 255, 255));
@@ -601,6 +750,10 @@ void DrawHud(const HudState& hud, float w, float h) {
         return;
     }
 #endif
+    if (hud.craft_open) {
+        DrawCraftingTable(hud, w, h);
+        return;
+    }
     if (hud.inv_open) {
         DrawInventory(hud, w, h);
         return;

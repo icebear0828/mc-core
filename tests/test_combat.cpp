@@ -54,6 +54,47 @@ TEST(CombatEngineTest, SweepingEdgeOnGround) {
     EXPECT_NEAR(intent.damage, 7.0f, 0.01f);
 }
 
+TEST(CombatEngineTest, SwordLadderMatchesTheJavaAttackDamage) {
+    MockCombatAdapter adapter;
+    mc::CombatEngine combat(adapter);
+
+    struct Case {
+        mc::ItemId item;
+        float damage;
+        float percent;
+    };
+    const Case cases[] = {{mc::ItemId::WoodenSword, 4.0f, 0.03f},
+                          {mc::ItemId::StoneSword, 5.0f, 0.035f},
+                          {mc::ItemId::IronSword, 6.0f, 0.04f},
+                          {mc::ItemId::DiamondSword, 7.0f, 0.05f},
+                          {mc::ItemId::NetheriteSword, 8.0f, 0.06f}};
+    for (const Case& c : cases) {
+        const auto intent = combat.calculateMeleeHit(mc::EntityId{1}, mc::EntityId{2}, c.item, 1.0f, false, true, {0, 0, 0},
+                                                     {0, 1, 0});
+        EXPECT_NEAR(intent.damage, c.damage, 0.01f) << static_cast<int>(c.item);
+        EXPECT_NEAR(intent.max_hp_percent, c.percent, 1e-6f) << static_cast<int>(c.item);
+        EXPECT_TRUE(intent.is_sweeping) << static_cast<int>(c.item);
+    }
+}
+
+TEST(CombatEngineTest, PickaxeTiersMatchTheJavaAttackDamage) {
+    MockCombatAdapter adapter;
+    mc::CombatEngine combat(adapter);
+    struct Case {
+        mc::ItemId item;
+        float damage;
+    };
+    const Case cases[] = {{mc::ItemId::WoodenPickaxe, 2.0f}, {mc::ItemId::StonePickaxe, 3.0f},
+                          {mc::ItemId::IronPickaxe, 4.0f},   {mc::ItemId::GoldenPickaxe, 2.0f},
+                          {mc::ItemId::DiamondPickaxe, 5.0f}, {mc::ItemId::NetheritePickaxe, 6.0f}};
+    for (const Case& c : cases) {
+        const auto intent = combat.calculateMeleeHit(mc::EntityId{1}, mc::EntityId{2}, c.item, 1.0f, false, true, {0, 0, 0},
+                                                     {0, 1, 0});
+        EXPECT_NEAR(intent.damage, c.damage, 0.01f) << static_cast<int>(c.item);
+        EXPECT_FALSE(intent.is_sweeping) << static_cast<int>(c.item);
+    }
+}
+
 namespace {
 
 class CountingCombatAdapter : public mc::ICombatAdapter {

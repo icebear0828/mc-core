@@ -30,7 +30,7 @@ public:
         if (block_id == BlockId::Tnt) {
             return 0.05f; // Extremely fast / near-instant break
         }
-        if (block_id == BlockId::Wood) {
+        if (block_id == BlockId::Wood || block_id == BlockId::CraftingTable) {
             return held_tool == ItemId::None ? 3.0f : 1.5f; // no axes in the mod: any tool speeds it up
         }
         if (block_id == BlockId::Obsidian) {
@@ -62,7 +62,8 @@ public:
         if (block_id == BlockId::Stone || block_id == BlockId::Cobblestone) {
             return isPickaxe(held_tool);
         }
-        if (block_id == BlockId::Dirt || block_id == BlockId::Tnt || block_id == BlockId::Wood) {
+        if (block_id == BlockId::Dirt || block_id == BlockId::Tnt || block_id == BlockId::Wood ||
+            block_id == BlockId::CraftingTable) {
             return true;
         }
         if (block_id == BlockId::Obsidian) {
@@ -81,6 +82,7 @@ public:
             case BlockId::Dirt: return ItemId::BlockDirt;
             case BlockId::Tnt: return ItemId::BlockTnt;
             case BlockId::Wood: return ItemId::BlockWood;
+            case BlockId::CraftingTable: return ItemId::CraftingTable;
             case BlockId::Obsidian:
                 return (held_tool == ItemId::DiamondPickaxe || held_tool == ItemId::NetheritePickaxe) ? ItemId::BlockObsidian : ItemId::None;
             default: return ItemId::None;

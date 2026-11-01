@@ -37,6 +37,7 @@ BlockId blockForItem(ItemId item) {
         case ItemId::BlockCobblestone: return BlockId::Cobblestone;
         case ItemId::BlockWood: return BlockId::Wood;
         case ItemId::BlockObsidian: return BlockId::Obsidian;
+        case ItemId::CraftingTable: return BlockId::CraftingTable;
         default: return BlockId::Air;
     }
 }

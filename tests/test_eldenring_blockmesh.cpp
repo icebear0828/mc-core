@@ -49,6 +49,20 @@ TEST(BlockMesh, TntHasDifferentTopSideAndBottom) {
     EXPECT_EQ(side, 16);
 }
 
+TEST(BlockMesh, CraftingTableUsesItsOwnTopAndFrontFaces) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::CraftingTable);
+    const mc::rig::RigMesh m = buildBlockMesh(g);
+    EXPECT_EQ(m.vertices.size(), 24u);
+    int top = 0, front = 0;
+    for (const mc::rig::RigVertex& v : m.vertices) {
+        if (inside(mc::hud::kUV_BLOCK_CRAFTING_TABLE_TOP, v)) ++top;
+        else if (inside(mc::hud::kUV_BLOCK_CRAFTING_TABLE_FRONT, v)) ++front;
+    }
+    EXPECT_EQ(top, 8);   // top and bottom
+    EXPECT_EQ(front, 16); // four sides
+}
+
 TEST(BlockMesh, TheTopFaceIsAtTheTopOfTheCell) {
     BlockGrid g;
     g.place({3, 7, -2}, mc::BlockId::Dirt);

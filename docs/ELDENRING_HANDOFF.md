@@ -76,6 +76,39 @@
 
 ---
 
+## 0.0.2 2026-11-02：背包合成台与创造面板分页（**待实机验证**）
+
+分支：`feat/inventory-crafting`（基于 `origin/main` `e434ecc`）。
+
+- **3x3 合成台**：`include/mc/crafting_session.hpp` + `src/crafting_session.cpp`（纯逻辑，原子扣料）
+  与 `include/mc/crafting_table_layout.hpp`（176×166 原版布局）。玩家**手持 `CraftingTable` 或对准
+  已放置的工作台按 I/E** 打开 3x3；生存背包里的 2x2 使用同一个 session 的左上 2x2 格子，所以木板/木棍/工作台
+  可以在背包里直接合成，剑/盾/铁砧/TNT/金苹果需要合成台。关屏时网格物品自动回背包，装不下就留在网格里不丢失。
+- **工作台是可放置方块**：`BlockId::CraftingTable` 已接入 `blockForItem/itemForBlock`、`faceCellsFor`
+  （top/front 材质）、`BlockSound`（`block.wood.step`）、挖掘 3 s（任意工具 1.5 s）掉落自身、
+  TNT 抗性 2.5。放下后对准它按 I/E 也能打开 3x3（`AimingAtCraftingTable` → `craft_table_targeted`）。
+- **配方引擎**：合入 `feat/issue-67` 的 `recipe.hpp/.cpp`（`6b3d5a9`，剑梯、盾、铁砧、TNT、打火石、
+  金苹果、木板/木棍/工作台；shaped/shapeless/mirror/原子扣料）。
+- **创造面板分页**：`paletteItems()` 从 27 项扩到 59 项，每页 27 格、滚轮翻页（3 页），
+  `paletteItemAt(page, slot)` 统一取项；采矿掉落、5 种镐、圆石、合成材料全部可选。
+- **滚轮翻页修复**：`hotkey_dispatcher.cpp` 之前在背包打开时也会无条件 `TakeWheelNotches()`，
+  把事件清空，导致控制器永远拿到 0；现在背包打开时不再 drain（用 `inventory_open` 的刷新值判断），
+  滚轮只交给面板翻页。新增 `HotkeyDispatcherTest.InventoryOpenLeavesTheWheelForThePalettePager`。
+- **翻页兜底**：面板右上角新增 `<` / `>` 两个可点击按钮（`InventoryLayout::palettePrevButton/NextButton`，
+  `SlotRef::Kind::PalettePrev/PaletteNext`），滚轮失效时也能翻页。
+- **新增 16 个图集格子**（木板/工作台/铁砧/沙子/剑梯/木棍/铁金下界合金锭/线/火药/燧石/苹果）：
+  `tools/extract_mc_assets.py` 已加 region、jar 映射和占位色；仓库里的 `hud_atlas.hpp` 是**占位图集**，
+  部署前必须用 client.jar 重提（见 `CLAUDE.md` 的图集规则）。
+- **已部署（2026-11-02，待实机确认）**：`dinput8.dll` SHA256 `3472CFF0…`（2521600 B），
+  真实图集 `6584A754…`（33950 B，121 区）；旧 DLL 备份在游戏目录 `dinput8.dll.bak_tnt_fixed`。
+  `inspect_atlas_regions.py` 通过：`entity_shield` 716、`item_shield` 144。
+- **验证**：`cmake --build build --config RelWithDebInfo` 全绿；`mc_tests` **1385 个（1384 过 / 1 skip）**，
+  纯 MC 变体 **1319 个（1318 过 / 1 skip）**；Python **114 passed / 1 skipped**。**尚未进游戏实测**——需要部署
+  `build/bin/eldenring/dinput8.dll` 并用真实图集确认：E 开背包/手持工作台开 3x3、2x2 合成工作台、
+  剑梯合成、滚轮翻页、关屏物品回包。
+
+---
+
 ## 0. 当前最新状态（2026-10-12，新开会话必读）
 
 ### 0.1 核心成果与分支拓扑
