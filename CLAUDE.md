@@ -25,10 +25,12 @@
 - 跨线程只读 `RuntimeContext::mode().control_authority_bits`，用 `modOwns` / `blocksNative` 查询。
 
 ## 构建变体（别部署错）
-- `build/`：`ENABLE_CS2_VIEWMODEL=ON`，**CS2 viewmodel 构建**；运行时 MC 模式被禁用，表现是“纯 CS”。
-- `build_pure_mc/`：`ENABLE_CS2_VIEWMODEL=OFF`，**纯 MC 构建**。
-- 部署 MC 用 `build_pure_mc\bin\eldenring\dinput8.dll`；部署 CS 用 `build\bin\eldenring\dinput8.dll`。
-- 部署前先确认：`Get-Content <build>\CMakeCache.txt | Select-String ENABLE_CS2_VIEWMODEL`。两个 DLL 都叫 `dinput8.dll`，只看文件名分不出来。
+三个模式是三个独立的构建轴：`ENABLE_MC_MODE` / `ENABLE_CS2_VIEWMODEL` / `ENABLE_OW_VIEWMODEL`。
+- `build/`：当前三者都 ON 的组合构建（可在运行时切换 MC / CS / OW）。
+- `build_pure_mc/`：`ENABLE_CS2_VIEWMODEL=OFF`；若要连 OW 代码也排除，配置时加 `-DENABLE_OW_VIEWMODEL=OFF`。
+- `build_modes/<combo>/`：`tools/deploy_modes.py` 为所选组合生成的独立构建目录（如 `mc+ow`、`cs`、`ow`）。
+- **优先用统一部署工具**：`uv run python tools/deploy_modes.py --modes mc|cs|ow|mc,ow|all --deploy`。它按组合构建 DLL、只部署该组合的资产，并用 `mods/mc_adapter/mode_manifest.json` 清掉上一次部署里已取消模式的资产。
+- 手工部署前先确认三个开关：`Select-String ENABLE_MC_MODE,ENABLE_CS2_VIEWMODEL,ENABLE_OW_VIEWMODEL <build>\CMakeCache.txt`。所有变体的 DLL 都叫 `dinput8.dll`。
 
 ## 常用命令
 - mac 测试：`cmake --build build -j8 && ./build/bin/mc_tests`（当前 487 个应全过）；Python：`uv run --with pillow --with pytest python -m pytest tests/test_extract_assets.py tests/test_adapter_standards.py`。

@@ -77,6 +77,14 @@ void Teardown() {
 #if ENABLE_CS2_VIEWMODEL
     g_cs.release();
 #endif
+#if ENABLE_OW_VIEWMODEL
+    g_ow.release();
+    SafeRelease(g_ow_srv_heap);
+    g_ow_table_gpu = {};
+    g_ow_initialized = false;
+    g_ow_model_loaded = false;
+    g_ow_load_failed = false;
+#endif
     if (g_s.imgui_ready) {
         ImGui_ImplDX12_Shutdown();
         ImGui::DestroyContext();
@@ -302,9 +310,12 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
         CreateCsDecalTexture(srv_inc);
 #endif
 #if ENABLE_CS2_VIEWMODEL
-        // The CS2 build is CS-only at runtime: never start in MC mode, even if
-        // a config file or a missing CS asset would otherwise fall back to it.
+        // A build without MC gameplay must never start in MC mode, even if a
+        // config file or a missing CS asset would otherwise fall back to it.
+        // A combined build keeps the configured startup mode (mc_er_mode.txt).
+#if !ENABLE_MC_MODE
         eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
+#endif
         if (!g_cs.init(g_s.device, g_s.format, g_log)) {
             Logf("overlay: CS viewmodel renderer unavailable");
         } else {
@@ -343,9 +354,15 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                     snprintf(cs_msg, sizeof(cs_msg), "overlay: CS viewmodel model loaded successfully from %s", p.c_str());
                     Logf(cs_msg);
                     g_cs_knife_model_path = p;
-                    eldenring::RuntimeContext::Instance().mode().cs_mode.store(true);
-                    eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
-                    eldenring::RuntimeContext::Instance().mode().first_person.store(true);
+                    // Auto-start CS only when no other mode is active. A
+                    // combined build keeps whatever mc_er_mode.txt selected
+                    // (mc by default), so deploying OW or MC never silently
+                    // switches the player into CS.
+                    auto& cs_mode_ref = eldenring::RuntimeContext::Instance().mode();
+                    if (!cs_mode_ref.ow_mode.load() && !cs_mode_ref.mc_mode.load()) {
+                        cs_mode_ref.cs_mode.store(true);
+                        cs_mode_ref.first_person.store(true);
+                    }
                     break;
                 }
             }
@@ -523,6 +540,25 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                 D3D12_CPU_DESCRIPTOR_HANDLE src{cs_table_cpu.ptr + static_cast<SIZE_T>(srv_inc) * shared};
                 D3D12_CPU_DESCRIPTOR_HANDLE dst{ak_table_cpu.ptr + static_cast<SIZE_T>(srv_inc) * shared};
                 g_s.device->CopyDescriptorsSimple(1, dst, src, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            }
+        }
+#endif
+#if ENABLE_OW_VIEWMODEL
+        {
+            // The gauntlet owns a three-slot SRV heap. It never shares a slot
+            // with the CS2 knife/gun tables, so either subsystem can be built
+            // without the other.
+            D3D12_DESCRIPTOR_HEAP_DESC ow_heap{};
+            ow_heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+            ow_heap.NumDescriptors = 3;
+            ow_heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+            if (SUCCEEDED(g_s.device->CreateDescriptorHeap(&ow_heap, IID_PPV_ARGS(&g_ow_srv_heap))) &&
+                g_ow.init(g_s.device, g_s.format, g_log)) {
+                g_ow_table_gpu = g_ow_srv_heap->GetGPUDescriptorHandleForHeapStart();
+                g_ow_initialized = true;
+                Logf("overlay: OW gauntlet renderer ready (dedicated 3-slot SRV heap)");
+            } else {
+                Logf("overlay: OW gauntlet renderer unavailable");
             }
         }
 #endif

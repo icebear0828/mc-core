@@ -92,6 +92,8 @@ public:
     // Runtime steps
     void stepShadowGround(RuntimeContext& ctx);
     void stepPlayerBlockCollision(RuntimeContext& ctx);
+    // First-person sneak eye height. Runs from the general per-frame camera update, independent of block collision.
+    void stepSneakEyeHeight(float dt, RuntimeContext& ctx);
     void stepEnemyBlockCollision(const float player_feet[3], RuntimeContext& ctx);
     void processTntExplosions(const std::vector<EnemyInfo>& enemies, RuntimeContext& ctx);
     void processCreeperExplosions(const std::vector<EnemyInfo>& enemies, const float player_feet[3], RuntimeContext& ctx);

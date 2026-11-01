@@ -27,6 +27,9 @@
 #if ENABLE_CS2_VIEWMODEL
 #include "cs_ballistics.hpp"
 #endif
+#if ENABLE_OW_VIEWMODEL
+#include "eldenring_ow_combat.hpp"
+#endif
 #include "mc/combat.hpp"
 #include "mc/inventory.hpp"
 
@@ -135,6 +138,19 @@ struct CsShotResult {
 };
 #endif
 
+#if ENABLE_OW_VIEWMODEL
+// One Doomfist strike. `hits` is > 1 for the seismic slam's radial damage.
+struct OwStrikeResult {
+    bool fired{false};
+    bool hit{false};
+    int hits{0};
+    int total_er_damage{0};
+    uintptr_t victim_chr{0};
+    float distance{0.f};
+    int er_damage{0};
+};
+#endif
+
 class CombatService {
 public:
     static CombatService& Instance() {
@@ -199,6 +215,11 @@ public:
     // CS hitscan: spread -> torso ray -> LOS -> DamageQueue. Called on the input thread; the damage is
     // applied by the existing drain on the game thread. Returns what the bullet did for logging/tracers.
     CsShotResult fireCsShot(const eldenring::cs::CsShotParams& params, DamageQueue& queue, uint64_t tick, RuntimeContext& ctx);
+#endif
+#if ENABLE_OW_VIEWMODEL
+    // Doomfist strikes: hand cannon, rocket punch, uppercut and slam. Enqueues
+    // the damage in the same DamageQueue the CS bullets and MC melee use.
+    OwStrikeResult fireOwStrike(eldenring::ow::OwStrikeKind kind, DamageQueue& queue, uint64_t tick, RuntimeContext& ctx);
 #endif
     void aimCalStart(uint64_t manager, uint32_t handle, const float dir[3]);
     void aimCalTick();

@@ -52,6 +52,9 @@
 #include "cs_renderer_d3d12.hpp"
 #include "cs_impact_decals.hpp"
 #endif
+#if ENABLE_OW_VIEWMODEL
+#include "ow_renderer_d3d12.hpp"
+#endif
 #include "eldenring_runtime_context.hpp"
 #include "eldenring_inventory_preview.hpp"
 #include "eldenring_diagnostics.hpp"
@@ -91,6 +94,9 @@ using CreateDsvFn = void(STDMETHODCALLTYPE*)(ID3D12Device*, ID3D12Resource*, con
 inline CreateDsvFn g_create_dsv_orig = nullptr;
 
 inline SteveConfig g_steve_cfg;
+#if ENABLE_OW_VIEWMODEL
+inline OwConfig g_ow_cfg;
+#endif
 // The HUD atlas, enlarged 4x with nearest neighbour (ImGui's DX12 backend samples linearly), in heap slot 3.
 inline std::vector<uint8_t> g_atlas_rgba;
 inline unsigned g_atlas_w = 0, g_atlas_h = 0;
@@ -163,6 +169,17 @@ inline std::string g_cs_game_dir;
 inline std::string g_cs_knife_model_path;
 inline uint8_t g_cs_active_slot = 0;
 inline uint8_t g_cs_gun_table_slot = 0; // weapon slot whose maps are in g_cs_ak_table (0 = none)
+#endif
+
+#if ENABLE_OW_VIEWMODEL
+// Overwatch (Doomfist) first-person gauntlet. It owns a renderer, a descriptor
+// heap and a config of its own; nothing here touches the CS2 tables.
+inline erow::OwRenderer g_ow;
+inline ID3D12DescriptorHeap* g_ow_srv_heap = nullptr; // 3 SRVs: albedo, normal, ORM
+inline D3D12_GPU_DESCRIPTOR_HANDLE g_ow_table_gpu{};
+inline bool g_ow_initialized = false;
+inline bool g_ow_model_loaded = false;
+inline bool g_ow_load_failed = false;
 #endif
 inline mc::SteveAnimator g_anim;
 inline eldenring::render::SteveMotion g_motion;

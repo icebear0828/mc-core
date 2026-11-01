@@ -5,6 +5,23 @@ using namespace detail;
 
 void SetSteveConfig(const SteveConfig& cfg) { g_steve_cfg = cfg; }
 
+void SetOwConfig(const OwConfig& cfg) {
+#if ENABLE_OW_VIEWMODEL
+    g_ow_cfg = cfg;
+#else
+    (void)cfg;
+#endif
+}
+
+float OwClipDuration(const char* name) {
+#if ENABLE_OW_VIEWMODEL
+    return g_ow.clipDuration(name);
+#else
+    (void)name;
+    return 0.f;
+#endif
+}
+
 void RequestFrameTrace(int frames) { g_trace_left.store(frames); }
 
 void SetMobModel(const mc::model::EntityModel& model) {

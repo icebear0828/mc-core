@@ -448,6 +448,62 @@ void DrawInventory(const HudState& hud, float w, float h) {
 
 
 void DrawHud(const HudState& hud, float w, float h) {
+    if (hud.ow_mode) {
+        // Overwatch HUD: crosshair + ability legend. The MC hearts/hotbar must
+        // not leak into OW mode (the CS branch returns for the same reason).
+        ImDrawList* dl = ImGui::GetBackgroundDrawList();
+        const float cx = w * 0.5f, cy = h * 0.5f;
+        const float s = std::max(0.5f, h / 1080.f);
+        const ImU32 cyan = IM_COL32(120, 255, 220, 235);
+        const ImU32 shadow = IM_COL32(0, 0, 0, 190);
+        dl->AddCircleFilled({cx, cy}, 1.8f * s, shadow);
+        dl->AddCircleFilled({cx, cy}, 1.2f * s, cyan);
+        const float gap = 7.f * s, len = 9.f * s, th = 2.f * s;
+        auto tick = [&](float x0, float y0, float x1, float y1) {
+            dl->AddLine({x0, y0}, {x1, y1}, shadow, th + 2.f * s);
+            dl->AddLine({x0, y0}, {x1, y1}, cyan, th);
+        };
+        tick(cx - gap - len, cy, cx - gap, cy);
+        tick(cx + gap, cy, cx + gap + len, cy);
+        tick(cx, cy - gap - len, cx, cy - gap);
+        tick(cx, cy + gap, cx, cy + gap + len);
+
+        // Hit/kill feedback from the DamageQueue: the same diagonal ticks the
+        // CS branch uses. Without this an OW punch deals damage but the screen
+        // gives no confirmation.
+        if (hud.hit > 0.f) {
+            const float a = std::clamp(hud.hit, 0.f, 1.f);
+            const float hit_gap = (hud.hit_crit ? 8.f : 6.f) * s, hit_len = (hud.hit_crit ? 14.f : 10.f) * s;
+            const ImU32 col = hud.hit_crit ? IM_COL32(255, 170, 0, static_cast<int>(255 * a))
+                                           : IM_COL32(255, 255, 255, static_cast<int>(255 * a));
+            const float d = 0.70710678f;
+            for (int sx = -1; sx <= 1; sx += 2) {
+                for (int sy = -1; sy <= 1; sy += 2) {
+                    dl->AddLine({cx + sx * hit_gap * d, cy + sy * hit_gap * d},
+                                {cx + sx * (hit_gap + hit_len) * d, cy + sy * (hit_gap + hit_len) * d},
+                                col, 3.f * s);
+                }
+            }
+        }
+        if (hud.kill > 0.f) {
+            const float a = std::clamp(hud.kill, 0.f, 1.f);
+            const float kill_gap = 11.f * s, kill_len = 18.f * s;
+            const ImU32 col = IM_COL32(225, 40, 40, static_cast<int>(255 * a));
+            const float d = 0.70710678f;
+            dl->AddLine({cx - kill_gap * d, cy - kill_gap * d}, {cx + kill_len * d, cy + kill_len * d}, col, 3.f * s);
+            dl->AddLine({cx + kill_gap * d, cy - kill_gap * d}, {cx - kill_len * d, cy + kill_len * d}, col, 3.f * s);
+        }
+
+        const char* legend[4] = {"[LMB] Hand Cannon", "[RMB] Rocket Punch", "[Q] Seismic Slam", "[E] Rising Uppercut"};
+        const float fs = 15.f * s;
+        for (int i = 0; i < 4; ++i) {
+            const float px = 24.f * s;
+            const float py = h - (110.f - i * 24.f) * s;
+            dl->AddText(ImGui::GetFont(), fs, {px + s, py + s}, IM_COL32(0, 0, 0, 200), legend[i]);
+            dl->AddText(ImGui::GetFont(), fs, {px, py}, cyan, legend[i]);
+        }
+        return;
+    }
 #if ENABLE_CS2_VIEWMODEL
     if (hud.cs_mode) {
         ImDrawList* dl = ImGui::GetBackgroundDrawList();

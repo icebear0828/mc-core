@@ -1,5 +1,7 @@
 #include "eldenring_world_runtime.hpp"
 
+#include "eldenring_sneak.hpp"
+
 #include <cstdarg>
 #include <cmath>
 #include <cstring>
@@ -113,6 +115,25 @@ void VoxelWorldRuntime::stepShadowGround(RuntimeContext& ctx) {
     }
 }
 
+void VoxelWorldRuntime::stepSneakEyeHeight(float dt, RuntimeContext& ctx) {
+    if (!ctx.mode().mc_mode.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    // Sample the sneak key here instead of relying on stepPlayerBlockCollision(), which early-returns when the
+    // player/physics cannot be read. This keeps the signal fresh on every camera step, blocks or no blocks.
+    const bool fg = callbacks_.is_game_in_foreground ? callbacks_.is_game_in_foreground() : true;
+    const bool sneak_key_down = isKeyDown(ctx.mode().sneak_vk.load(std::memory_order_relaxed)) ||
+                                isKeyDown('X');
+    const bool sneaking = fg && sneak_key_down;
+    ctx.mode().sneak_active.store(sneaking, std::memory_order_relaxed);
+
+    const bool first_person = ctx.mode().first_person.load(std::memory_order_relaxed);
+    const float current = ctx.mode().eye_height.load(std::memory_order_relaxed);
+    ctx.mode().eye_height.store(sneak::stepSneakEyeHeight(current, sneaking, first_person, dt),
+                                std::memory_order_relaxed);
+}
+
 void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
     if (!ctx.mode().mc_mode.load(std::memory_order_relaxed)) {
         have_prev_player_ = false;
@@ -209,13 +230,8 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
                                 isKeyDown('X');
     const bool sneaking = fg && sneak_key_down;
     ctx.mode().sneak_active.store(sneaking, std::memory_order_relaxed);
-
-    if (ctx.mode().first_person.load(std::memory_order_relaxed)) {
-        const float target_eye = sneaking ? 1.27f : 1.65f;
-        float cur_eye = ctx.mode().eye_height.load(std::memory_order_relaxed);
-        cur_eye += (target_eye - cur_eye) * 0.25f;
-        ctx.mode().eye_height.store(cur_eye, std::memory_order_relaxed);
-    }
+    // The first-person eye-height interpolation is not driven here: it lives in stepSneakEyeHeight(), which runs
+    // from the general per-frame camera update so it does not depend on this function (or on placed blocks).
 
     bool pinned = false;
     const bool key_w = fg && isKeyDown('W');
