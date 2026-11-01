@@ -1,4 +1,5 @@
 #include "eldenring_locomotion.hpp"
+#include "eldenring_ow_dash.hpp"
 
 #include <cstdarg>
 #include <cmath>
@@ -567,6 +568,68 @@ void PlayerLocomotion::stepFlight(float dt, uint64_t now_ms, RuntimeContext& ctx
 
     std::memcpy(fly_last_written_, fly_own_, sizeof(fly_last_written_));
     fly_have_written_ = true;
+}
+
+void PlayerLocomotion::stepOwRocketPunch(float dt, RuntimeContext& ctx) {
+    const bool fg = callbacks_.is_game_in_foreground ? callbacks_.is_game_in_foreground() : true;
+    const bool dead = callbacks_.is_player_dead ? callbacks_.is_player_dead() : false;
+    if (!ctx.mode().ow_mode.load(std::memory_order_relaxed) ||
+        ctx.mode().ow_state.load(std::memory_order_relaxed) != 3 ||
+        ctx.ui().inv_open.load(std::memory_order_relaxed) || !fg || dead) {
+        return;
+    }
+
+    eldenring::ow::RocketPunchDashConfig cfg;
+    cfg.distance_m = ctx.mode().ow_dash_distance.load(std::memory_order_relaxed);
+    const float speed = eldenring::ow::rocketPunchSpeed(ctx.mode().ow_anim_time.load(std::memory_order_relaxed), cfg);
+    if (speed <= 0.f) return;
+
+    CameraPose cam{};
+    float dx = 0.f, dz = 0.f;
+    if (!callbacks_.read_camera || !callbacks_.read_camera(cam) ||
+        !eldenring::ow::rocketPunchDirection(cam.forward, dx, dz)) {
+        return;
+    }
+
+    const uintptr_t player = callbacks_.get_player_chr ? callbacks_.get_player_chr() : 0;
+    const uintptr_t module = player != 0 && callbacks_.get_physics_module ? callbacks_.get_physics_module(player) : 0;
+    if (module == 0 || !callbacks_.safe_read) return;
+
+    float feet[3] = {};
+    if (!callbacks_.safe_read(module + layout::kPhysicsPosition, feet, sizeof(feet))) return;
+
+    const float clamped_dt = std::clamp(dt, 0.001f, 0.05f);
+    float step = speed * clamped_dt;
+    if (step <= 0.f) return;
+
+    // Native collision: cast at waist and chest height and keep the shortest
+    // allowed step. The 0.4 m margin is the character capsule radius.
+    if (callbacks_.cast_ray) {
+        const float heights[2] = {0.4f, 1.0f};
+        for (const float h : heights) {
+            const float from[3] = {feet[0], feet[1] + h, feet[2]};
+            const float disp[3] = {dx * step, 0.f, dz * step};
+            const RayResult hit = callbacks_.cast_ray(from, disp);
+            if (hit.ok && hit.hit) {
+                step = std::min(step, std::max(0.f, hit.fraction * step - 0.4f));
+            }
+        }
+    }
+    if (step <= 1e-4f) return;
+
+    feet[0] += dx * step;
+    feet[2] += dz * step;
+    if (callbacks_.safe_write) {
+        callbacks_.safe_write(module + layout::kPhysicsPosition, feet, sizeof(feet));
+        callbacks_.safe_write(module + layout::kPhysicsPosition + 0x10, feet, sizeof(feet));
+        const uint8_t one = 1;
+        callbacks_.safe_write(module + layout::kPhysicsProxySyncRequest, &one, sizeof(one));
+
+        // Face the punch while dashing.
+        const auto out_q = eldenring::motion::characterQuatFromHeading(std::atan2(dx, dz));
+        const float q_raw[4] = {out_q.x, out_q.y, out_q.z, out_q.w};
+        callbacks_.safe_write(module + layout::kPhysicsOrientation, q_raw, sizeof(q_raw));
+    }
 }
 
 } // namespace eldenring::movement

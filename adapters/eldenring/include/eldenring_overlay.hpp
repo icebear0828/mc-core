@@ -150,6 +150,8 @@ void SetTerrainCrackMesh(const mc::rig::RigMesh& mesh);
 void RequestScreenshot(const char* utf8_path);
 // Duration (seconds) of a clip in the active CS viewmodel, or 0 when unavailable.
 float CsClipDuration(const char* name);
+// Duration (seconds) of an authored Overwatch clip, or 0 when unavailable.
+float OwClipDuration(const char* name);
 // Debug: bind the next captured 1920x1080 R32G8X24 depth resource (the game creates several).
 void CycleDepthCandidate();
 

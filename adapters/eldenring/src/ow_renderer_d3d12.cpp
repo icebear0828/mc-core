@@ -172,7 +172,7 @@ float4 PSMain(VSOut i) : SV_Target {
     float sky_occlusion = lerp(0.78, 1.0, saturate(N.y * 0.5 + 0.5));
     color *= sky_occlusion;
     color = AcesFilm(color * 1.15);
-    return float4(color, 1.0);
+    return float4(color, tint.a);
 }
 )hlsl";
 
@@ -225,6 +225,34 @@ ID3D12Resource* UploadBuffer(ID3D12Device* device, const void* data, size_t size
     return res;
 }
 
+// Persistent upload buffer for the bone palette: mapped once at init and
+// rewritten every frame, so the draw path never allocates.
+ID3D12Resource* MappedUploadBuffer(ID3D12Device* device, size_t size, void** mapped_out) {
+    if (!device || size == 0 || mapped_out == nullptr) return nullptr;
+    D3D12_HEAP_PROPERTIES hp{};
+    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC rd{};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rd.Width = size;
+    rd.Height = 1;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1;
+    rd.SampleDesc.Count = 1;
+    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    ID3D12Resource* res = nullptr;
+    if (FAILED(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                               IID_PPV_ARGS(&res)))) {
+        return nullptr;
+    }
+    D3D12_RANGE none{0, 0};
+    if (FAILED(res->Map(0, &none, mapped_out))) {
+        res->Release();
+        return nullptr;
+    }
+    std::memset(*mapped_out, 0, size);
+    return res;
+}
+
 bool ReadFileBytes(const std::string& path, std::vector<uint8_t>& out) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
@@ -235,6 +263,56 @@ bool ReadFileBytes(const std::string& path, std::vector<uint8_t>& out) {
     out.resize(static_cast<size_t>(size));
     f.read(reinterpret_cast<char*>(out.data()), size);
     return static_cast<bool>(f);
+}
+
+// CPU skinning: blend up to four palette matrices per vertex and write the
+// 40-byte CSVM vertex the unchanged v1 shader consumes. The palette already
+// maps bind space into viewmodel space, so the shader's `world` still applies
+// the viewmodel bob/scale exactly as it did for the rigid asset.
+void SkinVertices(const eldenring::ow::OwModel& model, const std::vector<fp::M4>& palette,
+                  eldenring::ow::OwVertex* out) {
+    for (size_t i = 0; i < model.vertices.size(); ++i) {
+        const eldenring::ow::OwVertex& v = model.vertices[i];
+        float p[3] = {0.f, 0.f, 0.f};
+        float n[3] = {0.f, 0.f, 0.f};
+        uint32_t weight_sum = 0;
+        for (int j = 0; j < 4; ++j) {
+            const uint32_t weight = v.weights[j];
+            if (weight == 0) continue;
+            const uint32_t bone = v.joints[j];
+            if (bone >= palette.size()) continue;
+            const fp::M4& m = palette[bone];
+            const float w = static_cast<float>(weight) / 255.0f;
+            p[0] += w * (m.m[0] * v.pos[0] + m.m[1] * v.pos[1] + m.m[2] * v.pos[2] + m.m[3]);
+            p[1] += w * (m.m[4] * v.pos[0] + m.m[5] * v.pos[1] + m.m[6] * v.pos[2] + m.m[7]);
+            p[2] += w * (m.m[8] * v.pos[0] + m.m[9] * v.pos[1] + m.m[10] * v.pos[2] + m.m[11]);
+            n[0] += w * (m.m[0] * v.normal[0] + m.m[1] * v.normal[1] + m.m[2] * v.normal[2]);
+            n[1] += w * (m.m[4] * v.normal[0] + m.m[5] * v.normal[1] + m.m[6] * v.normal[2]);
+            n[2] += w * (m.m[8] * v.normal[0] + m.m[9] * v.normal[1] + m.m[10] * v.normal[2]);
+            weight_sum += weight;
+        }
+        eldenring::ow::OwVertex& dst = out[i];
+        if (weight_sum == 0) {
+            for (int k = 0; k < 3; ++k) {
+                p[k] = v.pos[k];
+                n[k] = v.normal[k];
+            }
+        }
+        const float len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        if (len > 1e-6f && std::isfinite(len)) {
+            n[0] /= len; n[1] /= len; n[2] /= len;
+        } else {
+            n[0] = 0.f; n[1] = 0.f; n[2] = 1.f;
+        }
+        for (int k = 0; k < 3; ++k) {
+            dst.pos[k] = p[k];
+            dst.normal[k] = n[k];
+        }
+        dst.uv[0] = v.uv[0];
+        dst.uv[1] = v.uv[1];
+        std::memset(dst.joints, 0, sizeof(dst.joints));
+        std::memset(dst.weights, 0, sizeof(dst.weights));
+    }
 }
 
 } // namespace
@@ -406,6 +484,15 @@ bool OwRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     pd.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
     pd.InputLayout = {layout, 3};
     pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    // Alpha blend so the ultimate can fade the gauntlet out for the leap and
+    // back in at the landing. Opaque frames (tint.a = 1) are unaffected.
+    pd.BlendState.RenderTarget[0].BlendEnable = TRUE;
+    pd.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    pd.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    pd.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    pd.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    pd.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+    pd.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
     pd.SampleMask = UINT_MAX;
     pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     // The UE gauntlet mesh is not guaranteed to use the same winding as the
@@ -477,6 +564,13 @@ void OwRenderer::release() {
     Rel(root_);
     Rel(vb_);
     Rel(ib_);
+    if (skinned_vb_) {
+        skinned_vb_->Unmap(0, nullptr);
+        Rel(skinned_vb_);
+    }
+    skinned_vb_mapped_ = nullptr;
+    skinned_slot_stride_ = 0;
+    skinned_slot_ = 0;
     Rel(depth_tex_);
     Rel(dsv_heap_);
     dsv_cpu_ = {};
@@ -485,6 +579,7 @@ void OwRenderer::release() {
     albedo_tex_.release();
     normal_tex_.release();
     pbr_tex_.release();
+    animator_.setModel(nullptr);
     model_ = eldenring::ow::OwModel{};
     model_loaded_ = false;
 }
@@ -503,25 +598,63 @@ bool OwRenderer::loadModel(ID3D12Device* device, const std::string& path) {
 
     Rel(vb_);
     Rel(ib_);
-    const size_t vb_size = parsed.vertices.size() * sizeof(eldenring::ow::OwVertex);
+    if (skinned_vb_) {
+        skinned_vb_->Unmap(0, nullptr);
+        Rel(skinned_vb_);
+    }
+    skinned_vb_mapped_ = nullptr;
+    skinned_slot_stride_ = 0;
+    skinned_slot_ = 0;
+
     const size_t ib_size = parsed.indices.size() * sizeof(uint32_t);
-    vb_ = UploadBuffer(device, parsed.vertices.data(), vb_size);
     ib_ = UploadBuffer(device, parsed.indices.data(), ib_size);
-    if (!vb_ || !ib_) {
-        Rel(vb_);
-        Rel(ib_);
-        if (log_) log_("ow_render: vertex/index upload failed");
+    if (!ib_) {
+        if (log_) log_("ow_render: index upload failed");
         return false;
     }
-    vbv_ = {vb_->GetGPUVirtualAddress(), static_cast<UINT>(vb_size), static_cast<UINT>(sizeof(eldenring::ow::OwVertex))};
+
+    const UINT vertex_stride = static_cast<UINT>(sizeof(eldenring::ow::OwVertex));
+    const size_t per_slot = parsed.vertices.size() * vertex_stride;
+    if (parsed.skinned()) {
+        // CPU skinning writes this ring every frame; keep slots 256-byte
+        // aligned so each one is a valid vertex-buffer base address.
+        const UINT slot_stride = static_cast<UINT>((per_slot + 255u) & ~static_cast<size_t>(255u));
+        skinned_vb_ = MappedUploadBuffer(device, static_cast<size_t>(slot_stride) * kSkinnedSlots,
+                                         &skinned_vb_mapped_);
+        if (!skinned_vb_) {
+            Rel(ib_);
+            if (log_) log_("ow_render: skinned vertex buffer creation failed");
+            return false;
+        }
+        skinned_slot_stride_ = slot_stride;
+        vbv_ = {skinned_vb_->GetGPUVirtualAddress(), static_cast<UINT>(per_slot), vertex_stride};
+    } else {
+        vb_ = UploadBuffer(device, parsed.vertices.data(), per_slot);
+        if (!vb_) {
+            Rel(ib_);
+            if (log_) log_("ow_render: vertex upload failed");
+            return false;
+        }
+        vbv_ = {vb_->GetGPUVirtualAddress(), static_cast<UINT>(per_slot), vertex_stride};
+    }
     ibv_ = {ib_->GetGPUVirtualAddress(), static_cast<UINT>(ib_size), DXGI_FORMAT_R32_UINT};
-    model_ = std::move(parsed);
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        model_ = std::move(parsed);
+    }
+    animator_.setModel(&model_);
     model_loaded_ = true;
     if (log_) {
-        log_("ow_render: gauntlet loaded from %s (%zu verts, %zu indices, %zu submeshes)", path.c_str(),
-             model_.vertices.size(), model_.indices.size(), model_.submeshes.size());
+        log_("ow_render: gauntlet loaded from %s (%zu verts, %zu indices, %zu submeshes, %zu bones, %zu clips)",
+             path.c_str(), model_.vertices.size(), model_.indices.size(), model_.submeshes.size(),
+             model_.bones.size(), model_.clips.size());
     }
     return true;
+}
+
+float OwRenderer::clipDuration(const char* name) const {
+    std::lock_guard<std::mutex> lock(model_mutex_);
+    return model_.clipDuration(name);
 }
 
 bool OwRenderer::loadTextures(ID3D12Device* device, const std::string& albedo_png, const std::string& normal_png,
@@ -576,6 +709,9 @@ void OwRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
                       const mc::rig::Mat4& projection, D3D12_CPU_DESCRIPTOR_HANDLE rtv,
                       D3D12_CPU_DESCRIPTOR_HANDLE dsv) {
     if (!ready() || !list) return;
+    // Fully faded out (ultimate leap): skip the draw entirely so the invisible
+    // gauntlet does not write depth into the overlay pass.
+    if (animator_.fade() <= 0.01f) return;
 
     const bool dedicated_depth = ensureDepth(device_, width, height);
     if (dedicated_depth) dsv = dsv_cpu_;
@@ -609,14 +745,46 @@ void OwRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
 
     list->SetGraphicsRoot32BitConstants(0, 16, projection.m.data(), 0);
 
+    const std::vector<fp::M4>& palette = animator_.palette();
+    const std::vector<fp::M4>* active_palette = &palette;
+    if (animator_.currentState() == 2 && cfg_.shoot_motion < 0.999f) {
+        // The authored hand cannon clip throws the gauntlet 0.35 m towards the
+        // camera and 0.34 m up. Blend each bone back towards the idle pose so
+        // the recoil reads as a kick instead of the whole arm floating.
+        const auto idle_it = model_.clips.find("idle");
+        if (idle_it != model_.clips.end()) {
+            effective_palette_ = palette;
+            const auto& idle_tracks = idle_it->second.tracks;
+            for (size_t b = 0; b < effective_palette_.size(); ++b) {
+                if (b < idle_tracks.size() && !idle_tracks[b].empty()) {
+                    effective_palette_[b] =
+                        eldenring::ow::owLerpMatrix(idle_tracks[b][0], effective_palette_[b], cfg_.shoot_motion);
+                }
+            }
+            active_palette = &effective_palette_;
+        }
+    }
+    const bool skinned = model_.skinned() && skinned_vb_mapped_ != nullptr && !active_palette->empty();
+    if (skinned) {
+        const uint32_t slot = skinned_slot_;
+        skinned_slot_ = (skinned_slot_ + 1u) % kSkinnedSlots;
+        auto* dst = reinterpret_cast<eldenring::ow::OwVertex*>(
+            static_cast<uint8_t*>(skinned_vb_mapped_) + static_cast<size_t>(slot) * skinned_slot_stride_);
+        SkinVertices(model_, *active_palette, dst);
+        vbv_ = {skinned_vb_->GetGPUVirtualAddress() + static_cast<UINT64>(slot) * skinned_slot_stride_,
+                static_cast<UINT>(model_.vertices.size() * sizeof(eldenring::ow::OwVertex)),
+                static_cast<UINT>(sizeof(eldenring::ow::OwVertex))};
+    }
+
     fp::M4 world = animator_.pose().base;
-    if (cfg_.scale != 1.0f) world = fp::mul(world, fp::scale(cfg_.scale));
+    const float scale = cfg_.scale * animator_.scalePulse();
+    if (scale != 1.0f) world = fp::mul(world, fp::scale(scale));
     const mc::rig::Mat4 host_world = fp::toHost(world);
     list->SetGraphicsRoot32BitConstants(0, 16, host_world.m.data(), 16);
 
     const float light[4] = {0.35f, 0.85f, -0.40f, 0.0f};
     list->SetGraphicsRoot32BitConstants(0, 4, light, 32);
-    const float tint[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    const float tint[4] = {1.0f, 1.0f, 1.0f, animator_.fade()};
     list->SetGraphicsRoot32BitConstants(0, 4, tint, 36);
 
     for (const eldenring::ow::OwSubmesh& sub : model_.submeshes) {

@@ -577,9 +577,12 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
         CreateCsDecalTexture(srv_inc);
 #endif
 #if ENABLE_CS2_VIEWMODEL
-        // The CS2 build is CS-only at runtime: never start in MC mode, even if
-        // a config file or a missing CS asset would otherwise fall back to it.
+        // A build without MC gameplay must never start in MC mode, even if a
+        // config file or a missing CS asset would otherwise fall back to it.
+        // A combined build keeps the configured startup mode (mc_er_mode.txt).
+#if !ENABLE_MC_MODE
         eldenring::RuntimeContext::Instance().mode().mc_mode.store(false);
+#endif
         if (!g_cs.init(g_s.device, g_s.format, g_log)) {
             Logf("overlay: CS viewmodel renderer unavailable");
         } else {
@@ -618,12 +621,13 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                     snprintf(cs_msg, sizeof(cs_msg), "overlay: CS viewmodel model loaded successfully from %s", p.c_str());
                     Logf(cs_msg);
                     g_cs_knife_model_path = p;
-                    // The CS2 build starts in CS mode, but an OW config or a
-                    // runtime OW toggle must win: never force CS over OW.
+                    // Auto-start CS only when no other mode is active. A
+                    // combined build keeps whatever mc_er_mode.txt selected
+                    // (mc by default), so deploying OW or MC never silently
+                    // switches the player into CS.
                     auto& cs_mode_ref = eldenring::RuntimeContext::Instance().mode();
-                    if (!cs_mode_ref.ow_mode.load()) {
+                    if (!cs_mode_ref.ow_mode.load() && !cs_mode_ref.mc_mode.load()) {
                         cs_mode_ref.cs_mode.store(true);
-                        cs_mode_ref.mc_mode.store(false);
                         cs_mode_ref.first_person.store(true);
                     }
                     break;
@@ -1544,7 +1548,33 @@ void DrawHud(const HudState& hud, float w, float h) {
         tick(cx, cy - gap - len, cx, cy - gap);
         tick(cx, cy + gap, cx, cy + gap + len);
 
-        const char* legend[4] = {"[LMB] Hand Cannon", "[RMB] Rocket Punch", "[Shift] Seismic Slam", "[E] Rising Uppercut"};
+        // Hit/kill feedback from the DamageQueue: the same diagonal ticks the
+        // CS branch uses. Without this an OW punch deals damage but the screen
+        // gives no confirmation.
+        if (hud.hit > 0.f) {
+            const float a = std::clamp(hud.hit, 0.f, 1.f);
+            const float hit_gap = (hud.hit_crit ? 8.f : 6.f) * s, hit_len = (hud.hit_crit ? 14.f : 10.f) * s;
+            const ImU32 col = hud.hit_crit ? IM_COL32(255, 170, 0, static_cast<int>(255 * a))
+                                           : IM_COL32(255, 255, 255, static_cast<int>(255 * a));
+            const float d = 0.70710678f;
+            for (int sx = -1; sx <= 1; sx += 2) {
+                for (int sy = -1; sy <= 1; sy += 2) {
+                    dl->AddLine({cx + sx * hit_gap * d, cy + sy * hit_gap * d},
+                                {cx + sx * (hit_gap + hit_len) * d, cy + sy * (hit_gap + hit_len) * d},
+                                col, 3.f * s);
+                }
+            }
+        }
+        if (hud.kill > 0.f) {
+            const float a = std::clamp(hud.kill, 0.f, 1.f);
+            const float kill_gap = 11.f * s, kill_len = 18.f * s;
+            const ImU32 col = IM_COL32(225, 40, 40, static_cast<int>(255 * a));
+            const float d = 0.70710678f;
+            dl->AddLine({cx - kill_gap * d, cy - kill_gap * d}, {cx + kill_len * d, cy + kill_len * d}, col, 3.f * s);
+            dl->AddLine({cx + kill_gap * d, cy - kill_gap * d}, {cx - kill_len * d, cy + kill_len * d}, col, 3.f * s);
+        }
+
+        const char* legend[4] = {"[LMB] Hand Cannon", "[RMB] Rocket Punch", "[Q] Seismic Slam", "[E] Rising Uppercut"};
         const float fs = 15.f * s;
         for (int i = 0; i < 4; ++i) {
             const float px = 24.f * s;
@@ -2607,6 +2637,15 @@ void SetOwConfig(const OwConfig& cfg) {
     g_ow_cfg = cfg;
 #else
     (void)cfg;
+#endif
+}
+
+float OwClipDuration(const char* name) {
+#if ENABLE_OW_VIEWMODEL
+    return g_ow.clipDuration(name);
+#else
+    (void)name;
+    return 0.f;
 #endif
 }
 

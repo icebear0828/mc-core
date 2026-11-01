@@ -943,12 +943,8 @@ bool ClickAttack(float charged) {
 
 // Should the native character ignore the mouse buttons right now? Only while the MC HUD is on and the game shows no UI.
 bool WantSuppress() {
-#if ENABLE_CS2_VIEWMODEL
-    if (!g_mc_mode.load() && !eldenring::RuntimeContext::Instance().mode().cs_mode.load() &&
-        !eldenring::RuntimeContext::Instance().mode().ow_mode.load()) return false;
-#else
-    if (!g_mc_mode.load() && !eldenring::RuntimeContext::Instance().mode().ow_mode.load()) return false;
-#endif
+    const auto& mode = eldenring::RuntimeContext::Instance().mode();
+    if (!g_mc_mode.load() && !mode.cs_mode.load() && !mode.ow_mode.load()) return false;
     MenuState ms;
     LoadingState ls;
     if (!readMenuState(g_reader, readSingleton(g_reader, g_img.base, g_rva_menu, sigs::kCSMenuMan), ms) ||
@@ -1565,6 +1561,14 @@ void GroundSprintStep(float dt) {
     eldenring::movement::PlayerLocomotion::Instance().stepGroundSprint(dt, g_ctx);
 }
 
+void OwRocketPunchStep(float dt) {
+#if ENABLE_OW_VIEWMODEL
+    eldenring::movement::PlayerLocomotion::Instance().stepOwRocketPunch(dt, g_ctx);
+#else
+    (void)dt;
+#endif
+}
+
 void ProcessTntExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies) {
     eldenring::world::VoxelWorldRuntime::Instance().processTntExplosions(enemies, g_ctx);
 }
@@ -1576,7 +1580,11 @@ void EnemiesBlockCollisionStep(const float player_feet[3]) {
 #else
     const bool cs_on = false;
 #endif
-    if (!mc_on && !cs_on) return;
+    // OW strikes trace against the same cached enemy list. Without this the
+    // cache is only refreshed for MC/CS, and a punch in an OW-only build finds
+    // no targets at all.
+    const bool ow_on = eldenring::RuntimeContext::Instance().mode().ow_mode.load(std::memory_order_relaxed);
+    if (!mc_on && !cs_on && !ow_on) return;
 
     std::vector<EnemyInfo> enemies;
     if (!enumerateEnemies(g_reader, g_img.base, enemies, 512)) {
@@ -1584,7 +1592,7 @@ void EnemiesBlockCollisionStep(const float player_feet[3]) {
         return;
     }
 
-    // The CS hitscan reads this cache on the input thread.
+    // The CS hitscan and the OW strikes read this cache on the input thread.
     EntityManager::instance().updateCacheFromGameThread(enemies);
 
     if (!mc_on) return;
@@ -1981,6 +1989,21 @@ bool FireCsShot(float damage, float spread, float range, uint32_t tracer_frequen
 #endif
 }
 
+// Doomfist strike: 0 hand cannon, 1 rocket punch, 2 uppercut, 3 slam. Runs on
+// the input thread and enqueues the damage for the game-thread drain.
+bool FireOwStrike(int kind) {
+#if ENABLE_OW_VIEWMODEL
+    if (kind < 0 || kind > 3) return false;
+    return eldenring::combat::CombatService::Instance()
+        .fireOwStrike(static_cast<eldenring::ow::OwStrikeKind>(kind), g_queue, NowTick(),
+                      eldenring::RuntimeContext::Instance())
+        .fired;
+#else
+    (void)kind;
+    return false;
+#endif
+}
+
 void SetupBulletLog() {
     const bool proj_log = FileExists(g_game_dir + "mc_er_bulletlog.txt");
     const bool arrow_dmg = FileExists(g_game_dir + "mc_er_arrowdmg.txt");
@@ -2028,6 +2051,7 @@ void SetupGameHooksCallbacks() {
         BlocksCollisionStep();
         McJumpStep();
         GroundSprintStep(dt);
+        OwRocketPunchStep(dt);
         ShadowGroundStep();
         RestoreCamKeep();
         {
@@ -2477,10 +2501,13 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     steve.cam_valid = false;
     CameraPose cam;
     float feet[3], q[4];
-    if (g_steve_enabled.load() && !eldenring::RuntimeContext::Instance().mode().ow_mode.load(std::memory_order_relaxed) && readCamera(g_reader, g_img.base, world, cam) &&
+    const bool ow_view = eldenring::RuntimeContext::Instance().mode().ow_mode.load(std::memory_order_relaxed);
+    if (g_steve_enabled.load() && readCamera(g_reader, g_img.base, world, cam) &&
         detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(player), feet) &&
         detail::readPhysicsOrientation(g_reader, g_img.base, static_cast<uintptr_t>(player), q)) {
-        steve.draw = true;
+        // OW hides Steve, but the combat particles (hit sparks, damage
+        // numbers) still need a valid world camera to project into.
+        steve.draw = !ow_view;
         steve.cam_valid = true;
         steve.cam.right = {cam.right[0], cam.right[1], cam.right[2]};
         steve.cam.up = {cam.up[0], cam.up[1], cam.up[2]};
@@ -2507,7 +2534,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     }
     {
         static bool was_dead = false;
-        if (steve.dead && !was_dead) eraudio::Play("entity.player.death");
+        if (steve.dead && !was_dead && g_mc_mode.load(std::memory_order_relaxed)) eraudio::Play("entity.player.death");
         was_dead = steve.dead;
     }
     if (steve.sleeping) {
@@ -2580,10 +2607,10 @@ void SetupOverlay() {
                 else if (key == "mc_jump") g_mc_jump.store(value != 0.f);
                 else if (key == "mc_jump_key") g_mc_jump_vk.store(static_cast<int>(value));
                 else if (key == "mc_mode") {
-#if ENABLE_CS2_VIEWMODEL
-                    g_mc_mode.store(false); // CS2 build: MC mode is not available
-#else
+#if ENABLE_MC_MODE
                     g_mc_mode.store(value != 0.f);
+#else
+                    g_mc_mode.store(false); // built without MC gameplay
 #endif
                 }
                 else if (key == "ow_mode") {
@@ -2747,6 +2774,14 @@ void SetupOverlay() {
                     ow_cfg.offset_y = value;
                 } else if (key == "ow_offset_z") {
                     ow_cfg.offset_z = value;
+                } else if (key == "ow_dash_distance") {
+                    eldenring::RuntimeContext::Instance().mode().ow_dash_distance.store(std::clamp(value, 0.f, 15.f));
+                } else if (key == "ow_damage") {
+                    eldenring::RuntimeContext::Instance().mode().ow_damage_enabled.store(value != 0.f);
+                } else if (key == "ow_damage_scale") {
+                    eldenring::RuntimeContext::Instance().mode().ow_damage_scale.store(std::clamp(value, 0.f, 10.f));
+                } else if (key == "ow_shoot_motion") {
+                    ow_cfg.shoot_motion = std::clamp(value, 0.f, 1.f);
                 }
             }
             Log("ow config: %s", (g_game_dir + "mc_er_ow.txt").c_str());
@@ -2754,6 +2789,41 @@ void SetupOverlay() {
         erov::SetOwConfig(ow_cfg);
     }
 #endif
+    // Startup mode: tools/deploy_modes.py writes mc_er_mode.txt with
+    // `start_mode=mc|cs|ow`. It selects the active mode on launch; hotkeys still
+    // switch between every mode this build contains. A deployment that installs
+    // only one mode writes that mode, so an OW-only install never starts in CS
+    // or MC.
+    {
+        std::vector<uint8_t> mode_bytes;
+        if (FileExists(g_game_dir + "mc_er_mode.txt") && ReadFileAll(g_game_dir + "mc_er_mode.txt", mode_bytes)) {
+            const std::string text(mode_bytes.begin(), mode_bytes.end());
+            std::string start = "mc";
+            const size_t key_pos = text.find("start_mode");
+            if (key_pos != std::string::npos) {
+                const size_t eq = text.find('=', key_pos);
+                if (eq != std::string::npos) {
+                    size_t begin = eq + 1;
+                    size_t end = text.find_first_of("\r\n", begin);
+                    if (end == std::string::npos) end = text.size();
+                    while (begin < end && (text[begin] == ' ' || text[begin] == '\t')) ++begin;
+                    while (end > begin && (text[end - 1] == ' ' || text[end - 1] == '\t')) --end;
+                    start = text.substr(begin, end - begin);
+                }
+            }
+            auto& m = eldenring::RuntimeContext::Instance().mode();
+            const bool want_mc = start == "mc";
+            const bool want_cs = start == "cs";
+            const bool want_ow = start == "ow";
+            m.mc_mode.store(want_mc && ENABLE_MC_MODE != 0);
+            m.cs_mode.store(want_cs && ENABLE_CS2_VIEWMODEL != 0);
+            m.ow_mode.store(want_ow && ENABLE_OW_VIEWMODEL != 0);
+            g_mc_mode.store(want_mc && ENABLE_MC_MODE != 0);
+            if (want_cs || want_ow) m.first_person.store(true);
+            Log("start mode: %s (mc=%d cs=%d ow=%d)", start.c_str(), m.mc_mode.load() ? 1 : 0,
+                m.cs_mode.load() ? 1 : 0, m.ow_mode.load() ? 1 : 0);
+        }
+    }
     erov::Install(&HudProvider, [](const char* fmt, ...) {
         char msg[512];
         va_list args;
@@ -2960,6 +3030,7 @@ void SetupInput() {
         cb.play_sound = [](const char* s, float v) { eraudio::Play(s, v); };
         cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
         cb.clip_duration = [](const char* n) { return erov::CsClipDuration(n); };
+        cb.ow_clip_duration = [](const char* n) { return erov::OwClipDuration(n); };
         cb.take_left_click = erin::TakeLeftClick;
         cb.take_right_click = erin::TakeRightClick;
         cb.left_held = erin::LeftHeld;
@@ -2980,6 +3051,7 @@ void SetupInput() {
         cb.enqueue_nearest_hostile = EnqueueNearestHostile;
         cb.queue_bullet_fire = [](float dmg) { return QueueBulletFire(dmg); };
         cb.queue_cs_shot = [](float damage, float spread, float range, uint32_t tracer, uint8_t slot) { return FireCsShot(damage, spread, range, tracer, slot); };
+        cb.ow_strike = [](int kind) { return FireOwStrike(kind); };
         cb.queue_summon = [](const char* src) { return QueueSummon(src); };
         cb.cycle_hidden_slot = [](int& cur) { CycleHiddenSlot(cur); };
         cb.reset_slot_probe = [](int& cur) { ResetSlotProbe(cur); };

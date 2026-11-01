@@ -111,6 +111,8 @@ endif()
 if(ENABLE_OW_VIEWMODEL)
     target_sources(mc_tests PRIVATE
         test_ow_viewmodel.cpp
+        test_ow_dash.cpp
+        test_eldenring_ow_combat.cpp
     )
 endif()
 

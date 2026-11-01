@@ -14,6 +14,8 @@
 #include "eldenring_shield.hpp"
 #include "eldenring_roll.hpp"
 #include "eldenring_flight.hpp"
+#include "eldenring_ow_dash.hpp"
+#include "ow_viewmodel.hpp"
 #include "cs_weapon_registry.hpp"
 #include <algorithm>
 #include <cmath>
@@ -176,6 +178,9 @@ void HotkeyDispatcher::resetKeyStates() {
     prev_f1_ = false;
     prev_gameplay_f_ = false;
     prev_reload_r_ = false;
+    prev_ow_e_ = false;
+    prev_ow_q_ = false;
+    ow_punch_released_ = false;
     cs_fire_cooldown_ = 0.f;
 }
 
@@ -372,11 +377,13 @@ void HotkeyDispatcher::tick(float dt) {
     const bool right_edge = !inv_open && input_enabled && cb_.take_right_click && cb_.take_right_click();
 #if ENABLE_OW_VIEWMODEL
     if (mode.ow_mode.load() && fg && !is_dead && right_edge) {
-        // RMB: Rocket Punch / Heavy Uppercut (state 3)
+        // RMB: Rocket Punch charge. The authored controller starts the charge
+        // on press and fires the straight punch on release, so the state stays
+        // in the windup until the button comes up (see the timer block).
         mode.ow_state.store(3);
         mode.ow_anim_time.store(0.f);
         mode.ow_action_variant.store(static_cast<uint8_t>((mode.ow_action_variant.load() + 1u) & 1u));
-        if (cb_.play_sound) cb_.play_sound("ow.punch.release", 1.0f);
+        ow_punch_released_ = false;
     } else
 #endif
 #if ENABLE_CS2_VIEWMODEL
@@ -524,11 +531,38 @@ void HotkeyDispatcher::tick(float dt) {
 #if ENABLE_OW_VIEWMODEL
     if (mode.ow_mode.load()) {
         const uint8_t state = mode.ow_state.load();
-        const float t = mode.ow_anim_time.load() + dt;
+        const float prev_t = mode.ow_anim_time.load();
+        const float t = prev_t + dt;
+        const bool holding = cb_.right_held ? cb_.right_held() : true;
         float max_t = 0.f;
-        if (state == 2) max_t = 0.40f;      // Primary punch / cannon
-        else if (state == 3) max_t = 0.80f; // Heavy rocket punch
-        if (state != 0 && max_t > 0.f && t >= max_t) {
+        if (state != 0) {
+            const char* clip = eldenring::ow::owClipNameForState(state);
+            if (cb_.ow_clip_duration && clip != nullptr) max_t = cb_.ow_clip_duration(clip);
+            if (max_t <= 0.f) max_t = eldenring::ow::owClipDurationFallback(state);
+        }
+
+        if (state == 3) {
+            // Authored controller flow: hold RMB to coil the punch, release to
+            // fire. The windup holds at the release frame while the button is
+            // down; letting go jumps to that frame and plays the strike.
+            const float release_time = eldenring::ow::kRocketPunchReleaseTime;
+            if (!ow_punch_released_) {
+                if (holding) {
+                    mode.ow_anim_time.store(std::min(t, release_time));
+                } else {
+                    mode.ow_anim_time.store(release_time);
+                    ow_punch_released_ = true;
+                    if (cb_.play_sound) cb_.play_sound("ow.punch.release", 1.0f);
+                    if (cb_.ow_strike) cb_.ow_strike(1);
+                }
+            } else if (max_t > 0.f && t >= max_t) {
+                mode.ow_state.store(0);
+                mode.ow_anim_time.store(0.f);
+                ow_punch_released_ = false;
+            } else {
+                mode.ow_anim_time.store(t);
+            }
+        } else if (state != 0 && max_t > 0.f && t >= max_t) {
             mode.ow_state.store(0); // Return to Idle
             mode.ow_anim_time.store(0.f);
         } else {
@@ -648,15 +682,36 @@ void HotkeyDispatcher::tick(float dt) {
     const bool left_held = !inv_open && input_enabled && ((cb_.left_held && cb_.left_held()) || queryKey(VK_LBUTTON)) && alive;
     const bool want_suppress_click = (click_edge || left_held) ? want_suppress : false;
 
-    // OW mode attack triggers: gauntlet punch / hand cannon
+    // OW mode attack triggers: hand cannon, rocket punch (right click, above),
+    // rising uppercut (E) and seismic slam (Q).
 #if ENABLE_OW_VIEWMODEL
     if (mode.ow_mode.load() && fg && alive) {
         if (click_edge) {
-            mode.ow_state.store(2); // Primary punch / cannon
+            mode.ow_state.store(2); // Hand cannon
             mode.ow_action_variant.store(static_cast<uint8_t>((mode.ow_action_variant.load() + 1u) & 1u));
             mode.ow_anim_time.store(0.f);
             if (cb_.play_sound) cb_.play_sound("ow.cannon.fire", 1.0f);
+            if (cb_.ow_strike) cb_.ow_strike(0);
         }
+
+        const bool gameplay_key = !inv_open && input_enabled;
+        const bool e_down = gameplay_key && queryKey('E');
+        const bool q_down = gameplay_key && queryKey('Q');
+        if (e_down && !prev_ow_e_) {
+            mode.ow_state.store(4); // Rising uppercut
+            mode.ow_anim_time.store(0.f);
+            if (cb_.ow_strike) cb_.ow_strike(2);
+        }
+        if (q_down && !prev_ow_q_) {
+            mode.ow_state.store(5); // Seismic slam
+            mode.ow_anim_time.store(0.f);
+            if (cb_.ow_strike) cb_.ow_strike(3);
+        }
+        prev_ow_e_ = e_down;
+        prev_ow_q_ = q_down;
+    } else {
+        prev_ow_e_ = false;
+        prev_ow_q_ = false;
     }
 #endif
 
@@ -763,6 +818,10 @@ void HotkeyDispatcher::tick(float dt) {
             mode.cs_action_variant.store(0);
             mode.cs_action_hit.store(true);
             mode.cs_knife_anim_time.store(0.f);
+#if ENABLE_MC_MODE
+            // Combined build: leaving CS returns to the MC mode it replaced.
+            mode.mc_mode.store(true);
+#endif
             if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: OFF");
         }
     }
@@ -788,31 +847,31 @@ void HotkeyDispatcher::tick(float dt) {
 
     const bool d6 = fg && queryKey(VK_F6);
     if (d6 && !prev6_) {
-        const bool ow_was_on = mode.ow_mode.load();
-        if (ow_was_on) {
+        if (mode.ow_mode.load()) {
+            // F6 leaves OW without silently turning another mode on.
             mode.ow_mode.store(false);
+            mode.ow_state.store(0);
+            mode.ow_anim_time.store(0.f);
             if (cb_.log) cb_.log("[MODE] Overwatch Mode: OFF (via F6)");
-        }
-        if (!ow_was_on) {
+        } else if (mode.cs_mode.load()) {
 #if ENABLE_CS2_VIEWMODEL
-            // The CS2 build is CS-only at runtime: F6 can leave CS mode but never
-            // enables MC mode.
-            if (mode.cs_mode.load()) {
-                mode.cs_mode.store(false);
-                mode.cs_knife_state.store(0);
-                mode.cs_knife_inspect.store(false);
-                mode.cs_action_variant.store(0);
-                mode.cs_action_hit.store(true);
-                mode.cs_knife_anim_time.store(0.f);
-                if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: OFF (via F6)");
-            }
-#else
-            {
-                const bool new_mc = !mode.mc_mode.load();
-                mode.mc_mode.store(new_mc);
-                if (cb_.log) cb_.log(std::string("F6: MC mode ") + (new_mc ? "on" : "off"));
-                if (cb_.reset_slot_probe) cb_.reset_slot_probe(slot_cursor_);
-            }
+            mode.cs_mode.store(false);
+            mode.cs_knife_state.store(0);
+            mode.cs_knife_inspect.store(false);
+            mode.cs_action_variant.store(0);
+            mode.cs_action_hit.store(true);
+            mode.cs_knife_anim_time.store(0.f);
+#if ENABLE_MC_MODE
+            mode.mc_mode.store(true);
+#endif
+            if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: OFF (via F6)");
+#endif
+        } else {
+#if ENABLE_MC_MODE
+            const bool new_mc = !mode.mc_mode.load();
+            mode.mc_mode.store(new_mc);
+            if (cb_.log) cb_.log(std::string("F6: MC mode ") + (new_mc ? "on" : "off"));
+            if (cb_.reset_slot_probe) cb_.reset_slot_probe(slot_cursor_);
 #endif
         }
     }

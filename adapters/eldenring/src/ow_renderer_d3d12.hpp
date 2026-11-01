@@ -8,7 +8,9 @@
 #include <d3d12.h>
 
 #include <cstdint>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include "mc/rig.hpp"
 #include "ow_viewmodel.hpp"
@@ -21,7 +23,7 @@ public:
 
     bool init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log);
     void release();
-    [[nodiscard]] bool ready() const { return pso_ != nullptr && vb_ != nullptr; }
+    [[nodiscard]] bool ready() const { return pso_ != nullptr && (vb_ != nullptr || skinned_vb_ != nullptr); }
 
     bool loadModel(ID3D12Device* device, const std::string& path);
     [[nodiscard]] bool modelLoaded() const { return model_loaded_; }
@@ -41,6 +43,11 @@ public:
         animator_.tick(dt, state, anim_time, variant);
     }
     [[nodiscard]] const eldenring::ow::OwAnimator& animator() const { return animator_; }
+
+    // Duration of an authored clip in seconds, or 0 when the asset has not
+    // loaded (the dispatcher then uses the baked fallback constants). Safe to
+    // call from the input thread while the render thread loads the asset.
+    [[nodiscard]] float clipDuration(const char* name) const;
 
     void draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
               D3D12_GPU_DESCRIPTOR_HANDLE tex_table, unsigned width, unsigned height,
@@ -67,6 +74,15 @@ private:
     D3D12_VERTEX_BUFFER_VIEW vbv_{};
     D3D12_INDEX_BUFFER_VIEW ibv_{};
 
+    // CPU skinning output: a small ring of upload vertex buffers written every
+    // frame (`3 * floats` per vertex), rotated so the GPU never reads a slot
+    // the CPU is rewriting. Three slots cover a frame or two of latency.
+    static constexpr uint32_t kSkinnedSlots = 4;
+    ID3D12Resource* skinned_vb_{nullptr};
+    void* skinned_vb_mapped_{nullptr};
+    UINT skinned_slot_stride_{0};
+    uint32_t skinned_slot_{0};
+
     ID3D12Device* device_{nullptr};
     ID3D12Resource* depth_tex_{nullptr};
     ID3D12DescriptorHeap* dsv_heap_{nullptr};
@@ -79,7 +95,9 @@ private:
     TextureGpu pbr_tex_;
 
     eldenring::ow::OwModel model_;
+    mutable std::mutex model_mutex_; // guards model_.clips against the input thread
     eldenring::ow::OwAnimator animator_;
+    std::vector<eldenring::fp::M4> effective_palette_; // shoot damping scratch
     eldenring::ow::OwViewmodelConfig cfg_{};
     bool model_loaded_{false};
     LogFn log_{nullptr};
