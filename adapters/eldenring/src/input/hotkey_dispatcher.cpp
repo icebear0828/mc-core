@@ -15,6 +15,7 @@
 #include "eldenring_roll.hpp"
 #include "eldenring_flight.hpp"
 #include "eldenring_ow_dash.hpp"
+#include "eldenring_ow_feel.hpp"
 #include "ow_viewmodel.hpp"
 #include "cs_weapon_registry.hpp"
 #include <algorithm>
@@ -71,6 +72,12 @@
 #endif
 #ifndef VK_F12
 #define VK_F12 0x7B
+#endif
+#ifndef VK_PRIOR
+#define VK_PRIOR 0x21
+#endif
+#ifndef VK_NEXT
+#define VK_NEXT 0x22
 #endif
 
 namespace {
@@ -182,6 +189,13 @@ void HotkeyDispatcher::resetKeyStates() {
     prev_ow_q_ = false;
     ow_punch_released_ = false;
     cs_fire_cooldown_ = 0.f;
+    ow_fire_cooldown_ = 0.f;
+    ow_punch_cooldown_left_ = 0.f;
+    ow_uppercut_cooldown_left_ = 0.f;
+    ow_slam_cooldown_left_ = 0.f;
+    ow_hitstop_left_ = 0.f;
+    ow_since_shot_ = 10.f;
+    for (bool& key : prev_owview_keys_) key = false;
 }
 
 bool HotkeyDispatcher::queryKey(int vk) const {
@@ -376,7 +390,7 @@ void HotkeyDispatcher::tick(float dt) {
     const bool input_enabled = mode.input_enabled.load(std::memory_order_relaxed);
     const bool right_edge = !inv_open && input_enabled && cb_.take_right_click && cb_.take_right_click();
 #if ENABLE_OW_VIEWMODEL
-    if (mode.ow_mode.load() && fg && !is_dead && right_edge) {
+    if (mode.ow_mode.load() && fg && !is_dead && right_edge && eldenring::ow::owReady(ow_punch_cooldown_left_)) {
         // RMB: Rocket Punch charge. The authored controller starts the charge
         // on press and fires the straight punch on release, so the state stays
         // in the windup until the button comes up (see the timer block).
@@ -384,6 +398,9 @@ void HotkeyDispatcher::tick(float dt) {
         mode.ow_anim_time.store(0.f);
         mode.ow_action_variant.store(static_cast<uint8_t>((mode.ow_action_variant.load() + 1u) & 1u));
         ow_punch_released_ = false;
+        ow_charge_looping_ = true;
+        if (cb_.play_sound_loop) cb_.play_sound_loop("ow.punch.charge", 1.0f);
+        else if (cb_.play_sound) cb_.play_sound("ow.punch.charge", 1.0f);
     } else
 #endif
 #if ENABLE_CS2_VIEWMODEL
@@ -546,9 +563,31 @@ void HotkeyDispatcher::tick(float dt) {
     // OW action timer advance
 #if ENABLE_OW_VIEWMODEL
     if (mode.ow_mode.load()) {
+        ow_fire_cooldown_ = std::max(0.f, ow_fire_cooldown_ - dt);
+        ow_punch_cooldown_left_ = std::max(0.f, ow_punch_cooldown_left_ - dt);
+        ow_uppercut_cooldown_left_ = std::max(0.f, ow_uppercut_cooldown_left_ - dt);
+        ow_slam_cooldown_left_ = std::max(0.f, ow_slam_cooldown_left_ - dt);
+        ow_since_shot_ += dt;
+        mode.ow_since_shot.store(ow_since_shot_);
+
         const uint8_t state = mode.ow_state.load();
         const float prev_t = mode.ow_anim_time.load();
-        const float t = prev_t + dt;
+        // Idle keeps its authored loop rate; attacks honour ow_anim_speed and
+        // freeze for ow_hitstop seconds when the strike connects.
+        float step = (state == 0) ? dt : dt * mode.ow_anim_speed.load();
+        if (ow_hitstop_left_ > 0.f) {
+            ow_hitstop_left_ = std::max(0.f, ow_hitstop_left_ - dt);
+            step = 0.f;
+        }
+        const float t = prev_t + step;
+        if ((state != 3 || is_dead || !fg) && ow_charge_looping_) {
+            ow_charge_looping_ = false;
+            if (cb_.stop_sound_loop) cb_.stop_sound_loop("ow.punch.charge");
+        }
+        if (state == 5 && !ow_slam_impact_played_ && t >= 1.45f) {
+            ow_slam_impact_played_ = true;
+            if (cb_.play_sound) cb_.play_sound("ow.slam.impact", 1.0f);
+        }
         const bool holding = cb_.right_held ? cb_.right_held() : true;
         float max_t = 0.f;
         if (state != 0) {
@@ -568,10 +607,18 @@ void HotkeyDispatcher::tick(float dt) {
                 } else {
                     mode.ow_anim_time.store(release_time);
                     ow_punch_released_ = true;
+                    ow_punch_cooldown_left_ = mode.ow_punch_cooldown.load();
+                    if (ow_charge_looping_) {
+                        ow_charge_looping_ = false;
+                        if (cb_.stop_sound_loop) cb_.stop_sound_loop("ow.punch.charge");
+                    }
                     if (cb_.play_sound) cb_.play_sound("ow.punch.release", 1.0f);
-                    if (cb_.ow_strike) cb_.ow_strike(1);
+                    if (cb_.ow_strike && cb_.ow_strike(1)) {
+                        ow_hitstop_left_ = mode.ow_hitstop.load();
+                        if (cb_.play_sound) cb_.play_sound("ow.punch.impact", 1.0f);
+                    }
                 }
-            } else if (max_t > 0.f && t >= max_t) {
+            } else if (t >= eldenring::ow::rocketPunchStateEnd(release_time, mode.ow_punch_tail.load(), max_t)) {
                 mode.ow_state.store(0);
                 mode.ow_anim_time.store(0.f);
                 ow_punch_released_ = false;
@@ -702,26 +749,42 @@ void HotkeyDispatcher::tick(float dt) {
     // rising uppercut (E) and seismic slam (Q).
 #if ENABLE_OW_VIEWMODEL
     if (mode.ow_mode.load() && fg && alive) {
-        if (click_edge) {
+        const float hitstop = mode.ow_hitstop.load();
+        if (click_edge && eldenring::ow::owReady(ow_fire_cooldown_)) {
             mode.ow_state.store(2); // Hand cannon
             mode.ow_action_variant.store(static_cast<uint8_t>((mode.ow_action_variant.load() + 1u) & 1u));
             mode.ow_anim_time.store(0.f);
+            ow_fire_cooldown_ = mode.ow_fire_interval.load();
+            ow_since_shot_ = 0.f;
             if (cb_.play_sound) cb_.play_sound("ow.cannon.fire", 1.0f);
-            if (cb_.ow_strike) cb_.ow_strike(0);
+            if (cb_.ow_strike && cb_.ow_strike(0)) {
+                ow_hitstop_left_ = hitstop;
+                if (cb_.play_sound) cb_.play_sound("ow.cannon.hit", 1.0f);
+            }
         }
 
         const bool gameplay_key = !inv_open && input_enabled;
         const bool e_down = gameplay_key && queryKey('E');
         const bool q_down = gameplay_key && queryKey('Q');
-        if (e_down && !prev_ow_e_) {
+        if (e_down && !prev_ow_e_ && eldenring::ow::owReady(ow_uppercut_cooldown_left_)) {
             mode.ow_state.store(4); // Rising uppercut
             mode.ow_anim_time.store(0.f);
-            if (cb_.ow_strike) cb_.ow_strike(2);
+            ow_uppercut_cooldown_left_ = mode.ow_uppercut_cooldown.load();
+            if (cb_.play_sound) cb_.play_sound("ow.uppercut.start", 1.0f);
+            if (cb_.ow_strike && cb_.ow_strike(2)) {
+                ow_hitstop_left_ = hitstop;
+                if (cb_.play_sound) cb_.play_sound("ow.uppercut.hit", 1.0f);
+            }
         }
-        if (q_down && !prev_ow_q_) {
+        if (q_down && !prev_ow_q_ && eldenring::ow::owReady(ow_slam_cooldown_left_)) {
             mode.ow_state.store(5); // Seismic slam
             mode.ow_anim_time.store(0.f);
-            if (cb_.ow_strike) cb_.ow_strike(3);
+            ow_slam_cooldown_left_ = mode.ow_slam_cooldown.load();
+            ow_slam_impact_played_ = false;
+            if (cb_.play_sound) cb_.play_sound("ow.slam.flight", 1.0f);
+            const bool hit = cb_.ow_strike ? cb_.ow_strike(3) : false;
+            if (hit) ow_hitstop_left_ = hitstop;
+            if (cb_.ow_shake) cb_.ow_shake(mode.ow_slam_shake.load());
         }
         prev_ow_e_ = e_down;
         prev_ow_q_ = q_down;
@@ -862,6 +925,61 @@ void HotkeyDispatcher::tick(float dt) {
     }
 #endif
 
+    // OW viewmodel tuning keys, mirroring the CS set: [ ] move along Z, , . along
+    // X, ; ' along Y, - = change FOV, \ / change scale. Shift gives a 5x step.
+#if ENABLE_OW_VIEWMODEL
+    if (mode.ow_mode.load() && cb_.adjust_ow_view) {
+        static const int kVk[10] = {VK_OEM_4, VK_OEM_6, VK_OEM_COMMA, VK_OEM_PERIOD,
+                                    VK_OEM_1, VK_OEM_7, VK_OEM_MINUS, VK_OEM_PLUS,
+                                    VK_OEM_5, VK_OEM_2};
+        static const int kAxis[10] = {2, 2, 0, 0, 1, 1, 3, 3, 4, 4};
+        static const float kDir[10] = {-1.f, 1.f, -1.f, 1.f, -1.f, 1.f, -1.f, 1.f, -1.f, 1.f};
+        const bool shift = queryKey(VK_SHIFT);
+        for (int i = 0; i < 10; ++i) {
+            const bool down = fg && queryKey(kVk[i]);
+            if (down && !prev_owview_keys_[i]) {
+                const float step = (kAxis[i] == 3) ? (shift ? 5.f : 1.f)
+                                 : (kAxis[i] == 4) ? (shift ? 0.1f : 0.02f)
+                                 : (shift ? 0.05f : 0.01f);
+                cb_.adjust_ow_view(kAxis[i], kDir[i] * step);
+            }
+            prev_owview_keys_[i] = down;
+        }
+    }
+
+    // OW muzzle-flash debug: PageUp toggles the additive pass depth test,
+    // PageDown cycles the flash scale. Live, no rebuild or file edits.
+    if (mode.ow_mode.load() && fg) {
+        static const float kScales[] = {0.002f, 0.004f, 0.006f, 0.008f, 0.012f};
+        const bool vfx_depth_key = queryKey(VK_PRIOR);
+        if (vfx_depth_key && !prev_owvfx_keys_[0]) {
+            const bool nodepth = !mode.ow_vfx_nodepth.load();
+            mode.ow_vfx_nodepth.store(nodepth);
+            if (cb_.log) cb_.log(nodepth ? "OW VFX depth: off" : "OW VFX depth: on");
+        }
+        prev_owvfx_keys_[0] = vfx_depth_key;
+        const bool vfx_scale_key = queryKey(VK_NEXT);
+        if (vfx_scale_key && !prev_owvfx_keys_[1]) {
+            const float current = mode.ow_vfx_scale.load();
+            size_t idx = 0;
+            for (size_t i = 0; i < std::size(kScales); ++i) {
+                if (std::fabs(kScales[i] - current) < 1e-5f) {
+                    idx = i;
+                    break;
+                }
+            }
+            idx = (idx + 1) % std::size(kScales);
+            mode.ow_vfx_scale.store(kScales[idx]);
+            if (cb_.log) {
+                char msg[64];
+                snprintf(msg, sizeof(msg), "OW VFX scale: %.4f", kScales[idx]);
+                cb_.log(msg);
+            }
+        }
+        prev_owvfx_keys_[1] = vfx_scale_key;
+    }
+#endif
+
     const bool d8 = fg && queryKey(VK_F8);
     if (d8 && !prev8_ && mode.damage_enabled.load() && cb_.enqueue_nearest_hostile) {
         cb_.enqueue_nearest_hostile();
@@ -886,6 +1004,10 @@ void HotkeyDispatcher::tick(float dt) {
             mode.ow_mode.store(false);
             mode.ow_state.store(0);
             mode.ow_anim_time.store(0.f);
+            if (ow_charge_looping_) {
+                ow_charge_looping_ = false;
+                if (cb_.stop_sound_loop) cb_.stop_sound_loop("ow.punch.charge");
+            }
             if (cb_.log) cb_.log("[MODE] Overwatch Mode: OFF (via F6)");
         } else if (mode.cs_mode.load()) {
 #if ENABLE_CS2_VIEWMODEL
@@ -970,10 +1092,22 @@ void HotkeyDispatcher::tick(float dt) {
                 mode.first_person.store(true);
                 mode.ow_state.store(0);
                 mode.ow_anim_time.store(0.f);
+                ow_fire_cooldown_ = 0.f;
+                ow_punch_cooldown_left_ = 0.f;
+                ow_uppercut_cooldown_left_ = 0.f;
+                ow_slam_cooldown_left_ = 0.f;
+                ow_hitstop_left_ = 0.f;
+                ow_since_shot_ = 10.f;
+                ow_slam_impact_played_ = false;
+                ow_charge_looping_ = false;
                 if (cb_.log) cb_.log("[MODE] Overwatch Doomfist Mode: ACTIVE (MC/CS mode off)");
             } else {
                 mode.ow_state.store(0);
                 mode.ow_anim_time.store(0.f);
+                if (ow_charge_looping_) {
+                    ow_charge_looping_ = false;
+                    if (cb_.stop_sound_loop) cb_.stop_sound_loop("ow.punch.charge");
+                }
                 if (cb_.log) cb_.log("[MODE] Overwatch Doomfist Mode: OFF");
             }
 #endif

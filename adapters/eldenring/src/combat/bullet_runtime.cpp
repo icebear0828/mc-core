@@ -112,10 +112,12 @@ bool FireCsShot(float damage, float spread, float range, uint32_t tracer_frequen
 bool FireOwStrike(int kind) {
 #if ENABLE_OW_VIEWMODEL
     if (kind < 0 || kind > 3) return false;
+    // `.hit` (not `.fired`) drives the dispatcher's hitstop: a whiff should not
+    // freeze the viewmodel.
     return eldenring::combat::CombatService::Instance()
         .fireOwStrike(static_cast<eldenring::ow::OwStrikeKind>(kind), g_queue, NowTick(),
                       eldenring::RuntimeContext::Instance())
-        .fired;
+        .hit;
 #else
     (void)kind;
     return false;

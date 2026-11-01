@@ -89,6 +89,8 @@ protected:
             return true;
         };
         cb_.play_sound = [this](const char* snd, float) { played_sounds_.push_back(snd); };
+        cb_.play_sound_loop = [this](const char* snd, float) { played_sounds_.push_back(snd); };
+        cb_.stop_sound_loop = [this](const char* snd) { stopped_sounds_.push_back(snd); };
         cb_.log = [this](const std::string& msg) { logged_messages_.push_back(msg); };
         cb_.clip_duration = [](const char* name) -> float {
             const std::string n = name != nullptr ? name : "";
@@ -164,7 +166,11 @@ protected:
         };
         cb_.ow_strike = [this](int kind) {
             ow_strikes_.push_back(kind);
-            return true;
+            return ow_strike_hits_;
+        };
+        cb_.ow_shake = [this](float) { ++ow_shakes_; };
+        cb_.adjust_ow_view = [this](int axis, float delta) {
+            ow_view_adjusts_.push_back({axis, delta});
         };
         cb_.queue_summon = [this](const char*) { summon_queued_ = true; return true; };
         cb_.cycle_hidden_slot = [this](int& c) { ++c; };
@@ -230,6 +236,10 @@ protected:
     uint32_t cs_shot_tracer_{0u};
     uint8_t cs_shot_slot_{0};
     std::vector<int> ow_strikes_;
+    std::vector<std::string> stopped_sounds_;
+    bool ow_strike_hits_{true};
+    int ow_shakes_{0};
+    std::vector<std::pair<int, float>> ow_view_adjusts_;
     bool summon_queued_{false};
     bool snapshot_taken_{false};
     int trace_frames_{0};
@@ -995,13 +1005,15 @@ TEST_F(HotkeyDispatcherTest, OwModePlaysAuthenticSoundEvents) {
     right_click_edge_ = true;
     dispatcher_->tick(0.016f);
     EXPECT_EQ(ctx.mode().ow_state.load(), 3);
-    EXPECT_TRUE(played_sounds_.empty()) << "the windup must not play the release sound";
+    EXPECT_TRUE(std::find(played_sounds_.begin(), played_sounds_.end(), "ow.punch.charge") != played_sounds_.end())
+        << "the windup plays the authentic charge sound";
+    played_sounds_.clear();
 
     // Holding charges up to the authored release frame and no further.
     for (int i = 0; i < 200; ++i) dispatcher_->tick(0.016f);
     EXPECT_EQ(ctx.mode().ow_state.load(), 3);
     EXPECT_NEAR(ctx.mode().ow_anim_time.load(), eldenring::ow::kRocketPunchReleaseTime, 1e-3f);
-    EXPECT_TRUE(played_sounds_.empty()) << "the punch fires when the button comes up";
+    EXPECT_TRUE(played_sounds_.empty()) << "holding must not play the release sound";
 
     // Releasing plays the strike and the authentic release sound.
     right_held_ = false;
@@ -1099,6 +1111,98 @@ TEST_F(HotkeyDispatcherTest, OwAttacksRequestDamageForEveryAbility) {
     EXPECT_EQ(ow_strikes_.back(), 3);
     setKey('Q', false);
     dispatcher_->tick(0.016f);
+}
+
+TEST_F(HotkeyDispatcherTest, OwHandCannonRespectsFireInterval) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_SHIFT, true);
+    setKey(VK_F7, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F7, false);
+    setKey(VK_SHIFT, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().ow_mode.load());
+    ow_strikes_.clear();
+
+    left_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ow_strikes_.size(), 1u);
+
+    // A second click inside ow_fire_interval is ignored.
+    left_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ow_strikes_.size(), 1u);
+
+    // After the interval the next click fires again.
+    dispatcher_->tick(0.5f);
+    left_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ow_strikes_.size(), 2u);
+}
+
+TEST_F(HotkeyDispatcherTest, OwPunchCooldownBlocksImmediateRecharge) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_SHIFT, true);
+    setKey(VK_F7, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F7, false);
+    setKey(VK_SHIFT, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().ow_mode.load());
+    ow_strikes_.clear();
+
+    right_held_ = true;
+    right_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    right_held_ = false;
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ow_strikes_.size(), 1u);
+
+    // The punch cooldown is still running: a new charge must not start.
+    right_held_ = true;
+    right_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    right_held_ = false;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ow_strikes_.size(), 1u);
+}
+
+TEST_F(HotkeyDispatcherTest, OwSlamRequestsCameraShake) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_SHIFT, true);
+    setKey(VK_F7, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F7, false);
+    setKey(VK_SHIFT, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().ow_mode.load());
+
+    setKey('Q', true);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ow_shakes_, 1);
+    setKey('Q', false);
+    dispatcher_->tick(0.016f);
+}
+
+TEST_F(HotkeyDispatcherTest, OwTuningKeysAdjustTheView) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_SHIFT, true);
+    setKey(VK_F7, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F7, false);
+    setKey(VK_SHIFT, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().ow_mode.load());
+    ow_view_adjusts_.clear();
+
+    setKey(VK_OEM_4, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_OEM_4, false);
+    dispatcher_->tick(0.016f);
+
+    ASSERT_FALSE(ow_view_adjusts_.empty());
+    EXPECT_EQ(ow_view_adjusts_.front().first, 2); // Z axis
+    EXPECT_LT(ow_view_adjusts_.front().second, 0.f);
 }
 
 TEST_F(HotkeyDispatcherTest, OwModeDoesNotLeakMcGameplay) {

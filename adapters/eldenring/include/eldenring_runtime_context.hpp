@@ -113,6 +113,20 @@ struct ModeConfig {
     std::atomic<float> ow_dash_distance{4.0f}; // mc_er_ow.txt: ow_dash_distance=<m> for the rocket punch
     std::atomic<bool> ow_damage_enabled{true}; // mc_er_ow.txt: ow_damage=0 disables Doomfist strike damage
     std::atomic<float> ow_damage_scale{1.0f};  // mc_er_ow.txt: ow_damage_scale=<multiplier>
+    // Feel tuning (mc_er_ow.txt). The dispatcher owns the timers; the renderer
+    // reads ow_since_shot to draw the recoil kick and the FOV pulse.
+    std::atomic<float> ow_fire_interval{0.25f};
+    std::atomic<float> ow_punch_cooldown{0.8f};
+    std::atomic<float> ow_uppercut_cooldown{1.2f};
+    std::atomic<float> ow_slam_cooldown{2.0f};
+    std::atomic<float> ow_punch_tail{0.35f};
+    std::atomic<float> ow_anim_speed{1.0f};
+    std::atomic<float> ow_hitstop{0.05f};
+    std::atomic<float> ow_slam_shake{0.06f};
+    std::atomic<float> ow_since_shot{10.0f};
+    // OW muzzle-flash debug (PageUp toggles depth, PageDown cycles size).
+    std::atomic<bool> ow_vfx_nodepth{false};
+    std::atomic<float> ow_vfx_scale{0.004f};
     // Phase A debug animation state (mc_er_dbg_anim.txt + Insert/Delete/Home/End).
     std::atomic<bool> dbg_glide{false};
     std::atomic<bool> dbg_riptide{false};
@@ -307,6 +321,15 @@ public:
         mode_.ow_dash_distance.store(4.0f);
         mode_.ow_damage_enabled.store(true);
         mode_.ow_damage_scale.store(1.0f);
+        mode_.ow_fire_interval.store(0.25f);
+        mode_.ow_punch_cooldown.store(0.8f);
+        mode_.ow_uppercut_cooldown.store(1.2f);
+        mode_.ow_slam_cooldown.store(2.0f);
+        mode_.ow_punch_tail.store(0.35f);
+        mode_.ow_anim_speed.store(1.0f);
+        mode_.ow_hitstop.store(0.05f);
+        mode_.ow_slam_shake.store(0.06f);
+        mode_.ow_since_shot.store(10.0f);
         mode_.dbg_glide.store(false);
         mode_.dbg_riptide.store(false);
         mode_.dbg_trident_charge.store(0.f);

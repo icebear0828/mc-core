@@ -121,6 +121,7 @@ if(ENABLE_OW_VIEWMODEL)
         test_ow_viewmodel.cpp
         test_ow_dash.cpp
         test_eldenring_ow_combat.cpp
+        test_eldenring_ow_feel.cpp
     )
 endif()
 

@@ -39,6 +39,7 @@ void DrawCsMuzzleFlash(ImDrawList* dl, float w, float h) {
 }
 #endif
 
+
 // Tracers are 2D lines projected from world space: cheap, readable and independent of the scene depth buffer.
 void DrawTracers(ImDrawList* dl, float w, float h) {
     if (!g_fx_valid) return;

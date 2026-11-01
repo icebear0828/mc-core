@@ -43,6 +43,7 @@ struct Playing final : IXAudio2VoiceCallback {
 };
 
 struct Request {
+    enum class Kind { Play, Loop, StopLoop } kind{Kind::Play};
     std::string event;
     float volume;
 };
@@ -52,6 +53,7 @@ IXAudio2* g_xa = nullptr;
 IXAudio2MasteringVoice* g_master = nullptr;
 std::map<std::string, std::vector<Clip>> g_clips;
 std::vector<std::unique_ptr<Playing>> g_playing;
+std::map<std::string, std::unique_ptr<Playing>> g_loops; // worker-thread only
 std::mutex g_mutex;
 std::condition_variable g_cv;
 std::deque<Request> g_queue;
@@ -107,6 +109,35 @@ void PlayNow(const Request& r, std::mt19937& rng) {
     g_playing.push_back(std::move(p));
 }
 
+void StopLoopNow(const std::string& event) {
+    auto it = g_loops.find(event);
+    if (it == g_loops.end()) return;
+    if (it->second->voice) {
+        it->second->voice->Stop(0);
+        it->second->voice->DestroyVoice();
+    }
+    g_loops.erase(it);
+}
+
+void PlayLoopNow(const Request& r, std::mt19937& rng) {
+    StopLoopNow(r.event);
+    const auto it = g_clips.find(r.event);
+    if (it == g_clips.end() || it->second.empty()) return;
+    const Clip& clip = it->second[std::uniform_int_distribution<size_t>(0, it->second.size() - 1)(rng)];
+    auto p = std::make_unique<Playing>();
+    if (FAILED(g_xa->CreateSourceVoice(&p->voice, &clip.format, 0, 4.0f, p.get())) || !p->voice) return;
+    p->voice->SetVolume(std::clamp(clip.volume * r.volume * g_master_volume.load(), 0.f, 2.f));
+    XAUDIO2_BUFFER buf{};
+    buf.AudioBytes = static_cast<UINT32>(clip.pcm.size());
+    buf.pAudioData = clip.pcm.data();
+    buf.LoopCount = XAUDIO2_LOOP_INFINITE;
+    if (FAILED(p->voice->SubmitSourceBuffer(&buf)) || FAILED(p->voice->Start(0))) {
+        p->voice->DestroyVoice();
+        return;
+    }
+    g_loops[r.event] = std::move(p);
+}
+
 void Worker() {
     std::mt19937 rng(static_cast<unsigned>(GetTickCount64()));
     std::unique_lock<std::mutex> lock(g_mutex);
@@ -121,7 +152,11 @@ void Worker() {
         const Request r = g_queue.front();
         g_queue.pop_front();
         lock.unlock();
-        PlayNow(r, rng);
+        switch (r.kind) {
+            case Request::Kind::Play: PlayNow(r, rng); break;
+            case Request::Kind::Loop: PlayLoopNow(r, rng); break;
+            case Request::Kind::StopLoop: StopLoopNow(r.event); break;
+        }
         lock.lock();
     }
 }
@@ -186,6 +221,10 @@ void Shutdown() {
         if (p->voice) p->voice->DestroyVoice();
     }
     g_playing.clear();
+    for (auto& [event, p] : g_loops) {
+        if (p->voice) p->voice->DestroyVoice();
+    }
+    g_loops.clear();
     if (g_master) {
         g_master->DestroyVoice();
         g_master = nullptr;
@@ -203,7 +242,27 @@ void Play(const char* event, float volume) {
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         if (g_queue.size() >= kMaxQueue) return;
-        g_queue.push_back({event, volume});
+        g_queue.push_back({Request::Kind::Play, event, volume});
+    }
+    g_cv.notify_one();
+}
+
+void PlayLoop(const char* event, float volume) {
+    if (!g_ready.load(std::memory_order_relaxed) || !event) return;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_queue.size() >= kMaxQueue) return;
+        g_queue.push_back({Request::Kind::Loop, event, volume});
+    }
+    g_cv.notify_one();
+}
+
+void StopLoop(const char* event) {
+    if (!g_ready.load(std::memory_order_relaxed) || !event) return;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_queue.size() >= kMaxQueue) return;
+        g_queue.push_back({Request::Kind::StopLoop, event, 1.f});
     }
     g_cv.notify_one();
 }

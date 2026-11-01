@@ -4,6 +4,7 @@
 // forward speed curve for the punch's thrust window. The adapter integrates it
 // and writes the player position; tests cover the curve and its total distance.
 
+#include <algorithm>
 #include <cmath>
 
 namespace eldenring::ow {
@@ -13,12 +14,23 @@ namespace eldenring::ow {
 // extension at frame 92 (3.05 s). The release sound and the player dash are
 // keyed to this window, not to the right-click itself.
 inline constexpr float kRocketPunchReleaseTime = 2.25f;
+inline constexpr float kRocketPunchEndTime = 3.05f;
 
 struct RocketPunchDashConfig {
     float distance_m{4.0f}; // total forward displacement over the thrust window
     float start_time{kRocketPunchReleaseTime}; // 68 / 30.278
-    float end_time{3.05f};   // 92 / 30.278
+    float end_time{kRocketPunchEndTime};       // 92 / 30.278
 };
+
+// The dispatcher must not return to idle before the thrust window closes, or
+// the integrated dash distance silently shrinks. A tail shorter than the
+// authored window therefore only trims the return-to-idle part after 3.05 s.
+inline float rocketPunchStateEnd(float release_time_s, float tail_s, float clip_duration_s) {
+    float end = release_time_s + std::max(0.f, tail_s);
+    if (end < kRocketPunchEndTime) end = kRocketPunchEndTime;
+    if (clip_duration_s > 0.f) end = std::min(end, clip_duration_s);
+    return end;
+}
 
 // Forward speed (m/s) at `anim_time`. A sin(pi * p) profile keeps the total
 // displacement equal to `distance_m`: integral over the window is 2/pi, so the

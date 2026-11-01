@@ -28,11 +28,18 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-# The two events the OW mode plays today. Add more here if the state machine
-# grows a charge/hit sound.
+# Every OW event the dispatcher plays: fire/charge/release/impact for each
+# ability, decoded from the mod's Original/Audio assets.
 EVENTS = {
     "MIX_原版手炮完整开火": "ow.cannon.fire",
+    "MIX_原版手炮命中": "ow.cannon.hit",
+    "MIX_原版直拳蓄力一": "ow.punch.charge",
     "MIX_原版直拳释放": "ow.punch.release",
+    "MIX_原版直拳二次撞击": "ow.punch.impact",
+    "MIX_原版上勾拳完整起手": "ow.uppercut.start",
+    "MIX_原版上勾命中": "ow.uppercut.hit",
+    "SFX_原版裂地飞行": "ow.slam.flight",
+    "MIX_原版裂地主层落地": "ow.slam.impact",
 }
 
 BLOCK_MAGIC = 0x9999

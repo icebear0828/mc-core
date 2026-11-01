@@ -1,4 +1,5 @@
 #include "overlay_internal.hpp"
+#include "eldenring_ow_feel.hpp"
 
 namespace erov {
 namespace detail {
@@ -472,27 +473,60 @@ void RenderFrame(IDXGISwapChain* sc) {
                     }
                     return std::string();
                 };
-                std::vector<std::string> albedo, normal, pbr;
-                if (!ow_game_dir.empty()) {
-                    albedo.push_back((std::filesystem::path(ow_game_dir) / "mods" / "mc_adapter" / "ow_gauntlet.png").string());
-                    normal.push_back((std::filesystem::path(ow_game_dir) / "mods" / "mc_adapter" / "ow_gauntlet_normal.png").string());
-                    pbr.push_back((std::filesystem::path(ow_game_dir) / "mods" / "mc_adapter" / "ow_gauntlet_pbr.png").string());
-                }
-                albedo.push_back("mods\\mc_adapter\\ow_gauntlet.png");
-                normal.push_back("mods\\mc_adapter\\ow_gauntlet_normal.png");
-                pbr.push_back("mods\\mc_adapter\\ow_gauntlet_pbr.png");
-                if (g_ow.loadTextures(g_s.device, firstExisting(albedo), firstExisting(normal), firstExisting(pbr),
-                                      g_ow_srv_heap->GetCPUDescriptorHandleForHeapStart())) {
-                    Logf("overlay: OW gauntlet textures loaded");
+                auto pick = [&](const char* name) {
+                    std::vector<std::string> candidates;
+                    if (!ow_game_dir.empty()) {
+                        candidates.push_back((std::filesystem::path(ow_game_dir) / "mods" / "mc_adapter" / name).string());
+                    }
+                    candidates.push_back(std::string("mods\\mc_adapter\\") + name);
+                    return firstExisting(candidates);
+                };
+                // Section materials: 0 = right gauntlet, 1 = sleeves (cloth),
+                // 2 = left hand/forearm (body). Normal/ORM only exist for the
+                // gauntlet; the renderer binds flat maps for the other two.
+                std::vector<erow::OwRenderer::MaterialTextures> materials(3);
+                materials[0] = {pick("ow_gauntlet.png"), pick("ow_gauntlet_normal.png"), pick("ow_gauntlet_pbr.png")};
+                materials[1] = {pick("ow_cloth.png"), "", ""};
+                materials[2] = {pick("ow_body.png"), "", ""};
+                if (g_ow.loadTextures(g_s.device, materials, g_ow_srv_heap->GetCPUDescriptorHandleForHeapStart())) {
+                    Logf("overlay: OW textures loaded (gauntlet=%s cloth=%s body=%s)", materials[0].albedo.c_str(),
+                         materials[1].albedo.c_str(), materials[2].albedo.c_str());
                 } else {
-                    Logf("overlay: OW gauntlet textures missing");
+                    Logf("overlay: OW textures missing");
+                }
+
+                std::vector<std::string> vfx_candidates;
+                if (!ow_game_dir.empty()) {
+                    vfx_candidates.push_back((std::filesystem::path(ow_game_dir) / "mods" / "mc_adapter" / "ow_vfx_spark.bin").string());
+                }
+                vfx_candidates.push_back("mods\\mc_adapter\\ow_vfx_spark.bin");
+                vfx_candidates.push_back("ow_vfx_spark.bin");
+                for (const auto& p : vfx_candidates) {
+                    if (std::filesystem::exists(p) && g_ow.loadVfxMesh(g_s.device, p)) {
+                        Logf("overlay: OW muzzle flash loaded from %s", p.c_str());
+                        break;
+                    }
                 }
             }
         }
         if (g_ow_model_loaded) {
-            g_ow.setConfig(g_ow_cfg);
+            // Recoil and the FOV pulse are derived from the dispatcher's
+            // ow_since_shot timer, so the live tuning keys only touch the base
+            // values in g_ow_cfg.
+            eldenring::ow::OwViewmodelConfig cfg = g_ow_cfg;
+            eldenring::ow::OwFeelConfig feel;
+            feel.recoil_kick = cfg.recoil_kick;
+            feel.recoil_recover = cfg.recoil_recover;
+            feel.fov_pulse = cfg.fov_pulse;
+            const float since_shot = r_mode.ow_since_shot.load(std::memory_order_relaxed);
+            cfg.recoil_offset = eldenring::ow::owRecoilOffset(since_shot, feel);
+            cfg.fov_deg = std::clamp(cfg.fov_deg + eldenring::ow::owFovPulse(since_shot, feel), 20.f, 140.f);
+            g_ow.setConfig(cfg);
             const mc::rig::Mat4 proj = g_ow.computeProjection(g_s.width, g_s.height);
             g_ow.tick(dt, r_mode.ow_state.load(), r_mode.ow_anim_time.load(), r_mode.ow_action_variant.load());
+            g_ow.setSinceShot(since_shot);
+            g_ow.setVfxDebug(r_mode.ow_vfx_nodepth.load(std::memory_order_relaxed),
+                             r_mode.ow_vfx_scale.load(std::memory_order_relaxed));
             const D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_steve.ready() ? g_steve.dsvHandle() : D3D12_CPU_DESCRIPTOR_HANDLE{};
             g_ow.draw(g_s.list, g_ow_srv_heap, g_ow_table_gpu, g_s.width, g_s.height, proj, f.rtv, dsv);
             g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);

@@ -161,6 +161,10 @@ void RequestScreenshot(const char* utf8_path);
 float CsClipDuration(const char* name);
 // Debug: adjust the CS viewmodel projection. axis 0=x, 1=y, 2=z, 3=fov, 4=near.
 void AdjustCsView(int axis, float delta);
+// OW viewmodel tuning: axis 0=x, 1=y, 2=z, 3=fov, 4=scale, 5=shoot motion.
+// Writes the new values back to mc_er_ow.txt so a restart keeps them.
+void AdjustOwView(int axis, float delta);
+void PersistOwConfig(const OwConfig& cfg);
 // Duration (seconds) of an authored Overwatch clip, or 0 when unavailable.
 float OwClipDuration(const char* name);
 // Debug: bind the next captured 1920x1080 R32G8X24 depth resource (the game creates several).

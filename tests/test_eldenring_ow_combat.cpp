@@ -51,8 +51,8 @@ TEST(OwCombatTest, HandCannonHitsTheHostileUnderTheCrosshair) {
     const float dir[3] = {0.f, 0.f, 1.f};
     const auto hit = traceOwStrike(cam_rel, dir, enemies, owStrikeParamsFor(OwStrikeKind::HandCannon));
     EXPECT_EQ(hit.index, 0);
-    // The ray enters the 0.7 m body cylinder at 8 - 0.7 = 7.3 m.
-    EXPECT_NEAR(hit.distance, 7.3f, 0.05f);
+    // The ray enters the 0.8 m body cylinder at 8 - 0.8 = 7.2 m.
+    EXPECT_NEAR(hit.distance, 7.2f, 0.05f);
     EXPECT_GT(hit.er_damage, 0);
 }
 

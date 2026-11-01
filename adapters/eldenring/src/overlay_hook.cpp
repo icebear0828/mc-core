@@ -580,18 +580,19 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
 #endif
 #if ENABLE_OW_VIEWMODEL
         {
-            // The gauntlet owns a three-slot SRV heap. It never shares a slot
-            // with the CS2 knife/gun tables, so either subsystem can be built
-            // without the other.
+            // The gauntlet owns a 12-slot SRV heap: up to four materials, each
+            // with albedo/normal/ORM. It never shares a slot with the CS2
+            // knife/gun tables, so either subsystem can be built without the
+            // other.
             D3D12_DESCRIPTOR_HEAP_DESC ow_heap{};
             ow_heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-            ow_heap.NumDescriptors = 3;
+            ow_heap.NumDescriptors = 12;
             ow_heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
             if (SUCCEEDED(g_s.device->CreateDescriptorHeap(&ow_heap, IID_PPV_ARGS(&g_ow_srv_heap))) &&
                 g_ow.init(g_s.device, g_s.format, g_log)) {
                 g_ow_table_gpu = g_ow_srv_heap->GetGPUDescriptorHandleForHeapStart();
                 g_ow_initialized = true;
-                Logf("overlay: OW gauntlet renderer ready (dedicated 3-slot SRV heap)");
+                Logf("overlay: OW gauntlet renderer ready (dedicated 12-slot SRV heap)");
             } else {
                 Logf("overlay: OW gauntlet renderer unavailable");
             }

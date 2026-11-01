@@ -174,6 +174,16 @@ float4 PSMain(VSOut i) : SV_Target {
     color = AcesFilm(color * 1.15);
     return float4(color, tint.a);
 }
+
+// Additive, unlit pass for the hand-cannon muzzle flash (SM_火花球). The mesh
+// is a unit sphere from the PBZ mod; the facing falloff keeps the additive
+// silhouette from reading as a flat disc.
+float4 PSVfx(VSOut i) : SV_Target {
+    float3 N = normalize(i.normal);
+    float3 V = normalize(-i.wpos);
+    float falloff = pow(saturate(dot(N, V)), 1.6);
+    return float4(tint.rgb * falloff * tint.a, tint.a);
+}
 )hlsl";
 
 template <typename T>
@@ -509,10 +519,42 @@ bool OwRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     pd.SampleDesc.Count = 1;
 
     const HRESULT hr = device->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso_));
+    if (FAILED(hr)) {
+        Rel(vs);
+        Rel(ps);
+        if (log_) log_("ow_render: PSO creation failed");
+        release();
+        return false;
+    }
+
+    // Additive VFX pass. Same root signature and vertex layout; the muzzle
+    // flash only adds light, so it must not write depth and must not occlude
+    // the gauntlet behind it.
+    ID3DBlob* vfx_ps = nullptr;
+    if (!CompileShader("PSVfx", "ps_5_0", &vfx_ps, log_)) {
+        Rel(vs);
+        Rel(ps);
+        release();
+        return false;
+    }
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC vd = pd;
+    vd.PS = {vfx_ps->GetBufferPointer(), vfx_ps->GetBufferSize()};
+    vd.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
+    vd.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_ONE;
+    vd.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    vd.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ONE;
+    vd.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    const HRESULT vfx_hr = device->CreateGraphicsPipelineState(&vd, IID_PPV_ARGS(&vfx_pso_));
+    // Same pass without the depth test, toggled live from
+    // mc_er_owvfx_nodepth.txt while comparing muzzle-flash looks in game.
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC nd = vd;
+    nd.DepthStencilState.DepthEnable = FALSE;
+    const HRESULT vfx_nd_hr = device->CreateGraphicsPipelineState(&nd, IID_PPV_ARGS(&vfx_pso_nodepth_));
+    Rel(vfx_ps);
     Rel(vs);
     Rel(ps);
-    if (FAILED(hr)) {
-        if (log_) log_("ow_render: PSO creation failed");
+    if (FAILED(vfx_hr) || FAILED(vfx_nd_hr)) {
+        if (log_) log_("ow_render: VFX PSO creation failed");
         release();
         return false;
     }
@@ -561,6 +603,8 @@ bool OwRenderer::ensureDepth(ID3D12Device* device, unsigned width, unsigned heig
 
 void OwRenderer::release() {
     Rel(pso_);
+    Rel(vfx_pso_);
+    Rel(vfx_pso_nodepth_);
     Rel(root_);
     Rel(vb_);
     Rel(ib_);
@@ -576,12 +620,20 @@ void OwRenderer::release() {
     dsv_cpu_ = {};
     depth_w_ = depth_h_ = 0;
     device_ = nullptr;
-    albedo_tex_.release();
-    normal_tex_.release();
-    pbr_tex_.release();
+    for (auto& t : albedo_tex_) t.release();
+    for (auto& t : normal_tex_) t.release();
+    for (auto& t : pbr_tex_) t.release();
+    material_count_ = 0;
     animator_.setModel(nullptr);
     model_ = eldenring::ow::OwModel{};
     model_loaded_ = false;
+    Rel(vfx_vb_);
+    Rel(vfx_ib_);
+    vfx_vbv_ = {};
+    vfx_ibv_ = {};
+    vfx_index_count_ = 0;
+    muzzle_bone_ = -1;
+    since_shot_ = 1.0f;
 }
 
 bool OwRenderer::loadModel(ID3D12Device* device, const std::string& path) {
@@ -641,6 +693,40 @@ bool OwRenderer::loadModel(ID3D12Device* device, const std::string& path) {
     {
         std::lock_guard<std::mutex> lock(model_mutex_);
         model_ = std::move(parsed);
+        muzzle_bone_ = -1;
+        // The Hand Cannon is the left hand in this mod (the big metal gauntlet
+        // on the right is the Rocket Punch fist). The issue text said "right
+        // hand", but the shipped animation and the in-game view put the cannon
+        // on the left.
+        for (const char* wanted : {"IndexFinger_3_L", "Wrist_L", "IndexFinger_2_L"}) {
+            for (size_t i = 0; i < model_.bones.size(); ++i) {
+                if (model_.bones[i].name == wanted) {
+                    muzzle_bone_ = static_cast<int>(i);
+                    break;
+                }
+            }
+            if (muzzle_bone_ >= 0) break;
+        }
+        muzzle_bind_[0] = muzzle_bind_[1] = muzzle_bind_[2] = 0.0f;
+        if (muzzle_bone_ >= 0) {
+            float sum[3] = {0.0f, 0.0f, 0.0f};
+            float total = 0.0f;
+            for (const eldenring::ow::OwVertex& v : model_.vertices) {
+                for (int j = 0; j < 4; ++j) {
+                    if (v.joints[j] != muzzle_bone_ || v.weights[j] == 0) continue;
+                    const float w = static_cast<float>(v.weights[j]) / 255.0f;
+                    sum[0] += w * v.pos[0];
+                    sum[1] += w * v.pos[1];
+                    sum[2] += w * v.pos[2];
+                    total += w;
+                }
+            }
+            if (total > 0.0f) {
+                muzzle_bind_[0] = sum[0] / total;
+                muzzle_bind_[1] = sum[1] / total;
+                muzzle_bind_[2] = sum[2] / total;
+            }
+        }
     }
     animator_.setModel(&model_);
     model_loaded_ = true;
@@ -648,6 +734,11 @@ bool OwRenderer::loadModel(ID3D12Device* device, const std::string& path) {
         log_("ow_render: gauntlet loaded from %s (%zu verts, %zu indices, %zu submeshes, %zu bones, %zu clips)",
              path.c_str(), model_.vertices.size(), model_.indices.size(), model_.submeshes.size(),
              model_.bones.size(), model_.clips.size());
+        if (muzzle_bone_ >= 0) {
+            log_("ow_render: muzzle bone %d (%s) bind centroid (%.2f, %.2f, %.2f)", muzzle_bone_,
+                 model_.bones[static_cast<size_t>(muzzle_bone_)].name.c_str(), muzzle_bind_[0], muzzle_bind_[1],
+                 muzzle_bind_[2]);
+        }
     }
     return true;
 }
@@ -657,10 +748,52 @@ float OwRenderer::clipDuration(const char* name) const {
     return model_.clipDuration(name);
 }
 
-bool OwRenderer::loadTextures(ID3D12Device* device, const std::string& albedo_png, const std::string& normal_png,
-                              const std::string& pbr_png, D3D12_CPU_DESCRIPTOR_HANDLE first_slot) {
-    if (!device || first_slot.ptr == 0) return false;
+bool OwRenderer::loadVfxMesh(ID3D12Device* device, const std::string& path) {
+    std::vector<uint8_t> bytes;
+    if (!ReadFileBytes(path, bytes)) {
+        if (log_) log_("ow_render: cannot read VFX mesh %s", path.c_str());
+        return false;
+    }
+    if (bytes.size() < 16 || std::memcmp(bytes.data(), "OWVF", 4) != 0) {
+        if (log_) log_("ow_render: invalid OWVF header in %s", path.c_str());
+        return false;
+    }
+    uint32_t version = 0, vertex_count = 0, index_count = 0;
+    std::memcpy(&version, bytes.data() + 4, 4);
+    std::memcpy(&vertex_count, bytes.data() + 8, 4);
+    std::memcpy(&index_count, bytes.data() + 12, 4);
+    const size_t vb_bytes = static_cast<size_t>(vertex_count) * sizeof(eldenring::ow::OwVertex);
+    const size_t ib_bytes = static_cast<size_t>(index_count) * sizeof(uint32_t);
+    if (version != 1 || vertex_count == 0 || index_count < 3 || 16 + vb_bytes + ib_bytes != bytes.size()) {
+        if (log_) log_("ow_render: malformed OWVF %s", path.c_str());
+        return false;
+    }
+
+    Rel(vfx_vb_);
+    Rel(vfx_ib_);
+    vfx_vb_ = UploadBuffer(device, bytes.data() + 16, vb_bytes);
+    vfx_ib_ = UploadBuffer(device, bytes.data() + 16 + vb_bytes, ib_bytes);
+    if (!vfx_vb_ || !vfx_ib_) {
+        Rel(vfx_vb_);
+        Rel(vfx_ib_);
+        if (log_) log_("ow_render: VFX buffer upload failed");
+        return false;
+    }
+    vfx_vbv_ = {vfx_vb_->GetGPUVirtualAddress(), static_cast<UINT>(vb_bytes),
+                static_cast<UINT>(sizeof(eldenring::ow::OwVertex))};
+    vfx_ibv_ = {vfx_ib_->GetGPUVirtualAddress(), static_cast<UINT>(ib_bytes), DXGI_FORMAT_R32_UINT};
+    vfx_index_count_ = index_count;
+    if (log_) log_("ow_render: VFX mesh loaded from %s (%u verts, %u tris)", path.c_str(), vertex_count,
+                   index_count / 3);
+    return true;
+}
+
+bool OwRenderer::loadTextures(ID3D12Device* device, const std::vector<MaterialTextures>& materials,
+                              D3D12_CPU_DESCRIPTOR_HANDLE first_slot) {
+    if (!device || first_slot.ptr == 0 || materials.empty()) return false;
     const UINT inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    srv_inc_ = inc;
+    material_count_ = static_cast<uint32_t>(std::min<size_t>(materials.size(), kMaxMaterials));
 
     auto solid = [](std::vector<uint8_t>& out, uint8_t r, uint8_t g, uint8_t b) {
         out.resize(4 * 4 * 4);
@@ -672,37 +805,43 @@ bool OwRenderer::loadTextures(ID3D12Device* device, const std::string& albedo_pn
         }
     };
 
-    std::vector<uint8_t> rgba;
-    unsigned w = 0, h = 0;
-    if (albedo_png.empty() || !erov::DecodePngFile(albedo_png, rgba, w, h)) {
-        if (log_) log_("ow_render: albedo %s missing, using flat grey", albedo_png.c_str());
-        solid(rgba, 45, 45, 45);
-        w = h = 4;
-    }
-    D3D12_CPU_DESCRIPTOR_HANDLE slot = first_slot;
-    if (!albedo_tex_.create(device, rgba.data(), w, h, slot, /*srgb=*/true)) {
-        if (log_) log_("ow_render: albedo upload failed");
-        return false;
-    }
-    slot.ptr += inc;
+    for (uint32_t m = 0; m < material_count_; ++m) {
+        const MaterialTextures& mat = materials[m];
+        D3D12_CPU_DESCRIPTOR_HANDLE slot = first_slot;
+        slot.ptr += static_cast<SIZE_T>(inc) * 3u * m;
 
-    // A missing normal/ORM map must still bind a real descriptor: sampling an
-    // unwritten slot is invalid in D3D12. Fall back to a flat map.
-    if (!normal_png.empty() && erov::DecodePngFile(normal_png, rgba, w, h)) {
-        normal_tex_.create(device, rgba.data(), w, h, slot);
-    } else {
-        solid(rgba, 128, 128, 255); // mapN = (0, 0, 1)
-        normal_tex_.create(device, rgba.data(), 4, 4, slot);
-    }
-    slot.ptr += inc;
-    if (!pbr_png.empty() && erov::DecodePngFile(pbr_png, rgba, w, h)) {
-        pbr_tex_.create(device, rgba.data(), w, h, slot);
-    } else {
-        solid(rgba, 255, 200, 0); // AO = 1, roughness = 0.78, metallic = 0
-        pbr_tex_.create(device, rgba.data(), 4, 4, slot);
+        std::vector<uint8_t> rgba;
+        unsigned w = 0, h = 0;
+        if (mat.albedo.empty() || !erov::DecodePngFile(mat.albedo, rgba, w, h)) {
+            if (log_) log_("ow_render: material %u albedo %s missing, using flat grey", m, mat.albedo.c_str());
+            solid(rgba, 45, 45, 45);
+            w = h = 4;
+        }
+        if (!albedo_tex_[m].create(device, rgba.data(), w, h, slot, /*srgb=*/true)) {
+            if (log_) log_("ow_render: material %u albedo upload failed", m);
+            return false;
+        }
+        slot.ptr += inc;
+
+        // A missing normal/ORM map must still bind a real descriptor: sampling
+        // an unwritten slot is invalid in D3D12. Fall back to a flat map.
+        if (!mat.normal.empty() && erov::DecodePngFile(mat.normal, rgba, w, h)) {
+            normal_tex_[m].create(device, rgba.data(), w, h, slot);
+        } else {
+            solid(rgba, 128, 128, 255); // mapN = (0, 0, 1)
+            normal_tex_[m].create(device, rgba.data(), 4, 4, slot);
+        }
+        slot.ptr += inc;
+        if (!mat.pbr.empty() && erov::DecodePngFile(mat.pbr, rgba, w, h)) {
+            pbr_tex_[m].create(device, rgba.data(), w, h, slot);
+        } else {
+            solid(rgba, 255, 200, 0); // AO = 1, roughness = 0.78, metallic = 0
+            pbr_tex_[m].create(device, rgba.data(), 4, 4, slot);
+        }
     }
     return true;
 }
+
 
 void OwRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
                       D3D12_GPU_DESCRIPTOR_HANDLE tex_table, unsigned width, unsigned height,
@@ -728,15 +867,19 @@ void OwRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
         list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
     }
 
-    albedo_tex_.recordUpload(list);
-    normal_tex_.recordUpload(list);
-    pbr_tex_.recordUpload(list);
+    for (uint32_t m = 0; m < material_count_; ++m) {
+        albedo_tex_[m].recordUpload(list);
+        normal_tex_[m].recordUpload(list);
+        pbr_tex_[m].recordUpload(list);
+    }
 
     list->SetPipelineState(pso_);
     list->SetGraphicsRootSignature(root_);
     if (srv_heap && tex_table.ptr != 0) {
         ID3D12DescriptorHeap* heaps[] = {srv_heap};
         list->SetDescriptorHeaps(1, heaps);
+        // Base table (material 0); the per-submesh loop overrides it. Kept so a
+        // partially failed texture load still binds valid descriptors.
         list->SetGraphicsRootDescriptorTable(1, tex_table);
     }
     list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -777,6 +920,11 @@ void OwRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
     }
 
     fp::M4 world = animator_.pose().base;
+    if (cfg_.recoil_offset != 0.0f) {
+        // The palette already maps into viewmodel space, so a Z translation
+        // here is a straight kick towards or away from the camera.
+        world = fp::mul(fp::translate(0.0f, 0.0f, cfg_.recoil_offset), world);
+    }
     const float scale = cfg_.scale * animator_.scalePulse();
     if (scale != 1.0f) world = fp::mul(world, fp::scale(scale));
     const mc::rig::Mat4 host_world = fp::toHost(world);
@@ -789,7 +937,49 @@ void OwRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
 
     for (const eldenring::ow::OwSubmesh& sub : model_.submeshes) {
         if (sub.index_count == 0) continue;
+        if (srv_heap && tex_table.ptr != 0 && material_count_ > 0) {
+            const uint32_t mat = std::min(sub.material, material_count_ - 1);
+            D3D12_GPU_DESCRIPTOR_HANDLE table = tex_table;
+            table.ptr += static_cast<UINT64>(mat) * 3u * srv_inc_;
+            list->SetGraphicsRootDescriptorTable(1, table);
+        }
         list->DrawIndexedInstanced(sub.index_count, 1, sub.first_index, sub.base_vertex, 0);
+    }
+
+    // Muzzle flash: the PBZ SM_火花球 sphere, drawn additively at the right
+    // index fingertip for kMuzzleFlashTime seconds after a shot.
+    ID3D12PipelineState* vfx_active = (vfx_nodepth_ && vfx_pso_nodepth_ != nullptr) ? vfx_pso_nodepth_ : vfx_pso_;
+    if (vfx_active != nullptr && vfx_index_count_ != 0 && since_shot_ >= 0.0f &&
+        since_shot_ < kMuzzleFlashTime && muzzle_bone_ >= 0 &&
+        static_cast<size_t>(muzzle_bone_) < active_palette->size()) {
+        const fp::M4& bone = (*active_palette)[static_cast<size_t>(muzzle_bone_)];
+        const float t = since_shot_ / kMuzzleFlashTime;
+        // The palette maps bind space to viewmodel space. Transform the muzzle
+        // bone's bind-space centroid (not the palette translation, which is the
+        // bind origin) so the flash sits on the fingertip in every pose.
+        const float bx = muzzle_bind_[0], by = muzzle_bind_[1], bz = muzzle_bind_[2];
+        const float mx = bone.m[0] * bx + bone.m[1] * by + bone.m[2] * bz + bone.m[3];
+        const float my = bone.m[4] * bx + bone.m[5] * by + bone.m[6] * bz + bone.m[7];
+        const float mz = bone.m[8] * bx + bone.m[9] * by + bone.m[10] * bz + bone.m[11];
+        // Column-vector convention (v' = M * v): scale the sphere in its own
+        // space, move it to the fingertip in viewmodel space, then apply the
+        // gauntlet's world. Putting the scale on the left would scale the
+        // muzzle translation too and collapse the flash onto the camera.
+        // The source mesh is radius 50 (UE cm), so 0.004 gives a 20 cm flash.
+        const fp::M4 flash = fp::mul(world, fp::mul(fp::translate(mx, my, mz),
+                                                    fp::scale(vfx_scale_ * (1.0f - 0.45f * t))));
+
+        list->SetPipelineState(vfx_active);
+        list->IASetVertexBuffers(0, 1, &vfx_vbv_);
+        list->IASetIndexBuffer(&vfx_ibv_);
+        list->SetGraphicsRoot32BitConstants(0, 16, projection.m.data(), 0);
+        const mc::rig::Mat4 host_flash = fp::toHost(flash);
+        list->SetGraphicsRoot32BitConstants(0, 16, host_flash.m.data(), 16);
+        // T_PBZ_HandFlash is a solid 255/102/10 texture; the tint carries that
+        // colour and the fade so the additive pass needs no extra descriptor.
+        const float vfx_tint[4] = {1.0f, 0.4f, 0.039f, 1.0f - t};
+        list->SetGraphicsRoot32BitConstants(0, 4, vfx_tint, 36);
+        list->DrawIndexedInstanced(vfx_index_count_, 1, 0, 0, 0);
     }
 }
 

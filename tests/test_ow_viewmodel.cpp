@@ -308,7 +308,9 @@ TEST(OwViewmodelTest, ParsesTheShippedAssetWhenProvided) {
     const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     OwModel model;
     ASSERT_TRUE(parseOwModel(bytes.data(), bytes.size(), model)) << path;
-    EXPECT_EQ(model.bones.size(), 36u);
+    // Both arms: right gauntlet + sleeves + left hand = 100 bones, 3 sections.
+    EXPECT_EQ(model.bones.size(), 100u);
+    EXPECT_EQ(model.submeshes.size(), 3u);
     ASSERT_FALSE(model.submeshes.empty());
     EXPECT_TRUE(model.submeshes[0].skinned());
     EXPECT_EQ(model.clips.size(), 5u);
@@ -331,6 +333,8 @@ TEST(OwViewmodelTest, ParsesTheShippedAssetWhenProvided) {
     };
     const size_t wrist = bone_index("Wrist_R");
     ASSERT_LT(wrist, model.bones.size());
+    const size_t left_wrist = bone_index("Wrist_L");
+    ASSERT_LT(left_wrist, model.bones.size());
     const auto& idle_wrist = model.clips.at("idle").tracks[wrist];
     ASSERT_FALSE(idle_wrist.empty());
     // The palette is camera-relative metres, not UE centimetres.

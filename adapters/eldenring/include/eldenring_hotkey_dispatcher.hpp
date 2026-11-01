@@ -16,6 +16,8 @@ struct HotkeyCallbacks {
     std::function<uintptr_t()> get_player_chr;
     std::function<bool(uintptr_t, float[3])> read_physics_pos;
     std::function<void(const char*, float)> play_sound;
+    std::function<void(const char*, float)> play_sound_loop;
+    std::function<void(const char*)> stop_sound_loop;
     std::function<void(const std::string&)> log;
     // Duration (seconds) of a clip in the active CS viewmodel, or 0 when absent.
     std::function<float(const char*)> clip_duration;
@@ -59,6 +61,10 @@ struct HotkeyCallbacks {
     std::function<void(const char* path)> request_screenshot;
     // CS viewmodel tuning: axis 0=x, 1=y, 2=z, 3=fov, 4=near plane.
     std::function<void(int axis, float delta)> adjust_cs_view;
+    // OW viewmodel tuning: axis 0=x, 1=y, 2=z, 3=fov, 4=scale, 5=shoot motion.
+    std::function<void(int axis, float delta)> adjust_ow_view;
+    // Camera shake amplitude in metres (the seismic slam).
+    std::function<void(float amplitude)> ow_shake;
     std::function<void()> cycle_depth_candidate;
     std::function<void(bool fg)> inventory_tick;
     std::function<void()> blocks_tick;
@@ -124,9 +130,19 @@ private:
     bool prev_ow_q_{false};
     bool ow_punch_released_{false}; // RMB hold-to-charge: true once the punch fired
     float cs_fire_cooldown_{0.f};
+    float ow_fire_cooldown_{0.f};
+    float ow_punch_cooldown_left_{0.f};
+    float ow_uppercut_cooldown_left_{0.f};
+    float ow_slam_cooldown_left_{0.f};
+    float ow_hitstop_left_{0.f};
+    float ow_since_shot_{10.f};
+    bool ow_slam_impact_played_{false};
+    bool ow_charge_looping_{false};
     float cs_since_shot_{10.f}; // seconds since the last CS round: the first shot is accurate
     int cs_reload_sound_stage_{0}; // 0..3: mag-out / mag-in / bolt pull already played
     bool prev_csview_keys_[8]{};   // [ ] , . ; ' - = debug tuning keys
+    bool prev_owview_keys_[10]{};  // [ ] , . ; ' - = plus \ / for scale
+    bool prev_owvfx_keys_[2]{};    // PageUp depth toggle, PageDown scale cycle
 };
 
 } // namespace eldenring::input

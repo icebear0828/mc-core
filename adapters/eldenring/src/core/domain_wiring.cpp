@@ -196,10 +196,14 @@ void SetupInput() {
             return detail::readPhysicsPosition(g_reader, g_img.base, chr, out_pos);
         };
         cb.play_sound = [](const char* s, float v) { eraudio::Play(s, v); };
+        cb.play_sound_loop = [](const char* s, float v) { eraudio::PlayLoop(s, v); };
+        cb.stop_sound_loop = [](const char* s) { eraudio::StopLoop(s); };
         cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
         cb.clip_duration = [](const char* n) { return erov::CsClipDuration(n); };
         cb.ow_clip_duration = [](const char* n) { return erov::OwClipDuration(n); };
         cb.adjust_cs_view = [](int axis, float delta) { erov::AdjustCsView(axis, delta); };
+        cb.adjust_ow_view = [](int axis, float delta) { erov::AdjustOwView(axis, delta); };
+        cb.ow_shake = [](float amplitude) { TriggerOwShake(amplitude); };
         cb.take_left_click = erin::TakeLeftClick;
         cb.take_right_click = erin::TakeRightClick;
         cb.left_held = erin::LeftHeld;
