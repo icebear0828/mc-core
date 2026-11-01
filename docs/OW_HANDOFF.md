@@ -58,7 +58,7 @@
 | 资产 | `tools/ow/build_ow_skinned.py` 读取 `doomfist_1p.json` + 5 段 `*_anim.json`，输出 **CSVM v4**：12409 顶点（section 0）、36 根手/指骨骼、5 个 named-track clip（idle/shoot/punch/uppercut/slam），每帧存 bind→viewmodel 空间 palette |
 | 渲染 | 保留 v1 的 3 元素顶点布局与着色器；每帧在 CPU 用 palette 做四骨蒙皮，写入 4 槽环形上传顶点缓冲（避免 GPU 读到正在改写的槽位），世界变换仍是原来的 `toHost(base * scale)` |
 | 播放 | `OwAnimator` 按 state 选 clip，keyframe 之间逐元素插值（keyframe 位精确），状态切换 80 ms 交叉淡化；idle 循环 |
-| 动作 | 状态表：0 idle、2 手炮、3 火箭拳、4 上勾拳、**5 裂地猛击**；**E = 上勾拳，Q = 裂地猛击** |
+| 动作 | 状态表：0 idle、2 手炮、3 火箭拳、4 上勾拳、5 大招；**E = 上勾拳，Q = 大招**（原版键位是 Shift=上勾拳、E=裂地猛击、Q=大招；本适配器保留 E=上勾拳） |
 | 火箭拳输入 | 原版控制器 `右键_开始蓄力` / `右键_释放直拳`：**按住右键蓄力**，windup 停在释放帧；**松开右键出拳**（跳到 f68、播放释放音效、开始冲刺）。快速点击 = 立即出拳 |
 | 射击幅度 | 原版 shoot clip 手腕前移 0.35 m、上抬 0.34 m，第一人称太飘；`ow_shoot_motion`（0–1，默认 0.4）把每根骨骼向 idle 姿态混合 |
 | 时序 | 各状态时长取资产 clip 的 `(frames-1)/fps`；callback 未就绪时用烘焙常量兜底 |
@@ -100,6 +100,27 @@ C++ 侧 `MC_OW_ASSET=<bin> mc_tests --gtest_filter=OwViewmodelTest.ParsesTheShip
 裂地猛击的“隐身放大”来自技能阶段切换 + SlamFade 淡出/飞行效果，需要后续按 `帧_技能阶段` 的状态机再还原。
 
 > CUE4Parse 需要脚本映射才能把 `UFunction` 的 `ScriptBytecode` 解出来；当前只映射了 `Function`/`BlueprintGeneratedClass`/`AnimMontage` 的类哈希，字节码仍为空，交互流程是从函数名、变量名和 Montage 数据推断的。
+
+### 0.5 大招（Q）现状（2026-11-01）
+
+原版 Q 是 **Meteor Strike 大招**，不是裂地猛击：
+
+- 函数：`Q_起跳选点` → `Q_确认落点`；阶段变量 `技能阶段`（待机 / 大招起跳 / 大招选点 / 大招俯视 / 大招下落 / 大招收招）
+- 数据：`大招起点/落点/地面法线/前视角/动态圈`、`落点指示`、`大招选点开始`、`大招下落`、`大招俯视`、`大招收招`
+- 动画：`AS_原版三人大招起飞`（15 帧 @32.1fps ≈ 0.467 s）与 `AS_原版全身大招落地`（20 帧 @31.6fps ≈ 0.633 s），**390 根骨骼的全身 3P 动画**，不是 1P 拳套骨骼
+- 音效：`MIX_原版大招起手 / 预警 / 落地`；特效：`SFX_原版裂地飞行`、`T_PBZ_SlamFade_00..16`
+
+当前实现（状态 5）先做不需要驱动游戏主相机的部分：
+
+| 时间 | 表现 |
+|---|---|
+| 0.00–0.15 s | 拳套可见，开始蓄力 |
+| 0.15–0.35 s | 拳套淡出（“隐身”） |
+| 0.35–1.42 s | 完全隐藏（跳跃/俯视阶段） |
+| 1.42–1.56 s | 淡入 |
+| 1.50 s 附近 | 1.35× 缩放脉冲（“放大”冲击） |
+
+**仍缺**：真正的俯视视角、落点选择圈、下落轨迹——这些需要驱动游戏主相机并绘制落点 UI，属于下一步。
 
 
 ---
@@ -318,7 +339,7 @@ ow_shoot_motion=0.4
 ### 5.4 右键火箭冲拳位移（2026-10-31）
 
 - **纯逻辑**：`include/eldenring_ow_dash.hpp`
-  - `rocketPunchSpeed(t, cfg)`：`sin(pi * p)` 速度曲线，窗口 `[0.25, 0.60]`，总位移严格等于 `distance_m`
+  - `rocketPunchSpeed(t, cfg)`：`sin(pi * p)` 速度曲线，窗口 `[2.25, 3.05]`（对齐原版直拳 f68–f92），总位移严格等于 `distance_m`
   - `rocketPunchDistance(t, cfg)`：积分后的累计位移，便于测试与调试
   - `rocketPunchDirection(forward, x, z)`：把相机前向投影到水平面；俯仰接近垂直时返回 false
 - **执行层**：`PlayerLocomotion::stepOwRocketPunch(dt, ctx)`，由 `on_camera_step_pre` 每帧调用
@@ -330,4 +351,114 @@ ow_shoot_motion=0.4
 - **测试**：`tests/test_ow_dash.cpp`（窗口外为 0、峰值、数值积分等于总位移、单调性、水平投影）
 
 **注意**：这是位置写入而非速度写入。原生游戏的角色控制器每帧也会写位置；冲刺增强（`stepGroundSprint`）证明了同路径可行，但冲拳步长更大，实机需要重点看是否抖动、是否被原生动画/行为拉回。若出现回拉，下一步改为写 `PhysicsModule+0x120` 线速度并让原生物理积分。
+
+---
+
+## 6. 下一步：大招（Q）逆向与实现交接（2026-11-01）
+
+### 6.0 当前状态（接手先看）
+
+- **已推送**：PR #129，分支 `feat/ow-only`，头 `c966604`（本文件之后的 commit 会继续更新）。
+- **已完成**：1P 拳套 CSVM v4（36 骨骼、5 clip）+ CPU 蒙皮；LMB 手炮、RMB 按住蓄力/松开直拳、E 上勾拳、Q 大招淡出/放大近似；`ow_shoot_motion` 调射击幅度。
+- **已部署**：`Game\dinput8.dll`、`mods\mc_adapter\ow_gauntlet.bin`（v4，约 1.2 MB）；备份 `dinput8.dll.bak_ow_anim_20261101`、`ow_gauntlet.bin.bak_v1_20261101`。
+- **测试**：`mc_tests` 1262 passed（`ParsesTheShippedAssetWhenProvided` 需设置 `MC_OW_ASSET` 才运行）。
+- **Q 现状**：状态 5 播放 slam clip，0.15–0.35 s 淡出、0.35–1.42 s 隐藏、1.42–1.56 s 淡入、1.50 s 1.35× 缩放脉冲。渲染器已开启 alpha 混合，`tint.a` 控制透明度。**这不是原版大招**，只是“隐身放大”的视觉近似。
+
+### 6.1 原版事实（已解析，不要再猜）
+
+- **键位**：LMB `左键_手炮`；RMB `右键_开始蓄力` → `右键_释放直拳`；Shift `Shift_上勾拳`；E `E_裂地猛击`；Q `Q_起跳选点` → `Q_确认落点`（大招）。
+- **Montage**：`AM_原版直拳/手炮/上勾拳/裂地猛击` 都是单 section（Default），`AnimStart=0 / AnimEnd=全长 / PlayRate=1 / Looping=1`；直拳 3.6 s、手炮 0.933 s、上勾拳 0.867 s、裂地 2.0 s。
+- **控制器变量**：`技能阶段`（待机 / 大招起跳 / 大招选点 / 大招俯视 / 大招下落 / 大招收招）、`大招起点/落点/地面法线/前视角/动态圈`、`大招选点开始`、`落点指示`、`裂地落点/法线/方向/飞行终点`、`裂地本次伤害=90`、`裂地轻抬速度=313.04953`、`直拳起点/上一帧位置/冲刺/蓄力`、`下次直拳/下次上勾/下次大招/下次裂地`。
+- **大招动画**：`AS_原版三人大招起飞`（15 帧 @32.143 fps = 0.467 s）、`AS_原版全身大招落地`（20 帧 @31.579 fps = 0.633 s），**390 根骨骼全身 3P**；`Camera` 轨道：起飞 z -4.906..-3.492、y -2.892..-2.805；落地 y -3.223..-1.988。
+- **音效/特效**：`MIX_原版大招起手/预警/落地`、`MIX_原版直拳蓄力一/释放/二次撞击`；`SFX_原版裂地飞行`、`BP_裂地冲击`、`SM_裂地梯形`、`T_PBZ_SlamFade_00..16`。
+- **原版 Q 是 Meteor Strike**：起跳 → 俯视选点（动态圈/落点指示）→ 确认 → 下落 → 落地 → 收招。
+
+### 6.2 逆向清单（按优先级）
+
+**P0：控制器字节码（最大卡点）**
+
+| 目标 | 要拿到 |
+|---|---|
+| `Q_起跳选点` / `Q_确认落点` | 阶段切换条件、相机参数、落点选择算法、取消条件 |
+| `帧_技能阶段` | 阶段枚举值与每阶段时长 |
+| `帧_鼠标` / `帧_移动` / `帧_墙撞` | 俯视鼠标控制、起跳/下落速度、碰撞夹紧 |
+| `公共_取消技能` | 取消条件与恢复流程 |
+
+**P1：相机与落点**
+
+- 游戏主相机位置/俯仰/FOV 的可写偏移；`大招前视角` 的保存/恢复。
+- `Q_确认落点` 的地面射线：屏幕点 → 世界射线 → 地面。
+- `大招动态圈` / `落点指示`：网格/材质、缩放规则、显示时机。
+- `帧_俯视` 的相机曲线（可先用 `ult_takeoff.json` 的 Camera 轨道反推）。
+
+**P2：轨迹与落地**
+
+- `帧_移动`、`大招下落`、`裂地飞行终点`、`裂地轻抬速度` 的速度/终点算法。
+- `大招落点/地面法线` 的贴地与斜坡处理。
+- `BP_裂地冲击`、`SM_裂地梯形`、`MI_PBZ_裂地梯形` 的生成时机与参数。
+
+**P3：音效与淡出**
+
+- `MIX_原版大招起手/预警/落地` 解码为 WAV、注册事件、绑定阶段。
+- `SFX_原版裂地飞行` 是否需要在飞行阶段播放。
+- `T_PBZ_SlamFade_00..16` 的用途（屏幕淡出/角色淡出/落点圈动画）与材质参数。
+
+**P4/P5（可选）**：右键直拳的 `Montage_SetPosition` 落点与蓄力→冲刺映射；原版 E 裂地猛击（当前 E 是上勾拳）。
+
+### 6.3 卡点与解锁方式
+
+`BP_铁拳控制器` 的 UFunction `ScriptBytecode` 目前为 `null`，因为 CUE4Parse 缺少脚本映射（日志里的 `Missing script import`）。
+
+已映射（`Program.cs::InjectEmptyGlobalData`）：
+
+- `0x174F27AEC05072D0` → `Function`
+- `0x2B62D0815847A520` → `BlueprintGeneratedClass`
+- `0x11361FDBC40AEECC` / `0xFE00966596DA663` → `AnimMontage`
+- ABP 相关待映射：`0x1E57B5282C965C3F`（推测 `AnimBlueprintGeneratedClass`）、`0x2C00F707978C8EF5`（推测 `AnimInstance`）
+
+解锁优先级：
+
+1. **最优**：拿到 Phantom Blade Zero 的 `Content/Paks/global.utoc/.ucas`（官方脚本映射），用 CUE4Parse 正常加载后重新 `--dump`，字节码即可解出。
+2. **次优**：安装 PBZ + 原 mod，录屏观察真实右键/大招表现（相机高度/俯仰、阶段时长、落点圈），据此实现，不必解字节码。
+3. **兜底**：手动定位 UFunction 导出字节码偏移，用 `KismetExpression.ReadExpression` 解码（工作量大）。
+
+> 机器上目前没有找到 PBZ 安装；只有 Epic 启动器图标和 mod 压缩包 `D:\game\mc-core\影之刃零_第一人称末日铁拳MOD.rar`。
+
+### 6.4 工具与产物
+
+`C:\Users\30435\ow_export\Program.cs` 新增模式：
+
+| 命令 | 用途 |
+|---|---|
+| `--dump <needle>` | 导出包内所有 export、属性、Montage section/segment、UFunction flags/bytecode、NameMap |
+| `--imports <needle>` | 打印 ImportMap/ExportMap（ClassIndex/Super/Template/Outer） |
+| `--anim <needle> <out.json>` | 导出任意动画序列 |
+| `--types <needle>` | 反射 CUE4Parse 类型成员 |
+| `--findhash <hex...>` | 候选脚本名哈希匹配（当前未匹配到缺失哈希） |
+
+构建：`powershell -ExecutionPolicy Bypass -File build.ps1`，然后 `dotnet bin\ow_export.dll ...`。
+
+产物：
+
+- `out\dump_bp_controller.txt`（控制器全部导出、变量、NameMap）
+- `out\imports_bp.txt`（导入/导出映射）
+- `out\dump_AM_原版*.txt`（四个 Montage 的 section/segment）
+- `out\ult_takeoff.json` / `out\ult_landing.json`（大招全身动画，含 Camera 轨道）
+
+**烘焙工具未提交**：`D:\code\universal-modder\tools\ow\build_ow_skinned.py` 和 `tests\test_ow_skinned_export.py` 在 universal-modder 工作区里，属于 toolkit 仓库；下次接手先提交。
+
+### 6.5 建议实现方案（大招）
+
+- **阶段**：起跳（0.47 s）→ 俯视选点（可配置 0.8–1.5 s）→ 下落（约 0.4 s）→ 落地/收招（0.63 s），总时长约 2.2–3.0 s。
+- **相机**：复用现有相机 hook，起飞时抬升 + 俯视，确认后下落；保存/恢复 `大招前视角`。
+- **选点**：屏幕中心 → `CastStaticRay` 取地面点；HUD 画圆（参考 `SM_范围平面` / `MI_PBZ_毁天灭地范围`）。
+- **1P 表现**：飞行阶段保持拳套淡出；落地用缩放脉冲 + 冲击特效；接 `MIX_原版大招起手/预警/落地`。
+- **不依赖字节码可先做**：音效提取/注册、SlamFade 贴图用途确认、落地冲击特效、淡出/放大参数微调。
+- **依赖字节码/录屏才能定**：阶段时长、相机曲线、选点规则、取消条件、伤害/击飞。
+
+### 6.6 下次开工第一件事
+
+1. 问用户是否有 PBZ 安装；有则拿 `global.utoc/.ucas`（最优），或录原 mod 视频。
+2. 没有则手动解码 UFunction 字节码（从 `右键_释放直拳` 和 `帧_技能阶段` 开始，体量最小、信息量最大）。
+3. 更新本节，把拿到的阶段表和相机参数写进来。
 

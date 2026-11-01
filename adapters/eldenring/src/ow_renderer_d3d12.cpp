@@ -172,7 +172,7 @@ float4 PSMain(VSOut i) : SV_Target {
     float sky_occlusion = lerp(0.78, 1.0, saturate(N.y * 0.5 + 0.5));
     color *= sky_occlusion;
     color = AcesFilm(color * 1.15);
-    return float4(color, 1.0);
+    return float4(color, tint.a);
 }
 )hlsl";
 
@@ -484,6 +484,15 @@ bool OwRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     pd.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
     pd.InputLayout = {layout, 3};
     pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    // Alpha blend so the ultimate can fade the gauntlet out for the leap and
+    // back in at the landing. Opaque frames (tint.a = 1) are unaffected.
+    pd.BlendState.RenderTarget[0].BlendEnable = TRUE;
+    pd.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    pd.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    pd.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    pd.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    pd.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+    pd.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
     pd.SampleMask = UINT_MAX;
     pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     // The UE gauntlet mesh is not guaranteed to use the same winding as the
@@ -700,6 +709,9 @@ void OwRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
                       const mc::rig::Mat4& projection, D3D12_CPU_DESCRIPTOR_HANDLE rtv,
                       D3D12_CPU_DESCRIPTOR_HANDLE dsv) {
     if (!ready() || !list) return;
+    // Fully faded out (ultimate leap): skip the draw entirely so the invisible
+    // gauntlet does not write depth into the overlay pass.
+    if (animator_.fade() <= 0.01f) return;
 
     const bool dedicated_depth = ensureDepth(device_, width, height);
     if (dedicated_depth) dsv = dsv_cpu_;
@@ -765,13 +777,14 @@ void OwRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
     }
 
     fp::M4 world = animator_.pose().base;
-    if (cfg_.scale != 1.0f) world = fp::mul(world, fp::scale(cfg_.scale));
+    const float scale = cfg_.scale * animator_.scalePulse();
+    if (scale != 1.0f) world = fp::mul(world, fp::scale(scale));
     const mc::rig::Mat4 host_world = fp::toHost(world);
     list->SetGraphicsRoot32BitConstants(0, 16, host_world.m.data(), 16);
 
     const float light[4] = {0.35f, 0.85f, -0.40f, 0.0f};
     list->SetGraphicsRoot32BitConstants(0, 4, light, 32);
-    const float tint[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    const float tint[4] = {1.0f, 1.0f, 1.0f, animator_.fade()};
     list->SetGraphicsRoot32BitConstants(0, 4, tint, 36);
 
     for (const eldenring::ow::OwSubmesh& sub : model_.submeshes) {

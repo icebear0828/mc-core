@@ -365,6 +365,22 @@ public:
         const float bob = (state == 0) ? std::sin(anim_time * 2.5f) * 0.003f : 0.0f;
         pose_.base = fp::translate(0.0f, bob, 0.0f);
 
+        // Q (state 5) is the ultimate presentation: the gauntlet fades out
+        // during the leap, then fades back in with an impact scale bump when
+        // the slam lands. The top-down camera itself needs game-camera control.
+        fade_ = 1.0f;
+        scale_pulse_ = 1.0f;
+        if (state == 5) {
+            const float t = anim_time;
+            if (t < 0.15f) fade_ = 1.0f;
+            else if (t < 0.35f) fade_ = 1.0f - (t - 0.15f) / 0.20f;
+            else if (t < 1.42f) fade_ = 0.0f;
+            else if (t < 1.56f) fade_ = (t - 1.42f) / 0.14f;
+            fade_ = std::clamp(fade_, 0.0f, 1.0f);
+            const float d = (t - 1.50f) / 0.10f;
+            scale_pulse_ = 1.0f + 0.35f * std::exp(-d * d);
+        }
+
         std::vector<fp::M4> target;
         if (model_ != nullptr && !model_->bones.empty()) {
             target.assign(model_->bones.size(), fp::M4{});
@@ -430,6 +446,8 @@ public:
     [[nodiscard]] const OwPose& pose() const { return pose_; }
     [[nodiscard]] const std::vector<fp::M4>& palette() const { return palette_; }
     [[nodiscard]] bool hasAnimation() const { return !palette_.empty(); }
+    [[nodiscard]] float fade() const { return fade_; }
+    [[nodiscard]] float scalePulse() const { return scale_pulse_; }
     [[nodiscard]] uint8_t currentState() const { return current_state_; }
     [[nodiscard]] float currentAnimTime() const { return anim_time_; }
     [[nodiscard]] float clipDuration(uint8_t state) const {
@@ -452,6 +470,8 @@ private:
     uint8_t last_state_{0};
     float anim_time_{0.0f};
     float last_anim_time_{0.0f};
+    float fade_{1.0f};
+    float scale_pulse_{1.0f};
 };
 
 } // namespace eldenring::ow

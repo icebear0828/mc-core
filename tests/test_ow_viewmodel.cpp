@@ -359,6 +359,34 @@ TEST(OwViewmodelTest, AnimatorBlendsAfterASeek) {
     EXPECT_NEAR(anim.palette()[0].m[11], 12.0f, 1e-4f);
 }
 
+TEST(OwViewmodelTest, UltimateFadesOutAndPulsesOnLanding) {
+    OwModel model = makeAnimModel();
+    OwAnimator anim;
+    anim.setModel(&model);
+
+    anim.tick(0.016f, 5, 0.20f);
+    EXPECT_GT(anim.fade(), 0.0f);
+    EXPECT_LT(anim.fade(), 1.0f);
+
+    anim.tick(0.016f, 5, 0.80f);
+    EXPECT_FLOAT_EQ(anim.fade(), 0.0f) << "the gauntlet is invisible during the leap";
+
+    anim.tick(0.016f, 5, 1.50f);
+    EXPECT_GT(anim.fade(), 0.0f);
+    EXPECT_LT(anim.fade(), 1.0f);
+    EXPECT_GT(anim.scalePulse(), 1.2f) << "the landing impact enlarges the gauntlet";
+
+    anim.tick(0.016f, 5, 1.60f);
+    EXPECT_NEAR(anim.fade(), 1.0f, 1e-3f);
+
+    anim.tick(0.016f, 5, 1.90f);
+    EXPECT_NEAR(anim.scalePulse(), 1.0f, 0.02f);
+
+    anim.tick(0.016f, 0, 0.5f);
+    EXPECT_FLOAT_EQ(anim.fade(), 1.0f);
+    EXPECT_FLOAT_EQ(anim.scalePulse(), 1.0f);
+}
+
 TEST(OwViewmodelTest, ProjectionUsesItsOwnFov) {
     eldenring::ow::OwViewmodelConfig wide;
     wide.fov_deg = 90.f;
