@@ -62,6 +62,10 @@ if(WIN32)
     set(ELDENRING_ADAPTER_SRCS
         src/loader.cpp
         src/overlay_d3d12.cpp
+        src/overlay_hook.cpp
+        src/overlay_hud.cpp
+        src/overlay_scene.cpp
+        src/overlay_textures.cpp
         src/steve_renderer_d3d12.cpp
         src/steve_draw_first_person.cpp
         src/render/d3d12_util.cpp
