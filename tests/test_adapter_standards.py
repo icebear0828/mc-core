@@ -138,6 +138,19 @@ def test_every_host_feature_is_documented_in_the_reverse_interface_list():
         assert f'"{name}"' in header, f"hostFeatureName() does not name {name}"
 
 
+def test_eldenring_loader_is_thin():
+    """loader.cpp is the dinput8 entry point; gameplay logic belongs in domain modules.
+
+    Issue #96: keep the loader below 200 lines so it only handles DLL entry,
+    worker-thread startup, dependency assembly and teardown.
+    """
+    path = ADAPTERS_DIR / "eldenring" / "src" / "loader.cpp"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) < 200, (
+        f"loader.cpp is {len(lines)} lines; keep it below 200 by moving logic into domain modules"
+    )
+
+
 def test_reverse_interface_list_is_linked_and_its_paths_exist():
     doc = (REPO_ROOT / "docs" / "REVERSE_INTERFACES.md").read_text(encoding="utf-8")
     for linker in (REPO_ROOT / "docs" / "PORTING_PLAYBOOK.md", REPO_ROOT / "docs" / "ADAPTER_SPECIFICATION.md",

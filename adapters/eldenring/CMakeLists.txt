@@ -61,6 +61,21 @@ if(WIN32)
 
     set(ELDENRING_ADAPTER_SRCS
         src/loader.cpp
+        src/core/loader_state.cpp
+        src/core/loader_services.cpp
+        src/core/player_services.cpp
+        src/core/domain_wiring.cpp
+        src/hooks/hook_setup.cpp
+        src/hooks/camera_runtime.cpp
+        src/combat/combat_services.cpp
+        src/combat/bullet_runtime.cpp
+        src/world/summon_runtime.cpp
+        src/world/mining_runtime.cpp
+        src/world/block_actions.cpp
+        src/world/tnt_runtime.cpp
+        src/world/flags_runtime.cpp
+        src/movement/movement_runtime.cpp
+        src/ui/hud_overlay.cpp
         src/overlay_d3d12.cpp
         src/overlay_hook.cpp
         src/overlay_hud.cpp
