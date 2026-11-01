@@ -464,12 +464,11 @@ bool CsRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     pd.SampleMask = UINT_MAX;
     pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    // The weapon meshes and the VRF-exported agent glove/sleeve meshes use
-    // opposite winding conventions. Back-face culling therefore drops the near
-    // glove/sleeve surface and leaves the far (inner) surface visible, which is
-    // exactly the "arm shows through the sleeve / knife handle shows through
-    // the glove" symptom. Draw both faces and let the depth test pick the
-    // nearest one; the viewmodel is small enough that the extra fill is cheap.
+    // csgo_character.slang is single-sided (CullMode Back), but the CSVM
+    // winding after fp::toHost()'s Z mirror is not normalized across the AK
+    // and knife assets; CULL_BACK made the knife's glove draw its inner
+    // surface over the blade. Keep both faces until the converters emit a
+    // consistent, mirror-corrected winding.
     pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     pd.RasterizerState.DepthClipEnable = TRUE;
     pd.DepthStencilState.DepthEnable = TRUE;
@@ -1210,16 +1209,10 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
     // once per second so the file can be added or removed without a restart.
     static bool depth_flip = false;
     static uint64_t depth_flip_check = 0;
-    static bool bare_arm_visible = false;
-    static uint64_t bare_arm_check = 0;
     const uint64_t now_ms = GetTickCount64();
     if (now_ms - depth_flip_check > 1000) {
         depth_flip = std::filesystem::exists("mc_er_csdepthflip.txt");
         depth_flip_check = now_ms;
-    }
-    if (now_ms - bare_arm_check > 1000) {
-        bare_arm_visible = std::filesystem::exists("mc_er_csbarearm.txt");
-        bare_arm_check = now_ms;
     }
     const bool use_depth_flip = depth_flip && pso_depth_flip_ != nullptr;
     const float clear_depth = use_depth_flip ? 0.0f : 1.0f;
@@ -1316,15 +1309,6 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
         const float is_arm = (type == SubmeshType::Sleeve) ? 3.0f
                            : (type == SubmeshType::BareArm) ? 2.0f
                            : (type == SubmeshType::Arms) ? 1.0f : 0.0f;
-
-        // The bare arm is the skin layer underneath the agent sleeve. When a
-        // sleeve is loaded it is the outer layer; drawing the bare arm as well
-        // makes it poke through the elbow/cuff seams and the near-plane clip,
-        // which reads as brown patches at the bottom corners. Hide it unless
-        // the diagnostic toggle asks for it.
-        if (type == SubmeshType::BareArm && sleeve_tex_.tex != nullptr && !bare_arm_visible) {
-            continue;
-        }
 
         // CSVM v3: a submesh follows the animation track named after its bone.
         // Knife arms_glove maps to the legacy "arms" track; gun arms_L/arms_R
