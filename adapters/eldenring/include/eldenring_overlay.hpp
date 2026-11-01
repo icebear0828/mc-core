@@ -72,6 +72,7 @@ struct SteveState {
     float swing{0.f}; // arm swing progress 0..1 (0 = idle)
     bool dead{false}; // the player's HP is 0: the figure falls over (Minecraft death flip)
     float hurt{0.f};  // 1 just hurt .. 0: the figure flashes red
+    float hurt_side{1.f}; // -1/+1: the side the damage came from (drives the third-person hurt tilt)
     bool first_person{false};   // draw the view model (bare arm or held item) instead of the figure
     uint16_t held_item{0};      // mc::ItemId the hotbar wants in the hand (0 = bare hand)
     uint16_t offhand_item{0};   // mc::ItemId in offhand (0 = none)
