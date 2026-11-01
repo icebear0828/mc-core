@@ -44,9 +44,9 @@ inline OwStrikeParams owStrikeParamsFor(OwStrikeKind kind) {
     switch (kind) {
         case OwStrikeKind::HandCannon:
             p.shot.damage = 40.f;
-            p.shot.max_range_m = 35.f;
-            p.shot.hit_radius_m = 0.7f;
-            p.shot.falloff_start = 0.6f;
+            p.shot.max_range_m = 60.f;
+            p.shot.hit_radius_m = 0.8f;
+            p.shot.falloff_start = 0.55f;
             p.shot.min_damage_scale = 0.45f;
             break;
         case OwStrikeKind::RocketPunch:

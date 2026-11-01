@@ -10,6 +10,7 @@ using eldenring::ow::RocketPunchDashConfig;
 using eldenring::ow::rocketPunchDirection;
 using eldenring::ow::rocketPunchDistance;
 using eldenring::ow::rocketPunchSpeed;
+using eldenring::ow::rocketPunchStateEnd;
 
 TEST(OwDashTest, SpeedIsZeroOutsideTheThrustWindow) {
     const RocketPunchDashConfig cfg{};
@@ -63,6 +64,17 @@ TEST(OwDashTest, DirectionProjectsToTheHorizontalPlane) {
 
     const float vertical[3] = {0.f, -1.f, 0.f};
     EXPECT_FALSE(rocketPunchDirection(vertical, x, z));
+}
+
+TEST(OwDashTest, StateEndKeepsTheWholeThrustWindow) {
+    // The tail trim must not cut the 2.25-3.05 s window: that would shrink the
+    // integrated distance to ~40% of ow_dash_distance.
+    EXPECT_NEAR(rocketPunchStateEnd(2.25f, 0.35f, 3.567f), 3.05f, 1e-4f);
+    EXPECT_NEAR(rocketPunchStateEnd(2.25f, 0.f, 3.567f), 3.05f, 1e-4f);
+    // A tail past the window still trims, clamped to the clip.
+    EXPECT_NEAR(rocketPunchStateEnd(2.25f, 2.f, 3.567f), 3.567f, 1e-4f);
+    // Without a loaded clip the window still closes at 3.05.
+    EXPECT_NEAR(rocketPunchStateEnd(2.25f, 0.35f, 0.f), 3.05f, 1e-4f);
 }
 
 } // namespace

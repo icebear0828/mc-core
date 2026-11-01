@@ -573,16 +573,20 @@ void PlayerLocomotion::stepFlight(float dt, uint64_t now_ms, RuntimeContext& ctx
 void PlayerLocomotion::stepOwRocketPunch(float dt, RuntimeContext& ctx) {
     const bool fg = callbacks_.is_game_in_foreground ? callbacks_.is_game_in_foreground() : true;
     const bool dead = callbacks_.is_player_dead ? callbacks_.is_player_dead() : false;
-    if (!ctx.mode().ow_mode.load(std::memory_order_relaxed) ||
-        ctx.mode().ow_state.load(std::memory_order_relaxed) != 3 ||
-        ctx.ui().inv_open.load(std::memory_order_relaxed) || !fg || dead) {
+    const bool state3 = ctx.mode().ow_mode.load(std::memory_order_relaxed) &&
+                        ctx.mode().ow_state.load(std::memory_order_relaxed) == 3 &&
+                        !ctx.ui().inv_open.load(std::memory_order_relaxed) && fg && !dead;
+    if (!state3) {
+        if (ow_dash_active_) {
+            ow_dash_active_ = false;
+            log("OW-DASH: ended by state change");
+        }
         return;
     }
 
     eldenring::ow::RocketPunchDashConfig cfg;
     cfg.distance_m = ctx.mode().ow_dash_distance.load(std::memory_order_relaxed);
-    const float speed = eldenring::ow::rocketPunchSpeed(ctx.mode().ow_anim_time.load(std::memory_order_relaxed), cfg);
-    if (speed <= 0.f) return;
+    const float anim_time = ctx.mode().ow_anim_time.load(std::memory_order_relaxed);
 
     CameraPose cam{};
     float dx = 0.f, dz = 0.f;
@@ -597,6 +601,29 @@ void PlayerLocomotion::stepOwRocketPunch(float dt, RuntimeContext& ctx) {
 
     float feet[3] = {};
     if (!callbacks_.safe_read(module + layout::kPhysicsPosition, feet, sizeof(feet))) return;
+
+    if (anim_time >= cfg.end_time) {
+        if (ow_dash_active_) {
+            const float ax = feet[0] - ow_dash_start_[0];
+            const float az = feet[2] - ow_dash_start_[2];
+            log("OW-DASH: done configured=%.2f actual=%.2f", static_cast<double>(cfg.distance_m),
+                static_cast<double>(std::sqrt(ax * ax + az * az)));
+            ow_dash_active_ = false;
+        }
+        return;
+    }
+
+    const float speed = eldenring::ow::rocketPunchSpeed(anim_time, cfg);
+    if (speed <= 0.f) return;
+
+    if (!ow_dash_active_) {
+        ow_dash_active_ = true;
+        ow_dash_start_[0] = feet[0];
+        ow_dash_start_[1] = feet[1];
+        ow_dash_start_[2] = feet[2];
+        log("OW-DASH: start configured=%.2f window=%.2f..%.2f", static_cast<double>(cfg.distance_m),
+            static_cast<double>(cfg.start_time), static_cast<double>(cfg.end_time));
+    }
 
     const float clamped_dt = std::clamp(dt, 0.001f, 0.05f);
     float step = speed * clamped_dt;
@@ -631,5 +658,4 @@ void PlayerLocomotion::stepOwRocketPunch(float dt, RuntimeContext& ctx) {
         callbacks_.safe_write(module + layout::kPhysicsOrientation, q_raw, sizeof(q_raw));
     }
 }
-
 } // namespace eldenring::movement

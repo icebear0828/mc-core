@@ -155,6 +155,30 @@ void AdjustCsView(int axis, float delta) {
 #endif
 }
 
+void AdjustOwView(int axis, float delta) {
+#if ENABLE_OW_VIEWMODEL
+    auto cfg = g_ow_cfg;
+    switch (axis) {
+        case 0: cfg.offset_x += delta; break;
+        case 1: cfg.offset_y += delta; break;
+        case 2: cfg.offset_z += delta; break;
+        case 3: cfg.fov_deg = std::clamp(cfg.fov_deg + delta, 20.f, 140.f); break;
+        case 4: cfg.scale = std::clamp(cfg.scale + delta, 0.05f, 10.f); break;
+        case 5: cfg.shoot_motion = std::clamp(cfg.shoot_motion + delta, 0.f, 1.f); break;
+        default: return;
+    }
+    g_ow_cfg = cfg;
+    Logf("ow view: x=%.3f y=%.3f z=%.3f fov=%.1f scale=%.3f shoot=%.2f",
+         static_cast<double>(cfg.offset_x), static_cast<double>(cfg.offset_y),
+         static_cast<double>(cfg.offset_z), static_cast<double>(cfg.fov_deg),
+         static_cast<double>(cfg.scale), static_cast<double>(cfg.shoot_motion));
+    PersistOwConfig(cfg);
+#else
+    (void)axis;
+    (void)delta;
+#endif
+}
+
 void SetBlockMesh(const mc::rig::RigMesh& mesh) {
     std::lock_guard<std::mutex> g(g_block_mutex);
     g_block_mesh = mesh;

@@ -179,6 +179,145 @@ uv run python tools/deploy_modes.py --modes all --deploy
 
 ---
 
+### 0.8 射击 / 技能 / 动画手感参数化（2026-11-01）
+
+手感的短板在运行时逻辑，不在资产：手炮没有射速、技能没有冷却、直拳播完整段 3.57 s、命中没有顿帧。本轮把这些全部变成 `mc_er_ow.txt` 可调项，并给 OW 补了实时调参键。
+
+| 键 | 默认 | 作用 |
+|---|---|---|
+| `ow_fire_interval` | 0.45 s | 手炮射击间隔，冷却内的点击被忽略 |
+| `ow_punch_cooldown` | 0.8 s | 直拳释放后的冷却 |
+| `ow_uppercut_cooldown` | 1.2 s | 上勾拳冷却 |
+| `ow_slam_cooldown` | 2.0 s | 裂地猛击冷却 |
+| `ow_punch_tail` | 0.35 s | 直拳释放后只再播这么多秒（裁剪回 idle 的尾段） |
+| `ow_anim_speed` | 1.0 | 攻击 clip 播放倍率（idle 不受影响） |
+| `ow_hitstop` | 0.05 s | 命中时攻击 clip 冻结时长 |
+| `ow_slam_shake` | 0.06 m | 裂地猛击的相机位置抖动幅度 |
+| `ow_recoil_kick` | 0.05 m | 开火时拳套向镜头方向的回弹 |
+| `ow_recoil_recover` | 0.12 s | 回弹衰减时间常数 |
+| `ow_fov_pulse` | 1.5° | 开火时的视图 FOV 脉冲 |
+| `ow_blend_time` | 0.08 s | clip 交叉淡入淡出时长 |
+
+**实现位置**：
+- 纯逻辑与曲线：`adapters/eldenring/include/eldenring_ow_feel.hpp`（`owRecoilOffset` / `owFovPulse` / `owTrimmedEndTime` / `owReady`）。
+- 调度器计时：`src/input/hotkey_dispatcher.cpp`（射速、冷却、顿帧、尾段裁剪、`ow_since_shot`）。
+- 渲染：`src/overlay_scene.cpp` 每帧按 `ow_since_shot` 计算回弹与 FOV 脉冲；`src/ow_renderer_d3d12.cpp` 把回弹作为视图空间 Z 平移应用。
+- 相机抖动：`src/hooks/camera_runtime.cpp` 的 `TriggerOwShake`，只叠加在已经写入的第一人称眼睛位置上，不碰旋转。
+- 配置解析：`src/ui/hud_overlay.cpp`；实时调参写回同一文件（保留注释与其他键）。
+
+**实时调参键（仅 OW 模式，Shift 为 5 倍步长）**：
+
+| 键 | 轴 |
+|---|---|
+| `[` `]` | Z |
+| `,` `.` | X |
+| `;` `'` | Y |
+| `-` `=` | FOV |
+| `\` `/` | scale |
+
+**测试**：`tests/test_eldenring_ow_feel.cpp`（曲线、裁剪、冷却）、`tests/test_eldenring_hotkey_dispatcher.cpp` 新增 `OwHandCannonRespectsFireInterval` / `OwPunchCooldownBlocksImmediateRecharge` / `OwSlamRequestsCameraShake` / `OwTuningKeysAdjustTheView`。合并构建 `mc+cs+ow` 全量 1350 passed / 1 skipped。
+
+**已部署**：2026-11-01，`Game\dinput8.dll` SHA256 `2420CFBE386A77366409D0C7D98074D800E03F0AEC46A4A6D3004F271824DF47`；`mc_er_ow.txt` 已补全新键。
+
+### 0.9 双手显示与冲拳位移修复（2026-11-01）
+
+**问题 1：只有右手。** 1P 网格 `SK_Doomfist_OW1_Gameplay1P` 实际有 3 个 LOD section：section 0 右手炮、section 1 双臂袖套、section 2 左手；旧烘焙脚本只导了 section 0。
+
+- `tools/ow/build_ow_skinned.py` 改为多 section：默认 `--sections all`，顶点按 section 拼接，索引全局偏移，每个 section 一个 submesh；骨骼表取并集。
+- 骨骼上限 `MAX_BONES` / `kOwMaxSkinBones` 64 → 128（实际 100）。
+- 重新烘焙后 `ow_gauntlet.bin` 2,676,445 字节、100 骨骼、3 submesh、5 clip，SHA256 `859CBF853AD0326C53E1C0F631D515924DEFEAEDB33081AB526456BC86B76EBC`。
+- 运行时解析器本来就支持多 submesh，无需改渲染路径；`ParsesTheShippedAssetWhenProvided` 断言更新为 100 骨骼 / 3 section，并检查 `Wrist_L` 存在。
+
+**问题 2：冲拳位移变短。** 上一轮加的 `ow_punch_tail=0.35` 让直拳状态在 `2.25 + 0.35 = 2.6 s` 结束，而位移窗口是 2.25–3.05 s，积分只覆盖约 40%：配置 4 m 实际约 1.6 m。
+
+- 新增 `kRocketPunchEndTime = 3.05f` 与 `rocketPunchStateEnd()`：状态结束时间不早于推力窗口结束，tail 只裁掉 3.05 s 之后回 idle 的部分。
+- `stepOwRocketPunch` 增加 `OW-DASH: start/done configured=… actual=…` 日志，方便实机核对位移；状态被提前切走时记录 `ended by state change`。
+- 新增测试 `OwDashTest.StateEndKeepsTheWholeThrustWindow`。
+
+**验证**：`mc+cs+ow` 全量 1350 passed / 1 skipped（`MC_OW_ASSET` 指向新资产时 shipped-asset 测试也通过）。
+
+**已部署**：`Game\dinput8.dll` SHA256 `2420CFBE386A77366409D0C7D98074D800E03F0AEC46A4A6D3004F271824DF47`；`Game\mods\mc_adapter\ow_gauntlet.bin` SHA256 `859CBF853AD0326C53E1C0F631D515924DEFEAEDB33081AB526456BC86B76EBC`。
+
+### 0.10 左手段贴图与手炮射速（2026-11-01）
+
+**左手贴图错误**：3 个 section 使用 3 个不同材质，旧渲染器只绑一套贴图（gauntlet）。
+
+- CSVM 的 submesh 首字段改为 **material index**（skinned submesh 原本不用 bone index，v4 格式兼容）。
+- 渲染器改为每材质一组 albedo/normal/ORM（最多 4 材质），OW 专用 SRV 堆 3 → 12 槽；draw 时按 `sub.material` 绑定对应的 descriptor table。
+- 材质映射：`0` 右手炮 → `ow_gauntlet.*`，`1` 袖套 → `ow_cloth.png`（`cloth_albedo.png`），`2` 左手/前臂 → `ow_body.png`（`body_albedo.png`）。body/cloth 没有 normal/ORM，渲染器绑定平面默认贴图。
+- 部署新增两张贴图（OW 文件数 7 → 9）。
+
+**手炮射速**：`ow_fire_interval` 默认 0.45 → **0.25 s**（`eldenring_ow_feel.hpp`、`ModeConfig`、`tools/deploy_modes.py` 与游戏内 `mc_er_ow.txt` 同步）。
+
+**验证**：`MC_OW_ASSET` 指向新资产时全量 **1351 passed**（shipped-asset 测试同时覆盖 material 字段）。
+
+**已部署**：`Game\dinput8.dll` SHA256 `2420CFBE386A77366409D0C7D98074D800E03F0AEC46A4A6D3004F271824DF47`；`Game\mods\mc_adapter\ow_gauntlet.bin` SHA256 `859CBF853AD0326C53E1C0F631D515924DEFEAEDB33081AB526456BC86B76EBC`。
+
+### 0.11 手炮伤害与射击反馈（2026-11-02）
+
+**左键没伤害的根因**：手炮射程只有 35 m，而实测时状态行一直是 `nearest=41.3` / `45.2` / `46.1`，日志里 `OW-STRIKE: kind=0 hits=0`——所有目标都在射程外。
+
+- 手炮 `max_range_m` 35 → **60 m**，`hit_radius_m` 0.7 → **0.8**，`falloff_start` 0.6 → 0.55。
+- 远距离仍有衰减（60 m 处 45%），不会变成无脑远程。
+
+**射击反馈**（此前只有音效和动画）：
+
+| 层 | 实现 |
+|---|---|
+| 枪口火光 | 新增 `ParticleKind::Muzzle` / `FxKind::Muzzle`，在拳套前方（相机 + forward·0.8 + right·0.16 − up·0.10）生成 12 颗短命亮橙粒子 |
+| 弹道 | 用现有 `SpawnTracer` 从枪口画到命中点/墙面/最大射程，`0.07 s` 淡出 |
+| 未命中 | 静态射线打到墙时在墙面生成 Dust 尘雾，弹道也停在墙上 |
+| 命中 | 保留原有 Spark + HUD 命中标记/击杀 X |
+
+**测试**：全量 **1351 passed**（`MC_OW_ASSET` 指向新资产时也通过）；命中圆柱半径变化同步更新了 `HandCannonHitsTheHostileUnderTheCrosshair` 的期望值（7.3 → 7.2 m）。
+
+**已部署**：`Game\dinput8.dll` SHA256 `C28D665D34C233BA2191B96ECEFB8A44153E3A1CF97DC134659D745EC769454C`。
+
+### 0.12 原版音效与枪口火光（2026-11-02）
+
+**音效**：从 PBZ mod 的 `Original/Audio` 解码了 9 个原版事件（`tools/extract_ow_sounds.py` 的 `EVENTS` 已扩展）：
+
+| 事件 | 原版资产 | 触发 |
+|---|---|---|
+| `ow.cannon.fire` | `MIX_原版手炮完整开火` | 左键开火 |
+| `ow.cannon.hit` | `MIX_原版手炮命中` | 手炮命中 |
+| `ow.punch.charge` | `MIX_原版直拳蓄力一` | **右键按下**（新增） |
+| `ow.punch.release` | `MIX_原版直拳释放` | 右键松开 |
+| `ow.punch.impact` | `MIX_原版直拳二次撞击` | 直拳命中 |
+| `ow.uppercut.start` / `.hit` | `MIX_原版上勾拳完整起手` / `MIX_原版上勾命中` | E 起手 / 命中 |
+| `ow.slam.flight` / `.impact` | `SFX_原版裂地飞行` / `MIX_原版裂地主层落地` | Q 起手 / 1.45 s 落地 |
+
+**火光**：`MI_PBZ_手炮闪光` 是 `BLEND_Additive` 材质，基础色取自 `T_PBZ_HandFlash`（RGB 255/102/10，纯色 32×32）。运行时按这个原色绘制枪口火光，并锚定到 combat service 报告的枪口世界坐标（`g_ow_muzzle_world`），持续 0.09 s；粒子层同步改为该橙色。
+
+> 说明：mod 的火光形状来自材质/网格（`SM_火花球` 等），不是贴图本身。当前是 2D 辉光近似；若要做成真正的 3D 火光，下一步需要导出 `SM_火花球` 静态网格并加一条 additive 绘制通道。
+
+**验证**：全量 **1351 passed**；`OwModePlaysAuthenticSoundEvents` 更新为“按下播放蓄力音、按住不再播释放音”。
+
+**已部署**：`Game\dinput8.dll` SHA256 `DA234B372CFD3C5D16293D9AEF05FAD0A6BB0F59C04CC00A84D6FB740D687D92`；`sounds/ow/` 下 9 个 WAV，`sounds_manifest.txt` 9 条 `ow.*`。
+
+### 0.13 蓄力音循环与枪口火光定位（2026-11-02）
+
+**蓄力音**：`MIX_原版直拳蓄力一` 只有 1.6 s，而直拳前摇是 2.25 s，单次播放会在松开前就停。音频层新增 `eraudio::PlayLoop` / `StopLoop`（XAudio2 `XAUDIO2_LOOP_INFINITE`，每个事件一条循环 voice）；右键按下循环播放，松开/离开 OW/死亡时停止。
+
+**枪口火光定位**：之前用世界相机投影，火光位置和拳套对不上。新增 `OwRenderer::muzzleScreen()`：取 `IndexFinger_3_R`（回退 `Wrist_R` / `IndexFinger_2_R`）的 palette 平移，沿视图空间 +Z 推 0.10 m，套用 bob/回弹/scale 后用 **viewmodel 投影** 投到屏幕，火光直接钉在右手枪口上。颜色仍取 `MI_PBZ_手炮闪光` 的 additive 原色 255/102/10。
+
+> 仍未还原的是火光/曳光的**网格形状**（mod 用 `SM_火花球` / `SM_曳光柱` + additive 材质）。当前是 2D 辉光 + 2D tracer；要做 1:1 需要导出静态网格并加一条 additive 3D 绘制通道。
+
+**验证**：全量 1351 passed；蓄力音测试覆盖“按下循环、松开停止”。
+
+**已部署**：`Game\dinput8.dll` SHA256 `DA234B372CFD3C5D16293D9AEF05FAD0A6BB0F59C04CC00A84D6FB740D687D92`。
+
+### 0.14 火光去掉自创形状（2026-11-02）
+
+上一版把世界空间的 Muzzle 粒子和六条射线一起投到屏幕上，实际效果“奇形怪状”。本轮：
+
+- 不再绘制世界空间的 Muzzle 粒子（`DrawFx` 直接跳过），只保留锚定在右手枪口的屏幕空间辉光。
+- 去掉六条射线和硬边圆，改成四层半透明圆盘（外圈 255/102/10，核心 255/248/225），0.09 s 淡出。
+
+**关于“是否跟随 mod”**：颜色与 additive 风格来自 `MI_PBZ_手炮闪光` / `T_PBZ_HandFlash`（RGB 255/102/10），音效来自 mod 的 `Original/Audio`。但 mod 的火光**形状**来自 `SM_火花球` 静态网格；尝试用 CUE4Parse 导出时 UE5.6 静态网格反序列化失败（`Invalid bool value`，脚本映射不全），所以当前辉光是形状近似，不是网格本体。要 1:1 还原需要换一个能解析 UE5.6 静态网格的工具（FModel/UEViewer）导出 `SM_火花球`，再给 OW 渲染器加一条 additive 网格通道。
+
+**验证**：全量 1351 passed。**已部署**：`Game\dinput8.dll` SHA256 `DA234B372CFD3C5D16293D9AEF05FAD0A6BB0F59C04CC00A84D6FB740D687D92`。
+
 ## 1. 核心缺陷根因与修复细节 (Root Cause Analysis & Fixes)
 
 ### 1.1 贴图丢失 Bug（原版 OW 拳套金属与高光生效）

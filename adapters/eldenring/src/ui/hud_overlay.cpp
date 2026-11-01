@@ -1,5 +1,7 @@
 #include "core/loader_internal.hpp"
 
+#include <fstream>
+
 namespace eldenring::loader_detail {
 
 void RestoreNativeModel() {
@@ -377,6 +379,30 @@ void SetupOverlay() {
                     eldenring::RuntimeContext::Instance().mode().ow_damage_scale.store(std::clamp(value, 0.f, 10.f));
                 } else if (key == "ow_shoot_motion") {
                     ow_cfg.shoot_motion = std::clamp(value, 0.f, 1.f);
+                } else if (key == "ow_fire_interval") {
+                    eldenring::RuntimeContext::Instance().mode().ow_fire_interval.store(std::clamp(value, 0.05f, 5.f));
+                } else if (key == "ow_punch_cooldown") {
+                    eldenring::RuntimeContext::Instance().mode().ow_punch_cooldown.store(std::clamp(value, 0.f, 30.f));
+                } else if (key == "ow_uppercut_cooldown") {
+                    eldenring::RuntimeContext::Instance().mode().ow_uppercut_cooldown.store(std::clamp(value, 0.f, 30.f));
+                } else if (key == "ow_slam_cooldown") {
+                    eldenring::RuntimeContext::Instance().mode().ow_slam_cooldown.store(std::clamp(value, 0.f, 30.f));
+                } else if (key == "ow_punch_tail") {
+                    eldenring::RuntimeContext::Instance().mode().ow_punch_tail.store(std::clamp(value, 0.f, 5.f));
+                } else if (key == "ow_anim_speed") {
+                    eldenring::RuntimeContext::Instance().mode().ow_anim_speed.store(std::clamp(value, 0.25f, 4.f));
+                } else if (key == "ow_hitstop") {
+                    eldenring::RuntimeContext::Instance().mode().ow_hitstop.store(std::clamp(value, 0.f, 0.5f));
+                } else if (key == "ow_slam_shake") {
+                    eldenring::RuntimeContext::Instance().mode().ow_slam_shake.store(std::clamp(value, 0.f, 1.f));
+                } else if (key == "ow_recoil_kick") {
+                    ow_cfg.recoil_kick = std::clamp(value, -0.5f, 0.5f);
+                } else if (key == "ow_recoil_recover") {
+                    ow_cfg.recoil_recover = std::clamp(value, 0.01f, 1.f);
+                } else if (key == "ow_fov_pulse") {
+                    ow_cfg.fov_pulse = std::clamp(value, 0.f, 20.f);
+                } else if (key == "ow_blend_time") {
+                    ow_cfg.blend_seconds = std::clamp(value, 0.f, 0.5f);
                 }
             }
             Log("ow config: %s", (g_game_dir + "mc_er_ow.txt").c_str());
@@ -430,3 +456,67 @@ void SetupOverlay() {
 }
 
 } // namespace eldenring::loader_detail
+
+namespace erov {
+
+// Live OW tuning writes the six view keys back into mc_er_ow.txt, preserving
+// comments and every unrelated key so the next launch starts from the tuned
+// values.
+void PersistOwConfig(const OwConfig& cfg) {
+    using namespace eldenring::loader_detail;
+    const std::string path = g_game_dir + "mc_er_ow.txt";
+    std::vector<uint8_t> bytes;
+    std::string text;
+    if (ReadFileAll(path, bytes)) text.assign(bytes.begin(), bytes.end());
+
+    char line_buf[64];
+    auto format_line = [&](const char* key, double value) {
+        std::snprintf(line_buf, sizeof(line_buf), "%s=%.4g\n", key, value);
+        return std::string(line_buf);
+    };
+    struct Update { const char* key; std::string line; };
+    const Update updates[] = {
+        {"ow_fov", format_line("ow_fov", cfg.fov_deg)},
+        {"ow_scale", format_line("ow_scale", cfg.scale)},
+        {"ow_offset_x", format_line("ow_offset_x", cfg.offset_x)},
+        {"ow_offset_y", format_line("ow_offset_y", cfg.offset_y)},
+        {"ow_offset_z", format_line("ow_offset_z", cfg.offset_z)},
+        {"ow_shoot_motion", format_line("ow_shoot_motion", cfg.shoot_motion)},
+    };
+    constexpr size_t kUpdates = sizeof(updates) / sizeof(updates[0]);
+    bool seen[kUpdates] = {};
+
+    std::string out;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t end = text.find('\n', pos);
+        if (end == std::string::npos) end = text.size();
+        std::string line = text.substr(pos, end - pos);
+        std::string key = line;
+        const size_t eq = line.find('=');
+        if (eq != std::string::npos) key = line.substr(0, eq);
+        if (!key.empty() && key.back() == '\r') key.pop_back();
+        bool replaced = false;
+        for (size_t i = 0; i < kUpdates; ++i) {
+            if (key == updates[i].key) {
+                out += updates[i].line;
+                seen[i] = true;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            out += line;
+            out += '\n';
+        }
+        pos = end + 1;
+    }
+    for (size_t i = 0; i < kUpdates; ++i) {
+        if (!seen[i]) out += updates[i].line;
+    }
+
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (file) file.write(out.data(), static_cast<std::streamsize>(out.size()));
+}
+
+} // namespace erov

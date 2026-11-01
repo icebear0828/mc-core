@@ -408,6 +408,8 @@ bool ChrCamPosAddress(uintptr_t& addr);
 bool CameraPositionTargetSafe(uintptr_t addr);
 void RestoreCamKeep();
 void AfterCameraStep(bool have_before, uintptr_t addr, const float before[3]);
+// Decaying camera-position shake, used by the OW seismic slam.
+void TriggerOwShake(float amplitude);
 
 // ---- world: mining -------------------------------------------------------------------------
 void __fastcall HitCollectorDetour(void* self, const void* hit);

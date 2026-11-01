@@ -631,6 +631,7 @@ OwStrikeResult CombatService::fireOwStrike(eldenring::ow::OwStrikeKind kind, Dam
         const float cam_rel[3] = {cam.position[0] - feet[0], cam.position[1] - feet[1], cam.position[2] - feet[2]};
         const eldenring::ow::OwStrikeHit hit =
             eldenring::ow::traceOwStrike(cam_rel, cam.forward, enemies, params);
+
         if (hit.index >= 0) {
             const EnemyInfo& victim = enemies[static_cast<size_t>(hit.index)];
             bool visible = true;

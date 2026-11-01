@@ -14,5 +14,9 @@ void SetMasterVolume(float volume);
 
 // Thread safe, cheap. Unknown events are ignored. `volume` scales the file's own volume.
 void Play(const char* event, float volume = 1.f);
+// Loops `event` until StopLoop() (one loop voice per event). Used by the OW
+// rocket-punch charge, which must keep sounding while RMB is held.
+void PlayLoop(const char* event, float volume = 1.f);
+void StopLoop(const char* event);
 
 } // namespace eraudio

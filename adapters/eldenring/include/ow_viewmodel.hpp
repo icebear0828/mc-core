@@ -26,9 +26,9 @@
 
 namespace eldenring::ow {
 
-// Must match the HLSL palette size in ow_renderer_d3d12.cpp and MAX_BONES in
+// Must match MAX_BONES in tools/ow/build_ow_skinned.py. Both arms need 100
 // tools/ow/build_ow_skinned.py.
-inline constexpr uint32_t kOwMaxSkinBones = 64;
+inline constexpr uint32_t kOwMaxSkinBones = 128;
 
 // Source 2 style decoupled viewmodel projection. The gauntlet has its own FOV,
 // scale and translation so it never inherits the CS2 or the host game camera.
@@ -44,6 +44,15 @@ struct OwViewmodelConfig {
     // clip, which throws the gauntlet 0.35 m towards the camera and 0.34 m up;
     // too floaty in first person). Blends each bone towards the idle pose.
     float shoot_motion{0.4f};
+    // Feel tuning (mc_er_ow.txt): recoil kick towards the camera and its decay
+    // constant, the viewmodel FOV pulse on fire, and the clip crossfade time.
+    float recoil_kick{0.05f};
+    float recoil_recover{0.12f};
+    float fov_pulse{1.5f};
+    float blend_seconds{0.08f};
+    // Per-frame derived value written by the overlay: viewmodel-space Z
+    // translation for the recoil (negative pulls towards the camera).
+    float recoil_offset{0.0f};
 };
 
 inline mc::rig::Mat4 computeOwProjection(unsigned width, unsigned height, const OwViewmodelConfig& cfg = {}) {
@@ -119,6 +128,7 @@ struct OwVertex {
 static_assert(sizeof(OwVertex) == 40, "CSVM v4 vertex stride must stay 40 bytes");
 
 struct OwSubmesh {
+    uint32_t material{0}; // index into the renderer's material texture table
     uint32_t first_index{0};
     int32_t base_vertex{0};
     uint32_t index_count{0};
@@ -184,8 +194,7 @@ inline bool parseOwModel(const uint8_t* data, size_t size, OwModel& out) {
         offset += name_len;
 
         OwSubmesh sub;
-        uint32_t bone_index = 0;
-        std::memcpy(&bone_index, data + offset, 4);
+        std::memcpy(&sub.material, data + offset, 4);
         offset += 4;
         std::memcpy(&sub.first_index, data + offset, 4);
         offset += 4;
@@ -354,12 +363,13 @@ public:
         blend_left_ = 0.0f;
     }
 
-    void tick(float dt, uint8_t state, float anim_time, uint8_t variant = 0) {
+    void tick(float dt, uint8_t state, float anim_time, uint8_t variant = 0, float blend_seconds = 0.08f) {
         (void)variant;
         const uint8_t previous_state = last_state_;
         last_state_ = state;
         current_state_ = state;
         anim_time_ = anim_time;
+        blend_seconds_ = std::max(0.0f, blend_seconds);
         float effective_time = anim_time;
 
         const float bob = (state == 0) ? std::sin(anim_time * 2.5f) * 0.003f : 0.0f;
@@ -423,14 +433,15 @@ public:
         const bool seeked = state == previous_state && std::fabs(time_delta) > 0.15f;
         if ((state != previous_state || seeked) && !palette_.empty() && palette_.size() == target.size()) {
             blend_from_ = palette_;
-            blend_left_ = kBlendSeconds;
+            blend_left_ = blend_seconds_;
         } else if (palette_.size() != target.size()) {
             blend_from_.clear();
             blend_left_ = 0.0f;
         }
 
         if (blend_left_ > 0.0f && blend_from_.size() == target.size()) {
-            const float alpha = std::clamp(1.0f - blend_left_ / kBlendSeconds, 0.0f, 1.0f);
+            const float denom = (blend_seconds_ > 1e-5f) ? blend_seconds_ : 1e-5f;
+            const float alpha = std::clamp(1.0f - blend_left_ / denom, 0.0f, 1.0f);
             const float smooth = alpha * alpha * (3.0f - 2.0f * alpha);
             for (size_t b = 0; b < target.size(); ++b) {
                 target[b] = owLerpMatrix(blend_from_[b], target[b], smooth);
@@ -459,7 +470,7 @@ public:
     }
 
 private:
-    static constexpr float kBlendSeconds = 0.08f;
+    float blend_seconds_{0.08f};
 
     const OwModel* model_{nullptr};
     OwPose pose_{};

@@ -2,6 +2,18 @@
 
 namespace eldenring::loader_detail {
 
+namespace {
+std::atomic<float> g_ow_shake_amp{0.f};
+std::atomic<uint64_t> g_ow_shake_until_ms{0};
+constexpr uint64_t kOwShakeMs = 350;
+} // namespace
+
+void TriggerOwShake(float amplitude) {
+    if (!(amplitude > 0.f)) return;
+    g_ow_shake_amp.store(amplitude, std::memory_order_relaxed);
+    g_ow_shake_until_ms.store(GetTickCount64() + kOwShakeMs, std::memory_order_relaxed);
+}
+
 bool ChrCamPosAddress(uintptr_t& addr) {
     const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
     uint64_t cam = 0;
@@ -51,11 +63,22 @@ void AfterCameraStep(bool have_before, uintptr_t addr, const float before[3]) {
                     Log("camstep: REFUSED eye write at %p (target no longer looks like a camera position)",
                         reinterpret_cast<void*>(addr));
                 }
-            } else if (WriteBytesSafe(addr, eye, sizeof(eye))) {
-                g_cam_keep.pos_addr = addr;
-                std::memcpy(g_cam_keep.third_person, now, sizeof(now));
-                g_cam_keep.valid = true;
-                wrote = true;
+            } else {
+                const uint64_t now_ms = GetTickCount64();
+                const uint64_t until = g_ow_shake_until_ms.load(std::memory_order_relaxed);
+                if (now_ms < until) {
+                    const float remain = static_cast<float>(until - now_ms) / static_cast<float>(kOwShakeMs);
+                    const float amp = g_ow_shake_amp.load(std::memory_order_relaxed) * remain * remain;
+                    const float phase = static_cast<float>(call) * 0.9f;
+                    eye[0] += amp * std::sin(phase * 1.7f);
+                    eye[1] += amp * std::sin(phase);
+                }
+                if (WriteBytesSafe(addr, eye, sizeof(eye))) {
+                    g_cam_keep.pos_addr = addr;
+                    std::memcpy(g_cam_keep.third_person, now, sizeof(now));
+                    g_cam_keep.valid = true;
+                    wrote = true;
+                }
             }
         }
     }

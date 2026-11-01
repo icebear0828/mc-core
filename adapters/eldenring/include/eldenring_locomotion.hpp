@@ -155,6 +155,8 @@ private:
     unsigned fly_rebases_{0};
     flight::DoubleTap flight_tap_;
     uint64_t last_flight_log_ms_{0};
+    bool ow_dash_active_{false};
+    float ow_dash_start_[3]{};
 
     void log(const char* fmt, ...);
 
