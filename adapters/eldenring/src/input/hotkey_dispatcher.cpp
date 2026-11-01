@@ -514,15 +514,31 @@ void HotkeyDispatcher::tick(float dt) {
                 const uint32_t take = std::min(need, reserve);
                 mode.cs_ammo.store(ammo + take);
                 mode.cs_reserve.store(reserve - take);
-                if (cb_.play_sound) {
-                    cb_.play_sound(mode.cs_weapon_slot.load() == 1 ? "cs.ak47.bolt" : "cs.knife.deploy", 1.0f);
-                }
+                cs_reload_sound_stage_ = 0;
             }
             mode.cs_knife_state.store(0); // Return to Idle
             mode.cs_knife_inspect.store(false);
             mode.cs_knife_anim_time.store(0.f);
         } else {
             mode.cs_knife_anim_time.store(t);
+            if (state == 5 && mode.cs_weapon_slot.load() == 1 && max_t > 0.f) {
+                // Reload audio follows the animation instead of one sound at
+                // t=0: mag out at frame 13, mag in at frame 24, bolt pull at
+                // frame 48 of the 74-frame reload clip.
+                const float d = max_t;
+                if (cs_reload_sound_stage_ == 0 && t >= d * 0.176f) {
+                    if (cb_.play_sound) cb_.play_sound("cs.ak47.magout", 1.0f);
+                    cs_reload_sound_stage_ = 1;
+                }
+                if (cs_reload_sound_stage_ == 1 && t >= d * 0.324f) {
+                    if (cb_.play_sound) cb_.play_sound("cs.ak47.magin", 1.0f);
+                    cs_reload_sound_stage_ = 2;
+                }
+                if (cs_reload_sound_stage_ == 2 && t >= d * 0.649f) {
+                    if (cb_.play_sound) cb_.play_sound("cs.ak47.bolt", 1.0f);
+                    cs_reload_sound_stage_ = 3;
+                }
+            }
         }
     }
 #endif
@@ -646,7 +662,7 @@ void HotkeyDispatcher::tick(float dt) {
             mode.cs_knife_state.store(5); // Reload
             mode.cs_knife_inspect.store(false);
             mode.cs_knife_anim_time.store(0.f);
-            if (cb_.play_sound) cb_.play_sound(mode.cs_weapon_slot.load() == 1 ? "cs.ak47.reload" : "cs.knife.deploy", 1.0f);
+            cs_reload_sound_stage_ = 0;
             if (cb_.log) cb_.log("CS: reload");
         }
         prev_reload_r_ = r_down;
