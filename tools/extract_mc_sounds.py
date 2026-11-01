@@ -40,6 +40,8 @@ EVENTS = [
     # experience
     "entity.experience_orb.pickup", "entity.player.levelup",
     "entity.arrow.shoot", "entity.arrow.hit", "entity.arrow.hit_player", "item.crossbow.shoot",
+    # trident
+    "item.trident.throw", "item.trident.hit", "item.trident.return", "item.trident.riptide_1",
     # tnt & explosion
     "entity.tnt.primed", "entity.creeper.primed", "entity.generic.explode",
 ]
@@ -135,7 +137,15 @@ def main() -> int:
             manifest_lines.append(f"{event}|{rel}|{volume:.3f}|{pmin:.3f}|{pmax:.3f}")
         print(f"{event}: {count} file(s)")
 
-    (out_root / "sounds_manifest.txt").write_text("\n".join(manifest_lines) + "\n", encoding="utf-8")
+    # The manifest is shared with the other sound extractors (the CS2 and OW packs): keep their lines, this run only
+    # owns the events it fetched.
+    manifest_path = out_root / "sounds_manifest.txt"
+    fetched = set(args.events)
+    kept: list[str] = []
+    if manifest_path.is_file():
+        kept = [line for line in manifest_path.read_text(encoding="utf-8").splitlines()
+                if line and line.split("|", 1)[0] not in fetched]
+    manifest_path.write_text("\n".join(kept + manifest_lines) + "\n", encoding="utf-8")
     if missing:
         print("events not in sounds.json: " + ", ".join(missing), file=sys.stderr)
     print(f"wrote {len(manifest_lines)} sound files to {out_root}")

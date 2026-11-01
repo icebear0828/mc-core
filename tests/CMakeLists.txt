@@ -9,6 +9,7 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(mc_tests
     test_animator.cpp
+    test_trident.cpp
     test_death.cpp
     test_voxel_world.cpp
     test_combat.cpp

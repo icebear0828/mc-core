@@ -134,7 +134,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         const auto& dbg = eldenring::RuntimeContext::Instance().mode();
         steve.gliding = dbg.dbg_glide.load(std::memory_order_relaxed);
         steve.riptide = dbg.dbg_riptide.load(std::memory_order_relaxed);
-        steve.trident_charge = dbg.dbg_trident_charge.load(std::memory_order_relaxed);
+        steve.trident_charge = dbg.trident_charge.load(std::memory_order_relaxed);
         steve.firework_seq = dbg.dbg_firework_seq.load(std::memory_order_relaxed);
     }
     return true;
@@ -313,7 +313,7 @@ void SetupOverlay() {
                 }
             }
         }
-        {   // Phase A debug props: elytra wings and trident (drawn only when the debug keys turn them on).
+        {   // Props: the elytra wings (on the torso while gliding) and the trident (3D in the right hand).
             for (const char* prop : {"elytra_wings", "trident"}) {
                 const std::string model_path = g_game_dir + "mods\\mc_adapter\\models\\" + prop + ".geo.json";
                 std::vector<uint8_t> json;
@@ -322,6 +322,14 @@ void SetupOverlay() {
                 if (model && !model->bones.empty()) {
                     erov::RegisterModel(prop, *model);
                     Log("props: model %s (%zu bones)", prop, model->bones.size());
+                }
+                // The prop's own texture, when the deploy put one next to the model (the elytra is 64x32).
+                const std::string skin_path = g_game_dir + "mods\\mc_adapter\\" + prop + ".png";
+                std::vector<uint8_t> prop_skin;
+                unsigned pw = 0, ph = 0;
+                if (erov::DecodePngFile(skin_path, prop_skin, pw, ph) && pw == 64 && (ph == 32 || ph == 64)) {
+                    erov::SetMobSkin(prop, prop_skin.data(), pw, ph);
+                    Log("props: skin %s (%ux%u)", prop, pw, ph);
                 }
             }
         }

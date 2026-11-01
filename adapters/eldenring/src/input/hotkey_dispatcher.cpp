@@ -11,6 +11,7 @@
 #include "eldenring_creative.hpp"
 #include "eldenring_audio_data.hpp"
 #include "eldenring_bow.hpp"
+#include "mc/trident.hpp"
 #include "eldenring_shield.hpp"
 #include "eldenring_roll.hpp"
 #include "eldenring_flight.hpp"
@@ -447,6 +448,32 @@ void HotkeyDispatcher::tick(float dt) {
         }
     }
 
+    // Trident update: hold the right button to charge, release to throw. It goes through the same bullet
+    // pipeline as the bow, so it needs the same gate; in survival the thrown trident leaves the hand.
+    {
+        static mc::TridentController s_trident;
+        bool usable = false;
+        {
+            std::lock_guard<std::mutex> g(combat.melee_mutex);
+            combat.melee.select(combat.melee.selectedSlot());
+            usable = combat.melee.heldItem() == mc::ItemId::Trident && combat.melee.countAt(combat.melee.selectedSlot()) > 0;
+        }
+        usable = usable && mode.bullet_fire_enabled.load() && mc_on && fg && want_suppress && !inv_open && input_enabled && !is_dead;
+        const bool right_held = input_enabled && ((cb_.right_held && cb_.right_held()) || queryKey(VK_RBUTTON));
+        const mc::TridentUpdate u = s_trident.update(dt, right_held, usable);
+        mode.trident_charge.store(s_trident.power(), std::memory_order_relaxed);
+        mode.trident_charging.store(s_trident.charging(), std::memory_order_relaxed);
+        if (u.released) {
+            if (cb_.queue_bullet_fire && cb_.queue_bullet_fire(mc::kTridentThrowDamage)) {
+                if (creative::consumesItems(ctx.currentGameMode())) {
+                    std::lock_guard<std::mutex> g(combat.melee_mutex);
+                    combat.melee.consumeFirst(mc::ItemId::Trident);
+                }
+                if (cb_.play_sound) cb_.play_sound("item.trident.throw", 1.0f);
+            }
+        }
+    }
+
     // Shield update
     {
         static shield::ShieldController s_shield;
@@ -462,7 +489,9 @@ void HotkeyDispatcher::tick(float dt) {
                                 fg && want_suppress && !inv_open && !is_dead && mc_on;
         const bool is_drawing_bow = mode.bow_ticks.load(std::memory_order_relaxed) > 0;
         const bool is_eating = player.eating.isEating();
-        const bool shield_usable = has_shield && !is_drawing_bow && !is_eating;
+        // A charged trident owns the right button: the offhand shield stays down until it is thrown.
+        const bool is_charging_trident = mode.trident_charging.load(std::memory_order_relaxed);
+        const bool shield_usable = has_shield && !is_drawing_bow && !is_eating && !is_charging_trident;
         s_shield.update(dt, right_held, shield_usable);
         combat.shield.update(dt, right_held, shield_usable);
         const bool prev_blocking = mode.shield_blocking.load(std::memory_order_relaxed);

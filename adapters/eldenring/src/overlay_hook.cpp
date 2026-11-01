@@ -263,7 +263,8 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             g_mob_registry.setModel(g_mob_model_gpu ? &g_mob_model : nullptr);
 
             // Mobs list to allocate descriptor tables for
-            const std::vector<std::string> known_mobs = {"creeper", "zombie", "skeleton"};
+            // Each entry gets a [depth, skin] descriptor table; the props draw their own textures the same way.
+            const std::vector<std::string> known_mobs = {"creeper", "zombie", "skeleton", "elytra_wings"};
             size_t slot_idx = 8;
             for (const auto& mob : known_mobs) {
                 if (slot_idx + 1 >= 16) break;

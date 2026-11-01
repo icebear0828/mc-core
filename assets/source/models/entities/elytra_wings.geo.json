@@ -1,12 +1,12 @@
 {
   "format_version": "1.12.0",
-  "source": "Custom Blockbench recreation, not a Mojang asset. Extracted from 'replicate-steve-animations-in-blockbench (1)/dist/index.html' (see re_data_cache/model_data.js, bones 'rightWing'/'leftWing'). Coordinates are Bedrock model pixels.",
+  "source": "Custom Blockbench recreation, not a Mojang asset. Extracted from 'replicate-steve-animations-in-blockbench (1)/dist/index.html' (see re_data_cache/model_data.js, bones 'rightWing'/'leftWing'). Coordinates are Bedrock model pixels. The UVs are the vanilla elytra layout: a 10x20x2 box at texOffs (22,0) on the 64x32 entity/equipment/wings/elytra.png, the right wing mirrored like the game's WingsModel.",
   "minecraft:geometry": [
     {
       "description": {
         "identifier": "geometry.elytra_wings",
         "texture_width": 64,
-        "texture_height": 64,
+        "texture_height": 32,
         "visible_bounds_width": 2,
         "visible_bounds_height": 2,
         "visible_bounds_offset": [0, 1, 0]
@@ -22,8 +22,7 @@
           "parent": "upper",
           "pivot": [-1, 23, 3],
           "cubes": [
-            {"origin": [-11, 3, 2.6], "size": [10, 20, 1], "color": "wing"},
-            {"origin": [-11, 3, 3.6], "size": [2, 20, 0.2], "color": "wingDark"}
+            {"origin": [-11, 3, 2.6], "size": [10, 20, 2], "uv": [22, 0], "mirror": true}
           ]
         },
         {
@@ -31,8 +30,7 @@
           "parent": "upper",
           "pivot": [1, 23, 3],
           "cubes": [
-            {"origin": [1, 3, 2.6], "size": [10, 20, 1], "color": "wing"},
-            {"origin": [9, 3, 3.6], "size": [2, 20, 0.2], "color": "wingDark"}
+            {"origin": [1, 3, 2.6], "size": [10, 20, 2], "uv": [22, 0]}
           ]
         }
       ]

@@ -120,7 +120,7 @@ TEST(ElytraTridentModels, ElytraFileHasTwoWingsHangingFromTheUpperBody) {
     EXPECT_FLOAT_EQ(right->pivot.x, -1.0f);
     EXPECT_FLOAT_EQ(right->pivot.y, 23.0f);
     EXPECT_FLOAT_EQ(right->pivot.z, 3.0f);
-    ASSERT_EQ(right->cubes.size(), 2u);
+    ASSERT_EQ(right->cubes.size(), 1u);
 
     const Bone* left = model.findBone("leftWing");
     ASSERT_NE(left, nullptr);
@@ -128,7 +128,7 @@ TEST(ElytraTridentModels, ElytraFileHasTwoWingsHangingFromTheUpperBody) {
     EXPECT_FLOAT_EQ(left->pivot.x, 1.0f);
     EXPECT_FLOAT_EQ(left->pivot.y, 23.0f);
     EXPECT_FLOAT_EQ(left->pivot.z, 3.0f);
-    ASSERT_EQ(left->cubes.size(), 2u);
+    ASSERT_EQ(left->cubes.size(), 1u);
 }
 
 TEST(ElytraTridentModels, WingSlabsAreTenByTwentyPixelsAndMirrored) {
@@ -140,18 +140,25 @@ TEST(ElytraTridentModels, WingSlabsAreTenByTwentyPixelsAndMirrored) {
     ASSERT_NE(right, nullptr);
     ASSERT_NE(left, nullptr);
 
-    // main slab: from [-11, 3, -3.6] to [-1, 23, -2.6]
+    // one slab per wing: the vanilla 10x20x2 elytra box, from [-11, 3, 2.6] to [-1, 23, 4.6]
     EXPECT_FLOAT_EQ(right->cubes[0].origin.x, -11.0f);
     EXPECT_FLOAT_EQ(right->cubes[0].origin.y, 3.0f);
     EXPECT_FLOAT_EQ(right->cubes[0].size.x, 10.0f);
     EXPECT_FLOAT_EQ(right->cubes[0].size.y, 20.0f);
-    EXPECT_FLOAT_EQ(right->cubes[0].size.z, 1.0f);
+    EXPECT_FLOAT_EQ(right->cubes[0].size.z, 2.0f);
+    // the vanilla elytra texture: both wings sample texOffs (22,0), the right one mirrored
+    EXPECT_FLOAT_EQ(right->cubes[0].u, 22.0f);
+    EXPECT_FLOAT_EQ(right->cubes[0].v, 0.0f);
+    EXPECT_TRUE(right->cubes[0].mirror);
 
     // left wing mirrors the right one about x = 0
     EXPECT_FLOAT_EQ(left->cubes[0].origin.x, 1.0f);
     EXPECT_FLOAT_EQ(left->cubes[0].size.x, 10.0f);
     EXPECT_FLOAT_EQ(left->cubes[0].size.y, 20.0f);
-    EXPECT_FLOAT_EQ(left->cubes[0].size.z, 1.0f);
+    EXPECT_FLOAT_EQ(left->cubes[0].size.z, 2.0f);
+    EXPECT_FLOAT_EQ(left->cubes[0].u, 22.0f);
+    EXPECT_FLOAT_EQ(left->cubes[0].v, 0.0f);
+    EXPECT_FALSE(left->cubes[0].mirror);
 
     const Bounds r = boundsOf(*right);
     EXPECT_FLOAT_EQ(r.min.y, 3.0f);
@@ -167,11 +174,11 @@ TEST(ElytraTridentModels, BothModelsBuildMeshesWithoutTouchingTheSteveRig) {
     ASSERT_TRUE(trident.has_value());
     ASSERT_TRUE(wings.has_value());
 
-    // 5 cubes -> 5 * 24 vertices / 5 * 36 indices; 4 wing cubes -> 96 / 144.
+    // 5 cubes -> 5 * 24 vertices / 5 * 36 indices; 2 wing cubes -> 48 / 72.
     EXPECT_EQ(trident->buildCombinedMesh(identityBasis()).vertices.size(), 5u * 24u);
     EXPECT_EQ(trident->buildCombinedMesh(identityBasis()).indices.size(), 5u * 36u);
-    EXPECT_EQ(wings->buildCombinedMesh(identityBasis()).vertices.size(), 4u * 24u);
-    EXPECT_EQ(wings->buildCombinedMesh(identityBasis()).indices.size(), 4u * 36u);
+    EXPECT_EQ(wings->buildCombinedMesh(identityBasis()).vertices.size(), 2u * 24u);
+    EXPECT_EQ(wings->buildCombinedMesh(identityBasis()).indices.size(), 2u * 36u);
 
     // The prop models are separate data: the 12-part Steve rig is untouched.
     EXPECT_EQ(static_cast<size_t>(StevePart::Count), 12u);
