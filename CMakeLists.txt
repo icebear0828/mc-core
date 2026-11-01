@@ -8,6 +8,20 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # Feature Options
+#
+# The three modes are independent build axes:
+#   ENABLE_MC_MODE         - Minecraft gameplay available at runtime
+#   ENABLE_CS2_VIEWMODEL   - Counter-Strike 2 arsenal + viewmodel compiled in
+#   ENABLE_OW_VIEWMODEL    - Overwatch Doomfist viewmodel compiled in
+#
+# A deployment picks any subset; see tools/deploy_modes.py.
+option(ENABLE_MC_MODE "Enable the Minecraft gameplay mode at runtime" ON)
+if(ENABLE_MC_MODE)
+    add_compile_definitions(ENABLE_MC_MODE=1)
+else()
+    add_compile_definitions(ENABLE_MC_MODE=0)
+endif()
+
 option(ENABLE_CS2_VIEWMODEL "Enable Counter-Strike 2 viewmodel and knife inspection subsystem" ON)
 if(ENABLE_CS2_VIEWMODEL)
     add_compile_definitions(ENABLE_CS2_VIEWMODEL=1)

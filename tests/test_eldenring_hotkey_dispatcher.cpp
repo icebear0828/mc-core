@@ -162,6 +162,10 @@ protected:
             cs_shot_slot_ = slot;
             return true;
         };
+        cb_.ow_strike = [this](int kind) {
+            ow_strikes_.push_back(kind);
+            return true;
+        };
         cb_.queue_summon = [this](const char*) { summon_queued_ = true; return true; };
         cb_.cycle_hidden_slot = [this](int& c) { ++c; };
         cb_.reset_slot_probe = [this](int& c) { c = -1; };
@@ -225,6 +229,7 @@ protected:
     float cs_shot_range_{0.f};
     uint32_t cs_shot_tracer_{0u};
     uint8_t cs_shot_slot_{0};
+    std::vector<int> ow_strikes_;
     bool summon_queued_{false};
     bool snapshot_taken_{false};
     int trace_frames_{0};
@@ -299,15 +304,15 @@ TEST_F(HotkeyDispatcherTest, ModeTogglesF5AndF6) {
     dispatcher_->tick(0.016f);
     EXPECT_EQ(ctx.currentGameMode(), creative::GameMode::Survival);
 
-    // Press F6 -> Toggle MC Mode (pure MC build only)
+    // Press F6 -> toggle MC mode when this build contains it.
     EXPECT_TRUE(ctx.mode().mc_mode.load());
     setKey(VK_F6, true);
     dispatcher_->tick(0.016f);
-#if ENABLE_CS2_VIEWMODEL
-    // The CS2 build is CS-only at runtime: F6 must not enable MC mode.
-    EXPECT_TRUE(ctx.mode().mc_mode.load());
-#else
+#if ENABLE_MC_MODE
     EXPECT_FALSE(ctx.mode().mc_mode.load());
+#else
+    // MC gameplay is compiled out: F6 has nothing to toggle.
+    EXPECT_TRUE(ctx.mode().mc_mode.load());
 #endif
 }
 
@@ -451,7 +456,11 @@ TEST_F(HotkeyDispatcherTest, CsModeToggleAndKnifeInspectLifecycle) {
     setKey(VK_F6, true);
     dispatcher_->tick(0.016f);
     EXPECT_FALSE(ctx.mode().cs_mode.load());
-    EXPECT_FALSE(ctx.mode().mc_mode.load()); // leaving CS mode does not silently re-enable MC
+#if ENABLE_MC_MODE
+    EXPECT_TRUE(ctx.mode().mc_mode.load()); // combined build: F6 returns to MC
+#else
+    EXPECT_FALSE(ctx.mode().mc_mode.load()); // MC-less build: nothing to return to
+#endif
 }
 
 TEST_F(HotkeyDispatcherTest, CsModeTurnsOffMcMode) {
@@ -467,7 +476,7 @@ TEST_F(HotkeyDispatcherTest, CsModeTurnsOffMcMode) {
     EXPECT_FALSE(ctx.mode().mc_mode.load());
 }
 
-TEST_F(HotkeyDispatcherTest, CsBuildF6NeverEnablesMcMode) {
+TEST_F(HotkeyDispatcherTest, F6LeavesCsModeAndRestoresMcWhenAvailable) {
     auto& ctx = RuntimeContext::Instance();
     setKey(VK_F1, true);
     dispatcher_->tick(0.016f);
@@ -476,14 +485,19 @@ TEST_F(HotkeyDispatcherTest, CsBuildF6NeverEnablesMcMode) {
     ASSERT_TRUE(ctx.mode().cs_mode.load());
     ASSERT_FALSE(ctx.mode().mc_mode.load());
 
-    // F6 leaves CS mode...
+    // F6 leaves CS mode and returns to MC when this build contains MC.
     setKey(VK_F6, true);
     dispatcher_->tick(0.016f);
     setKey(VK_F6, false);
     dispatcher_->tick(0.016f);
     EXPECT_FALSE(ctx.mode().cs_mode.load());
+#if ENABLE_MC_MODE
+    EXPECT_TRUE(ctx.mode().mc_mode.load());
+#else
+    EXPECT_FALSE(ctx.mode().mc_mode.load());
+#endif
 
-    // ...and a second F6 must not bring MC mode back.
+    // A second F6 toggles MC off (a no-op in an MC-less build).
     setKey(VK_F6, true);
     dispatcher_->tick(0.016f);
     setKey(VK_F6, false);
@@ -1000,6 +1014,47 @@ TEST_F(HotkeyDispatcherTest, OwModePlaysUppercutAndSlamOnEAndQ) {
     setKey('Q', true);
     dispatcher_->tick(0.016f);
     EXPECT_EQ(ctx.mode().ow_state.load(), 5);
+    setKey('Q', false);
+    dispatcher_->tick(0.016f);
+}
+
+TEST_F(HotkeyDispatcherTest, OwAttacksRequestDamageForEveryAbility) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_SHIFT, true);
+    setKey(VK_F7, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F7, false);
+    setKey(VK_SHIFT, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().ow_mode.load());
+    ow_strikes_.clear();
+
+    // Hand cannon: left click.
+    left_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ow_strikes_.size(), 1u);
+    EXPECT_EQ(ow_strikes_[0], 0);
+
+    // Rocket punch: hold RMB, release.
+    right_held_ = true;
+    right_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    right_held_ = false;
+    dispatcher_->tick(0.016f);
+    ASSERT_GE(ow_strikes_.size(), 2u);
+    EXPECT_EQ(ow_strikes_.back(), 1);
+
+    // Rising uppercut.
+    setKey('E', true);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ow_strikes_.back(), 2);
+    setKey('E', false);
+    dispatcher_->tick(0.016f);
+
+    // Seismic slam.
+    setKey('Q', true);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ow_strikes_.back(), 3);
     setKey('Q', false);
     dispatcher_->tick(0.016f);
 }

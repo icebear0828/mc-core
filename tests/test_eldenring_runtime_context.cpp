@@ -22,7 +22,11 @@ TEST_F(RuntimeContextTest, DefaultModeConfigMatchesAdapterInvariants) {
     auto& mode = ctx.mode();
 
     // Default states
+#if ENABLE_MC_MODE
     EXPECT_TRUE(mode.mc_mode.load());
+#else
+    EXPECT_FALSE(mode.mc_mode.load());
+#endif
     EXPECT_EQ(mode.game_mode.load(), static_cast<uint8_t>(creative::GameMode::Survival));
     EXPECT_FALSE(mode.first_person.load());
     EXPECT_TRUE(mode.steve_enabled.load());

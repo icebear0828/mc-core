@@ -145,6 +145,11 @@ bool CombatService::playerHitSurvival(void* module, void* attacker, uint8_t* ctx
         return false;
     }
 
+    // CS/OW are standalone modes. MC absorption, armor, the totem, the MC hurt
+    // sound and the MC hurt camera tilt must not leak into them: leave the
+    // native damage and the native hit feedback untouched.
+    if (!ctx.mode().mc_mode.load(std::memory_order_relaxed)) return false;
+
     if (ctx.mode().shield_blocking.load(std::memory_order_relaxed)) {
         const ShieldVerdict sv = evaluateShield(player, reinterpret_cast<uintptr_t>(attacker));
         if (sv.blocks) {
@@ -382,11 +387,17 @@ void CombatService::drainDamageQueue(DamageQueue& queue, const HitTemplate* tmpl
                     if (r.request.tag & 2u) callbacks_.spawn_fx(2 /* Sweep */, vpos, 0);
                 }
             }
-            // CS bullets have no arrow hit sound: the crosshair hitmarker is the feedback.
+            // CS bullets and Doomfist strikes have no arrow/melee hit sound:
+            // the crosshair hitmarker / impact FX is the feedback.
             if (callbacks_.play_sound) {
+                bool mod_strike = false;
 #if ENABLE_CS2_VIEWMODEL
-                if (!(r.request.tag & eldenring::cs::kCsShotTag))
+                mod_strike = mod_strike || (r.request.tag & eldenring::cs::kCsShotTag) != 0;
 #endif
+#if ENABLE_OW_VIEWMODEL
+                mod_strike = mod_strike || (r.request.tag & eldenring::ow::kOwStrikeTag) != 0;
+#endif
+                if (!mod_strike)
                 callbacks_.play_sound((r.request.tag & 1u) ? "entity.player.attack.crit"
                                       : (r.request.tag & 2u) ? "entity.player.attack.sweep"
                                       : (r.request.tag & 4u) ? "entity.player.attack.strong"
@@ -394,13 +405,17 @@ void CombatService::drainDamageQueue(DamageQueue& queue, const HitTemplate* tmpl
             }
             if (hp_after == 0) {
                 feedback.onKill();
-                Vitals victim{};
-                const int earned_xp = (callbacks_.read_vitals && callbacks_.read_vitals(r.request.victim_chr, victim)) ? xpForKill(victim.max_hp) : 0;
-                const int ups = xp.add(earned_xp);
-                if (callbacks_.play_sound) {
-                    callbacks_.play_sound(ups > 0 ? "entity.player.levelup" : "entity.experience_orb.pickup", 0.7f);
+                // XP and its level-up / orb sounds are Minecraft feedback; CS
+                // and OW kills only get the kill marker.
+                if (ctx.mode().mc_mode.load(std::memory_order_relaxed)) {
+                    Vitals victim{};
+                    const int earned_xp = (callbacks_.read_vitals && callbacks_.read_vitals(r.request.victim_chr, victim)) ? xpForKill(victim.max_hp) : 0;
+                    const int ups = xp.add(earned_xp);
+                    if (callbacks_.play_sound) {
+                        callbacks_.play_sound(ups > 0 ? "entity.player.levelup" : "entity.experience_orb.pickup", 0.7f);
+                    }
+                    log("XP: +%d (level %d, %.0f%%)%s", earned_xp, xp.level(), xp.progress() * 100.f, ups > 0 ? " LEVEL UP" : "");
                 }
-                log("XP: +%d (level %d, %.0f%%)%s", earned_xp, xp.level(), xp.progress() * 100.f, ups > 0 ? " LEVEL UP" : "");
             }
         }
         if (r.outcome != DamageOutcome::Applied) {
@@ -583,8 +598,15 @@ bool CombatService::clickAttack(float charged, MeleeController& melee, CombatEng
     const float dmg_scale = ctx.mode().damage_scale.load(std::memory_order_relaxed);
     const float hp_pct = ctx.mode().damage_hp_percent.load(std::memory_order_relaxed);
     const int dmg = live::erDamage(intent, e.max_hp, dmg_scale, hp_pct);
+    // The CS knife shares the MC melee path. Tag its hits as CS so
+    // drainDamageQueue shows the CS hitmarker instead of the Minecraft attack
+    // sounds (the knife already plays its own cs.knife.* sound).
+    uint32_t source_tag = 0;
+#if ENABLE_CS2_VIEWMODEL
+    if (ctx.mode().cs_mode.load(std::memory_order_relaxed)) source_tag = eldenring::cs::kCsShotTag;
+#endif
     const bool ok = dmg > 0 && queue.enqueue(e.chr, dmg, now_tick,
-        (intent.is_critical ? 1u : 0u) | (intent.is_sweeping ? 2u : 0u) | (charged > 0.848f ? 4u : 0u) |
+        source_tag | (intent.is_critical ? 1u : 0u) | (intent.is_sweeping ? 2u : 0u) | (charged > 0.848f ? 4u : 0u) |
         (static_cast<uint32_t>(std::min(255.f, std::floor(intent.damage))) << 8));
 
     log("click: item=%d charged=%.2f falling=%d crit=%d sweep=%d mc_dmg=%.2f -> %d on chr=%p npc=%d team=%u (%s) hp=%d/%d (%s)",
@@ -609,7 +631,7 @@ bool CombatService::clickAttack(float charged, MeleeController& melee, CombatEng
                 sweep_intent.is_sweeping = true;
                 const int sec_dmg = live::erDamage(sweep_intent, sec.max_hp, dmg_scale, hp_pct);
                 if (sec_dmg > 0) {
-                    const uint32_t sec_tag = 2u | (static_cast<uint32_t>(std::min(255.f, std::floor(sweep_intent.damage))) << 8);
+                    const uint32_t sec_tag = source_tag | 2u | (static_cast<uint32_t>(std::min(255.f, std::floor(sweep_intent.damage))) << 8);
                     if (queue.enqueue(sec.chr, sec_dmg, now_tick, sec_tag)) {
                         ++sweep_count;
                     }
@@ -939,6 +961,91 @@ CsShotResult CombatService::fireCsShot(const eldenring::cs::CsShotParams& params
         callbacks_.spawn_decal(out.to, out.normal);
     }
 #endif
+    return out;
+}
+#endif
+
+#if ENABLE_OW_VIEWMODEL
+OwStrikeResult CombatService::fireOwStrike(eldenring::ow::OwStrikeKind kind, DamageQueue& queue, uint64_t tick,
+                                           RuntimeContext& ctx) {
+    OwStrikeResult out;
+    if (!ctx.mode().ow_mode.load(std::memory_order_relaxed)) return out;
+    if (!ctx.mode().ow_damage_enabled.load(std::memory_order_relaxed)) return out;
+    if (!callbacks_.get_player_chr || !callbacks_.read_camera || !callbacks_.read_physics_pos) return out;
+
+    const uintptr_t player = callbacks_.get_player_chr();
+    CameraPose cam{};
+    float feet[3]{};
+    if (player == 0 || !callbacks_.read_camera(cam) || !callbacks_.read_physics_pos(player, feet)) {
+        log("OW-STRIKE: camera or player unavailable");
+        return out;
+    }
+
+    const float scale = ctx.mode().ow_damage_scale.load(std::memory_order_relaxed);
+    if (!(scale > 0.f)) return out;
+
+    eldenring::ow::OwStrikeParams params = eldenring::ow::owStrikeParamsFor(kind);
+    params.shot.damage *= scale;
+    const std::vector<EnemyInfo> enemies = EntityManager::instance().getCachedEnemies();
+    out.fired = true;
+
+    if (params.aoe_radius_m > 0.f) {
+        // Seismic slam: radial damage around the player, no line-of-sight test
+        // (the shockwave goes through cover).
+        const std::vector<eldenring::ow::OwStrikeHit> hits =
+            eldenring::ow::collectOwAoeHits(enemies, params);
+        for (const eldenring::ow::OwStrikeHit& h : hits) {
+            const EnemyInfo& victim = enemies[static_cast<size_t>(h.index)];
+            if (queue.enqueue(victim.chr, h.er_damage, tick, eldenring::ow::kOwStrikeTag, true)) {
+                ++out.hits;
+                out.total_er_damage += h.er_damage;
+                if (!out.hit) {
+                    out.hit = true;
+                    out.victim_chr = victim.chr;
+                    out.distance = h.distance;
+                    out.er_damage = h.er_damage;
+                }
+            }
+        }
+    } else {
+        const float cam_rel[3] = {cam.position[0] - feet[0], cam.position[1] - feet[1], cam.position[2] - feet[2]};
+        const eldenring::ow::OwStrikeHit hit =
+            eldenring::ow::traceOwStrike(cam_rel, cam.forward, enemies, params);
+        if (hit.index >= 0) {
+            const EnemyInfo& victim = enemies[static_cast<size_t>(hit.index)];
+            bool visible = true;
+            if (raycast_fn_ != nullptr) {
+                const float to[3] = {cam.position[0] + cam.forward[0] * hit.distance,
+                                     cam.position[1] + cam.forward[1] * hit.distance,
+                                     cam.position[2] + cam.forward[2] * hit.distance};
+                visible = eldenring::live::hasLineOfSight([this](const float f[3], const float d[3]) {
+                    return this->castStaticRay(f, d);
+                }, cam.position, to);
+            }
+            if (visible && queue.enqueue(victim.chr, hit.er_damage, tick, eldenring::ow::kOwStrikeTag, true)) {
+                out.hit = true;
+                out.hits = 1;
+                out.total_er_damage = hit.er_damage;
+                out.victim_chr = victim.chr;
+                out.distance = hit.distance;
+                out.er_damage = hit.er_damage;
+                if (callbacks_.spawn_fx) {
+                    float vpos[3] = {};
+                    if (callbacks_.read_physics_pos(victim.chr, vpos)) {
+                        vpos[1] += 1.0f;
+                        callbacks_.spawn_fx(3 /* Spark */, vpos, 0);
+                    }
+                }
+            } else if (!visible) {
+                log("OW-STRIKE: target chr=%p blocked by static geometry at %.1f m",
+                    reinterpret_cast<void*>(victim.chr), hit.distance);
+            }
+        }
+    }
+
+    log("OW-STRIKE: kind=%d hits=%d er=%d victim=%p dist=%.1f scale=%.2f",
+        static_cast<int>(kind), out.hits, out.total_er_damage, reinterpret_cast<void*>(out.victim_chr),
+        out.distance, scale);
     return out;
 }
 #endif

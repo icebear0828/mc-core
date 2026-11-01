@@ -553,6 +553,7 @@ void HotkeyDispatcher::tick(float dt) {
                     mode.ow_anim_time.store(release_time);
                     ow_punch_released_ = true;
                     if (cb_.play_sound) cb_.play_sound("ow.punch.release", 1.0f);
+                    if (cb_.ow_strike) cb_.ow_strike(1);
                 }
             } else if (max_t > 0.f && t >= max_t) {
                 mode.ow_state.store(0);
@@ -690,6 +691,7 @@ void HotkeyDispatcher::tick(float dt) {
             mode.ow_action_variant.store(static_cast<uint8_t>((mode.ow_action_variant.load() + 1u) & 1u));
             mode.ow_anim_time.store(0.f);
             if (cb_.play_sound) cb_.play_sound("ow.cannon.fire", 1.0f);
+            if (cb_.ow_strike) cb_.ow_strike(0);
         }
 
         const bool gameplay_key = !inv_open && input_enabled;
@@ -698,10 +700,12 @@ void HotkeyDispatcher::tick(float dt) {
         if (e_down && !prev_ow_e_) {
             mode.ow_state.store(4); // Rising uppercut
             mode.ow_anim_time.store(0.f);
+            if (cb_.ow_strike) cb_.ow_strike(2);
         }
         if (q_down && !prev_ow_q_) {
             mode.ow_state.store(5); // Seismic slam
             mode.ow_anim_time.store(0.f);
+            if (cb_.ow_strike) cb_.ow_strike(3);
         }
         prev_ow_e_ = e_down;
         prev_ow_q_ = q_down;
@@ -814,6 +818,10 @@ void HotkeyDispatcher::tick(float dt) {
             mode.cs_action_variant.store(0);
             mode.cs_action_hit.store(true);
             mode.cs_knife_anim_time.store(0.f);
+#if ENABLE_MC_MODE
+            // Combined build: leaving CS returns to the MC mode it replaced.
+            mode.mc_mode.store(true);
+#endif
             if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: OFF");
         }
     }
@@ -839,31 +847,31 @@ void HotkeyDispatcher::tick(float dt) {
 
     const bool d6 = fg && queryKey(VK_F6);
     if (d6 && !prev6_) {
-        const bool ow_was_on = mode.ow_mode.load();
-        if (ow_was_on) {
+        if (mode.ow_mode.load()) {
+            // F6 leaves OW without silently turning another mode on.
             mode.ow_mode.store(false);
+            mode.ow_state.store(0);
+            mode.ow_anim_time.store(0.f);
             if (cb_.log) cb_.log("[MODE] Overwatch Mode: OFF (via F6)");
-        }
-        if (!ow_was_on) {
+        } else if (mode.cs_mode.load()) {
 #if ENABLE_CS2_VIEWMODEL
-            // The CS2 build is CS-only at runtime: F6 can leave CS mode but never
-            // enables MC mode.
-            if (mode.cs_mode.load()) {
-                mode.cs_mode.store(false);
-                mode.cs_knife_state.store(0);
-                mode.cs_knife_inspect.store(false);
-                mode.cs_action_variant.store(0);
-                mode.cs_action_hit.store(true);
-                mode.cs_knife_anim_time.store(0.f);
-                if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: OFF (via F6)");
-            }
-#else
-            {
-                const bool new_mc = !mode.mc_mode.load();
-                mode.mc_mode.store(new_mc);
-                if (cb_.log) cb_.log(std::string("F6: MC mode ") + (new_mc ? "on" : "off"));
-                if (cb_.reset_slot_probe) cb_.reset_slot_probe(slot_cursor_);
-            }
+            mode.cs_mode.store(false);
+            mode.cs_knife_state.store(0);
+            mode.cs_knife_inspect.store(false);
+            mode.cs_action_variant.store(0);
+            mode.cs_action_hit.store(true);
+            mode.cs_knife_anim_time.store(0.f);
+#if ENABLE_MC_MODE
+            mode.mc_mode.store(true);
+#endif
+            if (cb_.log) cb_.log("[MODE] Counter-Strike Weapon Mode: OFF (via F6)");
+#endif
+        } else {
+#if ENABLE_MC_MODE
+            const bool new_mc = !mode.mc_mode.load();
+            mode.mc_mode.store(new_mc);
+            if (cb_.log) cb_.log(std::string("F6: MC mode ") + (new_mc ? "on" : "off"));
+            if (cb_.reset_slot_probe) cb_.reset_slot_probe(slot_cursor_);
 #endif
         }
     }

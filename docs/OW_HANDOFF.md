@@ -125,6 +125,60 @@ C++ 侧 `MC_OW_ASSET=<bin> mc_tests --gtest_filter=OwViewmodelTest.ParsesTheShip
 
 ---
 
+### 0.6 模式解耦、统一部署与 OW 伤害（2026-11-01）
+
+**问题**：三个模式此前只在“编译宏”层面分开，运行时和部署仍是耦合的：
+
+- `ENABLE_CS2_VIEWMODEL` 同时承担了“编译 CS 代码”和“禁用 MC 运行时”两件事，所以 CS 构建里 MC 永远起不来。
+- 部署 OW 只能复用 CS 构建（`ENABLE_OW_VIEWMODEL` 默认 ON），于是 OW 包里必然带 CS 代码和 CS 资产。
+- Doomfist 的四个技能只播放动画和音效，没有接入 `DamageQueue`；CS 的 AK 有伤害，铁拳打人没伤害。
+
+**本轮改造**：
+
+| 层 | 改造 |
+|---|---|
+| 构建轴 | 新增 `ENABLE_MC_MODE`（默认 ON），与 `ENABLE_CS2_VIEWMODEL` / `ENABLE_OW_VIEWMODEL` 完全正交。`mc_mode` 的默认值和配置解析只由它决定，CS 不再强行关 MC。 |
+| 运行时 | `mc_er_mode.txt` 的 `start_mode=mc\|cs\|ow` 决定启动模式；热键仍可切换本构建包含的所有模式。CS 只在“没有 MC/OW 激活”时自动启动，组合构建不会再被 CS 顶掉。 |
+| 热键 | F1 切 CS（关闭时回到 MC，若本构建含 MC）；F6：OW → 关 OW；CS → 关 CS 并回到 MC；否则切换 MC；Shift+F7 切 OW。 |
+| 部署 | `tools/deploy_modes.py --modes mc\|cs\|ow\|mc,ow\|all`：按所选组合构建一个 `dinput8.dll`，只部署该组合的资产，并用 `mode_manifest.json` 删除上一次部署里已取消模式的资产。 |
+| 伤害 | 新增 `eldenring_ow_combat.hpp`（纯逻辑）与 `CombatService::fireOwStrike`：手炮 40 / 火箭拳 100 / 上勾拳 60 / 裂地猛击 90（AoE 7 m），走与 CS 子弹相同的 `DamageQueue`，tag 为 `kOwStrikeTag`。 |
+
+**配置**（`mc_er_ow.txt`）：`ow_damage=0` 关闭伤害，`ow_damage_scale=<倍率>` 调整伤害。命中不再播放 MC 近战音效，与 CS 子弹一致。
+
+**部署示例**：
+
+```powershell
+uv run python tools/deploy_modes.py --modes mc --deploy
+uv run python tools/deploy_modes.py --modes ow --deploy
+uv run python tools/deploy_modes.py --modes cs --deploy
+uv run python tools/deploy_modes.py --modes mc,ow --deploy
+uv run python tools/deploy_modes.py --modes all --deploy
+```
+
+每种组合使用独立的构建目录 `mc-core/build_modes/<combo>`，互不覆盖。`--no-build` 可复用已有 DLL，`--dry-run` 只打印计划。
+
+**测试**：`tests/test_eldenring_ow_combat.cpp`（参数、射线命中、AoE 衰减、伤害换算）、`tests/test_eldenring_combat_service.cpp` 的 `FireOwStrike*`（伤害入队与 tag）、`tests/test_eldenring_hotkey_dispatcher.cpp` 的 `OwAttacksRequestDamageForEveryAbility`、`tests/test_deploy_modes.py`（模式解析、清单清理）。
+
+---
+
+### 0.7 命中/受击反馈按模式隔离（2026-11-01）
+
+实测反馈“MC 的受击音效是共享的；OW 没有射击反馈，CS 有”。逐项 trace：
+
+| 问题 | 根因 | 修复 |
+|---|---|---|
+| OW 命中无准星反馈 | `DrawHud` 的 OW 分支只画准星/技能提示就 `return`，`hud.hit`/`hud.kill` 从未绘制 | OW 分支补上 CS 同款四段斜线命中标记 + 击杀红 X |
+| OW 命中火花不显示 | `g_fx_valid = steve.cam_valid`，而 OW 模式原先跳过相机读取，`cam_valid=false` | OW 模式仍填充相机（只把 `steve.draw` 设为 false），粒子投影恢复 |
+| OW 技能提示键位错误 | 图例写 `[Shift] Seismic Slam` | 改为 `[Q] Seismic Slam` / `[E] Rising Uppercut` |
+| 玩家受击播放 MC 音效/红闪/护甲/图腾 | `playerHitSurvival` 不看模式，所有模式都套 MC 生存逻辑并播 `entity.player.hurt` | 非 MC 模式直接 `return false`：原生伤害与原生受击反馈保持不变，不播 MC 音效、不触发 MC 红闪/护甲/图腾/饥饿消耗 |
+| 玩家死亡播放 MC 死亡音 | loader 的 `entity.player.death` 未按模式门控 | 仅 `mc_mode` 播放 |
+| CS 刀命中播放 MC 攻击音 | CS 刀复用 MC 近战路径，入队时没有 CS tag | CS 模式下给 `clickAttack` 的伤害加 `kCsShotTag`，`drainDamageQueue` 不再播 MC 攻击音；命中标记仍走 `feedback.onHit` |
+| CS/OW 击杀播放 MC 升级/经验音 | XP 结算与音效未按模式门控 | 仅 `mc_mode` 结算 XP 与播放升级/经验音；击杀标记所有模式保留 |
+
+测试：`PlayerHitSurvivalIsInertOutsideMcMode`、`CsKnifeHitsCarryTheCsTag`、`FireOwStrike*`、`OwAttacksRequestDamageForEveryAbility`。
+
+---
+
 ## 1. 核心缺陷根因与修复细节 (Root Cause Analysis & Fixes)
 
 ### 1.1 贴图丢失 Bug（原版 OW 拳套金属与高光生效）
@@ -335,6 +389,10 @@ ow_shoot_motion=0.4
 - [ ] 用新的 `build\bin\eldenring\dinput8.dll` 启动游戏，Shift+F7 进入 OW，确认拳套贴图、PBR 高光与左/右键动作与改造前一致。
 - [ ] 在 `mc_er_ow.txt` 中调整 `ow_fov` / `ow_scale`，确认实时生效。
 - [ ] 确认切出 OW（F6）后 CS / MC 模式行为无回归。
+- [ ] **2026-11-01 已部署合并构建**（`--modes mc,cs,ow --start ow`，DLL SHA256 `F8CFB25AA90C7A79F66767A54262571CD1C41E7E46DCB0BE0F1990CA60BF5B0D`）：
+  - [ ] 进游戏应直接是 OW；左键手炮、按住/松开右键火箭拳、E 上勾拳、Q 裂地猛击都要掉血（日志 `OW-STRIKE:`）。
+  - [ ] F1 切 CS，AK 仍有伤害；F6 离开 OW 后再按 F6 切 MC；Shift+F7 回 OW。
+  - [ ] 想验证“OW 单独部署不含 CS”，运行 `uv run python tools/deploy_modes.py --modes ow --deploy`：旧 CS 文件会被改名为 `.bak_modes_<时间戳>`。
 
 ### 5.4 右键火箭冲拳位移（2026-10-31）
 

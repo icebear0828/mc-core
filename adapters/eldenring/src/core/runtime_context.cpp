@@ -9,13 +9,19 @@ RuntimeContext& RuntimeContext::Instance() {
 
 void RuntimeContext::resetForTesting() {
     // Reset ModeConfig
+#if ENABLE_MC_MODE
     mode_.mc_mode.store(true);
+#else
+    mode_.mc_mode.store(false);
+#endif
     mode_.cs_mode.store(false);
     mode_.ow_mode.store(false);
     mode_.ow_state.store(0);
     mode_.ow_anim_time.store(0.f);
     mode_.ow_action_variant.store(0);
     mode_.ow_dash_distance.store(4.0f);
+    mode_.ow_damage_enabled.store(true);
+    mode_.ow_damage_scale.store(1.0f);
     mode_.game_mode.store(static_cast<uint8_t>(creative::GameMode::Survival));
     mode_.mode_toast_ms.store(0);
     mode_.damage_enabled.store(false);

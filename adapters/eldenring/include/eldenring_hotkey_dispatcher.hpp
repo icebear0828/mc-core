@@ -49,6 +49,8 @@ struct HotkeyCallbacks {
     std::function<bool(float damage)> queue_bullet_fire;
     // CS hitscan: damage, cone spread (degrees), max range (metres), tracer every N rounds, weapon slot.
     std::function<bool(float damage, float spread_deg, float max_range_m, uint32_t tracer_frequency, uint8_t weapon_slot)> queue_cs_shot;
+    // Doomfist strike: 0 hand cannon, 1 rocket punch, 2 uppercut, 3 slam.
+    std::function<bool(int kind)> ow_strike;
     std::function<bool(const char* reason)> queue_summon;
     std::function<void(int& cursor)> cycle_hidden_slot;
     std::function<void(int& cursor)> reset_slot_probe;
