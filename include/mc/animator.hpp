@@ -36,7 +36,10 @@ struct SteveAnimInput {
     float bow_charge{0.f};    // [0, 1]
     bool bow_offhand{false};  // the bow is held in the left hand (the left arm aims instead of the right one)
     float trident_charge{0.f};// [0, 1]
-    float eating_progress{0.f}; // [0, 1] 0 = not eating, >0 = chewing vibration
+    // Third-person eating (issue #57): the arm raises to the mouth with a chew oscillation and the head
+    // follows the look direction plus the eat tilt. The first-person pose is eldenring_fp.hpp eatPose.
+    float eating_progress{0.f}; // [0, 1] 0 = not eating
+    bool eating_offhand{false};  // the food is in the offhand: the left arm eats instead of the right one
     bool arms_forward{false}; // zombie on the Steve rig: both arms held straight out in front
     bool arms_sway_only{false}; // zombie from a model file whose rest rotation already holds the arms out: only a slow sway on top
     bool is_gliding{false};
@@ -47,6 +50,9 @@ struct SteveAnimInput {
     // Issue #65: elytra wing-flap phase in [0, 1] (0 = wings at rest). Reserved for the #38/#39 wing
     // props; the 12-part rig has no wing bones, so it does not affect the pose yet.
     float elytra_wing_flap{0.f};
+    // Appended at the end so adding them cannot shift the offsets of the fields above.
+    bool right_hand_item{false}; // the main hand holds an item: ArmPose.ITEM (xRot*0.5 - pi/10, yRot 0)
+    bool left_hand_item{false};  // the offhand holds an item: the same pose on the left arm
 };
 
 class SteveAnimator {

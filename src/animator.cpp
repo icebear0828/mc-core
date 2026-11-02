@@ -245,6 +245,12 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                         // Compensate head pitch against torso forward pitch to maintain level gaze
                         pitch -= 0.15f;
                     }
+                    if (input.eating_progress > 0.0f) {
+                        // anim_data.js eat: head 8 deg down plus a 4 deg chew, turned 6 deg.
+                        const float chew = std::abs(std::sin(6.0f * kPi * input.eating_progress));
+                        pitch += (8.0f + 4.0f * chew) * kDeg;
+                        yaw -= 6.0f * kDeg;
+                    }
                     break;
 
                 case StevePart::Body:
@@ -296,6 +302,7 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                     } else if (input.is_blocking && input.block_offhand) {
                         // Minecraft ArmPose.ITEM: weapon arm held ready with dampened swing while offhand blocks
                         pitch = pitch * 0.5f - kPi * 0.1f;
+                        yaw = 0.0f;
                     } else if (input.bow_charge > 0.0f) {
                         pitch = -kPi * 0.5f + head_pitch;
                         yaw = -0.1f + head_yaw - (input.bow_offhand ? 0.4f : 0.0f);
@@ -308,10 +315,18 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                         pitch = (lerp(-150.0f, -192.0f, t) + n) * kDeg;
                         yaw = 0.0f;
                         roll = -4.0f * kDeg;
-                    } else if (input.eating_progress > 0.0f) {
-                        pitch = -1.7f + std::abs(std::sin(age_ * 1.5f)) * 0.15f;
-                        yaw = -0.3f;
+                    } else if (input.eating_progress > 0.0f && !input.eating_offhand) {
+                        // anim_data.js eat rightArm: -72 deg with a 6 deg chew, yaw 32 deg toward the mouth.
+                        const float chew = std::abs(std::sin(6.0f * kPi * input.eating_progress));
+                        pitch = (-72.0f + 6.0f * chew) * kDeg;
+                        yaw = 32.0f * kDeg;
+                        roll = 0.0f;
                     } else if (input.swing_progress > 0.0f) {
+                        // Java applies the attack swing on top of the hand's ArmPose.ITEM base.
+                        if (input.right_hand_item) {
+                            pitch = pitch * 0.5f - kPi * 0.1f;
+                            yaw = 0.0f;
+                        }
                         float f = 1.0f - input.swing_progress;
                         f *= f;
                         f *= f;
@@ -320,6 +335,10 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                         pitch -= f1 * 1.2f + f2;
                         yaw += body_yaw * 2.0f;
                         roll -= std::sin(input.swing_progress * kPi) * 0.4f;
+                    } else if (input.right_hand_item) {
+                        // Minecraft ArmPose.ITEM: half the walk swing, lowered 18 degrees.
+                        pitch = pitch * 0.5f - kPi * 0.1f;
+                        yaw = 0.0f;
                     } else {
                         // Idle breathing oscillation
                         roll += std::sin(age_ * 0.067f) * 0.05f;
@@ -341,7 +360,9 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                         pitch = pitch * 0.5f - kPi * 0.3f + head_pitch;
                         yaw = kPi / 6.0f + head_yaw;
                     } else if (input.is_blocking && !input.block_offhand) {
-                        pitch = pitch * 0.5f;
+                        // Minecraft ArmPose.ITEM: the offhand item arm keeps half the swing.
+                        pitch = pitch * 0.5f - kPi * 0.1f;
+                        yaw = 0.0f;
                     } else if (input.bow_charge > 0.0f) {
                         pitch = -kPi * 0.5f + head_pitch;
                         yaw = 0.1f + head_yaw + (input.bow_offhand ? 0.0f : 0.4f);
@@ -351,9 +372,24 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                         pitch = lerp(0.0f, -25.0f, t) * kDeg;
                         yaw = 0.0f;
                         roll = 8.0f * kDeg;
+                    } else if (input.eating_progress > 0.0f && input.eating_offhand) {
+                        // The offhand food uses the mirrored eat pose.
+                        const float chew = std::abs(std::sin(6.0f * kPi * input.eating_progress));
+                        pitch = (-72.0f + 6.0f * chew) * kDeg;
+                        yaw = -32.0f * kDeg;
+                        roll = 0.0f;
                     } else if (input.swing_progress > 0.0f) {
+                        // Java applies the attack swing on top of the offhand's ArmPose.ITEM base.
+                        if (input.left_hand_item) {
+                            pitch = pitch * 0.5f - kPi * 0.1f;
+                            yaw = 0.0f;
+                        }
                         yaw += body_yaw;
                         pitch += body_yaw;
+                    } else if (input.left_hand_item) {
+                        // Minecraft ArmPose.ITEM: half the walk swing, lowered 18 degrees.
+                        pitch = pitch * 0.5f - kPi * 0.1f;
+                        yaw = 0.0f;
                     } else {
                         roll -= std::sin(age_ * 0.067f) * 0.05f;
                     }

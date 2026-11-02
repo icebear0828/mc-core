@@ -48,6 +48,78 @@ TEST(SteveAnimatorTest, HeadFollowsLookAngles) {
     EXPECT_NE(head.rot.z, 0.0f); // yaw
 }
 
+TEST(SteveAnimatorTest, HoldingAnItemUsesMinecraftItemArmPose) {
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    mc::SteveAnimator animator;
+    mc::SteveAnimInput in{};
+    in.right_hand_item = true;
+    animator.update(0.05f, in);
+
+    const auto arm = animator.getTransforms()[ra];
+    // ArmPose.ITEM: xRot = xRot * 0.5 - pi/10. At rest xRot = 0, so the pitch is -18 degrees.
+    constexpr float kPi = 3.14159265f;
+    const float half = -kPi * 0.05f; // half of -18 degrees
+    EXPECT_NEAR(arm.rot.y, std::sin(half), 1e-4f);
+    EXPECT_NEAR(arm.rot.w, std::cos(half), 1e-4f);
+    EXPECT_NEAR(arm.rot.z, 0.0f, 1e-6f); // ArmPose.ITEM has no yaw
+}
+
+TEST(SteveAnimatorTest, ItemArmKeepsHalfTheWalkSwingAndNoYaw) {
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    mc::SteveAnimator plain, held;
+    mc::SteveAnimInput in{};
+    in.forward_speed = 4.317f;
+    mc::SteveAnimInput in_held = in;
+    in_held.right_hand_item = true;
+    for (int i = 0; i < 7; ++i) {
+        plain.update(0.05f, in);
+        held.update(0.05f, in_held);
+    }
+
+    const auto plain_arm = plain.getTransforms()[ra];
+    const auto held_arm = held.getTransforms()[ra];
+    // The quaternion's y/w ratio is tan(pitch/2); the breathing roll does not affect it.
+    const float plain_pitch = 2.f * std::atan2(plain_arm.rot.y, plain_arm.rot.w);
+    const float held_pitch = 2.f * std::atan2(held_arm.rot.y, held_arm.rot.w);
+    EXPECT_NEAR(held_pitch, plain_pitch * 0.5f - 3.14159265f * 0.1f, 0.02f);
+    EXPECT_NEAR(held_arm.rot.z, 0.0f, 1e-6f);
+}
+
+TEST(SteveAnimatorTest, OffhandItemUsesTheSameItemPose) {
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+    mc::SteveAnimator animator;
+    mc::SteveAnimInput in{};
+    in.left_hand_item = true;
+    animator.update(0.05f, in);
+
+    const auto arm = animator.getTransforms()[la];
+    constexpr float kPi = 3.14159265f;
+    const float half = -kPi * 0.05f;
+    EXPECT_NEAR(arm.rot.y, std::sin(half), 1e-4f);
+    EXPECT_NEAR(arm.rot.w, std::cos(half), 1e-4f);
+    EXPECT_NEAR(arm.rot.z, 0.0f, 1e-6f);
+}
+
+TEST(SteveAnimatorTest, EatingRaisesTheArmAndTiltsTheHead) {
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t head = static_cast<size_t>(mc::StevePart::Head);
+    mc::SteveAnimator animator;
+    mc::SteveAnimInput in{};
+    in.eating_progress = 0.5f; // the chew phase is sin(3*pi) = 0
+    animator.update(0.05f, in);
+
+    const auto arm = animator.getTransforms()[ra];
+    const float arm_pitch = 2.f * std::atan2(arm.rot.y, arm.rot.w);
+    EXPECT_NEAR(arm_pitch, -72.0f * 3.14159265f / 180.0f, 0.05f);
+    EXPECT_NE(arm.rot.x, 0.0f); // yaw 32 degrees toward the mouth
+    EXPECT_NE(arm.rot.z, 0.0f);
+
+    const auto h = animator.getTransforms()[head];
+    const float head_pitch = 2.f * std::atan2(h.rot.y, h.rot.w);
+    EXPECT_NEAR(head_pitch, 8.0f * 3.14159265f / 180.0f, 0.02f);
+    EXPECT_NE(h.rot.z, 0.0f); // yaw -6 degrees
+}
+
 TEST(SteveAnimatorTest, ZombieArmsPointStraightForwardAndKeepSwayingWhileWalking) {
     mc::SteveAnimator plain, zombie;
     mc::SteveAnimInput in{};
