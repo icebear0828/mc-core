@@ -1,7 +1,7 @@
 # 艾尔登法环 Minecraft 适配器：交接文档
 
 给**新开的 AI 会话 / 接手开发者**。先读完这一份，先看紧接着的"0. 当前最新状态（2026-10-12）"，再开展下一步工作。
-最后更新：2026-10-12（PR#12~PR#28 完整通过真实游戏实机游玩验收；3D 盾牌透明度、方块锚定卡人、F 键探索换手全部修复；主干正式确立为 `fork/main`；精炼 PR `fix/shield-live-polish` 已推送至 Fork 准备提给 upstream；下一步聚焦 **PR#29 重构模块审查与集成**）。
+最后更新：2026-11-02（背包持久化已实机确认；合成台/更多方块/重构待实机回归。历史记录见 §0.0.2~§0.0.4）。
 需要查证据时，权威文档是 `docs/ELDENRING_REVERSE.md`（逆向事实与审计）和 `docs/ELDENRING_VERIFY_CHECKLIST.md`（逐项验证状态，F1~F22 是近战/生存/视觉/音效）。
 
 > **改模式、输入、第一人称、相机、跳跃或移动前，先读 [CONTROL_POLICY.md](CONTROL_POLICY.md)。**
@@ -133,10 +133,36 @@
    AABB 碰撞）、火把（非满格）。需要先给 `buildBlockMesh` 加 block-shape 概念，不能只加枚举。
 2. **方块朝向**：原木/工作台/铁砧这类有 front 面的方块，放置时按玩家朝向旋转（`BlockGrid` 目前只存
    `BlockId`，需要加 2-bit orientation）。
-3. **背包持久化**：当前退出重进会清空背包/合成网格；文档里"物品存档"仍是待办。
+3. ~~**背包持久化**~~ **已完成（2026-11-02，实机确认）**：见 §0.0.4。
 4. **3D 手持/掉落建模**：工具/武器目前是平面贴图挤出；三叉戟/鞘翅模型在 Draft PR #126，渲染和 ER
    接线未完成；掉落物实体还没有。
 5. **熔炉/冶炼**：配方引擎没有 furnace，铁锭/金锭只能从创造面板拿；后续可加熔炉方块和 smelting 配方。
+
+---
+
+## 0.0.4 2026-11-02：背包持久化（**已实机确认**）
+
+分支 `feat/inventory-persistence`（基于 `origin/main` `c3e0b7c`）。
+
+- **纯逻辑**：`include/mc/inventory_persistence.hpp` + `src/inventory_persistence.cpp`。
+  - 版本化文本格式（首行 `mc-inventory 1`），物品用稳定 slug（`diamond_sword`、`block_dirt`…），
+    不依赖 `ItemId` 数值顺序。
+  - 保存内容：36 格主背包、4 格盔甲、副手、**光标上的物品**、选中热键栏槽位、3×3 合成网格。
+  - 解析时未知物品/坏行跳过并计数；头缺失或版本不支持时 `ok=false` 且**不改动**调用方状态；
+    数量按 `maxStackSize` 夹取；盔甲格做物品类型校验。
+  - `CraftingSession::setGrid` 用于恢复网格。
+- **适配层**：`adapters/eldenring/src/ui/inventory_store.cpp`。
+  - 启动时在 `KeyThread` 之前 `LoadInventorySave()`，读 `Game\mods\mc_adapter\inventory.txt`。
+  - `InventorySaveThread` 每 1 s 序列化一次，**只有文本变化才写**；先写 `.tmp` 再
+    `MoveFileEx(MOVEFILE_REPLACE_EXISTING)`，避免半截存档。
+  - 锁顺序与 `InventoryTick` 一致：`g_melee_mutex` → `ui.craft_mutex`。
+- **行为**：存档是**整个安装共享**的（不区分角色/存档位）；删掉 `inventory.txt` 即重置为默认初始物品。
+  退出前最后 ≤1 s 的改动可能丢失（进程无退出钩子）。
+- **验证**：`mc_tests` **1411 个（1410 过 / 1 预期跳过）**；`eldenring_adapter` RelWithDebInfo 编译
+  0 warning；用户实机确认：改背包/合成网格 → 退出 → 重进，背包、盔甲、副手、选中槽、3×3 网格全部恢复，
+  挖掘掉落/进食/放置方块的消耗也正确保留。
+- **已部署**：MC-only `dinput8.dll` SHA256 `5926B993…`（2,268,160 B）；旧 DLL 备份
+  `dinput8.dll.bak_before_inventory_save`（`AEE85FCC…`）。本次未改图集，无需重新提取。
 
 ---
 

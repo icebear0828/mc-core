@@ -107,3 +107,15 @@ TEST(CraftingSession, ReturnGridToEmptiesTheGridAndKeepsLeftoversWhenFull) {
     EXPECT_EQ(s.grid().at(0, 0).item, ItemId::Diamond); // nothing was lost
     EXPECT_EQ(s.grid().at(0, 0).count, 3u);
 }
+
+TEST(CraftingSession, SetGridRestoresASavedSession) {
+    CraftingSession s;
+    CraftingGrid saved;
+    saved.cells[0] = {ItemId::WoodPlanks, 4};
+    saved.cells[8] = {ItemId::Stick, 2};
+    s.setGrid(saved);
+    EXPECT_EQ(s.grid().at(0, 0).item, ItemId::WoodPlanks);
+    EXPECT_EQ(s.grid().at(0, 0).count, 4u);
+    EXPECT_EQ(s.grid().at(2, 2).item, ItemId::Stick);
+    EXPECT_EQ(s.grid().occupied(), 2);
+}

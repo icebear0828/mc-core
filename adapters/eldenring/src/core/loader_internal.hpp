@@ -334,6 +334,10 @@ HRESULT WINAPI DirectInput8CreateImpl(HINSTANCE hinst, DWORD version, REFIID rii
 DWORD WINAPI KeyThread(LPVOID);
 DWORD WINAPI AnimDebugThread(LPVOID);
 DWORD WINAPI CrackTunerThread(LPVOID);
+DWORD WINAPI InventorySaveThread(LPVOID);
+
+// ---- inventory persistence -----------------------------------------------------------------
+void LoadInventorySave();
 
 // ---- services ------------------------------------------------------------------------------
 DWORD FindGameWindowThread();
