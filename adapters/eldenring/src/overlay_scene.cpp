@@ -321,7 +321,8 @@ void RenderFrame(IDXGISwapChain* sc) {
                 static float flap_t = 0.f;
                 flap_t += dt;
                 const float flap = steve.gliding ? 0.35f * std::sin(flap_t * 8.f) : 0.f;
-                DrawProp("elytra_wings", PropModel("elytra_wings"), body_delta, sp, vp, steve, f.rtv,
+                const char* elytra_model = steve.gliding ? "elytra_wings_spread" : "elytra_wings";
+                DrawProp(elytra_model, PropModel(elytra_model), body_delta, sp, vp, steve, f.rtv,
                          g_elytra_table_gpu, true, 0.82f, 0.84f, 0.9f, flap);
             }
             if (steve.trident_charge > 0.f) {

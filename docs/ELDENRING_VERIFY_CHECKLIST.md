@@ -367,3 +367,14 @@
 - `mc::requestInventory` 在背包打开时请求 `MouseMotion` / `Keyboard` / `Cursor = Mod`，由 `HotkeyDispatcher` 每 tick 从 `ControlPlan` 统一应用。
 - 实测：背包开关、虚拟光标、拿放/Shift/数字键/F 换手正常；打开时 WASD/翻滚/跳跃/攻击/镜头无效，关闭后立即恢复；连续开关和 Alt-Tab 无输入粘连。
 - 自动化：CS2 构建 1188 tests passed，纯 MC 构建 1130 tests passed，Python 54 passed。
+
+## F37 2.7.2.0 fall/ground 审计与鞘翅 #38 — 待端到端验证（2026-11-02）
+
+- [ ] **版本确认**：本机 exe 为 2.7.2.0（86,973,008 字节）；用 `LocateByPrefix` 跑一遍全部签名，确认 2.7.2.0 上仍全部唯一。fall/kill/action 相关签名已核对唯一，其余未逐一验证。
+- [ ] **帧内顺序**：实机 10 Hz 日志记录 `+0x92/+0x93/+0x1CC/+0x1D0/+0x1D1/+0x1D2/+0x1B8/+0x3F1/+0x388`，确认 `PadManipulator` 贴地吸附、`0x140460AA0` 主物理、`0x1404614F0` fall 更新的先后顺序。
+- [ ] **低空阈值**：在滑翔/创造飞行中贴地，确认 `+0x1CC < 1.0` 时 `+0x92` 被强制置 1 的实际高度，以及 `+0x1D2`/`+0x3F1` 的翻转时序。
+- [ ] **12 s 事件**：生存模式下只每帧 `writeFallTimer(0)`（不扩展 `shouldDenyLongFall`）时，`FallModule+0x18` 是否仍能到 12.00 s 触发事件 12。
+- [ ] **3 s 移动锁**：确认 `unlockAirMovement` 清 ActionFlag `+0x40` bit19/20 后，`+0x1B8` 是否仍会累积到限制 WASD；需要时在 fall 更新后清零。
+- [ ] **#38 首版**：保持离地 >1 m 的滑翔端到端（装备检测、起停、烟花推进、撞地伤害、动画、坐标 Z-up cm ↔ Y-up m 转换）。
+- [ ] **#38 完整版**：同时抑制 `0x1403DD4E0`/`0x1403D9F30` 的贴地吸附与 `0x1404614F0` 的强制着地后，低空滑翔是否稳定；确认不会破坏状态 2/3/5/6 的 Havok 更新。
+- [ ] **文档地址**：更新 `eldenring_action_lock.hpp`、`eldenring_creative.hpp`、`eldenring_world.hpp` 注释里的 2.7.1.0 VA（或明确标注“以签名解析为准”）。

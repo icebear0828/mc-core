@@ -45,6 +45,13 @@ void SetupCreativeProbes() {
         reinterpret_cast<void*>(kw), reinterpret_cast<void*>(fh), reinterpret_cast<void*>(fe));
 }
 
+void SetupFallProbe() {
+    g_fall_probe_log.store(FileExists(g_game_dir + "mc_er_fallprobe.txt"), std::memory_order_relaxed);
+    if (g_fall_probe_log.load(std::memory_order_relaxed)) {
+        Log("fallprobe: enabled (mc_er_fallprobe.txt)");
+    }
+}
+
 void SetupGameHooksCallbacks() {
     eldenring::hooks::GameHooksCallbacks cb;
     cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
@@ -53,6 +60,7 @@ void SetupGameHooksCallbacks() {
     cb.safe_copy = [](uintptr_t a, void* d, size_t s) { return SafeCopy(a, d, s); };
 
     cb.on_camera_step_pre = [](float dt) {
+        FallProbeLog("pre");
         if (g_bullet_fire_pending.load(std::memory_order_relaxed) &&
             GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
             g_bullet_fire_pending.exchange(false)) {
@@ -83,9 +91,11 @@ void SetupGameHooksCallbacks() {
 
     cb.on_camera_step_post = [](bool have, uintptr_t addr, const float before[3]) {
         AfterCameraStep(have, addr, before);
+        FallProbeLog("post");
     };
 
     cb.on_clamp_tick = [](uintptr_t module) {
+        FallProbeLog("clamp");
         if (g_damage_enabled.load(std::memory_order_relaxed) && g_queue.pending() > 0) {
             DrainOnce(module);
         }

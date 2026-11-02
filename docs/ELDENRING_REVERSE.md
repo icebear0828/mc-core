@@ -1428,3 +1428,72 @@ Table 1                     Table 2
 - 材质解析不是恒为 1：同一地点不同地面给出不同值。已观察到 `material=1`（出生点石台，`shape=0x100010B`，掉圆石/煤炭/粗铁）、`material=2` 和 `material=5`（草地/泥土，`shape=0x1000A59` / `0x100243B`，掉泥土/圆石）。`matidx` 是打包值：高约 10 位是材质索引，低 22 位是 shape key（例如 `matidx=811597823` 的高位为 193、低位为 0x1A59FF）。
 - 失败与修正：最初把 `material=5` 当成石头，配置 `zone_mat_5=1` 后草地反而掉石头；实机确认 `material=5` 也是草地/泥土，改成 `zone_mat_5=0`。石头只保留 `material=1 -> StoneSurface`。`material` 值不是全局语义，必须在各区域分别采样。
 - 未确认：material 1/5 是否在所有地图都是石头、material 2 是否总是草地；需要更多区域的样本。
+
+## 46. 2.7.2.0 fall/ground 审计：鞘翅 #38 的硬卡点（2026-11-02，我方只读反汇编 + 现有签名扫描）
+
+**版本漂移（A，本机实测）**
+- 本机 `eldenring.exe` 是 **2.7.2.0**，`86,973,008` 字节；文档此前记录的是 2.7.1.0 / `87,042,128` 字节。
+- 项目现有签名在 2.7.2.0 上**仍然唯一命中**，但地址整体偏移。`hook_setup.cpp` 走 `LocateByPrefix`，所以 fall/kill hook 仍能定位；文档里的硬编码 VA 已过期。
+
+| 签名 | 2.7.1.0 | 2.7.2.0 | 偏移 |
+|---|---|---|---|
+| `kFallHeight` | `0x14044E240` | `0x14044E320` | +0xE0 |
+| `kFallTimeExceeded` | `0x14044E3A0` | `0x14044E480` | +0xE0 |
+| `kHardLanding` | `0x14044E090` | `0x14044E170` | +0xE0 |
+| `kKillChr` | `0x1403FCD90` | `0x1403FCE20` | +0x90 |
+| `kKillWrapper` | `0x1403EDA70` | `0x1403EDA70` | 0 |
+| `kChrEventDispatch` | `0x140428DE0` | `0x140428E70` | +0x90 |
+| `kHasSpEffect` | `0x1404FA370` | `0x1404FA450` | +0xE0 |
+| `kCameraStepExecute` | `0x1403B11D0` | `0x1403B11D0` | 0 |
+
+- 硬编码指令点同样偏移：action lock bit19 `0x140406AED -> 0x140406B7D`、bit20 `0x140406ACF -> 0x140406B5F`；fall timer 累加 `0x14046154B -> 0x14046162B`；`+0x1D0` 写入 `0x140460A19 -> 0x140460AF9`；游戏 set-position `0x14045C8BE -> 0x14045C99E`。
+- 反汇编确认语义未变：`0x14044E480` 仍是 `[FallModule+0x18] > threshold`；`0x14044E320` 仍是 `+0x1D != 0 -> 10000.0f`，否则 `[phys+0x150].y - [ground].y`，上限 `59.0f`；`0x14044E170` 仍是 `edx=0` 的致死路径 + SpEffect `0x8F` 查询，**不是落地复位**。
+
+**fall/ground 状态机（B，静态）**
+- `0x1404614F0–0x1404616D0` 是 fall 状态更新，按 `PhysicsModule+0x388` 做状态机：
+  - 1 = 不动作；2/3 = 空中；4 = 起飞（清 `+0x92/+0x1D1`）；5 = 起飞变体（`+0x1E1` 非零则跳过）；6 = 落地（最后置 `+0x92=1`）。
+- 公共尾部（`0x1404615E2`）：
+  - `+0x93 = +0x92`（状态 != 1）
+  - `+0x1D2 != 0` -> `+0x92=1`
+  - `1.0 > +0x1CC` -> `+0x92=1`
+  - `+0x3F1 != 0` -> `+0x92=1`
+  - `+0x92 == 0` 时 `+0x1B8 += dt`
+  - `+0x3F2 = +0x3F1; +0x3F1 = 0`
+  - `+0x1C4 = 1.0f; +0x1DD = 0; +0x1DA = 0`；清 `+0x2E7` bit1
+- 字段语义：
+  - `+0x1CC` = **离地距离**（米）。`0x1403DD4E0` 在近地时写 `0.12f` 并置 `+0x1D0=1/+0x1D1=1`；常量 `0x143B1CDC8 = 0.12f`。
+  - `+0x1D2` = **本帧落地标志**，由 `0x140467210` 设置；`+0x1D3..+0x1D6` 任一非零都会置 1。
+  - `+0x3F1` = **单帧 ground-hit 事件**，读后复制到 `+0x3F2` 并清零。
+  - `+0x1B8` = 滞空计时器；`+0x1D0` 由 `(+0x92==0) && ([+0xCC]==0 || +0x1B8<=1.0)` 算出（`0x140460AF9`），**不要自己写**。
+  - `+0x1D5` = `gravity_disabled`（文档已有）；写入点 `0x1404282F5`、`0x140483970`、`0x1404845D4`。
+
+**贴地吸附在 `CS::PadManipulator` 里（B，RTTI 确认）**
+- 虚表 `0x142A30798` 的 RTTI = `.?AVPadManipulator@CS@@`。
+- `0x1403D8670` 是 `PadManipulator` 构造函数（对象 0x210 字节），构造后存到 `[obj+0x588]`（`0x14065E29D`）。
+- `0x1403D9F30` 是 `PadManipulator` 虚表 `+0x50` 方法，调用链：
+  `0x1403D9F30 -> 0x1403DAA90 -> 0x1403DD4E0`（ground snap）。
+- 构造点：`0x140513D30`（由 `0x140509710` 调）和 `0x14065DFF0`（由 `0x140651140` 调）。
+- 结论：贴地吸附属于**玩家输入/移动阶段**，不是通用物理模块。
+
+**执行顺序（强推断，C+，未端到端验证）**
+```
+PadManipulator 更新（输入/移动，含贴地吸附）
+  -> 0x1403C8620 main physics wrapper
+       -> 0x140460AA0 main physics
+       -> 0x140461810 post-physics
+  -> 0x1404614F0 fall state update（独立 task）
+```
+- 主物理和 post-physics 在同一 wrapper；fall 更新是独立 task，`.rdata 0x142B93168 -> scheduler 0x140C472B0`、`0x142B93170 -> fall task 0x140C47410`，两者相邻。
+- `PadManipulator +0x50` 的每帧调用点没有静态隔离出来；`call [reg+0x50]` 扫描有大量误命中（异常清理、跳转表）。顺序是强推断，**需要实机日志确认**。
+
+**对 #38 的影响**
+- 低空滑翔（`+0x1CC < 1.0`）会被 fall 状态机强制判为着地；贴地吸附会在输入阶段先把 `+0x1CC` 写成 0.12。
+- 首版方案：保持离地 >1 m，复用 `stepFlight` 的位置积分 + `writeFallTimer(0)` + `unlockAirMovement`，不碰物理 hook。
+- 完整方案：需要同时处理两个来源——`0x1403DD4E0`/`0x1403D9F30`（贴地吸附）和 `0x1404614F0`（fall 强制着地）。只 hook fall 更新不够。
+- 12 秒死亡：创造飞行 34 s 无死亡是“timer 重置 + `0x14044E480` hook 返回 false”共同作用的结果，不能证明单独重置 timer 就够；生存鞘翅需要扩展 `shouldDenyLongFall` 或实测确认。
+
+**待端到端验证**
+- `PadManipulator` 吸附、main physics、fall 更新的帧内先后顺序。
+- 生存模式每帧 `writeFallTimer(0)` 是否单独足以阻止 12 s 事件。
+- 低空 `+0x1CC < 1.0` 的实际触发高度与 `+0x1D2/+0x3F1` 的翻转时序。
+- 2.7.2.0 上其余签名是否仍全部唯一（本次只核对了 fall/kill/action 相关签名）。
