@@ -27,13 +27,15 @@ void DrawProp(const char* name, const mc::model::EntityModel* model, const mc::r
     if (model == nullptr || !g_steve.mobModelReady(name)) return;
     const mc::Vec3 feet{steve.feet[0], steve.feet[1], steve.feet[2]};
     std::vector<mc::Quat> extra(model->bones.size());
-    if (flap != 0.f) {
-        const mc::Quat right{std::sin(flap * 0.5f), 0.f, 0.f, std::cos(flap * 0.5f)};
-        const mc::Quat left{-std::sin(flap * 0.5f), 0.f, 0.f, std::cos(flap * 0.5f)};
-        for (size_t i = 0; i < model->bones.size(); ++i) {
-            if (model->bones[i].name == "rightWing") extra[i] = eldenring::render::hostQuat(right);
-            else if (model->bones[i].name == "leftWing") extra[i] = eldenring::render::hostQuat(left);
-        }
+    // Vanilla elytra is fixed to the back and forms a V: the wing tops flare outward, outside the
+    // arm swing path. The flap adds the gliding oscillation on top of the static spread.
+    const float spread = 0.55f;
+    const float angle = flap + spread;
+    const mc::Quat right{std::sin(angle * 0.5f), 0.f, 0.f, std::cos(angle * 0.5f)};
+    const mc::Quat left{-std::sin(angle * 0.5f), 0.f, 0.f, std::cos(angle * 0.5f)};
+    for (size_t i = 0; i < model->bones.size(); ++i) {
+        if (model->bones[i].name == "rightWing") extra[i] = eldenring::render::hostQuat(right);
+        else if (model->bones[i].name == "leftWing") extra[i] = eldenring::render::hostQuat(left);
     }
     auto bones = mc::model::boneMatrices(*model, extra, feet, steve.yaw, eldenring::render::kBasis);
     for (auto& bone : bones) bone = bone * delta;
