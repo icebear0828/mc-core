@@ -11,6 +11,19 @@ std::string ResolveCsAssetPath(const std::string& path) {
     return (std::filesystem::path(g_cs_game_dir) / p).string();
 }
 
+// Copies the glove/bare-arm/sleeve descriptors shared by every weapon table.
+// Each gun has its own table, so a switch only swaps the GPU handle.
+void CopyCsSharedDescriptors(D3D12_CPU_DESCRIPTOR_HANDLE gun_table) {
+    if (!g_s.device || gun_table.ptr == 0 || g_cs_knife_table_cpu.ptr == 0) return;
+    const UINT inc = g_s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    const UINT shared_slots[] = {1, 3, 5, 6, 7, 8, 9, 10, 11};
+    for (UINT shared : shared_slots) {
+        D3D12_CPU_DESCRIPTOR_HANDLE src{g_cs_knife_table_cpu.ptr + static_cast<SIZE_T>(inc) * shared};
+        D3D12_CPU_DESCRIPTOR_HANDLE dst{gun_table.ptr + static_cast<SIZE_T>(inc) * shared};
+        g_s.device->CopyDescriptorsSimple(1, dst, src, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    }
+}
+
 // Loads the weapon requested by the hotkey dispatcher. The knife is the
 // fallback: if a gun asset is missing we keep rendering the current weapon.
 void UpdateCsWeaponSlot(uint8_t want_slot) {
@@ -34,12 +47,12 @@ void UpdateCsWeaponSlot(uint8_t want_slot) {
             def.normal_tex_path = ResolveCsAssetPath(def.normal_tex_path);
             def.pbr_tex_path = ResolveCsAssetPath(def.pbr_tex_path);
             if (std::filesystem::exists(def.model_csvm_path) && g_cs.loadWeapon(g_s.device, def)) {
-                // The gun table is shared by every gun: swap in this weapon's
-                // maps unless they are already there. The decoded PNGs stay
-                // cached, so a switch only pays the GPU upload.
-                if (g_cs_gun_table_slot != want_slot) {
-                    const bool any_real = g_cs.loadWeaponTextures(g_s.device, def, g_cs_ak_table_cpu);
-                    g_cs_gun_table_slot = want_slot;
+                // Every gun owns a descriptor table. Init normally preloads all
+                // of them; this is the lazy fallback if a map appeared later.
+                if (!g_cs_gun_table_loaded[want_slot]) {
+                    const bool any_real = g_cs.loadWeaponTextures(g_s.device, def, g_cs_gun_table_cpu[want_slot]);
+                    CopyCsSharedDescriptors(g_cs_gun_table_cpu[want_slot]);
+                    g_cs_gun_table_loaded[want_slot] = true;
                     if (!any_real) {
                         Logf("overlay: CS weapon %u has no texture maps, using fallbacks",
                              static_cast<unsigned>(want_slot));
@@ -164,7 +177,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
     rtv_desc.NumDescriptors = g_s.buffers;
     D3D12_DESCRIPTOR_HEAP_DESC srv_desc{};
     srv_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    srv_desc.NumDescriptors = 64; // 0: ImGui, 1-2: Steve, 3: HUD, 4-5: FP items, 6-7: Held, 8-9: Creeper, 10-11: Zombie, 12-13: Skeleton, 14-15: extra, 16-27: CS2 knife table, 32-43: CS2 gun table
+    srv_desc.NumDescriptors = 80; // 0-15: MC/ImGui; 16-27: CS knife table; 32-43 / 44-55 / 56-67: CS gun tables (AK/AWP/M4)
     srv_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(g_s.device->CreateDescriptorHeap(&rtv_desc, IID_PPV_ARGS(&g_s.rtv_heap))) ||
         FAILED(g_s.device->CreateDescriptorHeap(&srv_desc, IID_PPV_ARGS(&g_s.srv_heap)))) {
@@ -326,19 +339,23 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             cs_table_cpu.ptr += static_cast<SIZE_T>(srv_inc) * 16;
             D3D12_CPU_DESCRIPTOR_HANDLE glove_cpu = cs_table_cpu;
             glove_cpu.ptr += srv_inc;
-            D3D12_CPU_DESCRIPTOR_HANDLE ak_table_cpu = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
-            ak_table_cpu.ptr += static_cast<SIZE_T>(srv_inc) * 32;
             g_cs_weapon_tex_cpu = cs_table_cpu;
             g_cs_glove_tex_cpu = glove_cpu;
             g_cs_knife_table_cpu = cs_table_cpu;
-            g_cs_ak_table_cpu = ak_table_cpu;
-            g_cs_gun_table_slot = 0;
 
             D3D12_GPU_DESCRIPTOR_HANDLE srv_gpu_base = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
             g_cs_knife_table_gpu = srv_gpu_base;
             g_cs_knife_table_gpu.ptr += static_cast<UINT64>(srv_inc) * 16;
-            g_cs_ak_table_gpu = srv_gpu_base;
-            g_cs_ak_table_gpu.ptr += static_cast<UINT64>(srv_inc) * 32;
+
+            // One 12-slot table per gun: AK at 32, AWP at 44, M4A1-S at 56.
+            for (uint8_t slot = 1; slot <= 3; ++slot) {
+                const SIZE_T index = 32 + static_cast<SIZE_T>(slot - 1) * 12;
+                g_cs_gun_table_cpu[slot] = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
+                g_cs_gun_table_cpu[slot].ptr += static_cast<SIZE_T>(srv_inc) * index;
+                g_cs_gun_table_gpu[slot] = srv_gpu_base;
+                g_cs_gun_table_gpu[slot].ptr += static_cast<UINT64>(srv_inc) * index;
+                g_cs_gun_table_loaded[slot] = false;
+            }
 
             const std::string& game_dir = eldenring::diagnostics::GetGameDir();
             g_cs_game_dir = game_dir;
@@ -558,27 +575,25 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                                        knife_norm_png, glove_norm_png, knife_pbr_png, glove_pbr_png,
                                        bare_png, bare_norm_png, bare_pbr_png,
                                        sleeve_png, sleeve_norm_png, sleeve_pbr_png);
-            // The knife/glove/bare/sleeve maps are uploaded and never re-read;
-            // only gun maps are worth keeping decoded for later switches.
+            // Preload every gun's maps into its own table. A switch then only
+            // swaps the GPU handle: no PNG decode and no texture upload on the
+            // render thread, which used to hitch the first AK -> AWP/M4 switch.
+            const char* gun_ids[4] = {nullptr, "weapon_ak47", "weapon_awp", "weapon_m4a1_silencer"};
+            for (uint8_t slot = 1; slot <= 3; ++slot) {
+                const auto* found = eldenring::cs::CSWeaponRegistry::instance().findWeapon(gun_ids[slot]);
+                if (!found) continue;
+                auto def = *found;
+                def.albedo_tex_path = ResolveCsAssetPath(def.albedo_tex_path);
+                def.normal_tex_path = ResolveCsAssetPath(def.normal_tex_path);
+                def.pbr_tex_path = ResolveCsAssetPath(def.pbr_tex_path);
+                const bool any_real = g_cs.loadWeaponTextures(g_s.device, def, g_cs_gun_table_cpu[slot]);
+                CopyCsSharedDescriptors(g_cs_gun_table_cpu[slot]);
+                g_cs_gun_table_loaded[slot] = true;
+                Logf("overlay: CS gun table %u (%s) %s", static_cast<unsigned>(slot), def.display_name.c_str(),
+                     any_real ? "preloaded" : "using fallbacks");
+            }
+            // All maps are uploaded now; drop the CPU copies.
             erov::ReleaseCsDecodeCache();
-
-            // Load the AK-47 weapon maps into the second table once. Switching
-            // then only swaps the table handle: no PNG decode, no 48 MB upload.
-            if (const auto* ak = eldenring::cs::CSWeaponRegistry::instance().findWeapon("weapon_ak47")) {
-                auto ak_def = *ak;
-                ak_def.albedo_tex_path = ResolveCsAssetPath(ak_def.albedo_tex_path);
-                ak_def.normal_tex_path = ResolveCsAssetPath(ak_def.normal_tex_path);
-                ak_def.pbr_tex_path = ResolveCsAssetPath(ak_def.pbr_tex_path);
-                g_cs.loadWeaponTextures(g_s.device, ak_def, ak_table_cpu);
-                g_cs_gun_table_slot = 1;
-            }
-            // Glove + bare-arm + sleeve descriptors are shared by both weapon tables.
-            const UINT shared_slots[] = {1, 3, 5, 6, 7, 8, 9, 10, 11};
-            for (UINT shared : shared_slots) {
-                D3D12_CPU_DESCRIPTOR_HANDLE src{cs_table_cpu.ptr + static_cast<SIZE_T>(srv_inc) * shared};
-                D3D12_CPU_DESCRIPTOR_HANDLE dst{ak_table_cpu.ptr + static_cast<SIZE_T>(srv_inc) * shared};
-                g_s.device->CopyDescriptorsSimple(1, dst, src, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-            }
         }
 #endif
 #if ENABLE_OW_VIEWMODEL

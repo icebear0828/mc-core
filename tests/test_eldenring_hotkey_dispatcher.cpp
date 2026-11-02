@@ -588,6 +588,7 @@ TEST_F(HotkeyDispatcherTest, CsModeMasksItsVanillaKeys) {
     };
     EXPECT_TRUE(masked('R')); // reload must not also use a quick item
     EXPECT_TRUE(masked('F')); // inspect must not also trigger the vanilla action
+    EXPECT_TRUE(masked('Q')); // quick-switch must not reach the vanilla input
     for (int d = '1'; d <= '4'; ++d) EXPECT_TRUE(masked(d)); // weapon slots must not select vanilla quick slots
     EXPECT_TRUE(suppressed_wheel_);
 
@@ -726,6 +727,154 @@ TEST_F(HotkeyDispatcherTest, CsDigit4SelectsTheM4A1S) {
     EXPECT_EQ(ctx.mode().cs_ammo.load(), 20u);
     EXPECT_EQ(ctx.mode().cs_reserve.load(), 80u);
 }
+TEST_F(HotkeyDispatcherTest, CsQuickSwitchQReturnsToThePreviousWeapon) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+
+    auto press = [this](int vk) {
+        setKey(vk, true);
+        dispatcher_->tick(0.016f);
+        setKey(vk, false);
+        dispatcher_->tick(0.016f);
+    };
+
+    press('1');
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 1);
+    press('3');
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 0);
+
+    // Q swaps back to the AK-47 and plays the deploy take.
+    press('Q');
+    EXPECT_EQ(ctx.mode().cs_weapon_slot.load(), 1);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 4);
+
+    // Q again returns to the knife.
+    press('Q');
+    EXPECT_EQ(ctx.mode().cs_weapon_slot.load(), 0);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 4);
+}
+
+TEST_F(HotkeyDispatcherTest, CsQuickSwitchKeepsEachWeaponsAmmo) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+
+    auto press = [this](int vk) {
+        setKey(vk, true);
+        dispatcher_->tick(0.016f);
+        setKey(vk, false);
+        dispatcher_->tick(0.016f);
+    };
+    auto fire_one = [this, &ctx]() {
+        const uint32_t before = ctx.mode().cs_ammo.load();
+        left_held_ = true;
+        dispatcher_->tick(0.016f);
+        left_held_ = false;
+        EXPECT_EQ(ctx.mode().cs_ammo.load(), before - 1);
+    };
+
+    press('1'); // AK-47
+    fire_one();
+    ASSERT_EQ(ctx.mode().cs_ammo.load(), 29u);
+
+    press('4'); // M4A1-S
+    ASSERT_EQ(ctx.mode().cs_ammo.load(), 20u);
+    fire_one();
+    ASSERT_EQ(ctx.mode().cs_ammo.load(), 19u);
+
+    // Switching back restores the AK magazine instead of refilling it.
+    press('Q');
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 1);
+    EXPECT_EQ(ctx.mode().cs_ammo.load(), 29u);
+    EXPECT_EQ(ctx.mode().cs_reserve.load(), 90u);
+
+    press('Q');
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 3);
+    EXPECT_EQ(ctx.mode().cs_ammo.load(), 19u);
+    EXPECT_EQ(ctx.mode().cs_reserve.load(), 80u);
+}
+
+TEST_F(HotkeyDispatcherTest, CsQuickSwitchCancelsReload) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+
+    setKey('1', true);
+    dispatcher_->tick(0.016f);
+    setKey('1', false);
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 1);
+    dispatcher_->tick(1.1f); // finish the draw
+
+    left_held_ = true;
+    dispatcher_->tick(0.016f);
+    left_held_ = false;
+    ASSERT_EQ(ctx.mode().cs_ammo.load(), 29u);
+
+    setKey('R', true);
+    dispatcher_->tick(0.016f);
+    setKey('R', false);
+    ASSERT_EQ(ctx.mode().cs_knife_state.load(), 5);
+
+    // Q aborts the reload; the magazine must not refill afterwards.
+    setKey('Q', true);
+    dispatcher_->tick(0.016f);
+    setKey('Q', false);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_weapon_slot.load(), 0);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 4);
+    dispatcher_->tick(3.0f);
+
+    // Back to the AK: the aborted reload left the magazine at 29.
+    setKey('Q', true);
+    dispatcher_->tick(0.016f);
+    setKey('Q', false);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_weapon_slot.load(), 1);
+    EXPECT_EQ(ctx.mode().cs_ammo.load(), 29u);
+}
+
+TEST_F(HotkeyDispatcherTest, CsReselectingTheSameSlotDoesNotRefillOrRedeploy) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+
+    setKey('1', true);
+    dispatcher_->tick(0.016f);
+    setKey('1', false);
+    dispatcher_->tick(0.016f);
+    dispatcher_->tick(1.1f); // finish the draw
+    ASSERT_EQ(ctx.mode().cs_knife_state.load(), 0);
+
+    left_held_ = true;
+    dispatcher_->tick(0.016f);
+    left_held_ = false;
+    ASSERT_EQ(ctx.mode().cs_ammo.load(), 29u);
+    dispatcher_->tick(1.0f); // let the fire take return to idle
+    ASSERT_EQ(ctx.mode().cs_knife_state.load(), 0);
+
+    setKey('1', true);
+    dispatcher_->tick(0.016f);
+    setKey('1', false);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(ctx.mode().cs_weapon_slot.load(), 1);
+    EXPECT_EQ(ctx.mode().cs_ammo.load(), 29u);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 0);
+}
+
 TEST_F(HotkeyDispatcherTest, CsGunFireQueuesHitscanShotWithWeaponBallistics) {
     auto& ctx = RuntimeContext::Instance();
 

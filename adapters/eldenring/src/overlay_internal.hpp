@@ -165,13 +165,16 @@ inline CsRenderer g_cs;
 inline D3D12_CPU_DESCRIPTOR_HANDLE g_cs_weapon_tex_cpu{};
 inline D3D12_CPU_DESCRIPTOR_HANDLE g_cs_glove_tex_cpu{};
 inline D3D12_CPU_DESCRIPTOR_HANDLE g_cs_knife_table_cpu{};
-inline D3D12_CPU_DESCRIPTOR_HANDLE g_cs_ak_table_cpu{};
+// One 12-slot descriptor table per gun (index = weapon slot: 1 AK, 2 AWP,
+// 3 M4A1-S). Keeping every gun resident makes a switch a handle swap instead
+// of a PNG decode + texture upload on the render thread.
+inline D3D12_CPU_DESCRIPTOR_HANDLE g_cs_gun_table_cpu[4]{};
 inline D3D12_GPU_DESCRIPTOR_HANDLE g_cs_knife_table_gpu{};
-inline D3D12_GPU_DESCRIPTOR_HANDLE g_cs_ak_table_gpu{};
+inline D3D12_GPU_DESCRIPTOR_HANDLE g_cs_gun_table_gpu[4]{};
+inline bool g_cs_gun_table_loaded[4]{};
 inline std::string g_cs_game_dir;
 inline std::string g_cs_knife_model_path;
 inline uint8_t g_cs_active_slot = 0;
-inline uint8_t g_cs_gun_table_slot = 0; // weapon slot whose maps are in g_cs_ak_table (0 = none)
 #endif
 
 #if ENABLE_OW_VIEWMODEL

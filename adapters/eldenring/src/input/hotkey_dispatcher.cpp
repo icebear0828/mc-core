@@ -148,10 +148,10 @@ void HotkeyDispatcher::tick(float dt) {
 #if ENABLE_CS2_VIEWMODEL && defined(_WIN32)
     // CS mode owns these keys. Hide them from the game, or R uses a quick item
     // while reloading and 1-4 select vanilla quick slots.
-    int cs_scans[6] = {};
+    int cs_scans[7] = {};
     size_t cs_scan_count = 0;
     if (control_inputs.cs_mode && ctx.fg && !inv_open_for_policy) {
-        const int cs_keys[] = {'R', 'F', '1', '2', '3', '4'};
+        const int cs_keys[] = {'R', 'F', 'Q', '1', '2', '3', '4'};
         for (const int vk : cs_keys) {
             const int sc = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC));
             if (sc > 0) cs_scans[cs_scan_count++] = sc;

@@ -743,7 +743,7 @@ void DrawHud(const HudState& hud, float w, float h) {
                      static_cast<unsigned>(r_mode.cs_reserve.load()));
             dl->AddText(ImGui::GetFont(), 22.f, {x + card_w - 96.f, y + 10.f}, IM_COL32(255, 255, 255, 245), ammo_str);
             dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 60.f}, IM_COL32(200, 210, 225, 230), "[F] Inspect | [LMB] Fire | [R] Reload");
-            dl->AddText(ImGui::GetFont(), 12.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[1]AK [2]AWP [3]Knife [4]M4 | [F1] Toggle");
+            dl->AddText(ImGui::GetFont(), 12.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[Q] Last | [1]AK [2]AWP [3]Knife [4]M4 | [F1]");
         } else {
             dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 60.f}, IM_COL32(200, 210, 225, 230), "[F] Spin Inspect  |  [LMB] Slash");
             dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[RMB] Heavy Attack  |  [F1] Mode Toggle");

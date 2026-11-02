@@ -550,10 +550,11 @@ void RenderFrame(IDXGISwapChain* sc) {
 #if ENABLE_CS2_VIEWMODEL
     if (cs_active && !steve.dead) {
         const mc::rig::Mat4 proj = g_cs.computeViewmodelProjection(g_s.width, g_s.height);
-        // The knife and the shared gun table have their own descriptors;
-        // switching is just a descriptor-handle swap.
+        // The knife and each gun own their descriptor tables; switching is
+        // just a handle swap, with no texture upload on the render thread.
+        const uint8_t cs_slot = r_mode.cs_weapon_slot.load();
         D3D12_GPU_DESCRIPTOR_HANDLE cs_tex_table =
-            (r_mode.cs_weapon_slot.load() == 0) ? g_cs_knife_table_gpu : g_cs_ak_table_gpu;
+            (cs_slot == 0) ? g_cs_knife_table_gpu : g_cs_gun_table_gpu[cs_slot & 3u];
         if (g_steve.ready()) {
             g_steve.ensureDepth(g_s.device, g_s.width, g_s.height);
         }

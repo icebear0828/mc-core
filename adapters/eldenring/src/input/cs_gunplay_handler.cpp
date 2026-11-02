@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 namespace {
 
@@ -80,15 +81,102 @@ float fallbackCsDuration(uint8_t state, bool knife) {
     }
 }
 
+// Slots: 0 = butterfly knife, 1 = AK-47, 2 = AWP, 3 = M4A1-S.
+const char* weaponIdForSlot(uint8_t slot) {
+    switch (slot) {
+        case 1: return "weapon_ak47";
+        case 2: return "weapon_awp";
+        case 3: return "weapon_m4a1_silencer";
+        default: return "weapon_knife_butterfly";
+    }
+}
+
+// Sound-event namespace for the active weapon (cs.ak47.fire, cs.awp.draw, ...).
+const char* soundPrefixForSlot(uint8_t slot) {
+    switch (slot) {
+        case 1: return "ak47";
+        case 2: return "awp";
+        case 3: return "m4a1_s";
+        default: return "knife";
+    }
+}
+
 } // namespace
 
 namespace eldenring::input {
 
 void CsGunplayHandler::reset() {
     cs_fire_cooldown_ = 0.f;
+    cs_since_shot_ = 10.f;
+    cs_reload_sound_stage_ = 0;
     prev_reload_r_ = false;
     prev_gameplay_f_ = false;
+    prev_q_ = false;
+    last_slot_ = 0;
+    for (uint32_t& ammo : slot_ammo_) ammo = 0;
+    for (uint32_t& reserve : slot_reserve_) reserve = 0;
+    for (bool& ready : slot_ammo_ready_) ready = false;
     for (bool& key : prev_digit_) key = false;
+}
+
+void CsGunplayHandler::selectWeaponSlot(uint8_t slot, const InputTickContext& ctx) {
+#if ENABLE_CS2_VIEWMODEL
+    auto& mode = RuntimeContext::Instance().mode();
+    if (!mode.cs_mode.load() || slot > 3) return;
+    const uint8_t current = mode.cs_weapon_slot.load();
+    // Pressing the key of the weapon already in hand is a no-op in CS2; it
+    // must not refill the magazine or restart the deploy take.
+    if (slot == current) return;
+
+    // Remember each weapon's magazine so switching back does not refill it.
+    if (current < 4) {
+        slot_ammo_[current] = mode.cs_ammo.load();
+        slot_reserve_[current] = mode.cs_reserve.load();
+        slot_ammo_ready_[current] = true;
+    }
+    last_slot_ = current;
+
+    if (slot == 0) {
+        mode.cs_ammo.store(0);
+        mode.cs_reserve.store(0);
+        mode.cs_mag_capacity.store(0);
+    } else {
+        if (!slot_ammo_ready_[slot]) {
+            const auto* def = eldenring::cs::CSWeaponRegistry::instance().findWeapon(weaponIdForSlot(slot));
+            slot_ammo_[slot] = def ? def->ballistics.magazine_capacity : 0u;
+            slot_reserve_[slot] = def ? def->ballistics.reserve_capacity : 0u;
+            slot_ammo_ready_[slot] = true;
+        }
+        const auto* def = eldenring::cs::CSWeaponRegistry::instance().findWeapon(weaponIdForSlot(slot));
+        mode.cs_ammo.store(slot_ammo_[slot]);
+        mode.cs_reserve.store(slot_reserve_[slot]);
+        mode.cs_mag_capacity.store(def ? def->ballistics.magazine_capacity : slot_ammo_[slot]);
+    }
+
+    mode.cs_weapon_slot.store(slot);
+    mode.cs_knife_state.store(4); // Deploy
+    mode.cs_knife_inspect.store(false);
+    mode.cs_action_variant.store(static_cast<uint8_t>((mode.cs_action_variant.load() + 1u) & 1u));
+    mode.cs_action_hit.store(true);
+    mode.cs_knife_anim_time.store(0.f);
+    cs_reload_sound_stage_ = 0;
+    // A freshly drawn weapon fires on its first click and is perfectly
+    // accurate, matching CS2's first-shot behaviour after a switch.
+    cs_fire_cooldown_ = 0.f;
+    cs_since_shot_ = 10.f;
+    if (ctx.cb->play_sound) {
+        if (slot == 0) {
+            ctx.cb->play_sound("cs.knife.deploy", 1.0f);
+        } else {
+            char event[48];
+            snprintf(event, sizeof(event), "cs.%s.draw", soundPrefixForSlot(slot));
+            ctx.cb->play_sound(event, 1.0f);
+        }
+    }
+#else
+    (void)slot;
+    (void)ctx;
+#endif
 }
 
 bool CsGunplayHandler::tickRightClick(const InputTickContext& ctx) {
@@ -154,21 +242,29 @@ void CsGunplayHandler::tickActionTimer(const InputTickContext& ctx) {
         mode.cs_knife_anim_time.store(0.f);
     } else {
         mode.cs_knife_anim_time.store(t);
-        if (state == 5 && mode.cs_weapon_slot.load() == 1 && max_t > 0.f) {
+        if (state == 5 && mode.cs_weapon_slot.load() != 0 && max_t > 0.f) {
             // Reload audio follows the animation instead of one sound at
-            // t=0: mag out at frame 13, mag in at frame 24, bolt pull at
-            // frame 48 of the 74-frame reload clip.
+            // t=0: mag out, mag in, then the bolt/charging handle. The
+            // ratios match the authored AK timeline and are close enough for
+            // the AWP/M4 takes.
+            const char* prefix = soundPrefixForSlot(mode.cs_weapon_slot.load());
             const float d = max_t;
+            auto playStage = [&](const char* stage) {
+                if (!ctx.cb->play_sound) return;
+                char event[48];
+                snprintf(event, sizeof(event), "cs.%s.%s", prefix, stage);
+                ctx.cb->play_sound(event, 1.0f);
+            };
             if (cs_reload_sound_stage_ == 0 && t >= d * 0.176f) {
-                if (ctx.cb->play_sound) ctx.cb->play_sound("cs.ak47.magout", 1.0f);
+                playStage("magout");
                 cs_reload_sound_stage_ = 1;
             }
             if (cs_reload_sound_stage_ == 1 && t >= d * 0.324f) {
-                if (ctx.cb->play_sound) ctx.cb->play_sound("cs.ak47.magin", 1.0f);
+                playStage("magin");
                 cs_reload_sound_stage_ = 2;
             }
             if (cs_reload_sound_stage_ == 2 && t >= d * 0.649f) {
-                if (ctx.cb->play_sound) ctx.cb->play_sound("cs.ak47.bolt", 1.0f);
+                playStage("bolt");
                 cs_reload_sound_stage_ = 3;
             }
         }
@@ -195,7 +291,15 @@ void CsGunplayHandler::tickGameplayKeys(const InputTickContext& ctx) {
             mode.cs_knife_inspect.store(true);
             mode.cs_knife_anim_time.store(0.f);
             const uint8_t slot = mode.cs_weapon_slot.load();
-            if (ctx.cb->play_sound) ctx.cb->play_sound(slot == 1 ? "cs.ak47.inspect" : "cs.knife.inspect", 1.0f);
+            if (ctx.cb->play_sound) {
+                if (slot == 0) {
+                    ctx.cb->play_sound("cs.knife.inspect", 1.0f);
+                } else {
+                    char event[48];
+                    snprintf(event, sizeof(event), "cs.%s.inspect", soundPrefixForSlot(slot));
+                    ctx.cb->play_sound(event, 1.0f);
+                }
+            }
             if (ctx.cb->log) ctx.cb->log(slot == 0 ? "CS: Butterfly Knife Inspect (Flower Spin)" : "CS: weapon inspect");
         }
 #endif
@@ -209,32 +313,24 @@ void CsGunplayHandler::tickGameplayKeys(const InputTickContext& ctx) {
             if (mode.cs_mode.load() && i < 4) {
                 // CS arsenal slots: 1 = AK-47, 2 = AWP, 3 = butterfly knife, 4 = M4A1-S
                 const uint8_t slot = (i == 0) ? 1 : (i == 1) ? 2 : (i == 2) ? 0 : 3;
-                mode.cs_weapon_slot.store(slot);
-                if (slot == 0) {
-                    mode.cs_ammo.store(0);
-                    mode.cs_reserve.store(0);
-                    mode.cs_mag_capacity.store(0);
-                } else {
-                    const char* id = (slot == 1) ? "weapon_ak47"
-                                   : (slot == 2) ? "weapon_awp"
-                                   : "weapon_m4a1_silencer";
-                    if (const auto* def = eldenring::cs::CSWeaponRegistry::instance().findWeapon(id)) {
-                        mode.cs_ammo.store(def->ballistics.magazine_capacity);
-                        mode.cs_reserve.store(def->ballistics.reserve_capacity);
-                        mode.cs_mag_capacity.store(def->ballistics.magazine_capacity);
-                    }
-                }
-                mode.cs_knife_state.store(4); // Deploy!
-                mode.cs_knife_inspect.store(false);
-                mode.cs_action_variant.store(static_cast<uint8_t>((mode.cs_action_variant.load() + 1u) & 1u));
-                mode.cs_action_hit.store(true);
-                mode.cs_knife_anim_time.store(0.f);
-                if (ctx.cb->play_sound) ctx.cb->play_sound(slot == 1 ? "cs.ak47.draw" : "cs.knife.deploy", 1.0f);
+                selectWeaponSlot(slot, ctx);
             }
 #endif
         }
         prev_digit_[i] = d;
     }
+
+#if ENABLE_CS2_VIEWMODEL
+    // Q: CS2-style quick switch back to the previously held weapon.
+    const bool q_down = queryKeyDown(*ctx.cb, 'Q');
+    if (q_down && !prev_q_ && mode.cs_mode.load()) {
+        const uint8_t current = mode.cs_weapon_slot.load();
+        uint8_t target = last_slot_;
+        if (target == current) target = (current == 0) ? 1 : 0;
+        selectWeaponSlot(target, ctx);
+    }
+    prev_q_ = q_down;
+#endif
 
 #if ENABLE_CS2_VIEWMODEL
     // R: reload the active gun (state 5). Knife has no reload.
@@ -268,10 +364,7 @@ void CsGunplayHandler::tickAttack(const InputTickContext& ctx) {
                 if (ctx.cb->play_sound) ctx.cb->play_sound("cs.knife.slash", 1.0f);
             }
         } else {
-            const char* id = (slot == 1) ? "weapon_ak47"
-                           : (slot == 2) ? "weapon_awp"
-                           : "weapon_m4a1_silencer";
-            const auto* def = eldenring::cs::CSWeaponRegistry::instance().findWeapon(id);
+            const auto* def = eldenring::cs::CSWeaponRegistry::instance().findWeapon(weaponIdForSlot(slot));
             const float rpm = (def && def->ballistics.fire_rate_rpm > 1.f) ? def->ballistics.fire_rate_rpm : 600.f;
             const bool automatic = def ? def->ballistics.is_automatic : true;
             const bool trigger = automatic ? ctx.left_held : ctx.click_edge;
@@ -293,7 +386,11 @@ void CsGunplayHandler::tickAttack(const InputTickContext& ctx) {
                         ctx.cb->queue_cs_shot(damage, spread, range, tracer, slot);
                         cs_since_shot_ = 0.f;
                     }
-                    if (ctx.cb->play_sound) ctx.cb->play_sound("cs.ak47.fire", 1.0f); // placeholder until AWP/M4 fire sounds are extracted
+                    if (ctx.cb->play_sound) {
+                        char event[48];
+                        snprintf(event, sizeof(event), "cs.%s.fire", soundPrefixForSlot(slot));
+                        ctx.cb->play_sound(event, 1.0f);
+                    }
                 } else if (ctx.click_edge && ctx.cb->log) {
                     ctx.cb->log("CS: empty magazine - press R to reload");
                 }
