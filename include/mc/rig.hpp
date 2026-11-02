@@ -101,6 +101,12 @@ ModelPoint modelPivot(StevePart part); // model pixels
 Vec3 partPivot(StevePart part, const HostBasis& basis);
 RigMesh buildPartMesh(StevePart part, const HostBasis& basis);
 
+// The two 64x32 armor equipment textures (1.21.8: entity/equipment/humanoid and humanoid_leggings).
+// Humanoid covers the helmet, chestplate (body + arms) and boots (legs); Leggings covers the body and legs.
+// The left arm/leg use the right limb's UV rectangle mirrored, like Minecraft's ModelPart mirror flag.
+enum class ArmorLayer : uint8_t { Humanoid = 0, Leggings };
+RigMesh buildArmorPartMesh(StevePart part, ArmorLayer layer, const HostBasis& basis);
+
 // Every skin coordinate a point `local_px` (relative to the part's pivot, model pixels) can have on the part's
 // box. Edge points lie on two faces, hence a list. Empty when the point is not on the box.
 std::vector<std::array<float, 2>> skinUvForLocalPoint(StevePart part, ModelPoint local_px, float tolerance = 1e-3f);

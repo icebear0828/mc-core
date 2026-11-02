@@ -82,6 +82,7 @@ struct SteveState {
     bool first_person{false};   // draw the view model (bare arm or held item) instead of the figure
     uint16_t held_item{0};      // mc::ItemId the hotbar wants in the hand (0 = bare hand)
     uint16_t offhand_item{0};   // mc::ItemId in offhand (0 = none)
+    uint16_t armor_item[4]{};   // helmet, chestplate, leggings, boots (0 = empty)
     bool blocking{false};       // shield raise / blocking pose
     float cooldown{1.f};        // attack strength 0..1
     float eating{0.f};          // 0..1 progress of the meal in the hand (0 = not eating)

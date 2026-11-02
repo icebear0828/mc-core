@@ -98,6 +98,15 @@ RigCpuMesh BuildSteveRigMesh() {
     return out;
 }
 
+ArmorCpuMesh BuildArmorRigMesh(mc::rig::ArmorLayer layer) {
+    ArmorCpuMesh out;
+    for (size_t p = 0; p < static_cast<size_t>(mc::StevePart::Count); ++p) {
+        const mc::rig::RigMesh mesh = mc::rig::buildArmorPartMesh(static_cast<mc::StevePart>(p), layer, eldenring::render::kBasis);
+        out.parts[p] = AppendMesh(mesh, out.vertices, out.indices);
+    }
+    return out;
+}
+
 FirstPersonMesh BuildFirstPerson(const uint8_t* atlas_rgba, unsigned atlas_w, unsigned atlas_h,
                                  const std::vector<FpItemCell>& cells) {
     FirstPersonMesh out;

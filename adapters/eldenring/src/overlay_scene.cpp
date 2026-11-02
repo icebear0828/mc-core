@@ -22,8 +22,8 @@ const mc::model::EntityModel* PropModel(const char* name) {
 // Draws a Bedrock model (elytra wings, trident) attached to a Steve part. `delta` is the world-space motion of that
 // part since the rest pose; the model's own bone pivots line up with the Steve rig's (same Bedrock coordinates).
 void DrawProp(const char* name, const mc::model::EntityModel* model, const mc::rig::Mat4& delta, const SteveParams& sp,
-              const mc::rig::Mat4& vp, const SteveState& steve, D3D12_CPU_DESCRIPTOR_HANDLE rtv, float r, float g, float b,
-              float flap) {
+              const mc::rig::Mat4& vp, const SteveState& steve, D3D12_CPU_DESCRIPTOR_HANDLE rtv,
+              D3D12_GPU_DESCRIPTOR_HANDLE table, bool textured, float r, float g, float b, float flap) {
     if (model == nullptr || !g_steve.mobModelReady(name)) return;
     const mc::Vec3 feet{steve.feet[0], steve.feet[1], steve.feet[2]};
     std::vector<mc::Quat> extra(model->bones.size());
@@ -42,11 +42,12 @@ void DrawProp(const char* name, const mc::model::EntityModel* model, const mc::r
     pp.held_item = 0;
     pp.held_table = {};
     pp.offhand_item = 0;
-    pp.tint[0] = r;
-    pp.tint[1] = g;
-    pp.tint[2] = b;
-    pp.tint[3] = 1.f; // solid: the shader skips the skin alpha cut-out for a fully opaque tint
-    g_steve.drawMobModel(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, bones, pp, rtv, name);
+    const bool use_texture = textured && table.ptr != 0;
+    pp.tint[0] = use_texture ? 0.f : r;
+    pp.tint[1] = use_texture ? 0.f : g;
+    pp.tint[2] = use_texture ? 0.f : b;
+    pp.tint[3] = use_texture ? 0.f : 1.f; // solid: the shader skips the skin alpha cut-out for a fully opaque tint
+    g_steve.drawMobModel(g_s.list, g_s.srv_heap, use_texture ? table : g_depth_gpu, g_s.width, g_s.height, vp, bones, pp, rtv, name);
 }
 
 } // namespace
@@ -68,6 +69,10 @@ void RenderFrame(IDXGISwapChain* sc) {
         for (auto h : g_mob_depth_copy_cpus) {
             if (h.ptr != 0) g_steve.setDepthView(g_s.device, g_depth_res, h);
         }
+        for (auto h : g_armor_depth_copy_cpus) {
+            if (h.ptr != 0) g_steve.setDepthView(g_s.device, g_depth_res, h);
+        }
+        if (g_elytra_depth_copy_cpu.ptr != 0) g_steve.setDepthView(g_s.device, g_depth_res, g_elytra_depth_copy_cpu);
     }
 
     const UINT idx = g_s.swap->GetCurrentBackBufferIndex();
@@ -283,12 +288,16 @@ void RenderFrame(IDXGISwapChain* sc) {
         sp.offhand_item = steve.bow_offhand ? static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.offhand_item), steve.bow_charge))
                                             : steve.offhand_item;
         sp.held_table = g_atlas_ready ? g_held_table_gpu : D3D12_GPU_DESCRIPTOR_HANDLE{};
+        for (int i = 0; i < 4; ++i) sp.armor_item[i] = steve.armor_item[i];
+        sp.armor_table[0] = g_armor_table_gpu[0];
+        sp.armor_table[1] = g_armor_table_gpu[1];
         if (g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
             g_steve.draw(g_s.list, g_s.srv_heap, g_depth_gpu, g_s.width, g_s.height, vp, parts, sp, f.rtv);
             g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr); // ImGui draws without a depth view
         }
         // Phase A debug props: the elytra wings follow the torso, the trident follows the right arm.
-        if (!steve.dead && (steve.gliding || steve.trident_charge > 0.f)) {
+        const bool elytra_equipped = static_cast<mc::ItemId>(steve.armor_item[1]) == mc::ItemId::Elytra;
+        if (!steve.dead && (elytra_equipped || steve.gliding || steve.trident_charge > 0.f)) {
             const mc::Vec3 feet_v{steve.feet[0], steve.feet[1], steve.feet[2]};
             const mc::rig::Mat4 rest_body = mc::rig::partMatrix(mc::StevePart::Body, mc::Quat{}, feet_v, steve.yaw, eldenring::render::kBasis);
             const mc::rig::Mat4 body_delta =
@@ -305,14 +314,16 @@ void RenderFrame(IDXGISwapChain* sc) {
             const mc::Vec3 hand_rest = mc::rig::transformPoint(rest_arm, trident_pivot);
             const mc::Vec3 hand_posed = mc::rig::transformPoint(parts[static_cast<size_t>(mc::StevePart::RightArm)], trident_pivot);
             const mc::rig::Mat4 trident_delta = mc::rig::translation(hand_posed - hand_rest);
-            if (steve.gliding) {
+            if (elytra_equipped || steve.gliding) {
                 static float flap_t = 0.f;
                 flap_t += dt;
-                DrawProp("elytra_wings", PropModel("elytra_wings"), body_delta, sp, vp, steve, f.rtv, 0.82f, 0.84f, 0.9f,
-                         0.35f * std::sin(flap_t * 8.f));
+                const float flap = steve.gliding ? 0.35f * std::sin(flap_t * 8.f) : 0.f;
+                DrawProp("elytra_wings", PropModel("elytra_wings"), body_delta, sp, vp, steve, f.rtv,
+                         g_elytra_table_gpu, true, 0.82f, 0.84f, 0.9f, flap);
             }
             if (steve.trident_charge > 0.f) {
-                DrawProp("trident", PropModel("trident"), trident_delta, sp, vp, steve, f.rtv, 0.10f, 0.55f, 0.55f, 0.f);
+                DrawProp("trident", PropModel("trident"), trident_delta, sp, vp, steve, f.rtv,
+                         D3D12_GPU_DESCRIPTOR_HANDLE{}, false, 0.10f, 0.55f, 0.55f, 0.f);
             }
             g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
         }

@@ -226,5 +226,86 @@ void RecordAtlasUpload(ID3D12GraphicsCommandList* list) {
 #endif
 }
 
+void CreateArmorTextures(UINT srv_inc) {
+    const std::string& game_dir = eldenring::diagnostics::GetGameDir();
+    const char* files[2] = {"diamond_humanoid.png", "diamond_leggings.png"};
+    for (int layer = 0; layer < 2; ++layer) {
+        const size_t slot = 12 + static_cast<size_t>(layer) * 2;
+        D3D12_CPU_DESCRIPTOR_HANDLE depth_slot = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
+        depth_slot.ptr += static_cast<SIZE_T>(srv_inc) * slot;
+        D3D12_CPU_DESCRIPTOR_HANDLE tex_slot = depth_slot;
+        tex_slot.ptr += srv_inc;
+        g_steve.setDepthView(g_s.device, nullptr, depth_slot);
+        g_armor_depth_copy_cpus[layer] = depth_slot;
+
+        std::vector<uint8_t> rgba;
+        unsigned w = 0, h = 0;
+        std::vector<std::string> candidates;
+        if (!game_dir.empty()) {
+            candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "armor" / files[layer]).string());
+        }
+        candidates.push_back(std::string("mods\\mc_adapter\\textures\\armor\\") + files[layer]);
+        std::string used;
+        for (const auto& p : candidates) {
+            if (!std::filesystem::exists(p)) continue;
+            if (DecodePngFile(p, rgba, w, h)) {
+                used = p;
+                break;
+            }
+        }
+        if (rgba.empty() || w != 64 || h != 32) {
+            Logf("overlay: armor layer %d: no 64x32 %s", layer, files[layer]);
+            continue;
+        }
+        if (!g_steve.setArmorSkin(g_s.device, static_cast<mc::rig::ArmorLayer>(layer), rgba.data(), w, h, tex_slot)) {
+            Logf("overlay: armor layer %d: texture upload failed", layer);
+            continue;
+        }
+        D3D12_GPU_DESCRIPTOR_HANDLE table = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
+        table.ptr += static_cast<UINT64>(srv_inc) * slot;
+        g_armor_table_gpu[layer] = table;
+        Logf("overlay: armor layer %d: %ux%u from %s (slot %zu)", layer, w, h, used.c_str(), slot);
+    }
+}
+
+void CreateElytraTexture(UINT srv_inc) {
+    const size_t slot = 28;
+    D3D12_CPU_DESCRIPTOR_HANDLE depth_slot = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
+    depth_slot.ptr += static_cast<SIZE_T>(srv_inc) * slot;
+    D3D12_CPU_DESCRIPTOR_HANDLE tex_slot = depth_slot;
+    tex_slot.ptr += srv_inc;
+    g_steve.setDepthView(g_s.device, nullptr, depth_slot);
+    g_elytra_depth_copy_cpu = depth_slot;
+
+    const std::string& game_dir = eldenring::diagnostics::GetGameDir();
+    std::vector<std::string> candidates;
+    if (!game_dir.empty()) {
+        candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "elytra_wings.png").string());
+    }
+    candidates.push_back("mods\\mc_adapter\\elytra_wings.png");
+    std::vector<uint8_t> rgba;
+    unsigned w = 0, h = 0;
+    std::string used;
+    for (const auto& p : candidates) {
+        if (!std::filesystem::exists(p)) continue;
+        if (DecodePngFile(p, rgba, w, h)) {
+            used = p;
+            break;
+        }
+    }
+    if (rgba.empty() || w != 64 || h != 32) {
+        Logf("overlay: elytra wings: no 64x32 elytra_wings.png");
+        return;
+    }
+    if (!g_steve.setMobSkin(g_s.device, "elytra_wings", rgba.data(), w, h, tex_slot)) {
+        Logf("overlay: elytra wings: texture upload failed");
+        return;
+    }
+    D3D12_GPU_DESCRIPTOR_HANDLE table = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
+    table.ptr += static_cast<UINT64>(srv_inc) * slot;
+    g_elytra_table_gpu = table;
+    Logf("overlay: elytra wings: %ux%u from %s (slot %zu)", w, h, used.c_str(), slot);
+}
+
 } // namespace detail
 } // namespace erov

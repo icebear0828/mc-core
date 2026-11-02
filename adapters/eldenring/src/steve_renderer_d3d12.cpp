@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <cstring>
+#include <iterator>
 #include <vector>
 
 #include "eldenring_shadow.hpp"
@@ -14,6 +15,33 @@
 
 namespace erov {
 using d3d12::Rel;
+
+namespace {
+
+// Which armor boxes a layer draws for the equipped items. Humanoid: helmet, chestplate (body + arms), boots (legs).
+// Leggings: body + legs. The chestplate is not drawn when the chest slot is the elytra (the wings replace it).
+bool armorPartVisible(const uint16_t armor_item[4], int layer, mc::StevePart p) {
+    const auto item = [&](int i) { return static_cast<mc::ItemId>(armor_item[i]); };
+    if (layer == 0) {
+        switch (p) {
+            case mc::StevePart::Head: return item(0) == mc::ItemId::DiamondHelmet;
+            case mc::StevePart::Body:
+            case mc::StevePart::RightArm:
+            case mc::StevePart::LeftArm: return item(1) == mc::ItemId::DiamondChestplate;
+            case mc::StevePart::RightLeg:
+            case mc::StevePart::LeftLeg: return item(3) == mc::ItemId::DiamondBoots;
+            default: return false;
+        }
+    }
+    switch (p) {
+        case mc::StevePart::Body:
+        case mc::StevePart::RightLeg:
+        case mc::StevePart::LeftLeg: return item(2) == mc::ItemId::DiamondLeggings;
+        default: return false;
+    }
+}
+
+} // namespace
 
 bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     release();
@@ -30,6 +58,20 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
         base_vertex_[p] = rig.parts[p].base_vertex;
         first_index_[p] = rig.parts[p].first_index;
         index_count_[p] = rig.parts[p].index_count;
+    }
+
+    // Armor boxes: two 64x32 equipment layers, one buffer each, one range per Steve part.
+    for (int layer = 0; layer < 2; ++layer) {
+        const steve::ArmorCpuMesh armor = steve::BuildArmorRigMesh(static_cast<mc::rig::ArmorLayer>(layer));
+        unsigned armor_indices = 0;
+        ArmorGpuMesh& gpu = armor_meshes_[layer];
+        if (!d3d12::UploadMesh(device, armor.vertices, armor.indices, gpu.vertices, gpu.indices, gpu.vbv, gpu.ibv, armor_indices)) {
+            Rel(gpu.vertices);
+            Rel(gpu.indices);
+            if (log) log("steve: armor vertex/index buffers failed");
+            continue;
+        }
+        gpu.ranges.assign(std::begin(armor.parts), std::end(armor.parts));
     }
 
     // Statistics buffer for the calibration mode: default heap (UAV), an upload buffer with the initial values, readback.
@@ -184,6 +226,16 @@ void SteveRenderer::release() {
     Rel(mob_skin_.tex);
     Rel(mob_skin_.upload);
     mob_skin_.pending = false;
+    for (auto& s : armor_skin_) {
+        Rel(s.tex);
+        Rel(s.upload);
+        s.pending = false;
+    }
+    for (auto& m : armor_meshes_) {
+        Rel(m.vertices);
+        Rel(m.indices);
+        m.ranges.clear();
+    }
     for (auto& [name, s] : mob_skins_map_) {
         Rel(s.tex);
         Rel(s.upload);
@@ -308,6 +360,11 @@ bool SteveRenderer::ensureDepth(ID3D12Device* device, unsigned width, unsigned h
 
 bool SteveRenderer::setSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
     return steve::CreateSkinTexture(device, rgba, width, height, slot, skin_);
+}
+
+bool SteveRenderer::setArmorSkin(ID3D12Device* device, mc::rig::ArmorLayer layer, const uint8_t* rgba, unsigned width, unsigned height,
+                                 D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    return steve::CreateSkinTexture(device, rgba, width, height, slot, armor_skin_[static_cast<int>(layer)]);
 }
 
 bool SteveRenderer::setMobSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
@@ -511,6 +568,7 @@ void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* 
     if (!ready() || !own_depth_ || !dsv_heap_) return;
     steve::RecordUpload(list, skin_);
     steve::RecordUpload(list, mob_skin_);
+    for (auto& s : armor_skin_) steve::RecordUpload(list, s);
     for (auto& [name, s] : mob_skins_map_) steve::RecordUpload(list, s);
     beginPass(list, srv_heap, rtv, width, height, pipeline_.figure, !params.keep_depth);
     list->SetGraphicsRootDescriptorTable(1, depth_table);
@@ -534,6 +592,21 @@ void SteveRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* 
     for (size_t p = 0; p < static_cast<size_t>(mc::StevePart::Count); ++p) {
         setConstants(list, view_proj, parts[p], params, width, height, params.tint);
         list->DrawIndexedInstanced(index_count_[p], 1, first_index_[p], base_vertex_[p], 0);
+    }
+    // Armor layers: the same part matrices, the equipment texture, one draw per equipped box.
+    for (int layer = 0; layer < 2; ++layer) {
+        const ArmorGpuMesh& armor = armor_meshes_[layer];
+        if (params.armor_table[layer].ptr == 0 || armor.vbv.BufferLocation == 0 || armor.ranges.empty()) continue;
+        list->SetGraphicsRootDescriptorTable(1, params.armor_table[layer]);
+        list->IASetVertexBuffers(0, 1, &armor.vbv);
+        list->IASetIndexBuffer(&armor.ibv);
+        for (size_t p = 0; p < static_cast<size_t>(mc::StevePart::Count); ++p) {
+            if (!armorPartVisible(params.armor_item, layer, static_cast<mc::StevePart>(p))) continue;
+            const BoneRange& r = armor.ranges[p];
+            if (r.index_count == 0) continue;
+            setConstants(list, view_proj, parts[p], params, width, height, params.tint);
+            list->DrawIndexedInstanced(r.index_count, 1, r.first_index, r.base_vertex, 0);
+        }
     }
     drawAttachments(list, parts, params);
     if (measure) {

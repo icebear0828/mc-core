@@ -25,6 +25,14 @@ struct RigCpuMesh {
     DrawRange parts[static_cast<size_t>(mc::StevePart::Count)]{};
 };
 
+// The armor boxes for one 64x32 equipment layer, in one buffer with one range per Steve part.
+// Parts the layer does not cover have an empty range.
+struct ArmorCpuMesh {
+    std::vector<mc::rig::RigVertex> vertices;
+    std::vector<uint16_t> indices;
+    DrawRange parts[static_cast<size_t>(mc::StevePart::Count)]{};
+};
+
 // First-person arm (bare arm + sleeve) and the held items, all in one buffer as the original renderer built
 // them: the item ranges' base_vertex continues after the arm vertices.
 struct FirstPersonMesh {
@@ -58,6 +66,7 @@ struct MobCpuMesh {
 };
 
 [[nodiscard]] RigCpuMesh BuildSteveRigMesh();
+[[nodiscard]] ArmorCpuMesh BuildArmorRigMesh(mc::rig::ArmorLayer layer);
 [[nodiscard]] FirstPersonMesh BuildFirstPerson(const uint8_t* atlas_rgba, unsigned atlas_w, unsigned atlas_h,
                                                const std::vector<FpItemCell>& cells);
 [[nodiscard]] HeldItemsMesh BuildHeldItems(const uint8_t* atlas_rgba, unsigned atlas_w, unsigned atlas_h,
