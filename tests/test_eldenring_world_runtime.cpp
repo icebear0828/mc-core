@@ -521,3 +521,146 @@ TEST(EldenRingWorldRuntime, DoesNotTreatOurAirMovementAsARebase) {
     runtime.stepPlayerBlockCollision(ctx);
     EXPECT_EQ(rebase_calls, 0);
 }
+
+TEST(EldenRingWorldRuntime, BlockStepClearsTheStaleHorizontalVelocity) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x5000;
+
+    float feet[3] = {0.5f, 1.0f, 0.5f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, feet, sizeof(feet));
+    // The game keeps the velocity from before landing and integrates it every frame (the idle slide).
+    const float stale[3] = {-0.04f, -0.16f, 1.54f};
+    mem.writeBytes(kModule + 0x120, stale, sizeof(stale));
+
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+    runtime.setDeltaTimeOverrideForTesting(0.016f);
+    runtime.setInputProvider([](int) { return false; });
+
+    WorldRuntimeCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.read_physics_pos = [&](uintptr_t, float out_f[3]) {
+        return mem.readBytes(kModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+    };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.is_game_in_foreground = []() { return true; };
+    runtime.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+    ctx.mode().block_collision.store(true);
+    ctx.mode().block_ground.store(true);
+
+    {
+        std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+        ctx.world().block_grid.place({0, 0, 0}, mc::BlockId::Stone);
+    }
+
+    runtime.stepPlayerBlockCollision(ctx);
+
+    float velocity[3] = {};
+    mem.readBytes(kModule + 0x120, velocity, sizeof(velocity));
+    EXPECT_FLOAT_EQ(velocity[0], 0.f);
+    EXPECT_FLOAT_EQ(velocity[2], 0.f);
+}
+
+TEST(EldenRingWorldRuntime, BlockStepKeepsTheJumpVerticalAxis) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x5000;
+
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+    runtime.setDeltaTimeOverrideForTesting(0.016f);
+    runtime.setInputProvider([](int) { return false; });
+
+    WorldRuntimeCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.read_physics_pos = [&](uintptr_t, float out_f[3]) {
+        return mem.readBytes(kModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+    };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.is_game_in_foreground = []() { return true; };
+    cb.read_camera = [](CameraPose& cam) {
+        cam.forward[0] = 0.f; cam.forward[1] = 0.f; cam.forward[2] = 1.f;
+        cam.right[0] = 1.f; cam.right[1] = 0.f; cam.right[2] = 0.f;
+        return true;
+    };
+    runtime.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+    ctx.mode().block_collision.store(true);
+    ctx.mode().block_ground.store(true);
+
+    {
+        std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+        ctx.world().block_grid.place({0, 0, 0}, mc::BlockId::Stone);
+    }
+
+    // Sunk 5 cm into the block top (top at y = 1.0). While our jump integrates the arc, the block step must
+    // not lift the player onto the block or write the fake-grounded flags.
+    float feet[3] = {0.5f, 0.95f, 0.5f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, feet, sizeof(feet));
+    ctx.player().jump_active.store(true);
+
+    runtime.stepPlayerBlockCollision(ctx);
+
+    float written[3] = {};
+    mem.readBytes(kModule + layout::kPhysicsPosition, written, sizeof(written));
+    EXPECT_FLOAT_EQ(written[1], 0.95f);
+    uint8_t ground_flag = 0;
+    EXPECT_FALSE(mem.readBytes(kModule + 0x92, &ground_flag, 1));
+}
+
+TEST(EldenRingWorldRuntime, BlockStepStillPushesHorizontallyWhileOurJumpOwnsTheArc) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x5000;
+
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+    runtime.setDeltaTimeOverrideForTesting(0.016f);
+    runtime.setInputProvider([](int) { return false; });
+
+    WorldRuntimeCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.read_physics_pos = [&](uintptr_t, float out_f[3]) {
+        return mem.readBytes(kModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+    };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.is_game_in_foreground = []() { return true; };
+    runtime.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+    ctx.mode().block_collision.store(true);
+
+    {
+        std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+        ctx.world().block_grid.place({1, 0, 0}, mc::BlockId::Stone); // a wall to the player's right
+    }
+
+    // The player's box overlaps the wall by 5 cm while our jump integrates the arc. The wall must still push
+    // them out horizontally; the vertical axis stays with the jump controller.
+    float feet[3] = {0.75f, 0.5f, 0.5f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, feet, sizeof(feet));
+    ctx.player().jump_active.store(true);
+
+    runtime.stepPlayerBlockCollision(ctx);
+
+    float written[3] = {};
+    mem.readBytes(kModule + layout::kPhysicsPosition, written, sizeof(written));
+    EXPECT_NEAR(written[0], 0.70f, 1e-3f);
+    EXPECT_FLOAT_EQ(written[1], 0.5f);
+}
