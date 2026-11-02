@@ -165,6 +165,15 @@ HUD_SPRITES: list[tuple[str, tuple[int, int]]] = [
     # The anvil's block faces (the item icon above is the isometric cube).
     ("block_anvil_top", (16, 16)),
     ("block_anvil_side", (16, 16)),
+    # Non-cube and transparent blocks, appended so every earlier UV stays exactly where it was.
+    ("block_glass", (16, 16)),
+    ("block_leaves", (16, 16)),
+    ("block_stone_slab", (16, 16)),
+    ("block_torch", (16, 16)),
+    ("item_glass", (16, 16)),
+    ("item_leaves", (16, 16)),
+    ("item_stone_slab", (16, 16)),
+    ("item_torch", (16, 16)),
 ]
 
 
@@ -274,6 +283,12 @@ _JAR_HUD_SPRITES = {
     "block_white_wool": "block/white_wool.png",
     "block_anvil_top": "block/anvil_top.png",
     "block_anvil_side": "block/anvil.png",
+    # Non-cube / transparent block faces (the item icons for glass/leaves/slab are isometric cubes above).
+    "block_glass": "block/glass.png",
+    "block_leaves": "block/oak_leaves.png",
+    "block_stone_slab": "block/stone.png",
+    "block_torch": "block/torch.png",
+    "item_torch": "block/torch.png",
 }
 
 
@@ -307,6 +322,10 @@ _JAR_BLOCK_ITEMS = {
     "item_stone_bricks": ("block/stone_bricks.png", "block/stone_bricks.png"),
     "item_bricks": ("block/bricks.png", "block/bricks.png"),
     "item_white_wool": ("block/white_wool.png", "block/white_wool.png"),
+    # Non-cube / transparent block item icons.
+    "item_glass": ("block/glass.png", "block/glass.png"),
+    "item_leaves": ("block/oak_leaves.png", "block/oak_leaves.png"),
+    "item_stone_slab": ("block/stone.png", "block/stone.png"),
 }
 _CUBE_SHADE = {"top": 1.0, "left": 0.78, "right": 0.6}
 

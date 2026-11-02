@@ -29,14 +29,57 @@ struct GridHit {
     float distance{0.f};
 };
 
+// Ray vs a block's actual box inside `c`. A slab only fills the bottom half and a torch is a thin
+// post, so the voxel traversal alone would target the empty part of the cell.
+inline bool rayHitsBlockBox(const Cell& c, mc::BlockId id, const float origin[3], const float dir[3], float max_dist,
+                            float& t_hit, int normal[3]) {
+    const mc::BlockBox b = mc::blockBox(id);
+    const float lo[3] = {static_cast<float>(c.x) + b.x0, static_cast<float>(c.y) + b.y0, static_cast<float>(c.z) + b.z0};
+    const float hi[3] = {static_cast<float>(c.x) + b.x1, static_cast<float>(c.y) + b.y1, static_cast<float>(c.z) + b.z1};
+    float tmin = 0.f, tmax = max_dist;
+    int axis = -1, sign = 0;
+    for (int a = 0; a < 3; ++a) {
+        if (std::fabs(dir[a]) < 1e-9f) {
+            if (origin[a] < lo[a] || origin[a] > hi[a]) return false;
+            continue;
+        }
+        const float inv = 1.f / dir[a];
+        float t0 = (lo[a] - origin[a]) * inv;
+        float t1 = (hi[a] - origin[a]) * inv;
+        int s = -1;
+        if (t0 > t1) {
+            std::swap(t0, t1);
+            s = 1;
+        }
+        if (t0 > tmin) {
+            tmin = t0;
+            axis = a;
+            sign = s;
+        }
+        if (t1 < tmax) tmax = t1;
+        if (tmin > tmax) return false;
+    }
+    if (tmin < 0.f || tmin > max_dist) return false;
+    t_hit = tmin;
+    normal[0] = normal[1] = normal[2] = 0;
+    if (axis >= 0) normal[axis] = sign;
+    return true;
+}
+
 // Voxel traversal (Amanatides & Woo) from `origin` along the unit vector `dir`, up to `max_dist` metres.
 inline std::optional<GridHit> raycastGrid(const BlockGrid& grid, const float origin[3], const float dir[3], float max_dist) {
     if (grid.count() == 0) return std::nullopt;
     Cell c = cellOf(origin[0], origin[1], origin[2]);
     GridHit hit;
     if (grid.get(c) != mc::BlockId::Air) {
+        const mc::BlockId id = grid.get(c);
         hit.cell = c;
-        return hit;
+        if (mc::blockShape(id) == mc::BlockShape::FullCube) return hit;
+        float t = 0.f;
+        if (rayHitsBlockBox(c, id, origin, dir, max_dist, t, hit.normal)) {
+            hit.distance = t;
+            return hit;
+        }
     }
     int step[3];
     float t_max[3], t_delta[3];
@@ -65,11 +108,25 @@ inline std::optional<GridHit> raycastGrid(const BlockGrid& grid, const float ori
         const float t = t_max[a];
         t_max[a] += t_delta[a];
         const Cell cur{idx[0], idx[1], idx[2]};
-        if (grid.get(cur) != mc::BlockId::Air) {
-            hit.cell = cur;
-            hit.distance = t;
-            hit.normal[a] = -step[a];
-            return hit;
+        const mc::BlockId id = grid.get(cur);
+        if (id != mc::BlockId::Air) {
+            if (mc::blockShape(id) == mc::BlockShape::FullCube) {
+                hit.cell = cur;
+                hit.distance = t;
+                hit.normal[a] = -step[a];
+                return hit;
+            }
+            float t_box = 0.f;
+            int n[3] = {0, 0, 0};
+            if (rayHitsBlockBox(cur, id, origin, dir, max_dist, t_box, n)) {
+                hit.cell = cur;
+                hit.distance = t_box;
+                hit.normal[0] = n[0];
+                hit.normal[1] = n[1];
+                hit.normal[2] = n[2];
+                return hit;
+            }
+            continue; // the ray goes through the empty part of a slab/torch cell
         }
     }
     return std::nullopt;
@@ -93,14 +150,27 @@ inline constexpr float kPlayerHalfWidth = 0.3f;
 inline constexpr float kPlayerHeight = 1.8f;
 inline constexpr float kOverlapEps = 1e-4f;
 
-inline bool cellTouchesBox(const Cell& c, const float feet[3], float half_width = kPlayerHalfWidth, float height = kPlayerHeight) {
-    const float x0 = static_cast<float>(c.x), x1 = x0 + 1.f;
-    const float y0 = static_cast<float>(c.y), y1 = y0 + 1.f;
-    const float z0 = static_cast<float>(c.z), z1 = z0 + 1.f;
+inline bool cellTouchesBox(const Cell& c, mc::BlockId id, const float feet[3], float half_width = kPlayerHalfWidth,
+                           float height = kPlayerHeight) {
+    if (!mc::hasBlockCollision(id)) return false;
+    const mc::BlockBox b = mc::blockBox(id);
+    const float x0 = static_cast<float>(c.x) + b.x0, x1 = static_cast<float>(c.x) + b.x1;
+    const float y0 = static_cast<float>(c.y) + b.y0, y1 = static_cast<float>(c.y) + b.y1;
+    const float z0 = static_cast<float>(c.z) + b.z0, z1 = static_cast<float>(c.z) + b.z1;
     const float px0 = feet[0] - half_width + kOverlapEps, px1 = feet[0] + half_width - kOverlapEps;
     const float py0 = feet[1] + kOverlapEps, py1 = feet[1] + height - kOverlapEps;
     const float pz0 = feet[2] - half_width + kOverlapEps, pz1 = feet[2] + half_width - kOverlapEps;
     return px0 < x1 && px1 > x0 && py0 < y1 && py1 > y0 && pz0 < z1 && pz1 > z0;
+}
+
+// Full-cube test for callers that only have a cell.
+inline bool cellTouchesBox(const Cell& c, const float feet[3], float half_width = kPlayerHalfWidth,
+                           float height = kPlayerHeight) {
+    return cellTouchesBox(c, mc::BlockId::Stone, feet, half_width, height);
+}
+
+inline bool cellTouchesPlayer(const Cell& c, mc::BlockId id, const float feet[3]) {
+    return cellTouchesBox(c, id, feet, kPlayerHalfWidth, kPlayerHeight);
 }
 
 inline bool cellTouchesPlayer(const Cell& c, const float feet[3]) {
@@ -132,19 +202,24 @@ inline Resolve resolveBox(const BlockGrid& grid, const float feet_in[3], float h
             for (int y = y0; y <= y1; ++y) {
                 for (int z = z0; z <= z1; ++z) {
                     const Cell c{x, y, z};
-                    if (grid.get(c) == mc::BlockId::Air || !cellTouchesBox(c, r.feet, half_width, height)) continue;
+                    const mc::BlockId id = grid.get(c);
+                    if (!mc::hasBlockCollision(id) || !cellTouchesBox(c, id, r.feet, half_width, height)) continue;
                     any = true;
+                    const mc::BlockBox b = mc::blockBox(id);
+                    const float bx0 = static_cast<float>(c.x) + b.x0, bx1 = static_cast<float>(c.x) + b.x1;
+                    const float by0 = static_cast<float>(c.y) + b.y0, by1 = static_cast<float>(c.y) + b.y1;
+                    const float bz0 = static_cast<float>(c.z) + b.z0, bz1 = static_cast<float>(c.z) + b.z1;
                     struct Option {
                         float amount;
                         int axis;
                         float signed_delta;
                         bool up;
                     } options[5] = {
-                        {static_cast<float>(c.x + 1) - (r.feet[0] - half_width), 0, static_cast<float>(c.x + 1) - (r.feet[0] - half_width), false},
-                        {(r.feet[0] + half_width) - static_cast<float>(c.x), 0, -((r.feet[0] + half_width) - static_cast<float>(c.x)), false},
-                        {static_cast<float>(c.z + 1) - (r.feet[2] - half_width), 2, static_cast<float>(c.z + 1) - (r.feet[2] - half_width), false},
-                        {(r.feet[2] + half_width) - static_cast<float>(c.z), 2, -((r.feet[2] + half_width) - static_cast<float>(c.z)), false},
-                        {static_cast<float>(c.y + 1) - r.feet[1], 1, static_cast<float>(c.y + 1) - r.feet[1], true},
+                        {bx1 - (r.feet[0] - half_width), 0, bx1 - (r.feet[0] - half_width), false},
+                        {(r.feet[0] + half_width) - bx0, 0, -((r.feet[0] + half_width) - bx0), false},
+                        {bz1 - (r.feet[2] - half_width), 2, bz1 - (r.feet[2] - half_width), false},
+                        {(r.feet[2] + half_width) - bz0, 2, -((r.feet[2] + half_width) - bz0), false},
+                        {by1 - r.feet[1], 1, by1 - r.feet[1], true},
                     };
                     for (const Option& o : options) {
                         if (o.amount < best) {
@@ -155,7 +230,7 @@ inline Resolve resolveBox(const BlockGrid& grid, const float feet_in[3], float h
                         }
                     }
                     // the head against an underside
-                    const float down = (r.feet[1] + height) - static_cast<float>(c.y);
+                    const float down = (r.feet[1] + height) - by0;
                     if (down < best) {
                         best = down;
                         best_delta[0] = best_delta[2] = 0.f;
@@ -179,7 +254,11 @@ inline Resolve resolveBox(const BlockGrid& grid, const float feet_in[3], float h
         const int z0 = static_cast<int>(std::floor(r.feet[2] - half_width)), z1 = static_cast<int>(std::floor(r.feet[2] + half_width));
         for (int x = x0; x <= x1 && !overlapping; ++x)
             for (int y = y0; y <= y1 && !overlapping; ++y)
-                for (int z = z0; z <= z1 && !overlapping; ++z) overlapping = grid.get({x, y, z}) != mc::BlockId::Air && cellTouchesBox({x, y, z}, r.feet, half_width, height);
+                for (int z = z0; z <= z1 && !overlapping; ++z) {
+                    const Cell c{x, y, z};
+                    const mc::BlockId id = grid.get(c);
+                    overlapping = mc::hasBlockCollision(id) && cellTouchesBox(c, id, r.feet, half_width, height);
+                }
     }
     if (r.moved && (overlapping || std::sqrt(dx * dx + dy * dy + dz * dz) > max_push)) {
         Resolve none;
@@ -200,8 +279,11 @@ inline bool boxOverlapsBlocks(const BlockGrid& grid, const float feet[3], float 
     const int z0 = static_cast<int>(std::floor(feet[2] - half_width)), z1 = static_cast<int>(std::floor(feet[2] + half_width));
     for (int x = x0; x <= x1; ++x)
         for (int y = y0; y <= y1; ++y)
-            for (int z = z0; z <= z1; ++z)
-                if (grid.get({x, y, z}) != mc::BlockId::Air && cellTouchesBox({x, y, z}, feet, half_width, height)) return true;
+            for (int z = z0; z <= z1; ++z) {
+                const Cell c{x, y, z};
+                const mc::BlockId id = grid.get(c);
+                if (mc::hasBlockCollision(id) && cellTouchesBox(c, id, feet, half_width, height)) return true;
+            }
     return false;
 }
 
@@ -217,8 +299,10 @@ inline bool supportedByBlock(const BlockGrid& grid, const float feet[3]) {
     const int y = static_cast<int>(std::floor(feet[1] - 0.06f)); // the cell whose top is just under the feet
     for (int x = x0; x <= x1; ++x)
         for (int z = z0; z <= z1; ++z) {
-            if (grid.get({x, y, z}) == mc::BlockId::Air) continue;
-            const float top = static_cast<float>(y + 1);
+            const Cell c{x, y, z};
+            const mc::BlockId id = grid.get(c);
+            if (!mc::hasBlockCollision(id)) continue;
+            const float top = static_cast<float>(y) + mc::blockBox(id).y1;
             if (feet[1] >= top - 1e-3f && feet[1] <= top + 0.06f) return true;
         }
     return false;
@@ -232,11 +316,17 @@ inline Resolve resolveBoxSwept(const BlockGrid& grid, const float prev[3], const
         const int z0 = static_cast<int>(std::floor(cur[2] - half_width + kOverlapEps)), z1 = static_cast<int>(std::floor(cur[2] + half_width - kOverlapEps));
         const int y_top = static_cast<int>(std::floor(prev[1] + kOverlapEps)), y_low = static_cast<int>(std::floor(cur[1]));
         for (int y = y_top; y >= y_low; --y) { // from the highest block top the entity passed
+            float top = 0.f;
             bool found = false;
-            for (int x = x0; x <= x1 && !found; ++x)
-                for (int z = z0; z <= z1 && !found; ++z) found = grid.get({x, y, z}) != mc::BlockId::Air;
+            for (int x = x0; x <= x1; ++x)
+                for (int z = z0; z <= z1; ++z) {
+                    const Cell c{x, y, z};
+                    const mc::BlockId id = grid.get(c);
+                    if (!mc::hasBlockCollision(id)) continue;
+                    top = std::max(top, static_cast<float>(y) + mc::blockBox(id).y1);
+                    found = true;
+                }
             if (!found) continue;
-            const float top = static_cast<float>(y + 1);
             if (top > prev[1] + kOverlapEps || top <= cur[1]) continue;
             Resolve r;
             r.feet[0] = cur[0];

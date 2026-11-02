@@ -143,3 +143,18 @@ TEST(BlockIcon, TheFacesDoNotOverlapMuch) {
     EXPECT_GT(total, 0.6f * box);  // a cube's hexagon fills about 3/4 of its bounding box
     EXPECT_LT(total, 0.85f * box);
 }
+
+TEST(BlockIcon, ASlabIconIsHalfTheHeightOfAFullCubeIcon) {
+    auto height = [](const IconCube& icon) {
+        float lo = 1e9f, hi = -1e9f;
+        for (int i = 0; i < icon.count; ++i)
+            for (int k = 0; k < 4; ++k) {
+                lo = std::min(lo, icon.faces[i].p[k][1]);
+                hi = std::max(hi, icon.faces[i].p[k][1]);
+            }
+        return hi - lo;
+    };
+    const float full = height(blockIcon(mc::BlockId::Stone));
+    const float slab = height(blockIcon(mc::BlockId::StoneSlab));
+    EXPECT_LT(slab, full * 0.85f); // the projected half-height cube is ~80% of the full cube's height
+}

@@ -146,3 +146,24 @@ def test_pickaxe_icons_have_atlas_cells():
         assert 0.0 <= v0 < v1 <= 1.0
         assert pytest.approx(u1 - u0, abs=1e-5) == 16.0 / 512.0
         assert pytest.approx(v1 - v0, abs=1e-5) == 16.0 / 512.0
+
+
+def test_non_cube_and_transparent_block_sprites_come_from_the_jar():
+    """Glass, leaves, the stone slab and the torch are appended to the atlas from the authentic textures."""
+    assert JAR_PATH.exists(), f"Client jar must exist at {JAR_PATH}"
+    atlas, uv_map = build_hud_atlas(JAR_PATH)
+
+    def region(key):
+        u0, v0, u1, v1 = uv_map[key]
+        return atlas.crop((round(u0 * 512), round(v0 * 512), round(u1 * 512), round(v1 * 512)))
+
+    for key in ("block_glass", "block_leaves", "block_stone_slab", "block_torch",
+                "item_glass", "item_leaves", "item_stone_slab", "item_torch"):
+        assert key in uv_map, f"{key} must exist in the atlas"
+
+    # Glass and the torch sprite are cut out: the shader discards their transparent texels.
+    assert any(p[3] == 0 for p in region("block_glass").getdata())
+    assert any(p[3] == 0 for p in region("block_torch").getdata())
+    # Leaves and the stone slab have visible texels.
+    assert any(p[3] == 255 for p in region("block_leaves").getdata())
+    assert any(p[3] == 255 for p in region("block_stone_slab").getdata())

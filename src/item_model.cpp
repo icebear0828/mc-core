@@ -229,20 +229,23 @@ RigMesh buildHeldItemMesh(const ItemSprite& s, HeldItemStyle style, const HostBa
     return mesh;
 }
 
-RigMesh buildHeldBlockMesh(const UvRect& top, const UvRect& side, const UvRect& bottom, const HostBasis& basis) {
+RigMesh buildHeldBlockMesh(const UvRect& top, const UvRect& side, const UvRect& bottom, const HostBasis& basis, const BlockBox& box) {
     RigMesh mesh;
     const Display display{{75, 45, 0}, {0, 2.5f, 0}, 0.375f};
+    // The item display transform expects the cell centre (8,8,8 in model pixels) at the origin; a partial shape keeps its
+    // position inside the cell (a slab stays low, a torch keeps its post below the centre).
+    const float cx = 0.5f, cy = 0.5f, cz = 0.5f;
     struct Face {
-        float c[4][3]; // corners of the unit cube (-0.5..0.5), seen from outside: top-left, top-right, bottom-right, bottom-left
+        float c[4][3]; // corners of the block's box, seen from outside: top-left, top-right, bottom-right, bottom-left
         int kind;      // 0 top, 1 side, 2 bottom
     };
-    static const Face faces[6] = {
-        {{{-.5f, .5f, -.5f}, {.5f, .5f, -.5f}, {.5f, .5f, .5f}, {-.5f, .5f, .5f}}, 0},
-        {{{-.5f, -.5f, .5f}, {.5f, -.5f, .5f}, {.5f, -.5f, -.5f}, {-.5f, -.5f, -.5f}}, 2},
-        {{{.5f, .5f, -.5f}, {.5f, .5f, .5f}, {.5f, -.5f, .5f}, {.5f, -.5f, -.5f}}, 1},
-        {{{-.5f, .5f, .5f}, {-.5f, .5f, -.5f}, {-.5f, -.5f, -.5f}, {-.5f, -.5f, .5f}}, 1},
-        {{{.5f, .5f, .5f}, {-.5f, .5f, .5f}, {-.5f, -.5f, .5f}, {.5f, -.5f, .5f}}, 1},
-        {{{-.5f, .5f, -.5f}, {.5f, .5f, -.5f}, {.5f, -.5f, -.5f}, {-.5f, -.5f, -.5f}}, 1},
+    const Face faces[6] = {
+        {{{box.x0, box.y1, box.z0}, {box.x1, box.y1, box.z0}, {box.x1, box.y1, box.z1}, {box.x0, box.y1, box.z1}}, 0},
+        {{{box.x0, box.y0, box.z1}, {box.x1, box.y0, box.z1}, {box.x1, box.y0, box.z0}, {box.x0, box.y0, box.z0}}, 2},
+        {{{box.x1, box.y1, box.z0}, {box.x1, box.y1, box.z1}, {box.x1, box.y0, box.z1}, {box.x1, box.y0, box.z0}}, 1},
+        {{{box.x0, box.y1, box.z1}, {box.x0, box.y1, box.z0}, {box.x0, box.y0, box.z0}, {box.x0, box.y0, box.z1}}, 1},
+        {{{box.x1, box.y1, box.z1}, {box.x0, box.y1, box.z1}, {box.x0, box.y0, box.z1}, {box.x1, box.y0, box.z1}}, 1},
+        {{{box.x0, box.y1, box.z0}, {box.x1, box.y1, box.z0}, {box.x1, box.y0, box.z0}, {box.x0, box.y0, box.z0}}, 1},
     };
     for (const Face& f : faces) {
         const UvRect& r = f.kind == 0 ? top : (f.kind == 1 ? side : bottom);
@@ -250,8 +253,9 @@ RigMesh buildHeldBlockMesh(const UvRect& top, const UvRect& side, const UvRect& 
         const float vs[4] = {r.v0, r.v0, r.v1, r.v1};
         const uint16_t base = static_cast<uint16_t>(mesh.vertices.size());
         for (int k = 0; k < 4; ++k) {
-            // sprite space is 16 pixels per block
-            const Vec3 model = spriteToModel(Vec3{f.c[k][0] * 16.f, f.c[k][1] * 16.f, f.c[k][2] * 16.f}, display, HeldItemStyle::Handheld, Hand::Right);
+            // sprite space is 16 pixels per block, centred on the shape's own box
+            const Vec3 model = spriteToModel(Vec3{(f.c[k][0] - cx) * 16.f, (f.c[k][1] - cy) * 16.f, (f.c[k][2] - cz) * 16.f}, display,
+                                             HeldItemStyle::Handheld, Hand::Right);
             const Vec3 host = basis.fromCanonical(Vec3{-model.z * kCmPerModelPixel, model.x * kCmPerModelPixel, (24.0f - model.y) * kCmPerModelPixel});
             mesh.vertices.push_back({host.x, host.y, host.z, us[k], vs[k]});
         }

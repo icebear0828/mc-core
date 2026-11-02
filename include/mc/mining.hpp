@@ -30,6 +30,12 @@ public:
         if (block_id == BlockId::Tnt) {
             return 0.05f; // Extremely fast / near-instant break
         }
+        if (block_id == BlockId::Torch) {
+            return 0.05f;
+        }
+        if (block_id == BlockId::Glass || block_id == BlockId::Leaves) {
+            return 0.3f; // vanilla hardness, no tool speeds it up
+        }
         if (block_id == BlockId::Wood || block_id == BlockId::CraftingTable || block_id == BlockId::WoodPlanks) {
             return held_tool == ItemId::None ? 3.0f : 1.5f; // no axes in the mod: any tool speeds it up
         }
@@ -39,7 +45,7 @@ public:
             return 30.0f; // cannot be harvested without diamond/netherite
         }
         if (block_id == BlockId::Stone || block_id == BlockId::Cobblestone || block_id == BlockId::StoneBricks ||
-            block_id == BlockId::Bricks) {
+            block_id == BlockId::Bricks || block_id == BlockId::StoneSlab) {
             switch (toolTier(held_tool)) {
                 case ToolTier::Wood: return 1.15f;
                 case ToolTier::Stone: return 0.6f;
@@ -75,12 +81,12 @@ public:
             return false; // Creative mode breaks blocks without dropping items
         }
         if (block_id == BlockId::Stone || block_id == BlockId::Cobblestone || block_id == BlockId::StoneBricks ||
-            block_id == BlockId::Bricks || block_id == BlockId::Anvil) {
+            block_id == BlockId::Bricks || block_id == BlockId::StoneSlab || block_id == BlockId::Anvil) {
             return isPickaxe(held_tool);
         }
         if (block_id == BlockId::Dirt || block_id == BlockId::Tnt || block_id == BlockId::Wood ||
             block_id == BlockId::CraftingTable || block_id == BlockId::Sand || block_id == BlockId::Gravel ||
-            block_id == BlockId::WoodPlanks || block_id == BlockId::WhiteWool) {
+            block_id == BlockId::WoodPlanks || block_id == BlockId::WhiteWool || block_id == BlockId::Torch) {
             return true;
         }
         if (block_id == BlockId::Obsidian) {
@@ -107,6 +113,11 @@ public:
             case BlockId::Bricks: return isPickaxe(held_tool) ? ItemId::BlockBricks : ItemId::None;
             case BlockId::WhiteWool: return ItemId::BlockWhiteWool;
             case BlockId::Anvil: return isPickaxe(held_tool) ? ItemId::Anvil : ItemId::None;
+            case BlockId::StoneSlab: return isPickaxe(held_tool) ? ItemId::BlockStoneSlab : ItemId::None;
+            case BlockId::Torch: return ItemId::Torch;
+            // Glass and leaves need silk touch / shears in vanilla, which the mod does not have yet.
+            case BlockId::Glass:
+            case BlockId::Leaves: return ItemId::None;
             case BlockId::Obsidian:
                 return (held_tool == ItemId::DiamondPickaxe || held_tool == ItemId::NetheritePickaxe) ? ItemId::BlockObsidian : ItemId::None;
             default: return ItemId::None;

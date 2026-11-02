@@ -1,7 +1,7 @@
 # 艾尔登法环 Minecraft 适配器：交接文档
 
 给**新开的 AI 会话 / 接手开发者**。先读完这一份，先看紧接着的"0. 当前最新状态（2026-10-12）"，再开展下一步工作。
-最后更新：2026-11-02（背包持久化已实机确认；合成台/更多方块/重构待实机回归。历史记录见 §0.0.2~§0.0.4）。
+最后更新：2026-11-02（非立方体/透明方块已实机确认；手持火把与台阶叠放转入 issue #145 / #146。历史记录见 §0.0.2~§0.0.5）。
 需要查证据时，权威文档是 `docs/ELDENRING_REVERSE.md`（逆向事实与审计）和 `docs/ELDENRING_VERIFY_CHECKLIST.md`（逐项验证状态，F1~F22 是近战/生存/视觉/音效）。
 
 > **改模式、输入、第一人称、相机、跳跃或移动前，先读 [CONTROL_POLICY.md](CONTROL_POLICY.md)。**
@@ -129,8 +129,8 @@
 
 ### 0.0.3 下一步（按优先级）
 
-1. **非立方体/透明方块**：玻璃（透明排序 + 不剔除相邻面）、树叶（cutout）、台阶/楼梯（自定义 mesh +
-   AABB 碰撞）、火把（非满格）。需要先给 `buildBlockMesh` 加 block-shape 概念，不能只加枚举。
+1. ~~**非立方体/透明方块**~~ **已完成玻璃/树叶/石台阶/火把（2026-11-02，实机确认）**：见 §0.0.5。
+   楼梯未做（需要方块朝向）；手持火把与台阶同格叠放分别见 issue #145 / #146。
 2. **方块朝向**：原木/工作台/铁砧这类有 front 面的方块，放置时按玩家朝向旋转（`BlockGrid` 目前只存
    `BlockId`，需要加 2-bit orientation）。
 3. ~~**背包持久化**~~ **已完成（2026-11-02，实机确认）**：见 §0.0.4。
@@ -163,6 +163,36 @@
   挖掘掉落/进食/放置方块的消耗也正确保留。
 - **已部署**：MC-only `dinput8.dll` SHA256 `5926B993…`（2,268,160 B）；旧 DLL 备份
   `dinput8.dll.bak_before_inventory_save`（`AEE85FCC…`）。本次未改图集，无需重新提取。
+
+---
+
+## 0.0.5 2026-11-02：非立方体与透明方块（**已实机确认，含已知限制**）
+
+分支 `feat/non-cube-blocks`（基于 `origin/main` `ddef5f3`，即 PR #144 合并之后）。
+
+- **新增方块**：`Glass` / `Leaves` / `StoneSlab` / `Torch`（`BlockId`/`ItemId` 追加，旧 id 不变）。
+- **形状概念**：`include/mc/blocks.hpp` 的 `BlockShape`（FullCube/BottomSlab/Torch）、`BlockBox`、
+  `isTransparentBlock`、`isOpaqueBlock`、`hasBlockCollision`。网格、碰撞、阴影地面、瞄准射线读同一套。
+- **网格**：`include/mc/blockmesh.hpp` 的 `buildShapeFaces` / `faceUV`。
+  - 玻璃/树叶/火把走 **cutout**（像素着色器丢弃 alpha<0.5），不新增混合管线；相邻同类透明方块
+    **保留内部面**（`blockFaceVisible`），不透明方块朝向玻璃的面也保留。
+  - 台阶：下半格；侧面用贴图下半部分（原版 slab UV）；顶部在 y=0.5。
+  - 火把：7/16..9/16 的细柱，UV 取贴图中间 2×10 列；**无碰撞**。
+- **碰撞/瞄准**：`resolveBox`/`supportedByBlock`/`resolveBoxSwept`/`boxOverlapsBlocks` 按 `BlockBox`
+  计算；台阶站立高度 0.5，火把跳过。`raycastGrid` 增加 ray-vs-box，瞄准台阶空格/火把细柱不会误命中；
+  脚下阴影的 `block_top` 也读实际顶面。
+- **手持/图标**：物品显示变换的原点是**格中心 (0.5,0.5,0.5)**，台阶/火把不再被抬到包围盒中心；
+  台阶物品图标改为半高立方体（`blockIcon` 读 `BlockBox`），火把仍用平面精灵。
+- **资产**：图集追加 8 个精灵（4 个方块面 + 4 个物品图标）；真实图集 **141 区 / 40,634 B**。
+- **验证**：`mc_tests` **1432 个（1431 过 / 1 预期跳过）**；Python **114 过 / 1 跳过**；
+  适配层 `/W4 /WX` 0 warning；实机确认玻璃/树叶/台阶/火把的放置、挖掘、碰撞、图标正常。
+- **已知限制（后续）**：
+  - **手持火把模型仍不对**：issue [#145](https://github.com/icebear0828/mc-core/issues/145)。
+  - **台阶不能同格叠两块合并成整块**：issue [#146](https://github.com/icebear0828/mc-core/issues/146)。
+  - 玻璃没有 alpha 混合/着色，只是 cutout；楼梯未做（需要方块朝向，见 §0.0.3 下一步第 2 项）。
+- **已部署**：MC-only `dinput8.dll` SHA256 `47156B0C…`（2,275,328 B）；图集
+  `1F6F26A1…`（40,634 B / 141 区）。备份：`dinput8.dll.bak_before_non_cube_blocks`、
+  `mc_hud_atlas.png.bak_before_non_cube_blocks`。
 
 ---
 

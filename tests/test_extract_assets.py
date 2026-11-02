@@ -307,6 +307,8 @@ HUD_KEYS = [
     "block_sand", "block_gravel", "block_planks", "block_stone_bricks", "block_bricks", "block_white_wool",
     "item_gravel", "item_stone_bricks", "item_bricks", "item_white_wool",
     "block_anvil_top", "block_anvil_side",
+    "block_glass", "block_leaves", "block_stone_slab", "block_torch",
+    "item_glass", "item_leaves", "item_stone_slab", "item_torch",
 ]
 
 HUD_SIZES = {

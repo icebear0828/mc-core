@@ -41,11 +41,13 @@ enum class HeldItemStyle {
 RigMesh buildHeldItemMesh(const ItemSprite& sprite, HeldItemStyle style, const HostBasis& basis, Hand hand = Hand::Right);
 
 // A block held in the hand in third person (block/block display: rotation (75, 45, 0), translation (0, 2.5, 0), scale 0.375): a
-// textured cube in the same space as buildHeldItemMesh. The faces are cells of an atlas, given as UV rectangles.
+// textured box in the same space as buildHeldItemMesh. The faces are cells of an atlas, given as UV rectangles; `box` is the
+// block's shape inside its cell (a full cube by default), centred for the held pose.
 struct UvRect {
     float u0{0.f}, v0{0.f}, u1{1.f}, v1{1.f};
 };
-RigMesh buildHeldBlockMesh(const UvRect& top, const UvRect& side, const UvRect& bottom, const HostBasis& basis);
+RigMesh buildHeldBlockMesh(const UvRect& top, const UvRect& side, const UvRect& bottom, const HostBasis& basis,
+                           const BlockBox& box = {0.f, 0.f, 0.f, 1.f, 1.f, 1.f});
 
 // The sprite as a flat, one pixel thick extrusion centred on the origin, for the first-person view: x right, y up, z towards the
 // viewer, 1 unit = 1 block (16 sprite pixels), so the mesh spans -0.5..0.5 and is 1/16 thick. UVs address the atlas at the centre

@@ -32,6 +32,7 @@ inline const std::vector<ItemId>& paletteItems() {
         ItemId::BlockDirt, ItemId::BlockStone, ItemId::BlockCobblestone, ItemId::BlockWood, ItemId::BlockObsidian,
         ItemId::BlockTnt, ItemId::WoodPlanks, ItemId::CraftingTable, ItemId::Anvil, ItemId::Sand,
         ItemId::BlockGravel, ItemId::BlockStoneBricks, ItemId::BlockBricks, ItemId::BlockWhiteWool,
+        ItemId::BlockGlass, ItemId::BlockLeaves, ItemId::BlockStoneSlab, ItemId::Torch,
         // Materials.
         ItemId::Coal, ItemId::RawCopper, ItemId::RawIron, ItemId::RawGold, ItemId::Redstone, ItemId::LapisLazuli,
         ItemId::AmethystShard, ItemId::Diamond, ItemId::Emerald, ItemId::NetheriteScrap, ItemId::IronIngot,

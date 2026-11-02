@@ -80,6 +80,10 @@ constexpr SlugEntry kSlugs[] = {
     {ItemId::BlockStoneBricks, "block_stone_bricks"},
     {ItemId::BlockBricks, "block_bricks"},
     {ItemId::BlockWhiteWool, "block_white_wool"},
+    {ItemId::BlockGlass, "block_glass"},
+    {ItemId::BlockLeaves, "block_leaves"},
+    {ItemId::BlockStoneSlab, "block_stone_slab"},
+    {ItemId::Torch, "torch"},
 };
 
 std::string_view trim(std::string_view s) {

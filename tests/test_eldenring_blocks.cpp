@@ -182,6 +182,10 @@ TEST(Blocks, ItemsMapToBlocks) {
     EXPECT_EQ(blockForItem(mc::ItemId::BlockBricks), mc::BlockId::Bricks);
     EXPECT_EQ(blockForItem(mc::ItemId::BlockWhiteWool), mc::BlockId::WhiteWool);
     EXPECT_EQ(blockForItem(mc::ItemId::Anvil), mc::BlockId::Anvil);
+    EXPECT_EQ(blockForItem(mc::ItemId::BlockGlass), mc::BlockId::Glass);
+    EXPECT_EQ(blockForItem(mc::ItemId::BlockLeaves), mc::BlockId::Leaves);
+    EXPECT_EQ(blockForItem(mc::ItemId::BlockStoneSlab), mc::BlockId::StoneSlab);
+    EXPECT_EQ(blockForItem(mc::ItemId::Torch), mc::BlockId::Torch);
     EXPECT_EQ(blockForItem(mc::ItemId::DiamondSword), mc::BlockId::Air);
     EXPECT_EQ(itemForBlock(mc::BlockId::Stone), mc::ItemId::BlockStone);
     EXPECT_EQ(itemForBlock(mc::BlockId::Cobblestone), mc::ItemId::BlockCobblestone);
@@ -195,6 +199,10 @@ TEST(Blocks, ItemsMapToBlocks) {
     EXPECT_EQ(itemForBlock(mc::BlockId::Bricks), mc::ItemId::BlockBricks);
     EXPECT_EQ(itemForBlock(mc::BlockId::WhiteWool), mc::ItemId::BlockWhiteWool);
     EXPECT_EQ(itemForBlock(mc::BlockId::Anvil), mc::ItemId::Anvil);
+    EXPECT_EQ(itemForBlock(mc::BlockId::Glass), mc::ItemId::BlockGlass);
+    EXPECT_EQ(itemForBlock(mc::BlockId::Leaves), mc::ItemId::BlockLeaves);
+    EXPECT_EQ(itemForBlock(mc::BlockId::StoneSlab), mc::ItemId::BlockStoneSlab);
+    EXPECT_EQ(itemForBlock(mc::BlockId::Torch), mc::ItemId::Torch);
 }
 
 TEST(Blocks, FallingThroughABlockTopIsCaughtAndStandsOnIt) {
@@ -474,6 +482,80 @@ TEST(Blocks, ShiftTranslatesAllCellsAndIncrementsVersion) {
     ASSERT_TRUE(hit.has_value());
     EXPECT_EQ(hit->cell, (Cell{5, 1, 11}));
     EXPECT_NEAR(hit->distance, 10.0f, 1e-3f);
+}
+
+TEST(Blocks, ASlabIsAHalfHeightCollisionBox) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::StoneSlab);
+    float feet[3] = {0.5f, 0.45f, 0.5f}; // just inside the slab's top half
+    const Resolve r = resolvePlayer(g, feet);
+    ASSERT_TRUE(r.moved);
+    EXPECT_NEAR(r.feet[1], 0.5f, 1e-4f); // lifted onto the slab top, not the full cell top
+    EXPECT_TRUE(r.standing);
+}
+
+TEST(Blocks, StandingOnASlabTopCountsAsSupported) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::StoneSlab);
+    float feet[3] = {0.5f, 0.5f, 0.5f};
+    EXPECT_TRUE(supportedByBlock(g, feet));
+    EXPECT_FALSE(resolvePlayer(g, feet).moved);
+}
+
+TEST(Blocks, ATorchHasNoCollision) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::Torch);
+    float feet[3] = {0.5f, 0.0f, 0.5f};
+    EXPECT_FALSE(cellTouchesPlayer({0, 0, 0}, mc::BlockId::Torch, feet));
+    EXPECT_FALSE(resolvePlayer(g, feet).moved);
+    EXPECT_FALSE(supportedByBlock(g, feet));
+    EXPECT_FALSE(playerOverlapsBlocks(g, feet));
+}
+
+TEST(Blocks, AFallingPlayerLandsOnASlabTop) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::StoneSlab);
+    const float prev[3] = {0.5f, 1.2f, 0.5f};
+    const float cur[3] = {0.5f, 0.3f, 0.5f};
+    const Resolve r = resolvePlayerSwept(g, prev, cur);
+    ASSERT_TRUE(r.moved);
+    EXPECT_NEAR(r.feet[1], 0.5f, 1e-4f);
+    EXPECT_TRUE(r.standing);
+}
+
+TEST(Blocks, ARayThroughTheEmptyHalfOfASlabPassesThrough) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::StoneSlab);
+    g.place({0, 0, -2}, mc::BlockId::Stone);
+    const float eye[3] = {0.5f, 0.8f, 2.0f}; // above the slab top (0.5), looking down -z
+    const float dir[3] = {0.f, 0.f, -1.f};
+    const auto hit = raycastGrid(g, eye, dir, 10.f);
+    ASSERT_TRUE(hit.has_value());
+    EXPECT_EQ(hit->cell, (Cell{0, 0, -2}));
+}
+
+TEST(Blocks, ARayDownOntoASlabHitsItsTopFace) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::StoneSlab);
+    const float eye[3] = {0.5f, 1.5f, 0.5f};
+    const float dir[3] = {0.f, -1.f, 0.f};
+    const auto hit = raycastGrid(g, eye, dir, 5.f);
+    ASSERT_TRUE(hit.has_value());
+    EXPECT_EQ(hit->cell, (Cell{0, 0, 0}));
+    EXPECT_NEAR(hit->distance, 1.0f, 1e-4f); // from y = 1.5 to the slab top at y = 0.5
+    EXPECT_EQ(hit->normal[1], 1);
+}
+
+TEST(Blocks, ATorchIsOnlyHitByARayThroughItsPost) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::Torch);
+    const float dir[3] = {0.f, 0.f, -1.f};
+    const float miss[3] = {0.05f, 0.6f, 1.0f}; // x = 0.05 is outside the 7/16..9/16 post
+    EXPECT_FALSE(raycastGrid(g, miss, dir, 5.f).has_value());
+    const float hit_eye[3] = {0.5f, 0.3f, 1.0f};
+    const auto hit = raycastGrid(g, hit_eye, dir, 5.f);
+    ASSERT_TRUE(hit.has_value());
+    EXPECT_EQ(hit->cell, (Cell{0, 0, 0}));
 }
 
 

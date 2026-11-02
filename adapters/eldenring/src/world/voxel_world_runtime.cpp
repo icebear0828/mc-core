@@ -101,9 +101,11 @@ void VoxelWorldRuntime::stepShadowGround(RuntimeContext& ctx) {
         const int top_cell = static_cast<int>(std::floor(feet_y + 0.06f));
         const int low_cell = static_cast<int>(std::floor(feet_y - max_drop));
         for (int y = top_cell; y >= low_cell; --y) {
-            if (ctx.world().block_grid.get(blocks::cellOf(x, static_cast<float>(y), z)) != mc::BlockId::Air) {
-                return static_cast<float>(y + 1);
-            }
+            const blocks::Cell cell = blocks::cellOf(x, static_cast<float>(y), z);
+            const mc::BlockId id = ctx.world().block_grid.get(cell);
+            if (!mc::hasBlockCollision(id)) continue; // air, or a torch (no collision)
+            const float top = static_cast<float>(y) + mc::blockBox(id).y1;
+            if (top <= feet_y + 0.06f) return top; // a slab's top is at half height
         }
         return std::nullopt;
     };

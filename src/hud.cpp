@@ -152,6 +152,10 @@ const char* HudEngine::getItemDisplayName(ItemId item) {
         case ItemId::BlockWhiteWool: return "White Wool";
         case ItemId::Flint: return "Flint";
         case ItemId::Apple: return "Apple";
+        case ItemId::BlockGlass: return "Glass";
+        case ItemId::BlockLeaves: return "Oak Leaves";
+        case ItemId::BlockStoneSlab: return "Stone Slab";
+        case ItemId::Torch: return "Torch";
         case ItemId::None:
         default: return "";
     }

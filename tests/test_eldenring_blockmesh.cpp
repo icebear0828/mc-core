@@ -140,6 +140,28 @@ TEST(BlockMesh, TheHeldCubeIsCentredOnTheOrigin) {
     }
 }
 
+TEST(BlockMesh, TheHeldSlabKeepsTheLowerHalfOfTheCell) {
+    const mc::rig::RigMesh m = buildCubeMesh(mc::BlockId::StoneSlab);
+    ASSERT_EQ(m.vertices.size(), 24u);
+    for (const mc::rig::RigVertex& v : m.vertices) {
+        EXPECT_GE(v.y, -0.5f);
+        EXPECT_LE(v.y, 0.0f); // the cell centre is the origin, so the slab sits below it
+    }
+}
+
+TEST(BlockMesh, TheHeldTorchKeepsItsPostBelowTheCellCentre) {
+    const mc::rig::RigMesh m = buildCubeMesh(mc::BlockId::Torch);
+    ASSERT_EQ(m.vertices.size(), 24u);
+    for (const mc::rig::RigVertex& v : m.vertices) {
+        EXPECT_GE(v.x, -1.f / 16.f - 1e-5f);
+        EXPECT_LE(v.x, 1.f / 16.f + 1e-5f);
+        EXPECT_GE(v.y, -0.5f - 1e-5f);
+        EXPECT_LE(v.y, 10.f / 16.f - 0.5f + 1e-5f);
+        EXPECT_GE(v.z, -1.f / 16.f - 1e-5f);
+        EXPECT_LE(v.z, 1.f / 16.f + 1e-5f);
+    }
+}
+
 TEST(BlockMesh, TheThirdPersonHeldCubeUsesTheBlockFaces) {
     const mc::rig::HostBasis basis{{0.f, 0.f, 1.f}, {-1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, 0.01f};
     const mc::rig::RigMesh m = buildHeldCubeMesh(mc::BlockId::Tnt, basis);
@@ -220,4 +242,90 @@ TEST(BlockMesh, TerrainCrackMeshIsSeparateAndUsesTheSameQuad) {
         EXPECT_NEAR(v.y, 2.01f, 1e-3f);
         EXPECT_TRUE(inside(mc::hud::kUV_DESTROY_STAGE_4, v));
     }
+}
+
+TEST(BlockMesh, GlassUsesTheGlassCellAndKeepsTheFacesBetweenTwoGlassBlocks) {
+    BlockGrid one;
+    one.place({0, 0, 0}, mc::BlockId::Glass);
+    const mc::rig::RigMesh single = buildBlockMesh(one);
+    ASSERT_EQ(single.vertices.size(), 24u);
+    for (const mc::rig::RigVertex& v : single.vertices) EXPECT_TRUE(inside(mc::hud::kUV_BLOCK_GLASS, v));
+
+    BlockGrid two;
+    two.place({0, 0, 0}, mc::BlockId::Glass);
+    two.place({1, 0, 0}, mc::BlockId::Glass);
+    EXPECT_EQ(buildBlockMesh(two).vertices.size(), 12u * 4u); // the shared pair is kept: 12 faces
+}
+
+TEST(BlockMesh, LeavesKeepTheirInternalFaces) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::Leaves);
+    g.place({1, 0, 0}, mc::BlockId::Leaves);
+    const mc::rig::RigMesh m = buildBlockMesh(g);
+    EXPECT_EQ(m.vertices.size(), 12u * 4u);
+    for (const mc::rig::RigVertex& v : m.vertices) EXPECT_TRUE(inside(mc::hud::kUV_BLOCK_LEAVES, v));
+}
+
+TEST(BlockMesh, AnOpaqueBlockKeepsItsFaceAgainstGlassButGlassCullsAgainstIt) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::Stone);
+    g.place({1, 0, 0}, mc::BlockId::Glass);
+    const mc::rig::RigMesh m = buildBlockMesh(g);
+    EXPECT_EQ(m.vertices.size(), 11u * 4u); // stone 6 faces (one seen through the glass) + glass 5
+}
+
+TEST(BlockMesh, ASlabIsTheBottomHalfOfTheCell) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::StoneSlab);
+    const mc::rig::RigMesh m = buildBlockMesh(g);
+    ASSERT_EQ(m.vertices.size(), 24u);
+    float lo = 2.f, hi = -1.f;
+    for (const mc::rig::RigVertex& v : m.vertices) {
+        lo = std::min(lo, v.y);
+        hi = std::max(hi, v.y);
+        EXPECT_TRUE(inside(mc::hud::kUV_BLOCK_STONE_SLAB, v));
+    }
+    EXPECT_NEAR(lo, 0.f, 1e-5f);
+    EXPECT_NEAR(hi, 0.5f, 1e-5f);
+}
+
+TEST(BlockMesh, ASlabCullsItsBottomAgainstAnOpaqueFullBlock) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::Stone);
+    g.place({0, 1, 0}, mc::BlockId::StoneSlab);
+    const mc::rig::RigMesh m = buildBlockMesh(g);
+    EXPECT_EQ(m.vertices.size(), 11u * 4u); // the slab's bottom is hidden by the stone; the stone keeps its top
+}
+
+TEST(BlockMesh, ATorchIsAThinPostWithTheTorchSprite) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::Torch);
+    const mc::rig::RigMesh m = buildBlockMesh(g);
+    ASSERT_EQ(m.vertices.size(), 24u);
+    for (const mc::rig::RigVertex& v : m.vertices) {
+        EXPECT_GE(v.x, 7.f / 16.f - 1e-5f);
+        EXPECT_LE(v.x, 9.f / 16.f + 1e-5f);
+        EXPECT_GE(v.y, 0.f - 1e-5f);
+        EXPECT_LE(v.y, 10.f / 16.f + 1e-5f);
+        EXPECT_GE(v.z, 7.f / 16.f - 1e-5f);
+        EXPECT_LE(v.z, 9.f / 16.f + 1e-5f);
+        EXPECT_TRUE(inside(mc::hud::kUV_BLOCK_TORCH, v));
+    }
+}
+
+TEST(BlockMesh, ATorchRendersAllFacesBesideAnOpaqueBlock) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::Stone);
+    g.place({1, 0, 0}, mc::BlockId::Torch);
+    const mc::rig::RigMesh m = buildBlockMesh(g);
+    EXPECT_EQ(m.vertices.size(), 12u * 4u); // the post never touches the cell boundary
+}
+
+TEST(BlockMesh, ASlabAboveASlabKeepsTheGapFacesVisible) {
+    BlockGrid g;
+    g.place({0, 0, 0}, mc::BlockId::StoneSlab);
+    g.place({0, 1, 0}, mc::BlockId::StoneSlab);
+    const mc::rig::RigMesh m = buildBlockMesh(g);
+    // The lower slab keeps its top (inside the cell); the upper slab's bottom is culled by the identical slab below.
+    EXPECT_EQ(m.vertices.size(), 11u * 4u);
 }

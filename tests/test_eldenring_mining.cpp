@@ -217,3 +217,28 @@ TEST(EldenRingMiningTest, BlockMeshIncludesCrackOverlayQuads) {
     }
     EXPECT_TRUE(found_offset_top);
 }
+
+TEST(EldenRingMiningTest, GlassAndLeavesBreakFastAndDropNothing) {
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Glass, mc::ItemId::None, false), 0.3f);
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Glass, mc::ItemId::DiamondPickaxe, false), 0.3f);
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Leaves, mc::ItemId::None, false), 0.3f);
+    EXPECT_FALSE(MiningController::canHarvest(mc::BlockId::Glass, mc::ItemId::DiamondPickaxe, false));
+    EXPECT_FALSE(MiningController::canHarvest(mc::BlockId::Leaves, mc::ItemId::DiamondPickaxe, false));
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Glass, mc::ItemId::DiamondPickaxe, false), mc::ItemId::None);
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Leaves, mc::ItemId::DiamondPickaxe, false), mc::ItemId::None);
+}
+
+TEST(EldenRingMiningTest, ATorchIsInstantAndDropsItself) {
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::Torch, mc::ItemId::None, false), 0.05f);
+    EXPECT_TRUE(MiningController::canHarvest(mc::BlockId::Torch, mc::ItemId::None, false));
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::Torch, mc::ItemId::None, false), mc::ItemId::Torch);
+}
+
+TEST(EldenRingMiningTest, AStoneSlabNeedsAPickaxeAndDropsItself) {
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::StoneSlab, mc::ItemId::DiamondPickaxe, false), 0.3f);
+    EXPECT_FLOAT_EQ(MiningController::computeBreakTime(mc::BlockId::StoneSlab, mc::ItemId::None, false), 7.5f);
+    EXPECT_TRUE(MiningController::canHarvest(mc::BlockId::StoneSlab, mc::ItemId::WoodenPickaxe, false));
+    EXPECT_FALSE(MiningController::canHarvest(mc::BlockId::StoneSlab, mc::ItemId::None, false));
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::StoneSlab, mc::ItemId::IronPickaxe, false), mc::ItemId::BlockStoneSlab);
+    EXPECT_EQ(MiningController::blockDrop(mc::BlockId::StoneSlab, mc::ItemId::None, false), mc::ItemId::None);
+}
