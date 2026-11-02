@@ -271,14 +271,14 @@ std::array<FaceDef, 6> cubeFaces(const Cube& c) {
                 z1 = c.origin.z + c.size.z + c.inflate;
     const float u = c.u, v = c.v, w = c.size.x, h = c.size.y, d = c.size.z;
 
-    // Bedrock box UV layout:
-    // [u .. u+d]: East face (+X)
-    // [u+d .. u+d+w]: North face (-Z, Front)
-    // [u+d+w .. u+2d+w]: West face (-X)
-    // [u+2d+w .. u+2d+2w]: South face (+Z, Back)
-    // Mirrored cube (ModelPart.mirror): East and West swap rectangles, and every face is flipped horizontally.
-    const float u_east = c.mirror ? (u + d + w) : u;
-    const float u_west = c.mirror ? u : (u + d + w);
+    // Box UV layout, the one net.minecraft.client.model.geom.ModelPart$Cube uses (and the same one Bedrock uses):
+    // second row, left to right: West (-X), North (-Z, front), East (+X), South (+Z, back);
+    // top row, above North and East: Down (-Y), Up (+Y).
+    // [u .. u+d]: West   [u+d .. u+d+w]: North   [u+d+w .. u+2d+w]: East   [u+2d+w .. u+2d+2w]: South
+    // [u+d .. u+d+w] at v: Down   [u+d+w .. u+2d+w] at v: Up
+    // A mirrored cube flips every face horizontally (Bedrock's "mirror"; it does not move the rectangles).
+    const float u_west = u;
+    const float u_east = u + d + w;
     const bool m = c.mirror;
 
     return {{
@@ -291,9 +291,9 @@ std::array<FaceDef, 6> cubeFaces(const Cube& c) {
         // East (+X): South side (+Z) at U-left, North side (-Z) at U-right
         {{{x1, y0, z1}, {x1, y0, z0}, {x1, y1, z0}, {x1, y1, z1}}, u_east, v + d, d, h, m},
         // Top (+Y): East side (+X) at U-left, West side (-X) at U-right; South at V-top, North at V-bottom
-        {{{x1, y1, z0}, {x0, y1, z0}, {x0, y1, z1}, {x1, y1, z1}}, u + d, v, w, d, m},
+        {{{x1, y1, z0}, {x0, y1, z0}, {x0, y1, z1}, {x1, y1, z1}}, u + d + w, v, w, d, m},
         // Bottom (-Y): West side (-X) at U-left, East side (+X) at U-right; South at V-top, North at V-bottom
-        {{{x0, y0, z0}, {x1, y0, z0}, {x1, y0, z1}, {x0, y0, z1}}, u + d + w, v, w, d, m},
+        {{{x1, y0, z1}, {x0, y0, z1}, {x0, y0, z0}, {x1, y0, z0}}, u + d, v, w, d, m},
     }};
 }
 
@@ -317,8 +317,10 @@ void appendCubeMesh(const Cube& cube, const rig::HostBasis& basis, float tex_w, 
     for (size_t fi = 0; fi < faces.size(); ++fi) {
         const auto& f = faces[fi];
         const auto base = static_cast<uint16_t>(mesh.vertices.size());
-        const float s_of[4] = {0, 1, 1, 0};
-        const float t_of[4] = {1, 1, 0, 0}; // UV top-left convention
+        // ModelPart$Polygon hands the four corners (u1,v0), (u0,v0), (u0,v1), (u1,v1); every face above is listed in
+        // the same corner order as its vanilla Vertex[] so this one table works for all six.
+        const float s_of[4] = {1, 0, 0, 1};
+        const float t_of[4] = {0, 0, 1, 1};
 
         for (size_t c = 0; c < 4; ++c) {
             const Vec3 p = positions[fi * 4 + c];
@@ -395,7 +397,10 @@ rig::Mat4 boneRestRotation(const Bone& bone, const rig::HostBasis& basis) {
                           basis.fromCanonical({-1.f, 0.f, 0.f}) * (1.0f / basis.units_per_cm)};
     const float angles[3] = {bone.rotation.x * kDegToRad, bone.rotation.y * kDegToRad, bone.rotation.z * kDegToRad};
     rig::Mat4 m; // identity
-    for (int i = 0; i < 3; ++i) {
+    // Blockbench's Bedrock formats default to euler order ZYX (js/io/format.ts euler_order), the same order the Java
+    // models use (Quaternionf.rotationZYX): Z turns first, then Y, then X. In this row-vector convention that is
+    // m = Rz * Ry * Rx, so the loop runs backwards.
+    for (int i = 2; i >= 0; --i) {
         if (angles[i] == 0.0f) continue;
         // A reflecting host turns the same canonical rotation the other way (see rig::yawMatrix).
         m = m * rig::rotationAboutAxis(axes[i], basis.isReflection() ? -angles[i] : angles[i]);

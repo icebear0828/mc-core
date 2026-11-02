@@ -316,7 +316,7 @@ void SetupOverlay() {
             }
         }
         {   // Phase A debug props: elytra wings and trident (drawn only when the debug keys turn them on).
-            for (const char* prop : {"elytra_wings", "elytra_wings_spread", "trident"}) {
+            for (const char* prop : {"elytra_wings", "elytra_wings_glide", "elytra_wings_crouch", "trident"}) {
                 const std::string model_path = g_game_dir + "mods\\mc_adapter\\models\\" + prop + ".geo.json";
                 std::vector<uint8_t> json;
                 if (!ReadFileAll(model_path, json)) continue;

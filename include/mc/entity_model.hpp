@@ -52,7 +52,8 @@ struct EntityModel {
 
 // ---- Pose: pivots, rest rotations and the bone hierarchy ------------------------------------------------------------------------
 // The meshes from buildBoneMesh are rest-pose absolute (feet at the origin). A pose is one matrix per bone, in the order of EntityModel::bones:
-// the bone turns about its own pivot by its rest rotation (the file's "rotation", degrees about the Bedrock axes, X then Y then Z) and then by
+// the bone turns about its own pivot by its rest rotation (the file's "rotation", degrees about the Bedrock axes, applied Z then Y then X
+// as Blockbench's Bedrock euler order does) and then by
 // `extra[i]` (a host-space quaternion, for example from the animator), then follows its parent bone, then the whole figure is turned by
 // `host_yaw` about the host's vertical axis and moved to `root`. Row-vector convention like rig::partMatrix.
 

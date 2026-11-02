@@ -3,7 +3,7 @@
   "minecraft:geometry": [
     {
       "description": {
-        "identifier": "geometry.elytra_wings",
+        "identifier": "geometry.elytra_wings_crouch",
         "texture_width": 64,
         "texture_height": 32,
         "visible_bounds_width": 2,
@@ -25,19 +25,24 @@
           "cubes": []
         },
         {
-          "name": "rightWing",
+          "name": "leftWing",
           "parent": "upper",
           "pivot": [
             5,
-            24,
-            0
+            21,
+            2
+          ],
+          "rotation": [
+            40,
+            5,
+            -45
           ],
           "cubes": [
             {
               "origin": [
                 -5,
-                4,
-                0
+                1,
+                2
               ],
               "size": [
                 10,
@@ -50,27 +55,27 @@
               ],
               "inflate": 1
             }
-          ],
-          "rotation": [
-            15,
-            0,
-            -90
           ]
         },
         {
-          "name": "leftWing",
+          "name": "rightWing",
           "parent": "upper",
           "pivot": [
             -5,
-            24,
-            0
+            21,
+            2
+          ],
+          "rotation": [
+            40,
+            -5,
+            45
           ],
           "cubes": [
             {
               "origin": [
                 -5,
-                4,
-                0
+                1,
+                2.25
               ],
               "size": [
                 10,
@@ -81,18 +86,12 @@
                 22,
                 0
               ],
-              "inflate": 1,
-              "mirror": true
+              "inflate": 1
             }
-          ],
-          "rotation": [
-            15,
-            0,
-            90
           ]
         }
       ]
     }
   ],
-  "source": "Vanilla ElytraModel gliding pose: 10x20x2 wings, pivots at x=+-5,y=24, rotation (15,0,-+90), cube origin (-5,4,0), UV (22,0), inflate 1, 64x32 texture."
+  "source": "Vanilla ElytraModel, crouching pose (setupAnim while sneaking and not gliding): xRot 40deg, yRot +-5deg, zRot -+45deg, and leftWing.y = 3 drops the wing 3 px, so the Bedrock pivot is y=21 and the slab origin y=1. The right slab carries the same 0.25 px z nudge as elytra_wings.geo.json."
 }

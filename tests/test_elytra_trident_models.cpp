@@ -102,6 +102,11 @@ TEST(ElytraTridentModels, TridentShaftAndProngsMatchTheExtractedData) {
     EXPECT_FLOAT_EQ(b.max.z, 10.0f);
 }
 
+// Vanilla ElytraModel (net.minecraft.client.model.ElytraModel#createLayer):
+//   left_wing  addBox(-10, 0, 0, 10, 20, 2) at PartPose.offsetAndRotation( 5, 0, 0, 15deg, 0, -15deg)
+//   right_wing addBox(  0, 0, 0, 10, 20, 2) mirror at (-5, 0, 0, 15deg, 0,  15deg)
+// with CubeDeformation(1) and texOffs(22, 0) on a 64x32 sheet. ElytraLayer draws it at pose.translate(0, 0, 0.125),
+// so the slabs sit 2 px behind the torso's back face. Java's model y runs down from the neck, so Bedrock y = 24 - java y.
 TEST(ElytraTridentModels, ElytraFileHasTwoWingsHangingFromTheUpperBody) {
     const auto opt = EntityModel::fromJson(readAsset("/models/entities/elytra_wings.geo.json"));
     ASSERT_TRUE(opt.has_value());
@@ -114,24 +119,34 @@ TEST(ElytraTridentModels, ElytraFileHasTwoWingsHangingFromTheUpperBody) {
     ASSERT_NE(upper, nullptr);
     EXPECT_TRUE(upper->cubes.empty());
 
-    const Bone* right = model.findBone("rightWing");
-    ASSERT_NE(right, nullptr);
-    EXPECT_EQ(right->parent, "upper");
-    EXPECT_FLOAT_EQ(right->pivot.x, -1.0f);
-    EXPECT_FLOAT_EQ(right->pivot.y, 23.0f);
-    EXPECT_FLOAT_EQ(right->pivot.z, 3.0f);
-    ASSERT_EQ(right->cubes.size(), 2u);
-
     const Bone* left = model.findBone("leftWing");
     ASSERT_NE(left, nullptr);
     EXPECT_EQ(left->parent, "upper");
-    EXPECT_FLOAT_EQ(left->pivot.x, 1.0f);
-    EXPECT_FLOAT_EQ(left->pivot.y, 23.0f);
-    EXPECT_FLOAT_EQ(left->pivot.z, 3.0f);
-    ASSERT_EQ(left->cubes.size(), 2u);
+    EXPECT_FLOAT_EQ(left->pivot.x, 5.0f);
+    EXPECT_FLOAT_EQ(left->pivot.y, 24.0f);
+    EXPECT_FLOAT_EQ(left->pivot.z, 2.0f);
+    EXPECT_FLOAT_EQ(left->rotation.x, 15.0f);
+    EXPECT_FLOAT_EQ(left->rotation.y, 0.0f);
+    EXPECT_FLOAT_EQ(left->rotation.z, -15.0f);
+    ASSERT_EQ(left->cubes.size(), 1u);
+    EXPECT_FALSE(left->cubes[0].mirror);
+
+    const Bone* right = model.findBone("rightWing");
+    ASSERT_NE(right, nullptr);
+    EXPECT_EQ(right->parent, "upper");
+    EXPECT_FLOAT_EQ(right->pivot.x, -5.0f);
+    EXPECT_FLOAT_EQ(right->pivot.y, 24.0f);
+    EXPECT_FLOAT_EQ(right->pivot.z, 2.0f);
+    EXPECT_FLOAT_EQ(right->rotation.x, 15.0f);
+    EXPECT_FLOAT_EQ(right->rotation.y, 0.0f);
+    EXPECT_FLOAT_EQ(right->rotation.z, 15.0f);
+    ASSERT_EQ(right->cubes.size(), 1u);
+    // Vanilla's CubeListBuilder.mirror() only reverses the winding and flips the normal in ModelPart$Polygon; it
+    // does not mirror the UVs, so both slabs sample the same rectangle.
+    EXPECT_FALSE(right->cubes[0].mirror);
 }
 
-TEST(ElytraTridentModels, WingSlabsAreTenByTwentyPixelsAndMirrored) {
+TEST(ElytraTridentModels, WingSlabsAreTenByTwentyPixelsAndSitBehindTheTorso) {
     const auto opt = EntityModel::fromJson(readAsset("/models/entities/elytra_wings.geo.json"));
     ASSERT_TRUE(opt.has_value());
 
@@ -140,25 +155,71 @@ TEST(ElytraTridentModels, WingSlabsAreTenByTwentyPixelsAndMirrored) {
     ASSERT_NE(right, nullptr);
     ASSERT_NE(left, nullptr);
 
-    // main slab: from [-11, 3, -3.6] to [-1, 23, -2.6]
-    EXPECT_FLOAT_EQ(right->cubes[0].origin.x, -11.0f);
-    EXPECT_FLOAT_EQ(right->cubes[0].origin.y, 3.0f);
-    EXPECT_FLOAT_EQ(right->cubes[0].size.x, 10.0f);
-    EXPECT_FLOAT_EQ(right->cubes[0].size.y, 20.0f);
-    EXPECT_FLOAT_EQ(right->cubes[0].size.z, 1.0f);
+    // Both slabs cover the whole 10 px torso width; only the pivot and the depth nudge differ.
+    for (const Bone* wing : {left, right}) {
+        const Cube& slab = wing->cubes[0];
+        EXPECT_FLOAT_EQ(slab.origin.x, -5.0f);
+        EXPECT_FLOAT_EQ(slab.origin.y, 4.0f);
+        EXPECT_FLOAT_EQ(slab.size.x, 10.0f);
+        EXPECT_FLOAT_EQ(slab.size.y, 20.0f);
+        EXPECT_FLOAT_EQ(slab.size.z, 2.0f);
+        EXPECT_FLOAT_EQ(slab.inflate, 1.0f);
+        EXPECT_FLOAT_EQ(slab.u, 22.0f);
+        EXPECT_FLOAT_EQ(slab.v, 0.0f);
+        const Bounds b = boundsOf(*wing);
+        EXPECT_FLOAT_EQ(b.min.x, -5.0f);
+        EXPECT_FLOAT_EQ(b.max.x, 5.0f);
+        EXPECT_FLOAT_EQ(b.min.y, 4.0f);
+        EXPECT_FLOAT_EQ(b.max.y, 24.0f);
+        // The ElytraLayer offset puts the slab behind the torso (whose back face is z = +2), so the arms, which
+        // stay at z -2..2, never cut through it.
+        EXPECT_GE(b.min.z, 1.0f);
+    }
+    // Both wings have the same xRot and opposite zRot, so they lie in exactly the same plane and overlap over the
+    // whole back. Vanilla lets draw order settle it; with a float depth buffer that is a z-fight, so the right wing
+    // (the one vanilla draws last) is nudged 0.25 px back to win deterministically.
+    EXPECT_FLOAT_EQ(left->cubes[0].origin.z, 2.0f);
+    EXPECT_FLOAT_EQ(right->cubes[0].origin.z, 2.25f);
+}
 
-    // left wing mirrors the right one about x = 0
-    EXPECT_FLOAT_EQ(left->cubes[0].origin.x, 1.0f);
-    EXPECT_FLOAT_EQ(left->cubes[0].size.x, 10.0f);
-    EXPECT_FLOAT_EQ(left->cubes[0].size.y, 20.0f);
-    EXPECT_FLOAT_EQ(left->cubes[0].size.z, 1.0f);
+// ElytraModel.setupAnim only changes the rotations (and, while sneaking, drops the pivots 3 px).
+TEST(ElytraTridentModels, GlideAndCrouchModelsOnlyDifferInPose) {
+    const auto glide = EntityModel::fromJson(readAsset("/models/entities/elytra_wings_glide.geo.json"));
+    const auto crouch = EntityModel::fromJson(readAsset("/models/entities/elytra_wings_crouch.geo.json"));
+    ASSERT_TRUE(glide.has_value());
+    ASSERT_TRUE(crouch.has_value());
 
-    const Bounds r = boundsOf(*right);
-    EXPECT_FLOAT_EQ(r.min.y, 3.0f);
-    EXPECT_FLOAT_EQ(r.max.y, 23.0f);
-    const Bounds l = boundsOf(*left);
-    EXPECT_FLOAT_EQ(l.min.y, 3.0f);
-    EXPECT_FLOAT_EQ(l.max.y, 23.0f);
+    const Bone* glide_left = glide->findBone("leftWing");
+    const Bone* glide_right = glide->findBone("rightWing");
+    ASSERT_NE(glide_left, nullptr);
+    ASSERT_NE(glide_right, nullptr);
+    EXPECT_FLOAT_EQ(glide_left->rotation.x, 20.0f);
+    EXPECT_FLOAT_EQ(glide_left->rotation.y, 0.0f);
+    EXPECT_FLOAT_EQ(glide_left->rotation.z, -90.0f);
+    EXPECT_FLOAT_EQ(glide_right->rotation.z, 90.0f);
+    EXPECT_FLOAT_EQ(glide_left->pivot.y, 24.0f);
+    EXPECT_FLOAT_EQ(glide_left->cubes[0].origin.y, 4.0f);
+
+    const Bone* crouch_left = crouch->findBone("leftWing");
+    const Bone* crouch_right = crouch->findBone("rightWing");
+    ASSERT_NE(crouch_left, nullptr);
+    ASSERT_NE(crouch_right, nullptr);
+    EXPECT_FLOAT_EQ(crouch_left->rotation.x, 40.0f);
+    EXPECT_FLOAT_EQ(crouch_left->rotation.y, 5.0f);
+    EXPECT_FLOAT_EQ(crouch_left->rotation.z, -45.0f);
+    EXPECT_FLOAT_EQ(crouch_right->rotation.y, -5.0f);
+    EXPECT_FLOAT_EQ(crouch_right->rotation.z, 45.0f);
+    // sneaking drops the wing 3 px: java pivot y 3 -> bedrock 21, and the slab follows to y 1..21
+    EXPECT_FLOAT_EQ(crouch_left->pivot.y, 21.0f);
+    EXPECT_FLOAT_EQ(crouch_left->cubes[0].origin.y, 1.0f);
+    EXPECT_FLOAT_EQ(crouch_left->pivot.z, 2.0f);
+
+    for (const EntityModel* m : {&*glide, &*crouch}) {
+        EXPECT_FLOAT_EQ(m->findBone("leftWing")->cubes[0].origin.z, 2.0f);
+        EXPECT_FLOAT_EQ(m->findBone("rightWing")->cubes[0].origin.z, 2.25f);
+        EXPECT_FALSE(m->findBone("rightWing")->cubes[0].mirror);
+        EXPECT_FALSE(m->findBone("leftWing")->cubes[0].mirror);
+    }
 }
 
 TEST(ElytraTridentModels, BothModelsBuildMeshesWithoutTouchingTheSteveRig) {
@@ -167,11 +228,11 @@ TEST(ElytraTridentModels, BothModelsBuildMeshesWithoutTouchingTheSteveRig) {
     ASSERT_TRUE(trident.has_value());
     ASSERT_TRUE(wings.has_value());
 
-    // 5 cubes -> 5 * 24 vertices / 5 * 36 indices; 4 wing cubes -> 96 / 144.
+    // 5 cubes -> 5 * 24 vertices / 5 * 36 indices; 2 wing cubes -> 48 / 72.
     EXPECT_EQ(trident->buildCombinedMesh(identityBasis()).vertices.size(), 5u * 24u);
     EXPECT_EQ(trident->buildCombinedMesh(identityBasis()).indices.size(), 5u * 36u);
-    EXPECT_EQ(wings->buildCombinedMesh(identityBasis()).vertices.size(), 4u * 24u);
-    EXPECT_EQ(wings->buildCombinedMesh(identityBasis()).indices.size(), 4u * 36u);
+    EXPECT_EQ(wings->buildCombinedMesh(identityBasis()).vertices.size(), 2u * 24u);
+    EXPECT_EQ(wings->buildCombinedMesh(identityBasis()).indices.size(), 2u * 36u);
 
     // The prop models are separate data: the 12-part Steve rig is untouched.
     EXPECT_EQ(static_cast<size_t>(StevePart::Count), 12u);
