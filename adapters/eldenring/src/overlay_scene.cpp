@@ -202,7 +202,6 @@ void RenderFrame(IDXGISwapChain* sc) {
             // Phase A debug triggers (mc_er_dbg_anim.txt): glide, riptide and the trident charge come from the
             // debug keys, not from gameplay yet.
             anim_in.is_gliding = steve.gliding;
-            anim_in.elytra_equipped = static_cast<mc::ItemId>(steve.armor_item[1]) == mc::ItemId::Elytra;
             anim_in.trident_charge = steve.trident_charge;
             {
                 static float dbg_riptide_t = 0.f;
