@@ -1,10 +1,12 @@
 #pragma once
 
 #include <d3d12.h>
+#include <array>
 #include <cstdint>
 #include <map>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include "cs_viewmodel.hpp"
 #include "cs_weapon_registry.hpp"
@@ -56,12 +58,6 @@ public:
     bool setGloveNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
     bool setKnifePbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
     bool setGlovePbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
-    // Gun maps live in their own GPU resources. Reusing the knife resources
-    // would release the texture the knife descriptor table still points at,
-    // which makes the knife sample the gun's albedo.
-    bool setGunTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
-    bool setGunNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
-    bool setGunPbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
     bool setBareArmTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
     bool setBareArmNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
     bool setBareArmPbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
@@ -111,10 +107,13 @@ public:
     bool loadWeapon(ID3D12Device* device, const eldenring::cs::CSWeaponDefinition& def);
 
     // Swap the gun albedo/normal/ORM maps into the weapon texture slots
-    // (t0/t2/t4). The glove slots are left untouched.
+    // (t0/t2/t4). The glove slots are left untouched. `table_index` is the
+    // weapon slot (1..3); every gun owns its own texture set so preloading
+    // one gun never releases a resource another gun's table still points at.
     bool loadWeaponTextures(ID3D12Device* device,
                             const eldenring::cs::CSWeaponDefinition& def,
-                            D3D12_CPU_DESCRIPTOR_HANDLE weapon_slot);
+                            D3D12_CPU_DESCRIPTOR_HANDLE weapon_slot,
+                            uint8_t table_index);
 
     [[nodiscard]] const eldenring::cs::CSWeaponDefinition* activeWeapon() const {
         return has_active_weapon_ ? &active_weapon_def_ : nullptr;
@@ -154,15 +153,21 @@ private:
         ID3D12Resource* tex{nullptr};
         ID3D12Resource* upload{nullptr};
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+        UINT mip_count{1};
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT mip_footprints[16]{};
         bool pending{false};
 
         void release() {
             if (tex) { tex->Release(); tex = nullptr; }
             if (upload) { upload->Release(); upload = nullptr; }
+            mip_count = 1;
             pending = false;
         }
 
         bool create(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot, bool srgb = false);
+        // Loads a BC7/BC5 DDS (DX10 header) with its full mip chain. The DDS
+        // format decides sRGB vs linear, so no srgb argument is needed.
+        bool createFromDds(ID3D12Device* device, const std::string& path, D3D12_CPU_DESCRIPTOR_HANDLE slot);
         void recordUpload(ID3D12GraphicsCommandList* list);
     };
 
@@ -173,6 +178,16 @@ private:
     ID3D12Resource* ib_{nullptr};
     D3D12_VERTEX_BUFFER_VIEW vbv_{};
     D3D12_INDEX_BUFFER_VIEW ibv_{};
+
+    // Per-CSVM vertex/index buffers. They are never destroyed on a weapon
+    // switch, so the switch path needs no GPU wait; release() frees the cache.
+    struct MeshGpu {
+        ID3D12Resource* vb{nullptr};
+        ID3D12Resource* ib{nullptr};
+        D3D12_VERTEX_BUFFER_VIEW vbv{};
+        D3D12_INDEX_BUFFER_VIEW ibv{};
+    };
+    std::unordered_map<std::string, MeshGpu> mesh_cache_;
 
     // Dedicated viewmodel depth target.
     ID3D12Device* device_{nullptr};
@@ -198,9 +213,13 @@ private:
     TextureGpu glove_normal_tex_;
     TextureGpu knife_pbr_tex_;
     TextureGpu glove_pbr_tex_;
-    TextureGpu gun_tex_;
-    TextureGpu gun_normal_tex_;
-    TextureGpu gun_pbr_tex_;
+    // One texture set per gun table (index = weapon slot, 1..3). A single
+    // shared instance would release the previous gun's texture while its
+    // descriptor table still points at it.
+    static constexpr size_t kGunTextureSets = 4;
+    std::array<TextureGpu, kGunTextureSets> gun_tex_{};
+    std::array<TextureGpu, kGunTextureSets> gun_normal_tex_{};
+    std::array<TextureGpu, kGunTextureSets> gun_pbr_tex_{};
     TextureGpu bare_tex_;
     TextureGpu bare_normal_tex_;
     TextureGpu bare_pbr_tex_;
