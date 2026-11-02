@@ -58,17 +58,25 @@ TEST(ConsumablesTest, ChewingPulsesPeriodically) {
     EXPECT_GE(chew_ticks, 5);
 }
 
-TEST(ConsumablesTest, AnimatorHandJitterWhileEating) {
-    mc::SteveAnimator animator;
-    mc::SteveAnimInput input_normal{};
-    animator.update(0.05f, input_normal);
-    const auto normal_arm = animator.getTransforms()[static_cast<size_t>(mc::StevePart::RightArm)];
-
-    mc::SteveAnimInput input_eating{};
+TEST(ConsumablesTest, EatingRaisesTheThirdPersonArm) {
+    // Issue #57: eating is a third-person animation. The arm rises to the mouth with a chew oscillation
+    // (anim_data.js eat), so eating progress must change the arm pose.
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    mc::SteveAnimator plain, eating;
+    mc::SteveAnimInput input{};
+    input.right_hand_item = true;
+    mc::SteveAnimInput input_eating = input;
     input_eating.eating_progress = 0.5f;
-    animator.update(0.05f, input_eating);
-    const auto eating_arm = animator.getTransforms()[static_cast<size_t>(mc::StevePart::RightArm)];
 
-    // Eating arm pitch must be significantly altered to bring food to mouth
-    EXPECT_NE(normal_arm.rot.y, eating_arm.rot.y);
+    for (int i = 0; i < 5; ++i) {
+        plain.update(0.05f, input);
+        eating.update(0.05f, input_eating);
+    }
+
+    const auto plain_arm = plain.getTransforms()[ra];
+    const auto eating_arm = eating.getTransforms()[ra];
+    const float eating_pitch = 2.f * std::atan2(eating_arm.rot.y, eating_arm.rot.w);
+    EXPECT_LT(eating_pitch, -1.0f); // about -72 degrees
+    EXPECT_NE(plain_arm.rot.y, eating_arm.rot.y);
+    EXPECT_NE(plain_arm.rot.z, eating_arm.rot.z);
 }

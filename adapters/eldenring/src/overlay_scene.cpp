@@ -192,6 +192,9 @@ void RenderFrame(IDXGISwapChain* sc) {
             anim_in.bow_offhand = steve.bow_offhand;
             anim_in.is_blocking = steve.blocking;
             anim_in.block_offhand = steve.block_offhand;
+            anim_in.right_hand_item = steve.held_item != 0;
+            anim_in.left_hand_item = steve.offhand_item != 0;
+            anim_in.eating_progress = steve.eating;
             anim_in.is_crouching = steve.sneaking;
             anim_in.is_sprinting = steve.sprinting;
             anim_in.on_ground = steve.on_ground;
