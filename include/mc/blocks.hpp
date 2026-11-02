@@ -27,6 +27,38 @@ inline Cell cellOf(float x, float y, float z) {
     return {static_cast<int>(std::floor(x)), static_cast<int>(std::floor(y)), static_cast<int>(std::floor(z))};
 }
 
+// How much of its cell a block fills. Slabs are the bottom half; a torch is a thin post. The mesh
+// builder and the collision code both read this, so a new shape is added in one place.
+enum class BlockShape : uint8_t { FullCube, BottomSlab, Torch };
+
+inline constexpr BlockShape blockShape(BlockId id) {
+    switch (id) {
+        case BlockId::StoneSlab: return BlockShape::BottomSlab;
+        case BlockId::Torch: return BlockShape::Torch;
+        default: return BlockShape::FullCube;
+    }
+}
+
+// Cutout blocks: the texture's transparent texels are discarded by the pixel shader, and faces
+// between two of them are kept (so a glass wall or a leaf canopy does not look hollow).
+inline constexpr bool isTransparentBlock(BlockId id) {
+    return id == BlockId::Glass || id == BlockId::Leaves || id == BlockId::Torch;
+}
+
+inline constexpr bool isOpaqueBlock(BlockId id) { return id != BlockId::Air && !isTransparentBlock(id); }
+
+// Torches have no collision in Minecraft.
+inline constexpr bool hasBlockCollision(BlockId id) { return id != BlockId::Air && blockShape(id) != BlockShape::Torch; }
+
+// The block's box inside its cell, in 0..1 cell coordinates (mc::BlockBox).
+inline constexpr BlockBox blockBox(BlockId id) {
+    switch (blockShape(id)) {
+        case BlockShape::BottomSlab: return {0.f, 0.f, 0.f, 1.f, 0.5f, 1.f};
+        case BlockShape::Torch: return {7.f / 16.f, 0.f, 7.f / 16.f, 9.f / 16.f, 10.f / 16.f, 9.f / 16.f};
+        default: return {0.f, 0.f, 0.f, 1.f, 1.f, 1.f};
+    }
+}
+
 inline mc::BlockId blockForItem(mc::ItemId item) {
     switch (item) {
         case mc::ItemId::BlockDirt: return mc::BlockId::Dirt;
@@ -43,6 +75,10 @@ inline mc::BlockId blockForItem(mc::ItemId item) {
         case mc::ItemId::BlockBricks: return mc::BlockId::Bricks;
         case mc::ItemId::BlockWhiteWool: return mc::BlockId::WhiteWool;
         case mc::ItemId::Anvil: return mc::BlockId::Anvil;
+        case mc::ItemId::BlockGlass: return mc::BlockId::Glass;
+        case mc::ItemId::BlockLeaves: return mc::BlockId::Leaves;
+        case mc::ItemId::BlockStoneSlab: return mc::BlockId::StoneSlab;
+        case mc::ItemId::Torch: return mc::BlockId::Torch;
         default: return mc::BlockId::Air;
     }
 }
@@ -63,6 +99,10 @@ inline mc::ItemId itemForBlock(mc::BlockId block) {
         case mc::BlockId::Bricks: return mc::ItemId::BlockBricks;
         case mc::BlockId::WhiteWool: return mc::ItemId::BlockWhiteWool;
         case mc::BlockId::Anvil: return mc::ItemId::Anvil;
+        case mc::BlockId::Glass: return mc::ItemId::BlockGlass;
+        case mc::BlockId::Leaves: return mc::ItemId::BlockLeaves;
+        case mc::BlockId::StoneSlab: return mc::ItemId::BlockStoneSlab;
+        case mc::BlockId::Torch: return mc::ItemId::Torch;
         default: return mc::ItemId::None;
     }
 }

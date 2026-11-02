@@ -4,6 +4,7 @@
 // with no perspective, and lit from above (top 1.0, the two sides darker). Instead of one pre-rendered 16x16 picture the icon is three
 // textured quadrilaterals made from the block's full face textures, so it stays sharp at any GUI scale.
 
+#include "mc/blocks.hpp"
 #include "mc/hud_atlas.hpp"
 #include "mc/types.hpp"
 
@@ -43,6 +44,10 @@ inline IconCube blockIcon(mc::BlockId id) {
         case mc::BlockId::Bricks: top_uv = side_uv = &mc::hud::kUV_BLOCK_BRICKS; break;
         case mc::BlockId::WhiteWool: top_uv = side_uv = &mc::hud::kUV_BLOCK_WHITE_WOOL; break;
         case mc::BlockId::Anvil: top_uv = &mc::hud::kUV_BLOCK_ANVIL_TOP; side_uv = &mc::hud::kUV_BLOCK_ANVIL_SIDE; break;
+        case mc::BlockId::Glass: top_uv = side_uv = &mc::hud::kUV_BLOCK_GLASS; break;
+        case mc::BlockId::Leaves: top_uv = side_uv = &mc::hud::kUV_BLOCK_LEAVES; break;
+        case mc::BlockId::StoneSlab: top_uv = side_uv = &mc::hud::kUV_BLOCK_STONE_SLAB; break;
+        case mc::BlockId::Torch: top_uv = side_uv = &mc::hud::kUV_BLOCK_TORCH; break;
         default: top_uv = side_uv = &mc::hud::kUV_BLOCK_DIRT; break;
     }
     constexpr float kDeg = 3.14159265358979f / 180.f;
@@ -54,18 +59,23 @@ inline IconCube blockIcon(mc::BlockId id) {
         out[1] = cx * y1 - sx * z1;
         out[2] = sx * y1 + cx * z1;
     };
+    // The box centred on the cell centre: a slab is half as tall as a full block.
+    const mc::BlockBox b = mc::blockBox(id);
+    const float x0 = b.x0 - 0.5f, x1 = b.x1 - 0.5f;
+    const float y0 = b.y0 - 0.5f, y1 = b.y1 - 0.5f;
+    const float z0 = b.z0 - 0.5f, z1 = b.z1 - 0.5f;
     struct Face {
         float n[3];
         float c[4][3]; // top-left, top-right, bottom-right, bottom-left seen from outside
         bool top;
     };
-    static const Face faces[6] = {
-        {{0, 1, 0}, {{-.5f, .5f, -.5f}, {.5f, .5f, -.5f}, {.5f, .5f, .5f}, {-.5f, .5f, .5f}}, true},
-        {{0, -1, 0}, {{-.5f, -.5f, .5f}, {.5f, -.5f, .5f}, {.5f, -.5f, -.5f}, {-.5f, -.5f, -.5f}}, false},
-        {{1, 0, 0}, {{.5f, .5f, -.5f}, {.5f, .5f, .5f}, {.5f, -.5f, .5f}, {.5f, -.5f, -.5f}}, false},
-        {{-1, 0, 0}, {{-.5f, .5f, .5f}, {-.5f, .5f, -.5f}, {-.5f, -.5f, -.5f}, {-.5f, -.5f, .5f}}, false},
-        {{0, 0, 1}, {{.5f, .5f, .5f}, {-.5f, .5f, .5f}, {-.5f, -.5f, .5f}, {.5f, -.5f, .5f}}, false},
-        {{0, 0, -1}, {{-.5f, .5f, -.5f}, {.5f, .5f, -.5f}, {.5f, -.5f, -.5f}, {-.5f, -.5f, -.5f}}, false},
+    const Face faces[6] = {
+        {{0, 1, 0}, {{x0, y1, z0}, {x1, y1, z0}, {x1, y1, z1}, {x0, y1, z1}}, true},
+        {{0, -1, 0}, {{x0, y0, z1}, {x1, y0, z1}, {x1, y0, z0}, {x0, y0, z0}}, false},
+        {{1, 0, 0}, {{x1, y1, z0}, {x1, y1, z1}, {x1, y0, z1}, {x1, y0, z0}}, false},
+        {{-1, 0, 0}, {{x0, y1, z1}, {x0, y1, z0}, {x0, y0, z0}, {x0, y0, z1}}, false},
+        {{0, 0, 1}, {{x1, y1, z1}, {x0, y1, z1}, {x0, y0, z1}, {x1, y0, z1}}, false},
+        {{0, 0, -1}, {{x0, y1, z0}, {x1, y1, z0}, {x1, y0, z0}, {x0, y0, z0}}, false},
     };
     IconCube icon;
     float lo_x = 1e9f, hi_x = -1e9f, lo_y = 1e9f, hi_y = -1e9f;

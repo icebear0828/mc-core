@@ -18,7 +18,7 @@ inline constexpr int kInventorySaveVersion = 1;
 
 // One past the last real ItemId. Bump this when an item is appended and give it a slug below;
 // tests iterate every id up to it.
-inline constexpr ItemId kLastItemId = ItemId::BlockWhiteWool;
+inline constexpr ItemId kLastItemId = ItemId::Torch;
 
 // A stable lowercase slug ("diamond_sword"); empty for ItemId::None and ids past kLastItemId.
 [[nodiscard]] std::string_view itemSlug(ItemId item);

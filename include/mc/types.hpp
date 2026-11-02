@@ -57,6 +57,11 @@ struct GridPos {
     constexpr bool operator==(const GridPos&) const = default;
 };
 
+// A block's box inside its unit cell, in 0..1 cell coordinates.
+struct BlockBox {
+    float x0, y0, z0, x1, y1, z1;
+};
+
 enum class BlockId : uint8_t {
     Air = 0,
     Dirt,
@@ -72,7 +77,12 @@ enum class BlockId : uint8_t {
     StoneBricks,
     Bricks,
     WhiteWool,
-    Anvil
+    Anvil,
+    // Non-cube and transparent blocks (appended so every id above keeps its value).
+    Glass,
+    Leaves,
+    StoneSlab,
+    Torch
 };
 
 enum class ItemId : uint16_t {
@@ -145,7 +155,12 @@ enum class ItemId : uint16_t {
     BlockGravel,
     BlockStoneBricks,
     BlockBricks,
-    BlockWhiteWool
+    BlockWhiteWool,
+    // Non-cube and transparent blocks (appended so every id above keeps its value).
+    BlockGlass,
+    BlockLeaves,
+    BlockStoneSlab,
+    Torch
 };
 
 inline constexpr bool isSpawnEgg(ItemId item) noexcept {

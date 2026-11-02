@@ -111,12 +111,16 @@ const char* BlockSound(mc::BlockId id) {
         case mc::BlockId::Stone: return "block.stone.step";
         case mc::BlockId::StoneBricks:
         case mc::BlockId::Bricks:
+        case mc::BlockId::StoneSlab:
+        case mc::BlockId::Glass:
         case mc::BlockId::Anvil: return "block.stone.step";
         case mc::BlockId::Dirt: return "block.gravel.step";
         case mc::BlockId::Gravel: return "block.gravel.step";
         case mc::BlockId::Sand: return "block.sand.step";
+        case mc::BlockId::Leaves: return "block.grass.step";
         case mc::BlockId::Wood:
         case mc::BlockId::WoodPlanks:
+        case mc::BlockId::Torch:
         case mc::BlockId::CraftingTable: return "block.wood.step";
         default: return "block.grass.step";
     }
@@ -225,7 +229,7 @@ bool TryPlaceBlock() {
     if (!t.have) return true;
     const uintptr_t player = PlayerChrPtr();
     float feet[3];
-    if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, feet) && blocks::cellTouchesPlayer(t.place, feet)) return true; // not inside yourself
+    if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, feet) && blocks::cellTouchesPlayer(t.place, id, feet)) return true; // not inside yourself
     {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         if (!g_blocks.place(t.place, id)) return true;

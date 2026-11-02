@@ -224,7 +224,8 @@ void DrawFx(ImDrawList* dl, ImTextureID atlas, float w, float h) {
 // else as its flat sprite.
 void DrawItemIcon(ImDrawList* dl, ImTextureID atlas, const mc::HudRect& r, mc::ItemId item) {
     const mc::BlockId block = eldenring::blocks::blockForItem(item);
-    if (block != mc::BlockId::Air) {
+    // A slab is drawn as its own half-height cube; a torch is a flat sprite (it is not a cube at all).
+    if (block != mc::BlockId::Air && (mc::blockShape(block) == mc::BlockShape::FullCube || block == mc::BlockId::StoneSlab)) {
         const eldenring::blocks::IconCube icon = eldenring::blocks::blockIcon(block);
         for (int i = 0; i < icon.count; ++i) {
             const eldenring::blocks::IconFace& f = icon.faces[i];

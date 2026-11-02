@@ -41,6 +41,11 @@ _PLACEHOLDER_ITEM_COLORS = {
     "item_gravel": (130, 130, 130), "item_stone_bricks": (120, 120, 120), "item_bricks": (150, 70, 60),
     "item_white_wool": (230, 230, 230),
     "block_anvil_top": (80, 80, 85), "block_anvil_side": (70, 70, 75),
+    # Non-cube / transparent blocks: flat placeholders, replaced by the client.jar textures.
+    "block_glass": (200, 230, 240), "block_leaves": (60, 140, 50),
+    "block_stone_slab": (125, 125, 125), "block_torch": (150, 110, 60),
+    "item_glass": (200, 230, 240), "item_leaves": (60, 140, 50),
+    "item_stone_slab": (125, 125, 125), "item_torch": (150, 110, 60),
 }
 
 
