@@ -79,6 +79,10 @@ void SetupWorldRuntime() {
     cb.unlock_air_movement = [](uintptr_t chr) {
         eldenring::movement::PlayerLocomotion::Instance().unlockAirMovement(chr);
     };
+    cb.is_air_movement = []() {
+        auto& loco = eldenring::movement::PlayerLocomotion::Instance();
+        return loco.isFlying() || loco.isJumping();
+    };
     cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
     cb.on_origin_rebase = [](float rx, float ry, float rz) {
         {

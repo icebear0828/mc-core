@@ -97,6 +97,7 @@ public:
     // Getters and Setters for configuration / state
     bool isFlying() const { return flying_.load(std::memory_order_relaxed); }
     void setFlying(bool f) { flying_.store(f, std::memory_order_relaxed); }
+    bool isJumping() const { return jump_controller_.isActive(); }
 
     bool isMcJumpEnabled() const { return mc_jump_.load(std::memory_order_relaxed); }
     void setMcJumpEnabled(bool v) { mc_jump_.store(v, std::memory_order_relaxed); }

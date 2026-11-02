@@ -283,6 +283,14 @@ void PlayerLocomotion::stepJump(float dt, uint64_t now_ms, RuntimeContext& ctx) 
         return;
     }
 
+    // Creative flight owns the position; a space press must not also start a jump (the double-tap
+    // that enables flight would otherwise write a jump arc on the same frame).
+    if (isFlying()) {
+        prev_jump_key_ = false;
+        jump_controller_.cancel();
+        return;
+    }
+
     const uintptr_t player = callbacks_.get_player_chr ? callbacks_.get_player_chr() : 0;
     if (player == 0) return;
     const uintptr_t module = callbacks_.get_physics_module ? callbacks_.get_physics_module(player) : 0;
@@ -487,6 +495,12 @@ void PlayerLocomotion::stepFlight(float dt, uint64_t now_ms, RuntimeContext& ctx
         const bool on = !flying_.load(std::memory_order_relaxed);
         flying_.store(on, std::memory_order_relaxed);
         fly_have_written_ = false;
+        if (on) {
+            // The first press of the double-tap may have started a jump; drop it so it cannot
+            // write a position on the frame flight starts.
+            jump_controller_.cancel();
+            prev_jump_key_ = false;
+        }
         log("flight: %s", on ? "started" : "stopped");
     }
 

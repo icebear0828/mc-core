@@ -143,6 +143,13 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
         return;
     }
 
+    // Creative flight owns the position; block collision must not write it or shift the block grid.
+    if (ctx.mode().flying.load(std::memory_order_relaxed)) {
+        have_prev_player_ = false;
+        ctx.mode().block_supported.store(false, std::memory_order_relaxed);
+        return;
+    }
+
     const uintptr_t player = callbacks_.get_player_chr ? callbacks_.get_player_chr() : 0;
     float feet[3] = {};
     if (player == 0 || !callbacks_.read_physics_pos || !callbacks_.read_physics_pos(player, feet)) {
@@ -152,7 +159,8 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
     }
 
     float dx = 0.f, dy = 0.f, dz = 0.f;
-    if (have_prev_player_) {
+    const bool our_air_movement = callbacks_.is_air_movement && callbacks_.is_air_movement();
+    if (have_prev_player_ && !our_air_movement) {
         dx = feet[0] - prev_player_feet_[0];
         dy = feet[1] - prev_player_feet_[1];
         dz = feet[2] - prev_player_feet_[2];
@@ -195,7 +203,7 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
             dz = feet[2] - prev_player_feet_[2];
         }
     }
-    const bool jumped = std::sqrt(dx * dx + dy * dy + dz * dz) > 20.f;
+    const bool jumped = our_air_movement || std::sqrt(dx * dx + dy * dy + dz * dz) > 20.f;
 
     bool has_blocks = false;
     if (ctx.mode().block_collision.load(std::memory_order_relaxed)) {

@@ -64,6 +64,9 @@ struct WorldRuntimeCallbacks {
     std::function<void(uintptr_t module, bool force_zero, RuntimeContext& ctx)> drive_velocity;
     std::function<void(uintptr_t chr)> reset_fall_timer;
     std::function<void(uintptr_t chr)> unlock_air_movement;
+    // True while our own jump or creative flight owns the player's position. The block collision
+    // must not read that movement as a floating-origin rebase.
+    std::function<bool()> is_air_movement;
 
     // Diagnostics / logging
     std::function<void(const std::string&)> log;
