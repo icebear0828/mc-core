@@ -5,6 +5,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include "cs_viewmodel.hpp"
 #include "cs_weapon_registry.hpp"
@@ -154,15 +155,21 @@ private:
         ID3D12Resource* tex{nullptr};
         ID3D12Resource* upload{nullptr};
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+        UINT mip_count{1};
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT mip_footprints[16]{};
         bool pending{false};
 
         void release() {
             if (tex) { tex->Release(); tex = nullptr; }
             if (upload) { upload->Release(); upload = nullptr; }
+            mip_count = 1;
             pending = false;
         }
 
         bool create(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot, bool srgb = false);
+        // Loads a BC7/BC5 DDS (DX10 header) with its full mip chain. The DDS
+        // format decides sRGB vs linear, so no srgb argument is needed.
+        bool createFromDds(ID3D12Device* device, const std::string& path, D3D12_CPU_DESCRIPTOR_HANDLE slot);
         void recordUpload(ID3D12GraphicsCommandList* list);
     };
 
@@ -173,6 +180,16 @@ private:
     ID3D12Resource* ib_{nullptr};
     D3D12_VERTEX_BUFFER_VIEW vbv_{};
     D3D12_INDEX_BUFFER_VIEW ibv_{};
+
+    // Per-CSVM vertex/index buffers. They are never destroyed on a weapon
+    // switch, so the switch path needs no GPU wait; release() frees the cache.
+    struct MeshGpu {
+        ID3D12Resource* vb{nullptr};
+        ID3D12Resource* ib{nullptr};
+        D3D12_VERTEX_BUFFER_VIEW vbv{};
+        D3D12_INDEX_BUFFER_VIEW ibv{};
+    };
+    std::unordered_map<std::string, MeshGpu> mesh_cache_;
 
     // Dedicated viewmodel depth target.
     ID3D12Device* device_{nullptr};

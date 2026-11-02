@@ -4,13 +4,17 @@
 #include <d3dcompiler.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "cs_renderer_d3d12.hpp"
 #include "cs_animation_tracks.hpp"
@@ -49,6 +53,56 @@ bool DecodePngCached(const std::string& path, const uint8_t*& rgba, unsigned& wi
 void ReleaseDecodeCache() {
     std::lock_guard<std::mutex> lock(g_decode_mutex);
     g_decode_cache.clear();
+}
+
+// Minimal DDS reader for the BC7/BC5 maps produced offline by texconv.
+// Only uncompressed-header (DX10) 2D single-array textures are accepted.
+struct DdsPixelFormat {
+    uint32_t size;
+    uint32_t flags;
+    uint32_t four_cc;
+    uint32_t rgb_bit_count;
+    uint32_t r_mask, g_mask, b_mask, a_mask;
+};
+struct DdsHeader {
+    uint32_t size;
+    uint32_t flags;
+    uint32_t height;
+    uint32_t width;
+    uint32_t pitch_or_linear_size;
+    uint32_t depth;
+    uint32_t mip_count;
+    uint32_t reserved1[11];
+    DdsPixelFormat ddspf;
+    uint32_t caps, caps2, caps3, caps4, reserved2;
+};
+struct DdsHeaderDx10 {
+    uint32_t dxgi_format;
+    uint32_t resource_dimension;
+    uint32_t misc_flag;
+    uint32_t array_size;
+    uint32_t misc_flags2;
+};
+constexpr uint32_t kDdsMagic = 0x20534444u; // "DDS "
+constexpr uint32_t kDdsFourCcDx10 = 0x30315844u; // "DX10"
+constexpr uint32_t kDdsHeaderSize = 124u;
+constexpr uint32_t kDdsPixelFormatSize = 32u;
+
+uint32_t DdsMipSize(uint32_t width, uint32_t height, uint32_t block_bytes) {
+    const uint32_t blocks_w = std::max(1u, (width + 3u) / 4u);
+    const uint32_t blocks_h = std::max(1u, (height + 3u) / 4u);
+    return blocks_w * blocks_h * block_bytes;
+}
+
+uint32_t DdsBlockBytes(DXGI_FORMAT format) {
+    switch (format) {
+        case DXGI_FORMAT_BC7_UNORM:
+        case DXGI_FORMAT_BC7_UNORM_SRGB:
+        case DXGI_FORMAT_BC5_UNORM:
+            return 16u;
+        default:
+            return 0u;
+    }
 }
 
 constexpr char kCsShader[] = R"hlsl(
@@ -411,11 +465,15 @@ bool CsRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log) {
     params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
     D3D12_STATIC_SAMPLER_DESC sampler{};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    // The gun body is mostly grazing-angle surfaces; anisotropic filtering
+    // with the DDS mip chain removes the shimmer the linear sampler showed.
+    sampler.Filter = D3D12_FILTER_ANISOTROPIC;
+    sampler.MaxAnisotropy = 8;
     sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
     sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
     sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
     sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    sampler.MinLOD = 0.f;
     sampler.MaxLOD = D3D12_FLOAT32_MAX;
     sampler.ShaderRegister = 0;
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
@@ -553,8 +611,13 @@ void CsRenderer::release() {
     Rel(pso_);
     Rel(pso_depth_flip_);
     Rel(root_);
-    Rel(vb_);
-    Rel(ib_);
+    for (auto& entry : mesh_cache_) {
+        Rel(entry.second.vb);
+        Rel(entry.second.ib);
+    }
+    mesh_cache_.clear();
+    vb_ = nullptr;
+    ib_ = nullptr;
     Rel(depth_tex_);
     Rel(dsv_heap_);
     dsv_cpu_ = {};
@@ -615,6 +678,8 @@ bool CsRenderer::TextureGpu::create(ID3D12Device* device, const uint8_t* rgba, u
     UINT rows = 0;
     UINT64 row_bytes = 0, total = 0;
     device->GetCopyableFootprints(&td, 0, 1, 0, &footprint, &rows, &row_bytes, &total);
+    mip_count = 1;
+    mip_footprints[0] = footprint;
 
     D3D12_HEAP_PROPERTIES hu{};
     hu.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -651,19 +716,129 @@ bool CsRenderer::TextureGpu::create(ID3D12Device* device, const uint8_t* rgba, u
     return true;
 }
 
+bool CsRenderer::TextureGpu::createFromDds(ID3D12Device* device, const std::string& path, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
+    release();
+    if (!device || slot.ptr == 0) return false;
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    std::vector<uint8_t> file((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (file.size() < sizeof(uint32_t) + sizeof(DdsHeader) + sizeof(DdsHeaderDx10)) return false;
+
+    uint32_t magic = 0;
+    std::memcpy(&magic, file.data(), sizeof(magic));
+    if (magic != kDdsMagic) return false;
+
+    DdsHeader header{};
+    std::memcpy(&header, file.data() + 4, sizeof(header));
+    if (header.size != kDdsHeaderSize || header.ddspf.size != kDdsPixelFormatSize ||
+        header.ddspf.four_cc != kDdsFourCcDx10) {
+        return false;
+    }
+
+    DdsHeaderDx10 dx10{};
+    std::memcpy(&dx10, file.data() + 4 + sizeof(DdsHeader), sizeof(dx10));
+    if (dx10.resource_dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || dx10.array_size != 1) return false;
+
+    const DXGI_FORMAT format = static_cast<DXGI_FORMAT>(dx10.dxgi_format);
+    const uint32_t block_bytes = DdsBlockBytes(format);
+    if (block_bytes == 0 || header.width == 0 || header.height == 0) return false;
+
+    const UINT mips = std::max(1u, header.mip_count);
+    if (mips > 16) return false;
+
+    const size_t data_offset = 4 + sizeof(DdsHeader) + sizeof(DdsHeaderDx10);
+    size_t expected = data_offset;
+    for (UINT i = 0; i < mips; ++i) {
+        expected += DdsMipSize(std::max(1u, header.width >> i), std::max(1u, header.height >> i), block_bytes);
+    }
+    if (file.size() < expected) return false;
+
+    D3D12_HEAP_PROPERTIES hd{};
+    hd.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC td{};
+    td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    td.Width = header.width;
+    td.Height = header.height;
+    td.DepthOrArraySize = 1;
+    td.MipLevels = static_cast<UINT16>(mips);
+    td.Format = format;
+    td.SampleDesc.Count = 1;
+    td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+    if (FAILED(device->CreateCommittedResource(&hd, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&tex)))) {
+        return false;
+    }
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT layouts[16]{};
+    UINT num_rows[16]{};
+    UINT64 row_sizes[16]{};
+    UINT64 total = 0;
+    device->GetCopyableFootprints(&td, 0, mips, 0, layouts, num_rows, row_sizes, &total);
+
+    D3D12_HEAP_PROPERTIES hu{};
+    hu.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC ud{};
+    ud.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    ud.Width = total;
+    ud.Height = 1;
+    ud.DepthOrArraySize = 1;
+    ud.MipLevels = 1;
+    ud.SampleDesc.Count = 1;
+    ud.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    void* mapped = nullptr;
+    D3D12_RANGE none{0, 0};
+    if (FAILED(device->CreateCommittedResource(&hu, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload))) ||
+        FAILED(upload->Map(0, &none, &mapped))) {
+        release();
+        return false;
+    }
+
+    size_t src_offset = data_offset;
+    for (UINT i = 0; i < mips; ++i) {
+        const uint32_t mip_w = std::max(1u, header.width >> i);
+        const uint32_t mip_h = std::max(1u, header.height >> i);
+        const uint32_t mip_size = DdsMipSize(mip_w, mip_h, block_bytes);
+        const uint8_t* src = file.data() + src_offset;
+        for (UINT y = 0; y < num_rows[i]; ++y) {
+            std::memcpy(static_cast<uint8_t*>(mapped) + layouts[i].Offset + static_cast<size_t>(y) * layouts[i].Footprint.RowPitch,
+                        src + static_cast<size_t>(y) * row_sizes[i], static_cast<size_t>(row_sizes[i]));
+        }
+        src_offset += mip_size;
+    }
+    upload->Unmap(0, nullptr);
+
+    mip_count = mips;
+    for (UINT i = 0; i < mips; ++i) mip_footprints[i] = layouts[i];
+    footprint = layouts[0];
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
+    sd.Format = format;
+    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    sd.Texture2D.MipLevels = mips;
+    device->CreateShaderResourceView(tex, &sd, slot);
+    pending = true;
+    return true;
+}
+
 void CsRenderer::TextureGpu::recordUpload(ID3D12GraphicsCommandList* list) {
     if (!pending || !tex || !upload) return;
-    D3D12_TEXTURE_COPY_LOCATION dst{};
-    dst.pResource = tex;
-    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    dst.SubresourceIndex = 0;
 
-    D3D12_TEXTURE_COPY_LOCATION src{};
-    src.pResource = upload;
-    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    src.PlacedFootprint = footprint;
+    for (UINT i = 0; i < mip_count; ++i) {
+        D3D12_TEXTURE_COPY_LOCATION dst{};
+        dst.pResource = tex;
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dst.SubresourceIndex = i;
 
-    list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        D3D12_TEXTURE_COPY_LOCATION src{};
+        src.pResource = upload;
+        src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        src.PlacedFootprint = mip_footprints[i];
+
+        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    }
 
     D3D12_RESOURCE_BARRIER b{};
     b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -1055,23 +1230,33 @@ bool CsRenderer::loadModel(ID3D12Device* device, const std::string& path) {
         log_("cs_render: CSVM submeshes: %s", names.c_str());
     }
 
-    Rel(vb_);
-    Rel(ib_);
+    auto cached = mesh_cache_.find(path);
+    if (cached != mesh_cache_.end()) {
+        vb_ = cached->second.vb;
+        ib_ = cached->second.ib;
+        vbv_ = cached->second.vbv;
+        ibv_ = cached->second.ibv;
+    } else {
+        const size_t vb_size = model_.vertices.size() * sizeof(eldenring::cs::CSVMVertex);
+        const size_t ib_size = model_.indices.size() * sizeof(uint32_t);
 
-    const size_t vb_size = model_.vertices.size() * sizeof(eldenring::cs::CSVMVertex);
-    const size_t ib_size = model_.indices.size() * sizeof(uint32_t);
-
-    vb_ = UploadBuffer(device, model_.vertices.data(), vb_size);
-    ib_ = UploadBuffer(device, model_.indices.data(), ib_size);
-    if (!vb_ || !ib_) {
-        Rel(vb_);
-        Rel(ib_);
-        if (log_) log_("cs_render: failed to create vertex/index upload buffers");
-        return false;
+        MeshGpu mesh;
+        mesh.vb = UploadBuffer(device, model_.vertices.data(), vb_size);
+        mesh.ib = UploadBuffer(device, model_.indices.data(), ib_size);
+        if (!mesh.vb || !mesh.ib) {
+            Rel(mesh.vb);
+            Rel(mesh.ib);
+            if (log_) log_("cs_render: failed to create vertex/index upload buffers");
+            return false;
+        }
+        mesh.vbv = {mesh.vb->GetGPUVirtualAddress(), static_cast<UINT>(vb_size), static_cast<UINT>(sizeof(eldenring::cs::CSVMVertex))};
+        mesh.ibv = {mesh.ib->GetGPUVirtualAddress(), static_cast<UINT>(ib_size), DXGI_FORMAT_R32_UINT};
+        cached = mesh_cache_.emplace(path, mesh).first;
+        vb_ = cached->second.vb;
+        ib_ = cached->second.ib;
+        vbv_ = cached->second.vbv;
+        ibv_ = cached->second.ibv;
     }
-
-    vbv_ = {vb_->GetGPUVirtualAddress(), static_cast<UINT>(vb_size), static_cast<UINT>(sizeof(eldenring::cs::CSVMVertex))};
-    ibv_ = {ib_->GetGPUVirtualAddress(), static_cast<UINT>(ib_size), DXGI_FORMAT_R32_UINT};
 
     // Identify submesh roles
     submesh_types_.clear();
@@ -1145,42 +1330,69 @@ bool CsRenderer::loadWeaponTextures(ID3D12Device* device,
     D3D12_CPU_DESCRIPTOR_HANDLE normal_slot{weapon_slot.ptr + 2 * srv_inc};
     D3D12_CPU_DESCRIPTOR_HANDLE pbr_slot{weapon_slot.ptr + 4 * srv_inc};
 
+    auto isDds = [](const std::string& path) {
+        if (path.size() < 4) return false;
+        std::string ext = path.substr(path.size() - 4);
+        for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return ext == ".dds";
+    };
+
     bool any_loaded = false;
     const uint8_t* rgba = nullptr;
     unsigned width = 0, height = 0;
 
-    if (DecodePngCached(def.albedo_tex_path, rgba, width, height)) {
-        setGunTexture(device, rgba, width, height, weapon_slot);
+    bool albedo_ok = false;
+    if (isDds(def.albedo_tex_path)) {
+        albedo_ok = gun_tex_.createFromDds(device, def.albedo_tex_path, weapon_slot);
+        if (albedo_ok && log_) log_("cs_render: weapon albedo %s (DDS)", def.albedo_tex_path.c_str());
+    } else if (DecodePngCached(def.albedo_tex_path, rgba, width, height)) {
+        albedo_ok = gun_tex_.create(device, rgba, width, height, weapon_slot, /*srgb=*/true);
+        if (albedo_ok && log_) log_("cs_render: weapon albedo %s (%ux%u)", def.albedo_tex_path.c_str(), width, height);
+    }
+    if (albedo_ok) {
         any_loaded = true;
-        if (log_) log_("cs_render: weapon albedo %s (%ux%u)", def.albedo_tex_path.c_str(), width, height);
     } else {
         // A missing map must still leave a valid descriptor: the shader samples
         // this slot on every weapon draw.
         std::vector<uint8_t> fallback(16 * 16 * 4, 210);
-        setGunTexture(device, fallback.data(), 16, 16, weapon_slot);
+        gun_tex_.create(device, fallback.data(), 16, 16, weapon_slot, /*srgb=*/true);
         if (log_) log_("cs_render: weapon albedo missing, using fallback");
     }
-    if (DecodePngCached(def.normal_tex_path, rgba, width, height)) {
-        setGunNormalTexture(device, rgba, width, height, normal_slot);
+
+    bool normal_ok = false;
+    if (isDds(def.normal_tex_path)) {
+        normal_ok = gun_normal_tex_.createFromDds(device, def.normal_tex_path, normal_slot);
+        if (normal_ok && log_) log_("cs_render: weapon normal %s (DDS BC5)", def.normal_tex_path.c_str());
+    } else if (DecodePngCached(def.normal_tex_path, rgba, width, height)) {
+        normal_ok = gun_normal_tex_.create(device, rgba, width, height, normal_slot);
+        if (normal_ok && log_) log_("cs_render: weapon normal %s (%ux%u)", def.normal_tex_path.c_str(), width, height);
+    }
+    if (normal_ok) {
         any_loaded = true;
-        if (log_) log_("cs_render: weapon normal %s (%ux%u)", def.normal_tex_path.c_str(), width, height);
     } else {
         std::vector<uint8_t> flat_norm(16 * 16 * 4);
         for (size_t p = 0; p < flat_norm.size(); p += 4) {
             flat_norm[p] = 128; flat_norm[p + 1] = 128; flat_norm[p + 2] = 255; flat_norm[p + 3] = 255;
         }
-        setGunNormalTexture(device, flat_norm.data(), 16, 16, normal_slot);
+        gun_normal_tex_.create(device, flat_norm.data(), 16, 16, normal_slot);
     }
-    if (DecodePngCached(def.pbr_tex_path, rgba, width, height)) {
-        setGunPbrTexture(device, rgba, width, height, pbr_slot);
+
+    bool pbr_ok = false;
+    if (isDds(def.pbr_tex_path)) {
+        pbr_ok = gun_pbr_tex_.createFromDds(device, def.pbr_tex_path, pbr_slot);
+        if (pbr_ok && log_) log_("cs_render: weapon ORM %s (DDS)", def.pbr_tex_path.c_str());
+    } else if (DecodePngCached(def.pbr_tex_path, rgba, width, height)) {
+        pbr_ok = gun_pbr_tex_.create(device, rgba, width, height, pbr_slot);
+        if (pbr_ok && log_) log_("cs_render: weapon ORM %s (%ux%u)", def.pbr_tex_path.c_str(), width, height);
+    }
+    if (pbr_ok) {
         any_loaded = true;
-        if (log_) log_("cs_render: weapon ORM %s (%ux%u)", def.pbr_tex_path.c_str(), width, height);
     } else {
         std::vector<uint8_t> fallback(16 * 16 * 4);
         for (size_t p = 0; p < fallback.size(); p += 4) {
             fallback[p] = 255; fallback[p + 1] = 200; fallback[p + 2] = 0; fallback[p + 3] = 255;
         }
-        setGunPbrTexture(device, fallback.data(), 16, 16, pbr_slot);
+        gun_pbr_tex_.create(device, fallback.data(), 16, 16, pbr_slot);
     }
     return any_loaded;
 }

@@ -439,11 +439,8 @@ void RenderFrame(IDXGISwapChain* sc) {
     [[maybe_unused]] auto& r_mode = eldenring::RuntimeContext::Instance().mode();
 #if ENABLE_CS2_VIEWMODEL
     if (r_mode.cs_mode.load() && g_cs.ready()) {
-        // A weapon switch releases the old VB/IB and textures; wait for the
-        // GPU to finish the previous frame before replacing them.
-        if (r_mode.cs_weapon_slot.load() != g_cs_active_slot) {
-            WaitForGpu();
-        }
+        // Weapon meshes and textures are cached, so a switch never destroys a
+        // resource the GPU may still be using; no GPU wait is needed.
         UpdateCsWeaponSlot(r_mode.cs_weapon_slot.load());
     }
     const bool cs_mode_on = r_mode.cs_mode.load();

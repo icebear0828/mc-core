@@ -177,7 +177,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
     rtv_desc.NumDescriptors = g_s.buffers;
     D3D12_DESCRIPTOR_HEAP_DESC srv_desc{};
     srv_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    srv_desc.NumDescriptors = 80; // 0-15: MC/ImGui; 16-27: CS knife table; 32-43 / 44-55 / 56-67: CS gun tables (AK/AWP/M4)
+    srv_desc.NumDescriptors = 128; // 0-15: MC/ImGui; 16-27: CS knife; 45-64: elytra/mob; 68-79 / 80-91 / 92-103: CS guns (AK/AWP/M4)
     srv_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(g_s.device->CreateDescriptorHeap(&rtv_desc, IID_PPV_ARGS(&g_s.rtv_heap))) ||
         FAILED(g_s.device->CreateDescriptorHeap(&srv_desc, IID_PPV_ARGS(&g_s.srv_heap)))) {
@@ -347,9 +347,11 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
             g_cs_knife_table_gpu = srv_gpu_base;
             g_cs_knife_table_gpu.ptr += static_cast<UINT64>(srv_inc) * 16;
 
-            // One 12-slot table per gun: AK at 32, AWP at 44, M4A1-S at 56.
+            // One 12-slot table per gun, placed after the elytra/mob range
+            // (45-64) so no descriptor is ever overwritten: AK 68-79,
+            // AWP 80-91, M4A1-S 92-103.
             for (uint8_t slot = 1; slot <= 3; ++slot) {
-                const SIZE_T index = 32 + static_cast<SIZE_T>(slot - 1) * 12;
+                const SIZE_T index = 68 + static_cast<SIZE_T>(slot - 1) * 12;
                 g_cs_gun_table_cpu[slot] = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
                 g_cs_gun_table_cpu[slot].ptr += static_cast<SIZE_T>(srv_inc) * index;
                 g_cs_gun_table_gpu[slot] = srv_gpu_base;

@@ -156,9 +156,9 @@ CSWeaponDefinition CSWeaponRegistry::createAWPDefinition() {
     w.type = WeaponType::SniperAWP;
     w.slot = WeaponSlot::Primary;
     w.model_csvm_path = "mods/mc_adapter/cs_awp_viewmodel.bin";
-    w.albedo_tex_path = "mods/mc_adapter/textures/awp/awp_color.png";
-    w.normal_tex_path = "mods/mc_adapter/textures/awp/awp_normal.png";
-    w.pbr_tex_path = "mods/mc_adapter/textures/awp/awp_pbr.png";
+    w.albedo_tex_path = "mods/mc_adapter/textures/awp/awp_color.dds";
+    w.normal_tex_path = "mods/mc_adapter/textures/awp/awp_normal.dds";
+    w.pbr_tex_path = "mods/mc_adapter/textures/awp/awp_pbr.dds";
 
     w.sockets = {
         {"wpnHand_R", "hand_R", {0.015f, -0.11f, -0.06f}, {0.f, 0.f, 0.f, 1.f}},
@@ -192,9 +192,9 @@ CSWeaponDefinition CSWeaponRegistry::createM4A1SDefinition() {
     w.type = WeaponType::RifleM4A1S;
     w.slot = WeaponSlot::Primary;
     w.model_csvm_path = "mods/mc_adapter/cs_m4a1_s_viewmodel.bin";
-    w.albedo_tex_path = "mods/mc_adapter/textures/m4a1_s/m4a1_s_color.png";
-    w.normal_tex_path = "mods/mc_adapter/textures/m4a1_s/m4a1_s_normal.png";
-    w.pbr_tex_path = "mods/mc_adapter/textures/m4a1_s/m4a1_s_pbr.png";
+    w.albedo_tex_path = "mods/mc_adapter/textures/m4a1_s/m4a1_s_color.dds";
+    w.normal_tex_path = "mods/mc_adapter/textures/m4a1_s/m4a1_s_normal.dds";
+    w.pbr_tex_path = "mods/mc_adapter/textures/m4a1_s/m4a1_s_pbr.dds";
 
     w.sockets = {
         {"wpnHand_R", "hand_R", {0.02f, -0.12f, -0.05f}, {0.f, 0.f, 0.f, 1.f}},
