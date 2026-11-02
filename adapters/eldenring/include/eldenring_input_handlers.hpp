@@ -56,11 +56,19 @@ public:
     void tickAttack(const InputTickContext& ctx);
 
 private:
+    void selectWeaponSlot(uint8_t slot, const InputTickContext& ctx);
+
     float cs_fire_cooldown_{0.f};
     float cs_since_shot_{10.f}; // seconds since the last CS round: the first shot is accurate
     int cs_reload_sound_stage_{0}; // 0..3: mag-out / mag-in / bolt pull already played
     bool prev_reload_r_{false};
     bool prev_gameplay_f_{false};
+    bool prev_q_{false};
+    uint8_t last_slot_{0}; // CS2-style Q target: the weapon held before the current one
+    // Per-slot magazines so a switch does not refill ammo.
+    uint32_t slot_ammo_[4]{};
+    uint32_t slot_reserve_[4]{};
+    bool slot_ammo_ready_[4]{};
     bool prev_digit_[9]{};
 };
 
