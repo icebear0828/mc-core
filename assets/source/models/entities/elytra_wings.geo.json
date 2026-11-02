@@ -1,6 +1,5 @@
 {
   "format_version": "1.12.0",
-  "source": "Vanilla ElytraModel converted to the Bedrock Y-up-from-feet convention used by the model parser: 10x20x2 wings, pivots at x=+-5, y=24, rotation (15,0,-+90), cube origin (-5,4,0), UV (22,0), inflate 1, 64x32 texture.",
   "minecraft:geometry": [
     {
       "description": {
@@ -33,11 +32,6 @@
             24,
             0
           ],
-          "rotation": [
-            15,
-            0,
-            -90
-          ],
           "cubes": [
             {
               "origin": [
@@ -66,11 +60,6 @@
             24,
             0
           ],
-          "rotation": [
-            15,
-            0,
-            90
-          ],
           "cubes": [
             {
               "origin": [
@@ -94,5 +83,6 @@
         }
       ]
     }
-  ]
+  ],
+  "source": "Vanilla ElytraModel folded pose (not gliding): 10x20x2 wings, pivots at x=+-5,y=24, no rotation, cube origin (-5,4,0), UV (22,0), inflate 1, 64x32 texture."
 }

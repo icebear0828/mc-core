@@ -1,0 +1,98 @@
+{
+  "format_version": "1.12.0",
+  "minecraft:geometry": [
+    {
+      "description": {
+        "identifier": "geometry.elytra_wings",
+        "texture_width": 64,
+        "texture_height": 32,
+        "visible_bounds_width": 2,
+        "visible_bounds_height": 2,
+        "visible_bounds_offset": [
+          0,
+          1,
+          0
+        ]
+      },
+      "bones": [
+        {
+          "name": "upper",
+          "pivot": [
+            0,
+            24,
+            0
+          ],
+          "cubes": []
+        },
+        {
+          "name": "rightWing",
+          "parent": "upper",
+          "pivot": [
+            5,
+            24,
+            0
+          ],
+          "cubes": [
+            {
+              "origin": [
+                -5,
+                4,
+                0
+              ],
+              "size": [
+                10,
+                20,
+                2
+              ],
+              "uv": [
+                22,
+                0
+              ],
+              "inflate": 1
+            }
+          ],
+          "rotation": [
+            15,
+            0,
+            -90
+          ]
+        },
+        {
+          "name": "leftWing",
+          "parent": "upper",
+          "pivot": [
+            -5,
+            24,
+            0
+          ],
+          "cubes": [
+            {
+              "origin": [
+                -5,
+                4,
+                0
+              ],
+              "size": [
+                10,
+                20,
+                2
+              ],
+              "uv": [
+                22,
+                0
+              ],
+              "inflate": 1,
+              "mirror": true
+            }
+          ],
+          "rotation": [
+            15,
+            0,
+            90
+          ]
+        }
+      ]
+    }
+  ],
+  "source": "Vanilla ElytraModel gliding pose: 10x20x2 wings, pivots at x=+-5,y=24, rotation (15,0,-+90), cube origin (-5,4,0), UV (22,0), inflate 1, 64x32 texture."
+}
