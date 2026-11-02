@@ -99,12 +99,6 @@ public:
     void setFlying(bool f) { flying_.store(f, std::memory_order_relaxed); }
     bool isJumping() const { return jump_controller_.isActive(); }
 
-    bool isMcJumpEnabled() const { return mc_jump_.load(std::memory_order_relaxed); }
-    void setMcJumpEnabled(bool v) { mc_jump_.store(v, std::memory_order_relaxed); }
-
-    int mcJumpVk() const { return mc_jump_vk_.load(std::memory_order_relaxed); }
-    void setMcJumpVk(int vk) { mc_jump_vk_.store(vk, std::memory_order_relaxed); }
-
     float mcJumpSpeed() const { return mc_jump_speed_.load(std::memory_order_relaxed); }
     void setMcJumpSpeed(float s) { mc_jump_speed_.store(s, std::memory_order_relaxed); }
 
@@ -162,11 +156,13 @@ private:
     void log(const char* fmt, ...);
 
     // Jump state
-    std::atomic<bool> mc_jump_{true};
-    std::atomic<int> mc_jump_vk_{0x20}; // VK_SPACE
     std::atomic<float> mc_jump_speed_{eldenring::jump::kMcJumpInitialVelocity};
     bool prev_jump_key_{false};
     uint64_t jump_start_ms_{0};
+    // A jump needs the key held for a couple of frames. A single-frame spurious edge (input state toggling
+    // while the window gains focus, or touching a block) used to start a jump the player never asked for.
+    uint64_t jump_press_ms_{0};
+    bool jump_consumed_{false};
     eldenring::jump::MinecraftJumpController jump_controller_;
 
     // Sprint & fall timer state

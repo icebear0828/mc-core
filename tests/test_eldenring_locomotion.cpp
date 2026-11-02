@@ -247,22 +247,33 @@ TEST(EldenRingLocomotion, JumpTakeoffTrajectoryAndCeilingResolution) {
     auto& ctx = RuntimeContext::Instance();
     ctx.resetForTesting();
     ctx.mode().mc_mode.store(true);
+    ctx.mode().mc_jump.store(true);
     ctx.mode().on_ground.store(true);
 
     // Initial state: controller inactive
     EXPECT_FALSE(loco.jumpController().isActive());
 
-    // Press jump key
+    // Press jump key: the first frame only arms the press; the jump starts after a 25 ms hold (spurious
+    // single-frame edges used to start jumps the player never asked for).
     keys_down[VK_SPACE] = true;
     loco.stepJump(0.016f, 1000, ctx);
+    EXPECT_FALSE(loco.jumpController().isActive());
+    loco.stepJump(0.016f, 1030, ctx);
 
     // Takeoff confirmed
     EXPECT_TRUE(loco.jumpController().isActive());
     EXPECT_GT(loco.jumpController().vy(), 0.f);
+    // The jump owns the vertical axis: the game's own vertical velocity and fall speed are zeroed.
+    EXPECT_TRUE(ctx.player().jump_active.load());
+    float game_vy = -1.f, fall_speed = -1.f;
+    mem.readBytes(kModule + 0x120 + 4, &game_vy, sizeof(game_vy));
+    mem.readBytes(kModule + 0x1B8, &fall_speed, sizeof(fall_speed));
+    EXPECT_FLOAT_EQ(game_vy, 0.f);
+    EXPECT_FLOAT_EQ(fall_speed, 0.f);
 
     // Step jump upwards towards ceiling
     for (int i = 0; i < 15 && !ceiling_hit; ++i) {
-        loco.stepJump(0.016f, 1000 + (i + 1) * 16, ctx);
+        loco.stepJump(0.016f, 1030 + (i + 1) * 16, ctx);
     }
 
     EXPECT_TRUE(ceiling_hit);

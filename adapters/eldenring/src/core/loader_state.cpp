@@ -190,8 +190,8 @@ std::atomic<bool> g_fall_reset{true};
 std::atomic<float> g_fall_hold{1.0f};
 std::atomic<float> g_pre_fall_t{0.f};
 std::atomic<float> g_sprint_boost{2.5f}; // mc_er_steve.txt: sprint_boost=<m/s> (extra speed boost applied while sprinting on ground, default 2.5 m/s)
-std::atomic<bool> g_mc_jump{false};
-std::atomic<int> g_mc_jump_vk{VK_SPACE};
+std::atomic<bool>& g_mc_jump = g_mode.mc_jump;
+std::atomic<int>& g_mc_jump_vk = g_mode.mc_jump_vk;
 std::atomic<float> g_mc_jump_speed{eldenring::jump::kMcJumpInitialVelocity};
 std::atomic<float> g_mc_gravity{eldenring::jump::kMcJumpGravity};
 std::atomic<bool> g_flying{false};

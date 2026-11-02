@@ -159,6 +159,7 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
     }
 
     float dx = 0.f, dy = 0.f, dz = 0.f;
+    const bool jump_active = ctx.player().jump_active.load(std::memory_order_relaxed);
     const bool our_air_movement = callbacks_.is_air_movement && callbacks_.is_air_movement();
     if (have_prev_player_ && !our_air_movement) {
         dx = feet[0] - prev_player_feet_[0];
@@ -214,9 +215,20 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
     blocks::Resolve r{};
     if (has_blocks) {
         std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
-        r = have_prev_player_ && !jumped ?
-            blocks::resolvePlayerSwept(ctx.world().block_grid, prev_player_feet_, feet) :
-            blocks::resolvePlayer(ctx.world().block_grid, feet);
+        if (jump_active) {
+            // Our jump owns the vertical axis, but a placed wall must still stop horizontal movement.
+            r = blocks::resolvePlayer(ctx.world().block_grid, feet);
+            const bool horizontal = std::fabs(r.feet[0] - feet[0]) > 1e-4f || std::fabs(r.feet[2] - feet[2]) > 1e-4f;
+            if (horizontal) {
+                r.feet[1] = feet[1];
+            } else {
+                r.moved = false;
+            }
+        } else {
+            r = have_prev_player_ && !jumped ?
+                blocks::resolvePlayerSwept(ctx.world().block_grid, prev_player_feet_, feet) :
+                blocks::resolvePlayer(ctx.world().block_grid, feet);
+        }
     }
 
     float final_feet[3] = {r.moved ? r.feet[0] : feet[0], r.moved ? r.feet[1] : feet[1], r.moved ? r.feet[2] : feet[2]};
@@ -249,7 +261,7 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
     const bool key_s = fg && isKeyDown('S');
     const bool key_d = fg && isKeyDown('D');
     const bool key_space = fg && isKeyDown(VK_SPACE);
-    const bool should_anchor = ctx.mode().block_anchor.load(std::memory_order_relaxed) &&
+    const bool should_anchor = ctx.mode().block_anchor.load(std::memory_order_relaxed) && !jump_active &&
                                blocks::shouldAnchorBlockPosition(supported, key_w, key_a, key_s, key_d, key_space);
 
     if (should_anchor) {
@@ -288,7 +300,7 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
     }
 
     bool sneak_clamped = false;
-    if (sneaking && (supported || was_supported) && have_prev_player_ && !jumped && !pinned) {
+    if (sneaking && (supported || was_supported) && have_prev_player_ && !jumped && !pinned && !jump_active) {
         const float desired_dx = final_feet[0] - prev_player_feet_[0];
         const float desired_dz = final_feet[2] - prev_player_feet_[2];
         blocks::SneakMoveResult sneak_res;
@@ -310,7 +322,7 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
     // directly advance player coordinates by block_walk_speed (4.317 m/s) clamped by block collision.
     // This restores continuous, responsive locomotion on custom voxel surfaces.
     bool direct_moved = false;
-    if (supported && fg && !jumped) {
+    if (supported && fg && !jumped && !jump_active) {
         CameraPose cam{};
         if (callbacks_.read_camera && callbacks_.read_camera(cam)) {
             const float fwd_key = (isKeyDown('W') ? 1.f : 0.f) - (isKeyDown('S') ? 1.f : 0.f);
@@ -388,14 +400,14 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
         }
     }
 
-    if (module != 0 && (pinned || sneak_clamped || direct_moved) && callbacks_.safe_write) {
+    if (module != 0 && (pinned || sneak_clamped || direct_moved) && !jump_active && callbacks_.safe_write) {
         callbacks_.safe_write(module + layout::kPhysicsPosition, final_feet, sizeof(final_feet));
         callbacks_.safe_write(module + layout::kPhysicsPosition + 0x10, final_feet, sizeof(final_feet));
         const uint8_t one = 1;
         callbacks_.safe_write(module + layout::kPhysicsProxySyncRequest, &one, sizeof(one));
     }
 
-    if (module != 0 && supported && callbacks_.safe_write) {
+    if (module != 0 && supported && !jump_active && callbacks_.safe_write) {
         if (ctx.mode().block_ground.load(std::memory_order_relaxed)) {
             const uint8_t one = 1;
             callbacks_.safe_write(module + 0x92, &one, sizeof(one));
@@ -405,12 +417,17 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
         const float zero = 0.f;
         callbacks_.safe_write(module + 0x120 + 4, &zero, sizeof(zero));
         callbacks_.safe_write(module + 0x1B8, &zero, sizeof(zero));
+        // The game keeps the horizontal velocity from before landing and integrates it every frame while it
+        // thinks the player is airborne (observed: the player keeps sliding on a block with no keys held).
+        // On a placed block the position drive is the mover, so clear it.
+        callbacks_.safe_write(module + 0x120, &zero, sizeof(zero));
+        callbacks_.safe_write(module + 0x120 + 8, &zero, sizeof(zero));
     }
 
-    if (module != 0 && supported && ctx.mode().block_drive.load(std::memory_order_relaxed) && callbacks_.drive_velocity) {
+    if (module != 0 && supported && !jump_active && ctx.mode().block_drive.load(std::memory_order_relaxed) && callbacks_.drive_velocity) {
         callbacks_.drive_velocity(module, pinned, ctx);
     }
-    if (supported) {
+    if (supported && !jump_active) {
         ctx.player().movement_layer_ms.store(GetTickCount64(), std::memory_order_relaxed);
         if (callbacks_.reset_fall_timer) callbacks_.reset_fall_timer(player);
         if (callbacks_.unlock_air_movement) callbacks_.unlock_air_movement(player);

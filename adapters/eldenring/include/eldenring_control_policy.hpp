@@ -15,6 +15,11 @@
 
 namespace eldenring::control {
 
+// DirectInput scan codes for WASD. While the player stands on a placed block the mod's position drive is the
+// only mover, so these are hidden from the native character controller (otherwise both move the player and
+// the effective speed is about 2x; the controller also keeps a stale air velocity that slides the player).
+inline constexpr int kBlockMoveKeys[] = {0x11 /*W*/, 0x1E /*A*/, 0x1F /*S*/, 0x20 /*D*/};
+
 struct ModeInputs {
     bool foreground{true};
     bool input_enabled{true};
@@ -27,6 +32,9 @@ struct ModeInputs {
 
     bool mc_jump{false};
     int mc_jump_scan{0}; // 0 = do not mask the jump key
+
+    bool block_movement{false}; // standing on a placed block: the position drive owns movement
+    std::span<const int> block_move_keys{}; // DirectInput scan codes
 
     bool disable_vanilla_roll{false};
     std::span<const int> roll_keys{}; // DirectInput scan codes
@@ -83,6 +91,17 @@ inline mc::ControlPlan buildControlPlan(const ModeInputs& in) {
     // collision, the mod writes the desired velocity and body yaw.
     if (in.first_person) {
         mc::requestFirstPerson(resolver);
+    }
+
+    // On a placed block the direct position drive is the only mover. Hide WASD from the native controller,
+    // otherwise it adds its own movement (about 2x speed) and keeps sliding the player with its stale air
+    // velocity. Priority above first person: on a block the position drive must win even while the camera is
+    // owned by the mod.
+    if (in.block_movement && in.mc_mode && in.foreground && !in.inventory_open && in.native_input_allowed) {
+        resolver.request(mc::ControlDomain::Movement, mc::ControlAuthority::Mod, 110, 0, "block movement");
+        for (const int key : in.block_move_keys) {
+            if (key > 0) resolver.request(mc::ControlDomain::Key, mc::ControlAuthority::Mod, 110, key, "block movement");
+        }
     }
 
     // Inventory UI owns mouse motion, the keyboard and the virtual cursor.
