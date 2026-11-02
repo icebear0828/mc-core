@@ -30,7 +30,7 @@ void DrawProp(const char* name, const mc::model::EntityModel* model, const mc::r
     // Vanilla elytra is fixed to the back and forms a V: the wing tops flare outward, outside the
     // arm swing path. The flap adds the gliding oscillation on top of the static spread.
     const float spread = 0.55f;
-    const float angle = flap + spread;
+    const float angle = flap - spread;
     const mc::Quat right{std::sin(angle * 0.5f), 0.f, 0.f, std::cos(angle * 0.5f)};
     const mc::Quat left{-std::sin(angle * 0.5f), 0.f, 0.f, std::cos(angle * 0.5f)};
     for (size_t i = 0; i < model->bones.size(); ++i) {
