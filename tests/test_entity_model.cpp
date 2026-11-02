@@ -196,26 +196,23 @@ std::pair<float, float> faceURange(const rig::RigMesh& mesh, int face) {
 }
 } // namespace
 
-TEST(EntityModel, MirroredCubeFlipsEveryFaceHorizontallyAndSwapsTheSideFaces) {
+TEST(EntityModel, AMirroredCubeFlipsEveryFaceHorizontallyWithoutMovingTheRectangles) {
     const rig::RigMesh plain = oneCube(false).buildBoneMesh("leg", identityBasis());
     const rig::RigMesh mirrored = oneCube(true).buildBoneMesh("leg", identityBasis());
     ASSERT_EQ(plain.vertices.size(), 24u);
     ASSERT_EQ(mirrored.vertices.size(), 24u);
-    // same rectangles on the skin for the front/back/top/bottom faces, but running the other way
-    for (int face : {0, 1, 4, 5}) {
+    // every face keeps its rectangle on the skin and just runs the other way
+    for (int face : {0, 1, 2, 3, 4, 5}) {
         EXPECT_EQ(faceURange(plain, face), faceURange(mirrored, face)) << face;
         EXPECT_NEAR(plain.vertices[static_cast<size_t>(face * 4)].u, mirrored.vertices[static_cast<size_t>(face * 4 + 1)].u, 1e-6f) << face;
         EXPECT_NEAR(plain.vertices[static_cast<size_t>(face * 4 + 1)].u, mirrored.vertices[static_cast<size_t>(face * 4)].u, 1e-6f) << face;
     }
-    // the west and east faces take each other's rectangle:
-    // Bedrock standard box UV: East is [0..4], West is [8..12] (for u=0, depth 4, width 4)
-    EXPECT_EQ(faceURange(plain, 2), (std::pair<float, float>{8.f, 12.f}));
-    EXPECT_EQ(faceURange(plain, 3), (std::pair<float, float>{0.f, 4.f}));
-    EXPECT_EQ(faceURange(mirrored, 2), (std::pair<float, float>{0.f, 4.f}));
-    EXPECT_EQ(faceURange(mirrored, 3), (std::pair<float, float>{8.f, 12.f}));
-    // and are flipped too: the first vertex of the west face was on the left of its rectangle, now it is on the right
-    EXPECT_NEAR(plain.vertices[8].u * 64.f, 8.f, 1e-4f);
-    EXPECT_NEAR(mirrored.vertices[8].u * 64.f, 4.f, 1e-4f);
+    // ModelPart$Cube box UV for u=0, depth 4, width 4: West is the leftmost rectangle, East is the third one.
+    EXPECT_EQ(faceURange(plain, 2), (std::pair<float, float>{0.f, 4.f}));
+    EXPECT_EQ(faceURange(plain, 3), (std::pair<float, float>{8.f, 12.f}));
+    // and the west face is flipped too: its first vertex was on the right of the rectangle, now it is on the left
+    EXPECT_NEAR(plain.vertices[8].u * 64.f, 4.f, 1e-4f);
+    EXPECT_NEAR(mirrored.vertices[8].u * 64.f, 0.f, 1e-4f);
 }
 
 namespace {
@@ -354,6 +351,55 @@ TEST(EntityModel, ParsesActualZombieGeoJsonFile) {
     EXPECT_GT(mesh.indices.size(), 0u);
 }
 
+// The box UV layout has to match net.minecraft.client.model.geom.ModelPart$Cube, because every texture we
+// ship is a Java texture. Second row, left to right: west, north, east, south; top row above north and east:
+// down, up. (A previous east-first layout put the wings' side faces on the wrong rectangles.)
+TEST(EntityModel, BoxUvLayoutMatchesModelPartCube) {
+    constexpr std::string_view kJson = R"({
+        "format_version": "1.12.0",
+        "minecraft:geometry": [{
+            "description": {"identifier": "geometry.uv", "texture_width": 64, "texture_height": 64},
+            "bones": [{"name": "b", "pivot": [0, 0, 0], "cubes": [{"origin": [0, 0, 0], "size": [4, 8, 2], "uv": [0, 0]}]}]
+        }]
+    })";
+    const auto opt = EntityModel::fromJson(kJson);
+    ASSERT_TRUE(opt.has_value());
+    const auto mesh = opt->buildBoneMesh("b", identityBasis());
+    ASSERT_EQ(mesh.vertices.size(), 24u);
+    // one vertex per face group, in cubeFaces() order: north, south, west, east, up, down.
+    // ModelPart$Polygon puts corner 0 of every face at (u1, v0).
+    const float want[6][2] = {{6, 2}, {12, 2}, {2, 2}, {8, 2}, {10, 0}, {6, 0}};
+    for (size_t face = 0; face < 6; ++face) {
+        EXPECT_NEAR(mesh.vertices[face * 4].u * 64.f, want[face][0], 1e-4f) << "face " << face;
+        EXPECT_NEAR(mesh.vertices[face * 4].v * 64.f, want[face][1], 1e-4f) << "face " << face;
+    }
+}
+
+// Blockbench's Bedrock formats default to euler order ZYX, the same order the Java entity models use
+// (Quaternionf.rotationZYX): Z turns first, then Y, then X. Only multi-axis bones can tell the orders apart.
+TEST(EntityPose, ARestRotationTurnsZFirstThenYThenX) {
+    constexpr std::string_view kTwoAxis = R"({
+        "format_version": "1.12.0",
+        "minecraft:geometry": [{
+            "description": {"identifier": "geometry.two_axis", "texture_width": 64, "texture_height": 32},
+            "bones": [{"name": "b", "pivot": [0, 0, 0], "rotation": [15, 0, -15],
+                       "cubes": [{"origin": [0, 0, 0], "size": [1, 1, 1], "uv": [0, 0]}]}]
+        }]
+    })";
+    const auto opt = EntityModel::fromJson(kTwoAxis);
+    ASSERT_TRUE(opt.has_value());
+    const auto mats = boneMatrices(*opt, {}, {0.f, 0.f, 0.f}, 0.f, identityBasis());
+
+    // The vanilla ElytraModel's left wing: 10 px to the character's right and 20 px down from its pivot, turned
+    // -15 deg about Z and then 15 deg about X. In canonical axes (X forward, Y left, Z up) that point is (0, -10, -20)
+    // and the composition lands it at (-5.6695, -4.4829, -21.1595) px. X-first would give (-5.1764, -4.6593, -21.2476).
+    const float s = rig::kCmPerModelPixel;
+    const Vec3 got = rig::transformPoint(mats[0], {0.f, -10.f * s, -20.f * s});
+    EXPECT_NEAR(got.x, -5.6695f * s, 0.01f * s);
+    EXPECT_NEAR(got.y, -4.4829f * s, 0.01f * s);
+    EXPECT_NEAR(got.z, -21.1595f * s, 0.01f * s);
+}
+
 TEST(EntityModel, ParsesActualCreeperAndSkeletonGeoJsonFiles) {
     for (const auto& [mob_id, filename] : {std::pair{"geometry.creeper", "creeper.geo.json"}, {"geometry.skeleton", "skeleton.geo.json"}}) {
         const std::string path = std::string(MC_ASSET_DIR) + "/models/entities/" + filename;
@@ -405,10 +451,8 @@ TEST(EntityModel, CreeperHeadFaceUvOrientationMatchesMinecraftStandard) {
     // Bottom (-Y) is at bedrock.y = 18 -> canonical.z = +18 * s (down)
 
     // Check North face (face 0, vertices 0..3):
-    // Standard Bedrock: East side of face connects to East face (U = 8px)
-    // West side of face connects to West face (U = 16px)
-    // Top of face connects to Top face (V = 8px)
-    // Bottom of face connects to Bottom (V = 16px)
+    // ModelPart$Polygon: the corner at +X/-Y of the front face takes (u1, v0) = (16, 8) of the face rectangle,
+    // the +X/+Y corner takes (u1, v1) = (16, 16), and the -X corners take u0 = 8.
     bool found_east_top = false;
     bool found_west_top = false;
     bool found_east_bottom = false;
@@ -422,24 +466,24 @@ TEST(EntityModel, CreeperHeadFaceUvOrientationMatchesMinecraftStandard) {
         const float v_px = v.v * 32.0f;
 
         if (std::abs(v.y - 4.0f * s) < 1e-3f && std::abs(v.z - 26.0f * s) < 1e-3f) {
-            // East-Top: should be U = 8.0, V = 8.0
-            EXPECT_NEAR(u_px, 8.0f, 1e-3f) << "Front face East-Top U must be 8 (left of face texture)";
-            EXPECT_NEAR(v_px, 8.0f, 1e-3f) << "Front face East-Top V must be 8 (top of face texture)";
+            // East-Top: should be U = 16.0, V = 16.0
+            EXPECT_NEAR(u_px, 16.0f, 1e-3f) << "Front face East-Top U must be 16";
+            EXPECT_NEAR(v_px, 16.0f, 1e-3f) << "Front face East-Top V must be 16";
             found_east_top = true;
         } else if (std::abs(v.y - (-4.0f * s)) < 1e-3f && std::abs(v.z - 26.0f * s) < 1e-3f) {
-            // West-Top: should be U = 16.0, V = 8.0
-            EXPECT_NEAR(u_px, 16.0f, 1e-3f) << "Front face West-Top U must be 16 (right of face texture)";
-            EXPECT_NEAR(v_px, 8.0f, 1e-3f) << "Front face West-Top V must be 8 (top of face texture)";
+            // West-Top: should be U = 8.0, V = 16.0
+            EXPECT_NEAR(u_px, 8.0f, 1e-3f) << "Front face West-Top U must be 8";
+            EXPECT_NEAR(v_px, 16.0f, 1e-3f) << "Front face West-Top V must be 16";
             found_west_top = true;
         } else if (std::abs(v.y - 4.0f * s) < 1e-3f && std::abs(v.z - 18.0f * s) < 1e-3f) {
-            // East-Bottom: should be U = 8.0, V = 16.0
-            EXPECT_NEAR(u_px, 8.0f, 1e-3f) << "Front face East-Bottom U must be 8";
-            EXPECT_NEAR(v_px, 16.0f, 1e-3f) << "Front face East-Bottom V must be 16";
+            // East-Bottom: should be U = 16.0, V = 8.0
+            EXPECT_NEAR(u_px, 16.0f, 1e-3f) << "Front face East-Bottom U must be 16";
+            EXPECT_NEAR(v_px, 8.0f, 1e-3f) << "Front face East-Bottom V must be 8";
             found_east_bottom = true;
         } else if (std::abs(v.y - (-4.0f * s)) < 1e-3f && std::abs(v.z - 18.0f * s) < 1e-3f) {
-            // West-Bottom: should be U = 16.0, V = 16.0
-            EXPECT_NEAR(u_px, 16.0f, 1e-3f) << "Front face West-Bottom U must be 16";
-            EXPECT_NEAR(v_px, 16.0f, 1e-3f) << "Front face West-Bottom V must be 16";
+            // West-Bottom: should be U = 8.0, V = 8.0
+            EXPECT_NEAR(u_px, 8.0f, 1e-3f) << "Front face West-Bottom U must be 8";
+            EXPECT_NEAR(v_px, 8.0f, 1e-3f) << "Front face West-Bottom V must be 8";
             found_west_bottom = true;
         }
     }
@@ -449,14 +493,14 @@ TEST(EntityModel, CreeperHeadFaceUvOrientationMatchesMinecraftStandard) {
     EXPECT_TRUE(found_west_bottom);
 
     // Also verify East face (+X, left) and West face (-X, right) UV rects:
-    // Bedrock standard: East = [0..8], West = [16..24]
+    // ModelPart$Cube: West = [0..8], East = [16..24]
     // Face indices in appendCubeMesh: 0=North, 1=South, 2=West, 3=East
     const auto [w_lo, w_hi] = faceURange(mesh, 2);
     const auto [e_lo, e_hi] = faceURange(mesh, 3);
-    EXPECT_NEAR(e_lo, 0.0f, 1e-3f) << "East face U min must be 0";
-    EXPECT_NEAR(e_hi, 8.0f, 1e-3f) << "East face U max must be 8";
-    EXPECT_NEAR(w_lo, 16.0f, 1e-3f) << "West face U min must be 16";
-    EXPECT_NEAR(w_hi, 24.0f, 1e-3f) << "West face U max must be 24";
+    EXPECT_NEAR(e_lo, 16.0f, 1e-3f) << "East face U min must be 16";
+    EXPECT_NEAR(e_hi, 24.0f, 1e-3f) << "East face U max must be 24";
+    EXPECT_NEAR(w_lo, 0.0f, 1e-3f) << "West face U min must be 0";
+    EXPECT_NEAR(w_hi, 8.0f, 1e-3f) << "West face U max must be 8";
 }
 
 } // namespace

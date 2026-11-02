@@ -1,0 +1,97 @@
+{
+  "format_version": "1.12.0",
+  "minecraft:geometry": [
+    {
+      "description": {
+        "identifier": "geometry.elytra_wings_crouch",
+        "texture_width": 64,
+        "texture_height": 32,
+        "visible_bounds_width": 2,
+        "visible_bounds_height": 2,
+        "visible_bounds_offset": [
+          0,
+          1,
+          0
+        ]
+      },
+      "bones": [
+        {
+          "name": "upper",
+          "pivot": [
+            0,
+            24,
+            0
+          ],
+          "cubes": []
+        },
+        {
+          "name": "leftWing",
+          "parent": "upper",
+          "pivot": [
+            5,
+            21,
+            2
+          ],
+          "rotation": [
+            40,
+            5,
+            -45
+          ],
+          "cubes": [
+            {
+              "origin": [
+                -5,
+                1,
+                2
+              ],
+              "size": [
+                10,
+                20,
+                2
+              ],
+              "uv": [
+                22,
+                0
+              ],
+              "inflate": 1
+            }
+          ]
+        },
+        {
+          "name": "rightWing",
+          "parent": "upper",
+          "pivot": [
+            -5,
+            21,
+            2
+          ],
+          "rotation": [
+            40,
+            -5,
+            45
+          ],
+          "cubes": [
+            {
+              "origin": [
+                -5,
+                1,
+                2.25
+              ],
+              "size": [
+                10,
+                20,
+                2
+              ],
+              "uv": [
+                22,
+                0
+              ],
+              "inflate": 1
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "source": "Vanilla ElytraModel, crouching pose (setupAnim while sneaking and not gliding): xRot 40deg, yRot +-5deg, zRot -+45deg, and leftWing.y = 3 drops the wing 3 px, so the Bedrock pivot is y=21 and the slab origin y=1. The right slab carries the same 0.25 px z nudge as elytra_wings.geo.json."
+}

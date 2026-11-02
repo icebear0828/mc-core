@@ -1,6 +1,5 @@
 {
   "format_version": "1.12.0",
-  "source": "Custom Blockbench recreation, not a Mojang asset. Wings scaled down 20% from the original 10x20 geometry, moved 1.5 px back and 1 px outward to clear the armor arms, and mapped to the 64x32 elytra texture at UV (26,1).",
   "minecraft:geometry": [
     {
       "description": {
@@ -20,67 +19,79 @@
           "name": "upper",
           "pivot": [
             0,
-            12,
+            24,
             0
           ],
           "cubes": []
         },
         {
-          "name": "rightWing",
+          "name": "leftWing",
           "parent": "upper",
           "pivot": [
-            -1,
-            23,
-            3
+            5,
+            24,
+            2
+          ],
+          "rotation": [
+            15,
+            0,
+            -15
           ],
           "cubes": [
             {
               "origin": [
-                -10,
-                7,
-                4.1
+                -5,
+                4,
+                2
               ],
               "size": [
-                8,
-                16,
-                1
+                10,
+                20,
+                2
               ],
               "uv": [
-                26,
-                1
-              ]
+                22,
+                0
+              ],
+              "inflate": 1
             }
           ]
         },
         {
-          "name": "leftWing",
+          "name": "rightWing",
           "parent": "upper",
           "pivot": [
-            1,
-            23,
-            3
+            -5,
+            24,
+            2
+          ],
+          "rotation": [
+            15,
+            0,
+            15
           ],
           "cubes": [
             {
               "origin": [
-                2,
-                7,
-                4.1
+                -5,
+                4,
+                2.25
               ],
               "size": [
-                8,
-                16,
-                1
+                10,
+                20,
+                2
               ],
               "uv": [
-                26,
-                1
+                22,
+                0
               ],
-              "mirror": true
+              "inflate": 1
             }
           ]
         }
       ]
     }
-  ]
+  ],
+  "source": "Vanilla ElytraModel, standing pose. left_wing addBox(-10,0,0,10,20,2) at PartPose.offsetAndRotation(5,0,0, 15deg,0,-15deg); right_wing addBox(0,0,0,10,20,2) at (-5,0,0, 15deg,0,15deg); CubeDeformation(1), texOffs(22,0), 64x32. ElytraLayer renders it at pose.translate(0,0,0.125), so the slabs sit 2 px behind the torso's back face (Bedrock z=2). Java y runs down from the neck, so Bedrock y = 24 - java y. CubeListBuilder.mirror() only reverses the winding and flips the normal in ModelPart$Polygon; it does not mirror the UVs, so both slabs sample the same rectangle. The right slab carries a 0.25 px z nudge that only breaks the coplanar depth tie between the two wings."
 }

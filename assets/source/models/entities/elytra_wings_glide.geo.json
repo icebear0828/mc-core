@@ -1,0 +1,97 @@
+{
+  "format_version": "1.12.0",
+  "minecraft:geometry": [
+    {
+      "description": {
+        "identifier": "geometry.elytra_wings_glide",
+        "texture_width": 64,
+        "texture_height": 32,
+        "visible_bounds_width": 2,
+        "visible_bounds_height": 2,
+        "visible_bounds_offset": [
+          0,
+          1,
+          0
+        ]
+      },
+      "bones": [
+        {
+          "name": "upper",
+          "pivot": [
+            0,
+            24,
+            0
+          ],
+          "cubes": []
+        },
+        {
+          "name": "leftWing",
+          "parent": "upper",
+          "pivot": [
+            5,
+            24,
+            2
+          ],
+          "rotation": [
+            20,
+            0,
+            -90
+          ],
+          "cubes": [
+            {
+              "origin": [
+                -5,
+                4,
+                2
+              ],
+              "size": [
+                10,
+                20,
+                2
+              ],
+              "uv": [
+                22,
+                0
+              ],
+              "inflate": 1
+            }
+          ]
+        },
+        {
+          "name": "rightWing",
+          "parent": "upper",
+          "pivot": [
+            -5,
+            24,
+            2
+          ],
+          "rotation": [
+            20,
+            0,
+            90
+          ],
+          "cubes": [
+            {
+              "origin": [
+                -5,
+                4,
+                2.25
+              ],
+              "size": [
+                10,
+                20,
+                2
+              ],
+              "uv": [
+                22,
+                0
+              ],
+              "inflate": 1
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "source": "Vanilla ElytraModel, gliding pose (setupAnim's fall-flying branch at blend 1). Same wings as elytra_wings.geo.json but xRot 20deg and zRot -+90deg; the blend is 1 - (-vy/|v|)^1.5 while diving, which folds them back towards the standing pose. The right slab carries the same 0.25 px z nudge as elytra_wings.geo.json."
+}

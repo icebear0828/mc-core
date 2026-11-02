@@ -23,19 +23,10 @@ const mc::model::EntityModel* PropModel(const char* name) {
 // part since the rest pose; the model's own bone pivots line up with the Steve rig's (same Bedrock coordinates).
 void DrawProp(const char* name, const mc::model::EntityModel* model, const mc::rig::Mat4& delta, const SteveParams& sp,
               const mc::rig::Mat4& vp, const SteveState& steve, D3D12_CPU_DESCRIPTOR_HANDLE rtv,
-              D3D12_GPU_DESCRIPTOR_HANDLE table, bool textured, float r, float g, float b, float flap) {
+              D3D12_GPU_DESCRIPTOR_HANDLE table, bool textured, float r, float g, float b) {
     if (model == nullptr || !g_steve.mobModelReady(name)) return;
     const mc::Vec3 feet{steve.feet[0], steve.feet[1], steve.feet[2]};
-    std::vector<mc::Quat> extra(model->bones.size());
-    if (flap != 0.f) {
-        const mc::Quat right{std::sin(flap * 0.5f), 0.f, 0.f, std::cos(flap * 0.5f)};
-        const mc::Quat left{-std::sin(flap * 0.5f), 0.f, 0.f, std::cos(flap * 0.5f)};
-        for (size_t i = 0; i < model->bones.size(); ++i) {
-            if (model->bones[i].name == "rightWing") extra[i] = eldenring::render::hostQuat(right);
-            else if (model->bones[i].name == "leftWing") extra[i] = eldenring::render::hostQuat(left);
-        }
-    }
-    auto bones = mc::model::boneMatrices(*model, extra, feet, steve.yaw, eldenring::render::kBasis);
+    auto bones = mc::model::boneMatrices(*model, {}, feet, steve.yaw, eldenring::render::kBasis);
     for (auto& bone : bones) bone = bone * delta;
     SteveParams pp = sp;
     pp.keep_depth = true;
@@ -318,15 +309,17 @@ void RenderFrame(IDXGISwapChain* sc) {
             const mc::Vec3 hand_posed = mc::rig::transformPoint(parts[static_cast<size_t>(mc::StevePart::RightArm)], trident_pivot);
             const mc::rig::Mat4 trident_delta = mc::rig::translation(hand_posed - hand_rest);
             if (elytra_equipped || steve.gliding) {
-                static float flap_t = 0.f;
-                flap_t += dt;
-                const float flap = steve.gliding ? 0.35f * std::sin(flap_t * 8.f) : 0.f;
-                DrawProp("elytra_wings", PropModel("elytra_wings"), body_delta, sp, vp, steve, f.rtv,
-                         g_elytra_table_gpu, true, 0.82f, 0.84f, 0.9f, flap);
+                // Vanilla ElytraModel.setupAnim: the wings hang folded on the back, spread out level while gliding
+                // and tuck in tighter while sneaking. Gliding wins, as the fall-flying branch is the last one applied.
+                const char* elytra_model = steve.gliding    ? "elytra_wings_glide"
+                                           : steve.sneaking ? "elytra_wings_crouch"
+                                                            : "elytra_wings";
+                DrawProp(elytra_model, PropModel(elytra_model), body_delta, sp, vp, steve, f.rtv,
+                         g_elytra_table_gpu, true, 0.82f, 0.84f, 0.9f);
             }
             if (steve.trident_charge > 0.f) {
                 DrawProp("trident", PropModel("trident"), trident_delta, sp, vp, steve, f.rtv,
-                         D3D12_GPU_DESCRIPTOR_HANDLE{}, false, 0.10f, 0.55f, 0.55f, 0.f);
+                         D3D12_GPU_DESCRIPTOR_HANDLE{}, false, 0.10f, 0.55f, 0.55f);
             }
             g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
         }
