@@ -95,6 +95,7 @@ if(WIN32)
         src/core/diagnostics.cpp
         src/core/memory_scanner.cpp
         src/ui/inventory_controller.cpp
+        src/ui/inventory_store.cpp
         src/ui/hud_bridge.cpp
         src/debug/probes.cpp
         src/movement/player_locomotion.cpp

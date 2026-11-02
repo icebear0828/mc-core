@@ -154,6 +154,8 @@ DWORD WINAPI LoaderThread(LPVOID) {
     SetupOverlay();
     SetupZoneProbe();
     SetupInput();
+    LoadInventorySave();
+    CreateThread(nullptr, 0, InventorySaveThread, nullptr, 0, nullptr);
     CreateThread(nullptr, 0, KeyThread, nullptr, 0, nullptr);
     CreateThread(nullptr, 0, CrackTunerThread, nullptr, 0, nullptr);
     CreateThread(nullptr, 0, BuddyThread, nullptr, 0, nullptr);

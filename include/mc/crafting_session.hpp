@@ -38,6 +38,9 @@ public:
 
     void clear();
 
+    // Replace the whole grid (restoring a saved session).
+    void setGrid(const CraftingGrid& grid) { grid_ = grid; }
+
 private:
     CraftingGrid grid_{};
     RecipeBook book_;

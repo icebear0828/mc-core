@@ -74,6 +74,7 @@ add_library(mc_core STATIC
     include/mc/crafting_table_layout.hpp
     include/mc/inventory.hpp
     include/mc/inventory_layout.hpp
+    include/mc/inventory_persistence.hpp
     include/mc/ground_mining.hpp
     include/mc/shield.hpp
     include/mc/contracts/physics_adapter.hpp
@@ -98,6 +99,7 @@ add_library(mc_core STATIC
     src/tnt.cpp
     src/recipe.cpp
     src/crafting_session.cpp
+    src/inventory_persistence.cpp
 )
 
 target_include_directories(mc_core
