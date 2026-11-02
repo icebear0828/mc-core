@@ -102,6 +102,11 @@ if(WIN32)
         src/combat/combat_service.cpp
         src/combat/projectile_service.cpp
         src/input/hotkey_dispatcher.cpp
+        src/input/cs_gunplay_handler.cpp
+        src/input/ow_hero_skill_handler.cpp
+        src/input/mc_interaction_handler.cpp
+        src/input/mc_movement_handler.cpp
+        src/input/debug_tuning_handler.cpp
         src/hooks/game_hooks.cpp
         eldenring_dinput8.def)
 

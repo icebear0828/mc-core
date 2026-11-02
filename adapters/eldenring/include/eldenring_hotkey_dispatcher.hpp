@@ -6,6 +6,8 @@
 #include <atomic>
 #include <vector>
 
+#include "eldenring_input_handlers.hpp"
+
 namespace eldenring::input {
 
 struct HotkeyCallbacks {
@@ -109,40 +111,12 @@ private:
     std::atomic<bool> running_{false};
     int slot_cursor_{-1};
 
-    // Edge-triggered key memory
-    bool prev8_{false};
-    bool prev6_{false};
-    bool prev7_{false};
-    bool prev_digit_[9]{};
-    bool prev_space_{false};
-    bool prev9_{false};
-    bool prev10_{false};
-    bool prev11_{false};
-    bool prev12_{false};
-    bool prev5_{false};
-    bool prev4_{false};
-    bool prev_f3_{false};
-    bool prev_f2_{false};
-    bool prev_f1_{false};
-    bool prev_gameplay_f_{false};
-    bool prev_reload_r_{false};
-    bool prev_ow_e_{false};
-    bool prev_ow_q_{false};
-    bool ow_punch_released_{false}; // RMB hold-to-charge: true once the punch fired
-    float cs_fire_cooldown_{0.f};
-    float ow_fire_cooldown_{0.f};
-    float ow_punch_cooldown_left_{0.f};
-    float ow_uppercut_cooldown_left_{0.f};
-    float ow_slam_cooldown_left_{0.f};
-    float ow_hitstop_left_{0.f};
-    float ow_since_shot_{10.f};
-    bool ow_slam_impact_played_{false};
-    bool ow_charge_looping_{false};
-    float cs_since_shot_{10.f}; // seconds since the last CS round: the first shot is accurate
-    int cs_reload_sound_stage_{0}; // 0..3: mag-out / mag-in / bolt pull already played
-    bool prev_csview_keys_[8]{};   // [ ] , . ; ' - = debug tuning keys
-    bool prev_owview_keys_[10]{};  // [ ] , . ; ' - = plus \ / for scale
-    bool prev_owvfx_keys_[2]{};    // PageUp depth toggle, PageDown scale cycle
+    // Domain handlers, called in the same order as the original tick blocks.
+    CsGunplayHandler cs_;
+    OwHeroSkillHandler ow_;
+    McInteractionHandler mc_;
+    McMovementHandler movement_;
+    DebugTuningHandler debug_;
 };
 
 } // namespace eldenring::input
