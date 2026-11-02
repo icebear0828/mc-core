@@ -481,3 +481,43 @@ TEST(EldenRingWorldRuntime, DetectsFloatingOriginRebaseAndShiftsWorld) {
     // After:  (11.0f)  - (-0.15f)  = +11.15f
     // Relative distance is 100% PRESERVED!
 }
+
+TEST(EldenRingWorldRuntime, DoesNotTreatOurAirMovementAsARebase) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x5000;
+
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+    runtime.setDeltaTimeOverrideForTesting(0.016f);
+    runtime.setInputProvider([](int) { return false; });
+
+    WorldRuntimeCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.read_physics_pos = [&](uintptr_t, float out_f[3]) {
+        return mem.readBytes(kModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+    };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.is_game_in_foreground = []() { return true; };
+    cb.is_air_movement = []() { return true; }; // our jump or flight owns the position
+    int rebase_calls = 0;
+    cb.on_origin_rebase = [&](float, float, float) { ++rebase_calls; };
+    runtime.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+    ctx.mode().block_collision.store(true);
+
+    float p1[3] = {0.0f, 1.17f, 0.0f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, p1, sizeof(p1));
+    runtime.stepPlayerBlockCollision(ctx);
+
+    // An 8 m delta while our own jump/flight is moving the player is not a floating-origin rebase.
+    float p2[3] = {8.0f, 1.17f, 0.0f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, p2, sizeof(p2));
+    runtime.stepPlayerBlockCollision(ctx);
+    EXPECT_EQ(rebase_calls, 0);
+}
