@@ -1,6 +1,7 @@
 #pragma once
 
 #include <d3d12.h>
+#include <array>
 #include <cstdint>
 #include <map>
 #include <mutex>
@@ -57,12 +58,6 @@ public:
     bool setGloveNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
     bool setKnifePbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
     bool setGlovePbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
-    // Gun maps live in their own GPU resources. Reusing the knife resources
-    // would release the texture the knife descriptor table still points at,
-    // which makes the knife sample the gun's albedo.
-    bool setGunTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
-    bool setGunNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
-    bool setGunPbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
     bool setBareArmTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
     bool setBareArmNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
     bool setBareArmPbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
@@ -112,10 +107,13 @@ public:
     bool loadWeapon(ID3D12Device* device, const eldenring::cs::CSWeaponDefinition& def);
 
     // Swap the gun albedo/normal/ORM maps into the weapon texture slots
-    // (t0/t2/t4). The glove slots are left untouched.
+    // (t0/t2/t4). The glove slots are left untouched. `table_index` is the
+    // weapon slot (1..3); every gun owns its own texture set so preloading
+    // one gun never releases a resource another gun's table still points at.
     bool loadWeaponTextures(ID3D12Device* device,
                             const eldenring::cs::CSWeaponDefinition& def,
-                            D3D12_CPU_DESCRIPTOR_HANDLE weapon_slot);
+                            D3D12_CPU_DESCRIPTOR_HANDLE weapon_slot,
+                            uint8_t table_index);
 
     [[nodiscard]] const eldenring::cs::CSWeaponDefinition* activeWeapon() const {
         return has_active_weapon_ ? &active_weapon_def_ : nullptr;
@@ -215,9 +213,13 @@ private:
     TextureGpu glove_normal_tex_;
     TextureGpu knife_pbr_tex_;
     TextureGpu glove_pbr_tex_;
-    TextureGpu gun_tex_;
-    TextureGpu gun_normal_tex_;
-    TextureGpu gun_pbr_tex_;
+    // One texture set per gun table (index = weapon slot, 1..3). A single
+    // shared instance would release the previous gun's texture while its
+    // descriptor table still points at it.
+    static constexpr size_t kGunTextureSets = 4;
+    std::array<TextureGpu, kGunTextureSets> gun_tex_{};
+    std::array<TextureGpu, kGunTextureSets> gun_normal_tex_{};
+    std::array<TextureGpu, kGunTextureSets> gun_pbr_tex_{};
     TextureGpu bare_tex_;
     TextureGpu bare_normal_tex_;
     TextureGpu bare_pbr_tex_;

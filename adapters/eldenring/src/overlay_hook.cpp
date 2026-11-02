@@ -50,7 +50,7 @@ void UpdateCsWeaponSlot(uint8_t want_slot) {
                 // Every gun owns a descriptor table. Init normally preloads all
                 // of them; this is the lazy fallback if a map appeared later.
                 if (!g_cs_gun_table_loaded[want_slot]) {
-                    const bool any_real = g_cs.loadWeaponTextures(g_s.device, def, g_cs_gun_table_cpu[want_slot]);
+                    const bool any_real = g_cs.loadWeaponTextures(g_s.device, def, g_cs_gun_table_cpu[want_slot], want_slot);
                     CopyCsSharedDescriptors(g_cs_gun_table_cpu[want_slot]);
                     g_cs_gun_table_loaded[want_slot] = true;
                     if (!any_real) {
@@ -588,7 +588,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                 def.albedo_tex_path = ResolveCsAssetPath(def.albedo_tex_path);
                 def.normal_tex_path = ResolveCsAssetPath(def.normal_tex_path);
                 def.pbr_tex_path = ResolveCsAssetPath(def.pbr_tex_path);
-                const bool any_real = g_cs.loadWeaponTextures(g_s.device, def, g_cs_gun_table_cpu[slot]);
+                const bool any_real = g_cs.loadWeaponTextures(g_s.device, def, g_cs_gun_table_cpu[slot], slot);
                 CopyCsSharedDescriptors(g_cs_gun_table_cpu[slot]);
                 g_cs_gun_table_loaded[slot] = true;
                 Logf("overlay: CS gun table %u (%s) %s", static_cast<unsigned>(slot), def.display_name.c_str(),

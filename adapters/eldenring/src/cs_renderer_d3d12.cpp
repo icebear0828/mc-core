@@ -635,9 +635,9 @@ void CsRenderer::release() {
     glove_normal_tex_.release();
     knife_pbr_tex_.release();
     glove_pbr_tex_.release();
-    gun_tex_.release();
-    gun_normal_tex_.release();
-    gun_pbr_tex_.release();
+    for (auto& tex : gun_tex_) tex.release();
+    for (auto& tex : gun_normal_tex_) tex.release();
+    for (auto& tex : gun_pbr_tex_) tex.release();
     bare_tex_.release();
     bare_normal_tex_.release();
     bare_pbr_tex_.release();
@@ -872,18 +872,6 @@ bool CsRenderer::setKnifePbrTexture(ID3D12Device* device, const uint8_t* rgba, u
 
 bool CsRenderer::setGlovePbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
     return glove_pbr_tex_.create(device, rgba, width, height, slot);
-}
-
-bool CsRenderer::setGunTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
-    return gun_tex_.create(device, rgba, width, height, slot, /*srgb=*/true);
-}
-
-bool CsRenderer::setGunNormalTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
-    return gun_normal_tex_.create(device, rgba, width, height, slot);
-}
-
-bool CsRenderer::setGunPbrTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
-    return gun_pbr_tex_.create(device, rgba, width, height, slot);
 }
 
 bool CsRenderer::setBareArmTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot) {
@@ -1323,8 +1311,13 @@ bool CsRenderer::loadWeapon(ID3D12Device* device, const eldenring::cs::CSWeaponD
 
 bool CsRenderer::loadWeaponTextures(ID3D12Device* device,
                                     const eldenring::cs::CSWeaponDefinition& def,
-                                    D3D12_CPU_DESCRIPTOR_HANDLE weapon_slot) {
-    if (!device || weapon_slot.ptr == 0) return false;
+                                    D3D12_CPU_DESCRIPTOR_HANDLE weapon_slot,
+                                    uint8_t table_index) {
+    if (!device || weapon_slot.ptr == 0 || table_index >= kGunTextureSets) return false;
+
+    TextureGpu& albedo_tex = gun_tex_[table_index];
+    TextureGpu& normal_tex = gun_normal_tex_[table_index];
+    TextureGpu& pbr_tex = gun_pbr_tex_[table_index];
 
     const UINT srv_inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     D3D12_CPU_DESCRIPTOR_HANDLE normal_slot{weapon_slot.ptr + 2 * srv_inc};
@@ -1343,10 +1336,10 @@ bool CsRenderer::loadWeaponTextures(ID3D12Device* device,
 
     bool albedo_ok = false;
     if (isDds(def.albedo_tex_path)) {
-        albedo_ok = gun_tex_.createFromDds(device, def.albedo_tex_path, weapon_slot);
+        albedo_ok = albedo_tex.createFromDds(device, def.albedo_tex_path, weapon_slot);
         if (albedo_ok && log_) log_("cs_render: weapon albedo %s (DDS)", def.albedo_tex_path.c_str());
     } else if (DecodePngCached(def.albedo_tex_path, rgba, width, height)) {
-        albedo_ok = gun_tex_.create(device, rgba, width, height, weapon_slot, /*srgb=*/true);
+        albedo_ok = albedo_tex.create(device, rgba, width, height, weapon_slot, /*srgb=*/true);
         if (albedo_ok && log_) log_("cs_render: weapon albedo %s (%ux%u)", def.albedo_tex_path.c_str(), width, height);
     }
     if (albedo_ok) {
@@ -1355,16 +1348,16 @@ bool CsRenderer::loadWeaponTextures(ID3D12Device* device,
         // A missing map must still leave a valid descriptor: the shader samples
         // this slot on every weapon draw.
         std::vector<uint8_t> fallback(16 * 16 * 4, 210);
-        gun_tex_.create(device, fallback.data(), 16, 16, weapon_slot, /*srgb=*/true);
+        albedo_tex.create(device, fallback.data(), 16, 16, weapon_slot, /*srgb=*/true);
         if (log_) log_("cs_render: weapon albedo missing, using fallback");
     }
 
     bool normal_ok = false;
     if (isDds(def.normal_tex_path)) {
-        normal_ok = gun_normal_tex_.createFromDds(device, def.normal_tex_path, normal_slot);
+        normal_ok = normal_tex.createFromDds(device, def.normal_tex_path, normal_slot);
         if (normal_ok && log_) log_("cs_render: weapon normal %s (DDS BC5)", def.normal_tex_path.c_str());
     } else if (DecodePngCached(def.normal_tex_path, rgba, width, height)) {
-        normal_ok = gun_normal_tex_.create(device, rgba, width, height, normal_slot);
+        normal_ok = normal_tex.create(device, rgba, width, height, normal_slot);
         if (normal_ok && log_) log_("cs_render: weapon normal %s (%ux%u)", def.normal_tex_path.c_str(), width, height);
     }
     if (normal_ok) {
@@ -1374,15 +1367,15 @@ bool CsRenderer::loadWeaponTextures(ID3D12Device* device,
         for (size_t p = 0; p < flat_norm.size(); p += 4) {
             flat_norm[p] = 128; flat_norm[p + 1] = 128; flat_norm[p + 2] = 255; flat_norm[p + 3] = 255;
         }
-        gun_normal_tex_.create(device, flat_norm.data(), 16, 16, normal_slot);
+        normal_tex.create(device, flat_norm.data(), 16, 16, normal_slot);
     }
 
     bool pbr_ok = false;
     if (isDds(def.pbr_tex_path)) {
-        pbr_ok = gun_pbr_tex_.createFromDds(device, def.pbr_tex_path, pbr_slot);
+        pbr_ok = pbr_tex.createFromDds(device, def.pbr_tex_path, pbr_slot);
         if (pbr_ok && log_) log_("cs_render: weapon ORM %s (DDS)", def.pbr_tex_path.c_str());
     } else if (DecodePngCached(def.pbr_tex_path, rgba, width, height)) {
-        pbr_ok = gun_pbr_tex_.create(device, rgba, width, height, pbr_slot);
+        pbr_ok = pbr_tex.create(device, rgba, width, height, pbr_slot);
         if (pbr_ok && log_) log_("cs_render: weapon ORM %s (%ux%u)", def.pbr_tex_path.c_str(), width, height);
     }
     if (pbr_ok) {
@@ -1392,7 +1385,7 @@ bool CsRenderer::loadWeaponTextures(ID3D12Device* device,
         for (size_t p = 0; p < fallback.size(); p += 4) {
             fallback[p] = 255; fallback[p + 1] = 200; fallback[p + 2] = 0; fallback[p + 3] = 255;
         }
-        gun_pbr_tex_.create(device, fallback.data(), 16, 16, pbr_slot);
+        pbr_tex.create(device, fallback.data(), 16, 16, pbr_slot);
     }
     return any_loaded;
 }
@@ -1482,9 +1475,9 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
     glove_normal_tex_.recordUpload(list);
     knife_pbr_tex_.recordUpload(list);
     glove_pbr_tex_.recordUpload(list);
-    gun_tex_.recordUpload(list);
-    gun_normal_tex_.recordUpload(list);
-    gun_pbr_tex_.recordUpload(list);
+    for (auto& tex : gun_tex_) tex.recordUpload(list);
+    for (auto& tex : gun_normal_tex_) tex.recordUpload(list);
+    for (auto& tex : gun_pbr_tex_) tex.recordUpload(list);
     bare_tex_.recordUpload(list);
     bare_normal_tex_.recordUpload(list);
     bare_pbr_tex_.recordUpload(list);
