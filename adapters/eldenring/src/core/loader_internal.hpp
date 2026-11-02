@@ -261,6 +261,7 @@ extern std::mutex g_native_mutex;
 extern std::atomic<bool> g_no_stagger;
 extern std::atomic<unsigned> g_stagger_skipped;
 extern std::atomic<bool> g_fall_protect;
+extern std::atomic<bool> g_fall_probe_log;
 extern std::atomic<uint64_t> g_movement_layer_ms;
 extern std::atomic<unsigned> g_kills_skipped;
 extern std::mutex g_cr_mutex;
@@ -457,11 +458,13 @@ void GroundSprintStep(float dt);
 void OwRocketPunchStep(float dt);
 void McJumpStep();
 void FlightStep();
+void FallProbeLog(const char* phase);
 void InventoryTick(bool fg);
 
 // ---- hook installation / domain wiring -----------------------------------------------------
 void SetupZoneProbe();
 void SetupCreativeProbes();
+void SetupFallProbe();
 void SetupGameHooksCallbacks();
 void SetupDamage();
 void SetupLocomotion();

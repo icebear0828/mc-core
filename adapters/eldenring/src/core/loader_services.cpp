@@ -150,6 +150,7 @@ DWORD WINAPI LoaderThread(LPVOID) {
 
     SetupDamage();
     SetupCreativeProbes();
+    SetupFallProbe();
     SetupBulletLog();
     SetupOverlay();
     SetupZoneProbe();
