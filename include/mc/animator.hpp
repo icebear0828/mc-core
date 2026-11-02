@@ -2,6 +2,7 @@
 
 #include "mc/types.hpp"
 #include <array>
+#include <cmath>
 
 namespace mc {
 
@@ -20,6 +21,18 @@ enum class StevePart : uint8_t {
     LeftPants,
     Count
 };
+
+// The elytra wings tilt back 7 degrees; with that tilt the sleeve clears the wings when the
+// backward arm swing stays below 0.30 rad (17 degrees). Limit only the backward half and shift
+// the swing centre forward, so the forward swing and the idle pose stay intact.
+inline constexpr float kElytraSafeBackSwingRad = 0.30f;
+inline float limitElytraBackSwing(float raw, float amplitude) {
+    const float a = std::fabs(amplitude);
+    if (a <= kElytraSafeBackSwingRad || a <= 1e-4f) return raw;
+    const float mid = (a - kElytraSafeBackSwingRad) * 0.5f;
+    const float amp = (a + kElytraSafeBackSwingRad) * 0.5f;
+    return mid + amp * (raw / a);
+}
 
 struct SteveAnimInput {
     float forward_speed{0.f}; // m/s
@@ -41,6 +54,7 @@ struct SteveAnimInput {
     bool arms_sway_only{false}; // zombie from a model file whose rest rotation already holds the arms out: only a slow sway on top
     bool is_gliding{false};
     float roll_angle{0.f};    // radians (banking roll when turning during flight)
+    bool elytra_equipped{false}; // the chest slot holds the elytra: limit the backward arm swing
     bool is_sleeping{false};
     // Issue #64: riptide dash progress in [0, 1] over the 0.6 s loop (0 = not riptiding).
     float riptide{0.f};

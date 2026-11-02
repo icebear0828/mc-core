@@ -286,6 +286,7 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                 case StevePart::RightArm:
                 case StevePart::RightSleeve: {
                     pitch = std::cos(stride_ * 0.6662f + kPi) * amplitude;
+                    if (input.elytra_equipped) pitch = limitElytraBackSwing(pitch, amplitude);
                     if (input.arms_sway_only) {
                         pitch = std::sin(age_ * 0.067f) * 0.05f;
                     } else if (input.arms_forward) {
@@ -333,6 +334,7 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                 case StevePart::LeftArm:
                 case StevePart::LeftSleeve: {
                     pitch = std::cos(stride_ * 0.6662f) * amplitude;
+                    if (input.elytra_equipped) pitch = limitElytraBackSwing(pitch, amplitude);
                     if (input.arms_sway_only) {
                         pitch = -std::sin(age_ * 0.067f) * 0.05f;
                     } else if (input.arms_forward) {

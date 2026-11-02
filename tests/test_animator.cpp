@@ -653,3 +653,12 @@ TEST(SteveAnimatorTest, ZeroNewInputsKeepTheLegacyPoseBitIdentical) {
 
 
 
+
+TEST(SteveAnimatorTest, ElytraLimitsOnlyTheBackwardArmSwing) {
+    using mc::kElytraSafeBackSwingRad;
+    using mc::limitElytraBackSwing;
+    EXPECT_FLOAT_EQ(limitElytraBackSwing(0.1f, 0.1f), 0.1f);
+    EXPECT_NEAR(limitElytraBackSwing(-1.f, 1.f), -kElytraSafeBackSwingRad, 1e-5f);
+    EXPECT_NEAR(limitElytraBackSwing(1.f, 1.f), 1.f, 1e-5f);
+    EXPECT_NEAR(limitElytraBackSwing(0.f, 1.f), (1.f - kElytraSafeBackSwingRad) * 0.5f, 1e-5f);
+}
