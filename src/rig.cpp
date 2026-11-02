@@ -171,8 +171,7 @@ Vec3 partPivot(StevePart part, const HostBasis& basis) {
     return basis.fromCanonical(modelToCanonicalCm(def(part).pivot));
 }
 
-RigMesh buildPartMesh(StevePart part, const HostBasis& basis) {
-    const PartDef& d = def(part);
+RigMesh buildPartMeshFromDef(const PartDef& d, const HostBasis& basis, float inv_u, float inv_v, bool mirror) {
     RigMesh mesh;
     mesh.vertices.reserve(24);
     mesh.indices.reserve(36);
@@ -189,7 +188,6 @@ RigMesh buildPartMesh(StevePart part, const HostBasis& basis) {
     }
     centre = centre * (1.0f / static_cast<float>(positions.size()));
 
-    constexpr float inv = 1.0f / static_cast<float>(kSkinSize);
     for (size_t fi = 0; fi < faces.size(); ++fi) {
         const Face& f = faces[fi];
         const uint16_t base = static_cast<uint16_t>(mesh.vertices.size());
@@ -198,7 +196,8 @@ RigMesh buildPartMesh(StevePart part, const HostBasis& basis) {
         const float t_of[4] = {0, 0, 1, 1};
         for (size_t c = 0; c < 4; ++c) {
             const Vec3 p = positions[fi * 4 + c];
-            mesh.vertices.push_back({p.x, p.y, p.z, (f.u + s_of[c] * f.w) * inv, (f.v0 + t_of[c] * f.h) * inv});
+            const float s = mirror ? (1.0f - s_of[c]) : s_of[c];
+            mesh.vertices.push_back({p.x, p.y, p.z, (f.u + s * f.w) * inv_u, (f.v0 + t_of[c] * f.h) * inv_v});
         }
         // Wind so the geometric normal (cross product of the host coordinates) points away from the box centre,
         // whatever the handedness of the basis.
@@ -210,6 +209,50 @@ RigMesh buildPartMesh(StevePart part, const HostBasis& basis) {
         for (uint16_t idx : outward ? tri : flipped) mesh.indices.push_back(static_cast<uint16_t>(base + idx));
     }
     return mesh;
+}
+
+RigMesh buildPartMesh(StevePart part, const HostBasis& basis) {
+    constexpr float inv = 1.0f / static_cast<float>(kSkinSize);
+    return buildPartMeshFromDef(def(part), basis, inv, inv, false);
+}
+
+namespace {
+
+// The armor equipment textures are 64x32. Their UV rectangles follow the vanilla HumanoidModel:
+// helmet (0,0), body (16,16), right arm (40,16), legs (0,16); the left limbs mirror the right.
+bool armorRect(StevePart part, ArmorLayer layer, float& u, float& v) {
+    if (layer == ArmorLayer::Humanoid) {
+        switch (part) {
+            case StevePart::Head: u = 0; v = 0; return true;
+            case StevePart::Body: u = 16; v = 16; return true;
+            case StevePart::RightArm:
+            case StevePart::LeftArm: u = 40; v = 16; return true;
+            case StevePart::RightLeg:
+            case StevePart::LeftLeg: u = 0; v = 16; return true;
+            default: return false;
+        }
+    }
+    switch (part) {
+        case StevePart::Body: u = 16; v = 16; return true;
+        case StevePart::RightLeg:
+        case StevePart::LeftLeg: u = 0; v = 16; return true;
+        default: return false;
+    }
+}
+
+} // namespace
+
+RigMesh buildArmorPartMesh(StevePart part, ArmorLayer layer, const HostBasis& basis) {
+    float u = 0.f, v = 0.f;
+    if (!armorRect(part, layer, u, v)) return {};
+    PartDef d = def(part);
+    d.u = u;
+    d.v = v;
+    d.inflate = 0.5f;
+    const bool mirror = part == StevePart::LeftArm || part == StevePart::LeftLeg;
+    constexpr float inv_u = 1.0f / 64.0f;
+    constexpr float inv_v = 1.0f / 32.0f;
+    return buildPartMeshFromDef(d, basis, inv_u, inv_v, mirror);
 }
 
 std::vector<std::array<float, 2>> skinUvForLocalPoint(StevePart part, ModelPoint local_px, float tolerance) {

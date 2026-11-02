@@ -264,9 +264,9 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
 
             // Mobs list to allocate descriptor tables for
             const std::vector<std::string> known_mobs = {"creeper", "zombie", "skeleton"};
-            size_t slot_idx = 8;
+            size_t slot_idx = 45;
             for (const auto& mob : known_mobs) {
-                if (slot_idx + 1 >= 16) break;
+                if (slot_idx + 1 >= 64) break;
                 D3D12_CPU_DESCRIPTOR_HANDLE depth_slot = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
                 depth_slot.ptr += static_cast<SIZE_T>(srv_inc) * slot_idx;
                 D3D12_CPU_DESCRIPTOR_HANDLE skin_slot = depth_slot;
@@ -306,6 +306,9 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
         }
         g_depth_dirty.store(true); // bind the depth captured so far
         CreateAtlasTexture(srv_inc);
+        CreateArmorTextures(srv_inc);
+        CreateElytraTexture(srv_inc);
+        g_depth_dirty.store(true); // bind the captured depth to the new armor and elytra tables too
 #if ENABLE_CS2_VIEWMODEL
         CreateCsDecalTexture(srv_inc);
 #endif

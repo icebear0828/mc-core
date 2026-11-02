@@ -36,6 +36,8 @@ struct SteveParams {
     bool shield_blocking{false};       // a shield is raised (the arm is up): its display transform is shield_blocking.json
     bool block_offhand{false};         // ... and it is the offhand's one (else the main hand's)
     D3D12_GPU_DESCRIPTOR_HANDLE held_table{}; // descriptor table (scene depth, atlas) the held item is drawn with
+    uint16_t armor_item[4]{};           // helmet, chestplate, leggings, boots (mc::ItemId; 0 = empty)
+    D3D12_GPU_DESCRIPTOR_HANDLE armor_table[2]{}; // (scene depth, humanoid/leggings equipment texture)
     bool keep_depth{false};            // the blocks were drawn just before: do not clear the figure's depth buffer
 };
 
@@ -50,6 +52,9 @@ public:
     // Creates the skin texture (RGBA8, usually 64x64) and its SRV at `slot`, which must directly follow the depth SRV in the
     // heap (the two share one descriptor table: t0 depth, t1 skin). The pixels are copied to the GPU by the first draw().
     bool setSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
+    // The 64x32 equipment layer textures (humanoid and humanoid_leggings).
+    bool setArmorSkin(ID3D12Device* device, mc::rig::ArmorLayer layer, const uint8_t* rgba, unsigned width, unsigned height,
+                      D3D12_CPU_DESCRIPTOR_HANDLE slot);
     // The same for the mobs' skin: its SRV at `slot` must directly follow a depth SRV copy, they form the table the mobs are drawn with.
     bool setMobSkin(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
     bool setMobSkin(ID3D12Device* device, std::string_view name, const uint8_t* rgba, unsigned width, unsigned height, D3D12_CPU_DESCRIPTOR_HANDLE slot);
@@ -221,6 +226,15 @@ private:
     unsigned own_depth_w_{0}, own_depth_h_{0};
     SkinGpu skin_;     // Steve
     SkinGpu mob_skin_; // the mobs over the summons (zombie)
+    SkinGpu armor_skin_[2]; // humanoid / leggings equipment layers
+    struct ArmorGpuMesh {
+        ID3D12Resource* vertices{nullptr};
+        ID3D12Resource* indices{nullptr};
+        D3D12_VERTEX_BUFFER_VIEW vbv{};
+        D3D12_INDEX_BUFFER_VIEW ibv{};
+        std::vector<BoneRange> ranges;
+    };
+    ArmorGpuMesh armor_meshes_[2];
     ID3D12Resource* vertices_{nullptr};
     ID3D12Resource* indices_{nullptr};
     D3D12_VERTEX_BUFFER_VIEW vbv_{};

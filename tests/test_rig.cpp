@@ -377,3 +377,42 @@ TEST(RigShadowTest, ARadiusOfZeroOrLessGivesNoShadow) {
     EXPECT_TRUE(buildGroundShadowMesh(kBases[0].basis, 0.f).vertices.empty());
     EXPECT_TRUE(buildGroundShadowMesh(kBases[0].basis, -5.f).vertices.empty());
 }
+
+// ----------------------------------------------------------------------------- armor layers
+
+TEST(RigArmorTest, BuildsTheHumanoidArmorBoxes) {
+    const HostBasis& b = kBases[0].basis;
+    for (StevePart p : {StevePart::Head, StevePart::Body, StevePart::RightArm, StevePart::LeftArm,
+                        StevePart::RightLeg, StevePart::LeftLeg}) {
+        const RigMesh m = buildArmorPartMesh(p, ArmorLayer::Humanoid, b);
+        EXPECT_EQ(m.vertices.size(), 24u) << static_cast<int>(p);
+        EXPECT_EQ(m.indices.size(), 36u) << static_cast<int>(p);
+    }
+    for (StevePart p : {StevePart::Hat, StevePart::Jacket, StevePart::RightSleeve, StevePart::LeftSleeve,
+                        StevePart::RightPants, StevePart::LeftPants}) {
+        EXPECT_TRUE(buildArmorPartMesh(p, ArmorLayer::Humanoid, b).vertices.empty()) << static_cast<int>(p);
+    }
+}
+
+TEST(RigArmorTest, LeggingsCoverBodyAndLegsOnly) {
+    const HostBasis& b = kBases[0].basis;
+    EXPECT_FALSE(buildArmorPartMesh(StevePart::Body, ArmorLayer::Leggings, b).vertices.empty());
+    EXPECT_FALSE(buildArmorPartMesh(StevePart::RightLeg, ArmorLayer::Leggings, b).vertices.empty());
+    EXPECT_FALSE(buildArmorPartMesh(StevePart::LeftLeg, ArmorLayer::Leggings, b).vertices.empty());
+    EXPECT_TRUE(buildArmorPartMesh(StevePart::Head, ArmorLayer::Leggings, b).vertices.empty());
+    EXPECT_TRUE(buildArmorPartMesh(StevePart::RightArm, ArmorLayer::Leggings, b).vertices.empty());
+}
+
+TEST(RigArmorTest, ArmorUsesThe64x32EquipmentUvLayout) {
+    const HostBasis& b = kBases[0].basis;
+    const RigMesh head = buildArmorPartMesh(StevePart::Head, ArmorLayer::Humanoid, b);
+    float max_v = 0.f;
+    for (const RigVertex& v : head.vertices) {
+        max_v = std::max(max_v, v.v);
+        EXPECT_GE(v.u, 0.f);
+        EXPECT_LE(v.u, 1.f);
+        EXPECT_GE(v.v, 0.f);
+        EXPECT_LE(v.v, 1.f);
+    }
+    EXPECT_NEAR(max_v, 0.5f, 1e-5f); // 16 / 32, not 16 / 64
+}

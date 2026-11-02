@@ -108,6 +108,8 @@ inline bool g_atlas_pending = false;
 inline D3D12_GPU_DESCRIPTOR_HANDLE g_atlas_gpu{};
 inline bool g_atlas_ready = false;
 void CreateAtlasTexture(UINT srv_inc); // defined with the HUD drawing below
+void CreateArmorTextures(UINT srv_inc); // the 64x32 humanoid/leggings equipment layers
+void CreateElytraTexture(UINT srv_inc); // the 64x32 elytra wings texture
 #if ENABLE_CS2_VIEWMODEL
 // Authentic CS2 bullet-hole decal (mods/mc_adapter/textures/cs/bullet_hole_concrete.png), heap slot 44.
 inline std::vector<uint8_t> g_decal_rgba;
@@ -208,8 +210,12 @@ inline std::mutex g_crack_mutex;
 inline mc::rig::RigMesh g_crack_mesh;
 inline std::atomic<bool> g_crack_dirty{false};
 inline std::atomic<bool> g_blocks_dirty{false};
-inline D3D12_CPU_DESCRIPTOR_HANDLE g_depth_copy2_cpu{}; // slot 8: default mob depth copy
+inline D3D12_CPU_DESCRIPTOR_HANDLE g_depth_copy2_cpu{}; // slot 45: default mob depth copy
 inline D3D12_GPU_DESCRIPTOR_HANDLE g_mob_table_gpu{};   // default mob table; ptr 0 = no mob skin
+inline D3D12_CPU_DESCRIPTOR_HANDLE g_armor_depth_copy_cpus[2]{}; // slots 12 and 14: armor layer depth copies
+inline D3D12_GPU_DESCRIPTOR_HANDLE g_armor_table_gpu[2]{};       // (depth, humanoid/leggings texture)
+inline D3D12_CPU_DESCRIPTOR_HANDLE g_elytra_depth_copy_cpu{};    // slot 28: elytra wings depth copy
+inline D3D12_GPU_DESCRIPTOR_HANDLE g_elytra_table_gpu{};         // (depth, elytra texture)
 inline std::map<std::string, D3D12_GPU_DESCRIPTOR_HANDLE> g_mob_tables_gpu;
 inline std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> g_mob_depth_copy_cpus;
 inline mc::model::EntityModel g_mob_model;              // default model file

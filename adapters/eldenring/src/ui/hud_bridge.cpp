@@ -109,6 +109,7 @@ void PopulateSteveStateFromContext(erov::SteveState& steve, const RuntimeContext
 
     steve.held_item = static_cast<uint16_t>(ctx.combat().melee.heldItem());
     steve.offhand_item = static_cast<uint16_t>(ctx.combat().melee.inventory().offhand().item);
+    for (int i = 0; i < 4; ++i) steve.armor_item[i] = static_cast<uint16_t>(ctx.combat().melee.inventory().armor(i).item);
     steve.cooldown = ctx.combat().melee.cooldown();
     steve.eating = dead ? 0.f : ctx.player().eating.getProgress();
     steve.swing = dead ? 0.f : ctx.combat().melee.swingProgress();
