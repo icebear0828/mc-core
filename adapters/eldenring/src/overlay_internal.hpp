@@ -120,7 +120,22 @@ inline D3D12_PLACED_SUBRESOURCE_FOOTPRINT g_decal_footprint{};
 inline bool g_decal_pending = false;
 inline D3D12_GPU_DESCRIPTOR_HANDLE g_decal_gpu{};
 inline bool g_decal_ready = false;
+// Authentic CS2 AWP scope overlay: the black circular mask and the lens dirt
+// layer extracted from panorama/images/hud/scope. Heap slots 105/106.
+inline ID3D12Resource* g_scope_mask_tex = nullptr;
+inline ID3D12Resource* g_scope_mask_upload = nullptr;
+inline D3D12_PLACED_SUBRESOURCE_FOOTPRINT g_scope_mask_footprint{};
+inline bool g_scope_mask_pending = false;
+inline D3D12_GPU_DESCRIPTOR_HANDLE g_scope_mask_gpu{};
+inline bool g_scope_mask_ready = false;
+inline ID3D12Resource* g_scope_lens_tex = nullptr;
+inline ID3D12Resource* g_scope_lens_upload = nullptr;
+inline D3D12_PLACED_SUBRESOURCE_FOOTPRINT g_scope_lens_footprint{};
+inline bool g_scope_lens_pending = false;
+inline D3D12_GPU_DESCRIPTOR_HANDLE g_scope_lens_gpu{};
+inline bool g_scope_lens_ready = false;
 void CreateCsDecalTexture(UINT srv_inc);
+void CreateCsScopeTextures(UINT srv_inc);
 #endif
 // Combat particles: events queued by the loader, simulated and drawn here.
 struct FxEvent {

@@ -324,6 +324,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
         g_depth_dirty.store(true); // bind the captured depth to the new armor and elytra tables too
 #if ENABLE_CS2_VIEWMODEL
         CreateCsDecalTexture(srv_inc);
+        CreateCsScopeTextures(srv_inc);
 #endif
 #if ENABLE_CS2_VIEWMODEL
         // A build without MC gameplay must never start in MC mode, even if a
@@ -386,14 +387,22 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                             cs_cfg.offset_z = value;
                         } else if (key == "cs_z_near") {
                             cs_cfg.z_near = std::clamp(value, 0.0001f, 0.5f);
+                        } else if (key == "cs_scope_fov1") {
+                            eldenring::RuntimeContext::Instance().mode().cs_scope_fov1_deg.store(std::clamp(value, 2.f, 60.f));
+                        } else if (key == "cs_scope_fov2") {
+                            eldenring::RuntimeContext::Instance().mode().cs_scope_fov2_deg.store(std::clamp(value, 1.f, 60.f));
+                        } else if (key == "cs_scope_sens") {
+                            eldenring::RuntimeContext::Instance().mode().cs_scope_sens_ratio.store(std::clamp(value, 0.1f, 4.f));
                         }
                     }
                 }
                 g_cs.setViewmodelConfig(cs_cfg);
-                Logf("cs view config: x=%.3f y=%.3f z=%.3f fov=%.1f near=%.4f (%s)",
+                Logf("cs view config: x=%.3f y=%.3f z=%.3f fov=%.1f near=%.4f scope_fov=%.1f/%.1f (%s)",
                      static_cast<double>(cs_cfg.offset_x), static_cast<double>(cs_cfg.offset_y),
                      static_cast<double>(cs_cfg.offset_z), static_cast<double>(cs_cfg.fov_deg),
                      static_cast<double>(cs_cfg.z_near),
+                     static_cast<double>(eldenring::RuntimeContext::Instance().mode().cs_scope_fov1_deg.load()),
+                     static_cast<double>(eldenring::RuntimeContext::Instance().mode().cs_scope_fov2_deg.load()),
                      std::filesystem::exists(view_path) ? view_path.c_str() : "defaults");
             }
 

@@ -40,6 +40,9 @@ int TakeWheelNotches();
 void TakeMouseDelta(int& dx, int& dy);
 // While on, the game's mouse reads show no movement and no wheel (the inventory is open and owns the mouse).
 void SetSuppressMouseMotion(bool on);
+// Scales the mouse movement the game sees (1.0 = native). The AWP scope uses
+// this to match CS2's FOV-proportional scoped sensitivity.
+void SetMouseSensitivityScale(float scale);
 // While on, the game's keyboard reads show nothing pressed (the inventory is open: no walking, rolling, Esc menu...).
 void SetSuppressKeyboard(bool on);
 // Hides one key (a DirectInput scan code, e.g. 0x39 = Space) from the game while everything else passes; 0 = none. Used by the jump

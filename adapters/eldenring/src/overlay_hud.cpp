@@ -1,6 +1,7 @@
 #include "overlay_internal.hpp"
 
 #include "cs_economy.hpp"
+#include "cs_scope.hpp"
 #include "cs_weapon_registry.hpp"
 #include "mc/crafting_table_layout.hpp"
 
@@ -25,6 +26,7 @@ bool ProjectToScreen(const mc::rig::Mat4& m, const float p[3], float w, float h,
 void DrawCsMuzzleFlash(ImDrawList* dl, float w, float h) {
     auto& mode = eldenring::RuntimeContext::Instance().mode();
     if (!mode.cs_mode.load() || mode.cs_weapon_slot.load() == 0) return;
+    if (mode.cs_weapon_slot.load() == 2 && eldenring::cs::scopeActive(mode.cs_scope_level.load())) return;
     if (mode.cs_knife_state.load() != 2) return;
     const float t = mode.cs_knife_anim_time.load();
     if (t > 0.07f) return;
@@ -40,6 +42,69 @@ void DrawCsMuzzleFlash(ImDrawList* dl, float w, float h) {
         dl->AddLine({x, y}, {x + std::cos(a) * r * 1.7f, y + std::sin(a) * r * 1.7f},
                     IM_COL32(255, 210, 140, static_cast<int>(110.f * fade)), 2.f);
     }
+}
+
+// CS2 AWP scope: black mask with a circular cutout, built from annular quads
+// because ImDrawList has no even-odd fill. The reticle is part of the mask so
+// the normal green CS crosshair can stay hidden while scoped.
+void DrawCsScopeOverlay(ImDrawList* dl, float w, float h, uint8_t level) {
+    const float cx = w * 0.5f, cy = h * 0.5f;
+    const float radius = std::min(w, h) * 0.445f;
+    const float side = h;
+    const ImVec2 a{cx - side * 0.5f, cy - side * 0.5f};
+    const ImVec2 b{cx + side * 0.5f, cy + side * 0.5f};
+    const ImU32 black = IM_COL32(0, 0, 0, 255);
+    // Draw the lens dirt first: the circular mask is opaque black outside the
+    // scope, so it covers the parts of the lens texture that fall in the corners.
+    if (g_scope_lens_ready) {
+        dl->AddImage(reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(g_scope_lens_gpu.ptr)), a, b);
+    }
+    if (g_scope_mask_ready) {
+        // The authentic CS2 scope_circle mask: opaque black outside, alpha 0
+        // inside, with its own soft rim. 512 square drawn at screen height.
+        dl->AddImage(reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(g_scope_mask_gpu.ptr)), a, b);
+    } else {
+        const float outer = std::sqrt(w * w + h * h);
+        constexpr int kSegments = 96;
+        ImVec2 prev_in{cx + radius, cy};
+        ImVec2 prev_out{cx + outer, cy};
+        for (int i = 1; i <= kSegments; ++i) {
+            const float ang = 6.28318530718f * static_cast<float>(i) / static_cast<float>(kSegments);
+            const float c = std::cos(ang), s = std::sin(ang);
+            const ImVec2 in{cx + radius * c, cy + radius * s};
+            const ImVec2 out{cx + outer * c, cy + outer * s};
+            dl->AddQuadFilled(prev_in, in, out, prev_out, black);
+            prev_in = in;
+            prev_out = out;
+        }
+        dl->AddCircle({cx, cy}, radius, IM_COL32(0, 0, 0, 255), 128, 3.f);
+        // Soft inner vignette: a hard circle reads as a paper cutout, while a few
+        // translucent rings just inside the edge look like the scope's blurred rim.
+        for (int i = 0; i < 5; ++i) {
+            const float rr = radius - static_cast<float>(i) * 2.5f;
+            dl->AddCircle({cx, cy}, rr, IM_COL32(0, 0, 0, 70 - i * 12), 128, 5.f);
+        }
+    }
+
+    // The mask texture is a square drawn at screen height; on a 16:9 screen
+    // that leaves the left and right strips uncovered. CS2 blacks the whole
+    // screen outside the scope, so fill those strips explicitly.
+    if (w > side) {
+        dl->AddRectFilled({0.f, 0.f}, {a.x, h}, black);
+        dl->AddRectFilled({b.x, 0.f}, {w, h}, black);
+    } else if (h > side) {
+        dl->AddRectFilled({0.f, 0.f}, {w, a.y}, black);
+        dl->AddRectFilled({0.f, b.y}, {w, h}, black);
+    }
+
+    const ImU32 reticle = IM_COL32(0, 0, 0, 235);
+    const float gap = radius * 0.045f;
+    const float thick = (level == eldenring::cs::kScopeLevel2) ? 1.0f : 1.5f;
+    dl->AddLine({cx - radius, cy}, {cx - gap, cy}, reticle, thick);
+    dl->AddLine({cx + gap, cy}, {cx + radius, cy}, reticle, thick);
+    dl->AddLine({cx, cy - radius}, {cx, cy - gap}, reticle, thick);
+    dl->AddLine({cx, cy + gap}, {cx, cy + radius}, reticle, thick);
+    dl->AddCircleFilled({cx, cy}, 1.f, reticle);
 }
 #endif
 
@@ -738,22 +803,28 @@ void DrawHud(const HudState& hud, float w, float h) {
     if (hud.cs_mode) {
         ImDrawList* dl = ImGui::GetBackgroundDrawList();
         const float cx = w * 0.5f, cy = h * 0.5f;
+        auto& cs_mode = eldenring::RuntimeContext::Instance().mode();
+        const uint8_t cs_scope = cs_mode.cs_scope_level.load();
+        const bool cs_scoped = cs_mode.cs_weapon_slot.load() == 2 && eldenring::cs::scopeActive(cs_scope);
+        if (cs_scoped) DrawCsScopeOverlay(dl, w, h, cs_scope);
         const ImU32 green = IM_COL32(0, 255, 120, 240);
         const ImU32 shadow = IM_COL32(0, 0, 0, 200);
         const float gap = 5.f, len = 9.f, th = 2.f;
 
-        // Center dot
-        dl->AddRectFilled({cx - 1.f, cy - 1.f}, {cx + 2.f, cy + 2.f}, shadow);
-        dl->AddRectFilled({cx, cy}, {cx + 1.f, cy + 1.f}, green);
+        // Center dot and arms: hidden while the scope reticle is up.
+        if (!cs_scoped) {
+            dl->AddRectFilled({cx - 1.f, cy - 1.f}, {cx + 2.f, cy + 2.f}, shadow);
+            dl->AddRectFilled({cx, cy}, {cx + 1.f, cy + 1.f}, green);
 
-        auto line = [&](float x0, float y0, float x1, float y1) {
-            dl->AddLine({x0, y0}, {x1, y1}, shadow, th + 2.f);
-            dl->AddLine({x0, y0}, {x1, y1}, green, th);
-        };
-        line(cx - gap - len, cy, cx - gap, cy);
-        line(cx + gap, cy, cx + gap + len, cy);
-        line(cx, cy - gap - len, cx, cy - gap);
-        line(cx, cy + gap, cx, cy + gap + len);
+            auto line = [&](float x0, float y0, float x1, float y1) {
+                dl->AddLine({x0, y0}, {x1, y1}, shadow, th + 2.f);
+                dl->AddLine({x0, y0}, {x1, y1}, green, th);
+            };
+            line(cx - gap - len, cy, cx - gap, cy);
+            line(cx + gap, cy, cx + gap + len, cy);
+            line(cx, cy - gap - len, cx, cy - gap);
+            line(cx, cy + gap, cx, cy + gap + len);
+        }
 
         // Hit/kill feedback from the DamageQueue: four diagonal ticks, a red X on a kill.
         const float hs = std::max(0.5f, h / 1080.f);
@@ -802,6 +873,10 @@ void DrawHud(const HudState& hud, float w, float h) {
                                  (state == 4) ? "[DEPLOYING...]" :
                                  (state == 5) ? "[RELOADING...]" :
                                  (state == 6) ? "[BACKSTAB]" : "[READY]";
+        const uint8_t scope = r_mode.cs_scope_level.load();
+        if (is_gun && state == 0 && eldenring::cs::scopeActive(scope)) {
+            status_str = (scope == eldenring::cs::kScopeLevel2) ? "[SCOPED 2/2]" : "[SCOPED 1/2]";
+        }
         dl->AddText(ImGui::GetFont(), 19.f, {x + 14.f, y + 10.f}, IM_COL32(0, 255, 150, 255), weapon_name);
         dl->AddText(ImGui::GetFont(), 15.f, {x + 14.f, y + 36.f}, IM_COL32(255, 215, 0, 255), status_str);
         char money_str[32];

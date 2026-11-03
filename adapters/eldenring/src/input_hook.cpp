@@ -6,7 +6,9 @@
 
 #include <MinHook.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <set>
@@ -37,6 +39,23 @@ std::atomic<bool> g_right_prev{false};
 std::atomic<int> g_wheel{0};
 std::atomic<int> g_dx{0}, g_dy{0};
 std::atomic<bool> g_suppress_motion{false};
+std::atomic<float> g_mouse_scale{1.0f};
+thread_local float g_res_x_state = 0.f, g_res_y_state = 0.f;
+thread_local float g_res_x_data = 0.f, g_res_y_data = 0.f;
+
+// DirectInput deltas are integers, so a 0.1x scope scale would round small
+// movements to zero. Keep the fractional remainder and add it to the next
+// sample, which makes the scaled input behave like a float delta.
+LONG ScaleMouseAxis(LONG v, float& residual, float scale) {
+    if (scale == 1.f) {
+        residual = 0.f;
+        return v;
+    }
+    const float scaled = static_cast<float>(v) * scale + residual;
+    const LONG out = static_cast<LONG>(std::lround(scaled));
+    residual = scaled - static_cast<float>(out);
+    return out;
+}
 std::atomic<bool> g_suppress_wheel{false};
 std::atomic<bool> g_suppress_keys{false};
 std::atomic<uint64_t> g_masked_bits[4]{}; // DIK scan codes the game must not see (bit n of the 256-bit set), all clear = none
@@ -109,6 +128,12 @@ HRESULT STDMETHODCALLTYPE GetStateDetour(void* self, DWORD cb, LPVOID data) {
             memcpy(xy, data, sizeof(xy));
             if (xy[0] != 0) g_dx.fetch_add(static_cast<int>(xy[0]));
             if (xy[1] != 0) g_dy.fetch_add(static_cast<int>(xy[1]));
+            const float scale = g_mouse_scale.load(std::memory_order_relaxed);
+            if (scale != 1.f) {
+                xy[0] = ScaleMouseAxis(xy[0], g_res_x_state, scale);
+                xy[1] = ScaleMouseAxis(xy[1], g_res_y_state, scale);
+                memcpy(data, xy, sizeof(xy));
+            }
         }
         if (k == Kind::Mouse && data != nullptr && cb >= kMouseWheelOffset + sizeof(LONG)) {
             LONG z = 0;
@@ -147,10 +172,19 @@ HRESULT STDMETHODCALLTYPE GetDataDetour(void* self, DWORD cb, LPDIDEVICEOBJECTDA
             }
         }
         if (k == Kind::Mouse && data != nullptr && count != nullptr && cb >= sizeof(DIDEVICEOBJECTDATA)) {
+            const float scale = g_mouse_scale.load(std::memory_order_relaxed);
             for (DWORD i = 0; i < *count; ++i) {
                 auto* e = reinterpret_cast<DIDEVICEOBJECTDATA*>(reinterpret_cast<BYTE*>(data) + static_cast<size_t>(i) * cb);
-                if (e->dwOfs == DIMOFS_X) g_dx.fetch_add(static_cast<int>(static_cast<LONG>(e->dwData)));
-                if (e->dwOfs == DIMOFS_Y) g_dy.fetch_add(static_cast<int>(static_cast<LONG>(e->dwData)));
+                if (e->dwOfs == DIMOFS_X) {
+                    const LONG raw = static_cast<LONG>(e->dwData);
+                    g_dx.fetch_add(static_cast<int>(raw));
+                    if (scale != 1.f) e->dwData = static_cast<DWORD_PTR>(ScaleMouseAxis(raw, g_res_x_data, scale));
+                }
+                if (e->dwOfs == DIMOFS_Y) {
+                    const LONG raw = static_cast<LONG>(e->dwData);
+                    g_dy.fetch_add(static_cast<int>(raw));
+                    if (scale != 1.f) e->dwData = static_cast<DWORD_PTR>(ScaleMouseAxis(raw, g_res_y_data, scale));
+                }
                 if (g_suppress_motion.load(std::memory_order_relaxed) && (e->dwOfs == DIMOFS_X || e->dwOfs == DIMOFS_Y || e->dwOfs == DIMOFS_Z)) e->dwData = 0;
                 if (g_suppress_wheel.load(std::memory_order_relaxed) && e->dwOfs == DIMOFS_Z) e->dwData = 0;
             }
@@ -255,6 +289,11 @@ void TakeMouseDelta(int& dx, int& dy) {
 }
 
 void SetSuppressMouseMotion(bool on) { g_suppress_motion.store(on, std::memory_order_relaxed); }
+
+void SetMouseSensitivityScale(float scale) {
+    if (!(scale > 0.f)) scale = 1.f;
+    g_mouse_scale.store(std::clamp(scale, 0.01f, 4.f), std::memory_order_relaxed);
+}
 
 unsigned TakeKeyboardFailures(long& last_hr) {
     last_hr = g_kb_last_hr.load();
