@@ -38,8 +38,8 @@ inline int reloadSoundEventList(ReloadSoundEvents e, ReloadSoundEvent out[6]) {
 }
 
 // Weapon slots: 0 = butterfly knife, 1 = AK-47, 2 = AWP, 3 = M4A1-S.
-// AK-47: 74 frames (73 intervals); mag out f17, mag in f35, bolt back f51.
-inline constexpr ReloadSoundEvents kReloadAk47{0.23287671f, 0.47945205f, 0.00000000f, 0.00000000f, 0.69863014f, 0.00000000f};
+// AK-47: 74 frames (73 intervals); mag out f11, mag in f32, add ammo f33, bolt back f48.
+inline constexpr ReloadSoundEvents kReloadAk47{0.15068493f, 0.43835616f, 0.45205479f, 0.00000000f, 0.65753425f, 0.00000000f};
 // AWP: 111 frames (110 intervals); mag out f11, mag in f46, clip hit f60, bolt back f79, bolt forward f89.
 inline constexpr ReloadSoundEvents kReloadAwp{0.10000000f, 0.41818182f, 0.00000000f, 0.54545455f, 0.71818182f, 0.80909091f};
 // M4A1-S: 93 frames (92 intervals); mag out f13, mag in f35, add ammo f41, clip hit f60, no bolt sound.

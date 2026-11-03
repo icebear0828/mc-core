@@ -690,9 +690,10 @@ TEST_F(HotkeyDispatcherTest, CsReloadAudioFollowsTheAk47Timeline) {
     ASSERT_EQ(ctx.mode().cs_knife_state.load(), 0);
     played_sounds_.clear();
 
-    // AK-47 reload: 74 frames @30fps = 2.433 s. Authored events:
-    // mag out f17 (vmdl AE_CL_EJECT_MAG), mag seated f35, bolt pull starts f51
-    // so the WAV's 0.09 s lead-in lands its click on the f54 bolt peak.
+    // AK-47 reload: 74 frames @30fps = 2.433 s. The authored reload_ak vnmclip
+    // track plays Clipout f11, Clipin f32, AddAmmo f33 and BoltPull f48; the
+    // boltpull WAV has a 0.09 s lead-in, so its click lands as the bolt starts
+    // moving at f52.
     reload_duration_ = 2.433f;
     setKey('R', true);
     dispatcher_->tick(0.016f);
@@ -707,19 +708,21 @@ TEST_F(HotkeyDispatcherTest, CsReloadAudioFollowsTheAk47Timeline) {
         return std::count(played_sounds_.begin(), played_sounds_.end(), name);
     };
 
-    tick_until(0.50f); // frame 15: magazine still seated
+    tick_until(0.30f); // frame 9: magazine still seated
     EXPECT_EQ(count("cs.ak47.magout"), 0);
-    tick_until(0.60f); // frame 18: just past the eject event
+    tick_until(0.40f); // frame 12: just past the clipout event
     EXPECT_EQ(count("cs.ak47.magout"), 1);
 
-    tick_until(1.10f); // frame 33: new magazine not seated yet
+    tick_until(1.00f); // frame 30: new magazine not in yet
     EXPECT_EQ(count("cs.ak47.magin"), 0);
-    tick_until(1.20f); // frame 36: magazine seated at f35
+    EXPECT_EQ(count("cs.ak47.addammo"), 0);
+    tick_until(1.10f); // frame 33: clipin f32 and addammo f33
     EXPECT_EQ(count("cs.ak47.magin"), 1);
+    EXPECT_EQ(count("cs.ak47.addammo"), 1);
 
-    tick_until(1.60f); // frame 48: bolt still closed
+    tick_until(1.50f); // frame 45: bolt still closed
     EXPECT_EQ(count("cs.ak47.bolt"), 0);
-    tick_until(1.75f); // frame 52: bolt pull begins
+    tick_until(1.65f); // frame 49: boltpull event at f48
     EXPECT_EQ(count("cs.ak47.bolt"), 1);
 }
 
