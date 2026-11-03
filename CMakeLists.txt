@@ -63,6 +63,7 @@ add_library(mc_core STATIC
     include/mc/rig.hpp
     include/mc/item_model.hpp
     include/mc/entity_model.hpp
+    include/mc/static_mesh.hpp
     include/mc/tnt.hpp
     include/mc/hunger.hpp
     include/mc/xp.hpp
@@ -96,6 +97,7 @@ add_library(mc_core STATIC
     src/rig.cpp
     src/item_model.cpp
     src/entity_model.cpp
+    src/static_mesh.cpp
     src/tnt.cpp
     src/recipe.cpp
     src/crafting_session.cpp

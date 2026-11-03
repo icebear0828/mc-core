@@ -137,6 +137,11 @@ void SetMobSkin(std::string_view name, const uint8_t* rgba, unsigned width, unsi
 // The mobs' model (a Bedrock geometry file parsed by the loader): call before the overlay is created. Without it the mobs are drawn with the Steve rig.
 void SetMobModel(const mc::model::EntityModel& model);
 void SetMobModel(std::string_view name, const mc::model::EntityModel& model);
+// A baked static mesh (Pokémon and other non-Bedrock creatures) drawn through the same mob pipeline.
+void SetStaticModel(std::string_view name, const mc::model::StaticMesh& mesh);
+
+// The model types the overlay can draw: Bedrock files plus baked static meshes, sorted.
+std::vector<std::string> KnownModelNames();
 // Registers a model under a name without changing the default mob model (the Phase A props).
 void RegisterModel(std::string_view name, const mc::model::EntityModel& model);
 // The mobs drawn over the game's summons this frame (positions and headings in game metres/radians). Thread safe, replaces the last list.

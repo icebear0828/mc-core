@@ -12,6 +12,7 @@
 #include "mc/entity_model.hpp"
 #include "mc/item_model.hpp"
 #include "mc/rig.hpp"
+#include "mc/static_mesh.hpp"
 #include "render/steve_types.hpp"
 
 namespace erov::steve {
@@ -72,6 +73,8 @@ struct MobCpuMesh {
 [[nodiscard]] HeldItemsMesh BuildHeldItems(const uint8_t* atlas_rgba, unsigned atlas_w, unsigned atlas_h,
                                            const std::vector<FpItemCell>& cells);
 [[nodiscard]] MobCpuMesh BuildMobMesh(const mc::model::EntityModel& model);
+// A baked static mesh (already in host axes): one buffer, one draw range.
+[[nodiscard]] MobCpuMesh BuildStaticMesh(const mc::model::StaticMesh& mesh);
 
 // A flat disc of `segments` triangles plus its centre vertex.
 [[nodiscard]] mc::rig::RigMesh BuildShadowDisc(unsigned segments = 24);

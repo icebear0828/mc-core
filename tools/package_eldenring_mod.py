@@ -607,6 +607,16 @@ block_collision=1
         shutil.copy2(geo_src, models_target_dir / geo_name)
     print("  [OK] Bedrock models (creeper, skeleton, zombie verified)")
 
+    # 7b. Baked Pokemon static meshes (optional: generated locally, never committed)
+    pokemon_source_dir = repo_root / "build" / "pokemon"
+    for mob in ["darkrai", "cresselia", "arceus", "mega_charizard_x"]:
+        mesh = pokemon_source_dir / f"{mob}.mcsm"
+        atlas = pokemon_source_dir / f"{mob}.png"
+        if mesh.is_file() and atlas.is_file():
+            shutil.copy2(mesh, models_target_dir / mesh.name)
+            shutil.copy2(atlas, mod_adapter_dir / atlas.name)
+    print("  [OK] Pokemon static meshes (when generated)")
+
     # 8. High-Fidelity Audio Pack
     sounds_src_dir = game_dir / "mods" / "mc_adapter" / "sounds"
     if not sounds_src_dir.is_dir():

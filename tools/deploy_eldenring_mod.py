@@ -95,6 +95,18 @@ def main():
             shutil.copy2(src_geo, models_dir / f"{mob}.geo.json")
             print(f"[MODEL DEPLOY] Copied {mob}.geo.json to: {models_dir / f'{mob}.geo.json'}")
 
+    # Baked Pokemon static meshes (generated locally with tools/pokemon/build_static_mesh.py)
+    src_pokemon = root / "build" / "pokemon"
+    for mob in ["darkrai", "cresselia", "arceus", "mega_charizard_x"]:
+        src_mesh = src_pokemon / f"{mob}.mcsm"
+        src_atlas = src_pokemon / f"{mob}.png"
+        if src_mesh.is_file() and src_atlas.is_file():
+            shutil.copy2(src_mesh, models_dir / f"{mob}.mcsm")
+            shutil.copy2(src_atlas, game_dir / "mods" / "mc_adapter" / f"{mob}.png")
+            print(f"[POKEMON DEPLOY] Copied {mob}.mcsm + {mob}.png")
+        else:
+            print(f"[POKEMON DEPLOY] skipped {mob} (not generated in {src_pokemon})")
+
     # Check build/authentic_atlas first for extracted vanilla textures, fallback to source textures
     auth_dir = root / "build" / "authentic_atlas"
     src_textures = root / "assets" / "source" / "textures"

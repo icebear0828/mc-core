@@ -10,6 +10,7 @@
 #include "mc/bow.hpp"
 #include "mc/entity_model.hpp"
 #include "mc/mobs.hpp"
+#include "mc/static_mesh.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -72,6 +73,18 @@ public:
         }
     }
 
+    // A baked static mesh (Pokémon and other non-Bedrock creatures): one world matrix per draw.
+    void registerStaticModel(std::string_view name, const mc::model::StaticMesh* mesh) {
+        if (!name.empty() && mesh != nullptr) {
+            static_models_[std::string(name)] = mesh;
+        }
+    }
+
+    [[nodiscard]] const mc::model::StaticMesh* getStaticModel(std::string_view name) const {
+        auto it = static_models_.find(std::string(name));
+        return it == static_models_.end() ? nullptr : it->second;
+    }
+
     [[nodiscard]] const mc::model::EntityModel* getModel(std::string_view name = "") const {
         if (!name.empty()) {
             auto it = models_.find(std::string(name));
@@ -106,6 +119,7 @@ public:
             else if (!just_died) e.hurt = std::max(0.f, e.hurt - dt);
             if (e.dying >= 0.f && !just_died) e.dying += dt;
             if (e.dying > kDeathSeconds) continue; // the game may keep the corpse for seconds; the body is gone after kDeathSeconds anyway
+            if (e.dying < 0.f) e.age += dt;        // the idle bob freezes on the frame it dies
             out.push_back(draw(s.id, e, dt));
         }
         for (auto it = entries_.begin(); it != entries_.end();) {
@@ -138,6 +152,7 @@ private:
         bool have_hp{false};
         float hurt{0.f};   // seconds of red flash left
         float dying{-1.f}; // seconds since the hit points ran out; < 0: alive
+        float age{0.f};    // seconds alive, drives the static meshes' idle bob/sway
     };
 
     static inline mc::Quat mobEulerToHostQuat(float pitch, float yaw, float roll) {
@@ -209,6 +224,19 @@ private:
         return mc::model::boneMatrices(model, extra, {s.feet[0], s.feet[1], s.feet[2]}, s.yaw, eldenring::render::kBasis);
     }
 
+    // A static mesh is baked in host axes (metres, Y up, feet at the origin, facing +Z). Its idle is a whole-body
+    // bob and a small sway about the forward axis; the death pose freezes it because `age` stops advancing.
+    static mc::rig::Mat4 staticWorldMatrix(const mc::model::StaticMesh& mesh, const MobSnapshot& s, float age, uintptr_t id) {
+        const float phase = static_cast<float>(id % 997u) * 0.017f;
+        const float bob = 0.015f * std::sin(age * 1.8f + phase);
+        const float sway = 0.012f * std::sin(age * 1.1f + phase);
+        mc::rig::Mat4 m = mc::rig::rotationAboutAxis(eldenring::render::kBasis.up, s.yaw + mesh.yaw_offset);
+        m = m * mc::rig::rotationAboutAxis(eldenring::render::kBasis.forward, sway);
+        m = m * mc::rig::translation(mc::Vec3{0.f, bob, 0.f});
+        m = m * mc::rig::translation(mc::Vec3{s.feet[0], s.feet[1], s.feet[2]});
+        return m;
+    }
+
     // A living mob walks; a dying one keeps the pose it died in (the animator is not advanced and the walking speed is not measured).
     MobDraw draw(uintptr_t id, Entry& e, float dt) {
         const MobSnapshot& s = e.last;
@@ -219,7 +247,8 @@ private:
         d.dying = e.dying >= 0.f;
         d.hurt = d.dying ? 1.f : std::min(1.f, e.hurt / kHurtSeconds);
         d.fall = d.dying ? eldenring::render::deathFlipFraction(e.dying) : 0.f;
-        const mc::model::EntityModel* model = getModel(s.model_type);
+        const mc::model::StaticMesh* static_mesh = getStaticModel(s.model_type);
+        const mc::model::EntityModel* model = static_mesh != nullptr ? nullptr : getModel(s.model_type);
         if (!d.dying) {
             mc::SteveAnimInput in = e.motion.update(dt, s.feet, s.yaw);
             in.bow_charge = s.bow_charge;
@@ -243,7 +272,14 @@ private:
         const mc::Vec3 feet{s.feet[0], s.feet[1], s.feet[2]};
         const mc::rig::Mat4 flip = d.fall > 0.f ? eldenring::render::deathFallMatrix(feet, s.yaw, d.fall) : mc::rig::Mat4{};
         const mc::rig::Mat4 swell_mat = d.scale != 1.0f ? scaleAboutPoint(feet, d.scale) : mc::rig::Mat4{};
-        if (model != nullptr) {
+        if (static_mesh != nullptr) {
+            d.generic = true;
+            d.bones = {staticWorldMatrix(*static_mesh, s, e.age, id)};
+            for (auto& m : d.bones) {
+                if (d.scale != 1.0f) m = m * swell_mat;
+                m = m * flip;
+            }
+        } else if (model != nullptr) {
             d.generic = true;
             d.bones = poseFromAnimator(*model, e.anim.getTransforms(), s);
             for (auto& m : d.bones) {
@@ -262,6 +298,7 @@ private:
 
     const mc::model::EntityModel* model_{nullptr};
     std::map<std::string, const mc::model::EntityModel*> models_;
+    std::map<std::string, const mc::model::StaticMesh*> static_models_;
     std::map<uintptr_t, Entry> entries_;
 };
 

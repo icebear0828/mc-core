@@ -989,3 +989,15 @@ TEST(VirtualSummonTest, SkeletonCalculatesAimPitchAndOutputsPitchInSnapshots) {
 }
 
 
+
+TEST(SummonModel, PicksKnownNamesAndLoadedModelNames) {
+    EXPECT_EQ(pickSummonModel("creeper"), "creeper");
+    EXPECT_EQ(pickSummonModel("Skeleton"), "skeleton");
+    EXPECT_EQ(pickSummonModel("iron golem"), "iron_golem");
+    EXPECT_EQ(pickSummonModel("wolf"), "wolf");
+    EXPECT_EQ(pickSummonModel("zombie"), "zombie");
+    EXPECT_EQ(pickSummonModel("darkrai", {"darkrai", "arceus"}), "darkrai");
+    EXPECT_EQ(pickSummonModel("summon ARCEUS please\n", {"darkrai", "arceus"}), "arceus");
+    EXPECT_EQ(pickSummonModel("mega_charizard_x", {"mega_charizard_x"}), "mega_charizard_x");
+    EXPECT_EQ(pickSummonModel("unknown", {"darkrai"}), "creeper");
+}

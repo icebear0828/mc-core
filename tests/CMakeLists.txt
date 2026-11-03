@@ -60,6 +60,7 @@ add_executable(mc_tests
     test_eldenring_orientation.cpp
     test_eldenring_roll.cpp
     test_entity_model.cpp
+    test_static_mesh.cpp
     test_elytra_trident_models.cpp
     test_eldenring_shield.cpp
     test_eldenring_flags.cpp
@@ -121,6 +122,7 @@ if(ENABLE_CS2_VIEWMODEL)
         test_cs_viewmodel.cpp
         test_cs_ballistics.cpp
         test_cs_impact_decals.cpp
+        test_cs_economy.cpp
         ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/cs_weapon_registry.cpp
     )
 endif()

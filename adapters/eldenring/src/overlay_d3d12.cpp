@@ -43,6 +43,22 @@ void RegisterModel(std::string_view name, const mc::model::EntityModel& model) {
     g_mob_registry.registerModel(name, &g_mob_models[std::string(name)]);
 }
 
+void SetStaticModel(std::string_view name, const mc::model::StaticMesh& mesh) {
+    if (name.empty() || mesh.vertices.empty() || mesh.indices.empty()) return;
+    g_static_models[std::string(name)] = mesh;
+    g_mob_registry.registerStaticModel(name, &g_static_models[std::string(name)]);
+}
+
+std::vector<std::string> KnownModelNames() {
+    std::vector<std::string> names;
+    for (const auto& entry : g_mob_models) names.push_back(entry.first);
+    for (const auto& entry : g_static_models) {
+        if (std::find(names.begin(), names.end(), entry.first) == names.end()) names.push_back(entry.first);
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
 void SetMobSkin(const uint8_t* rgba, unsigned width, unsigned height) {
     SetMobSkin("", rgba, width, height);
 }

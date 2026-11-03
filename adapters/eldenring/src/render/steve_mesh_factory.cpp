@@ -206,6 +206,16 @@ MobCpuMesh BuildMobMesh(const mc::model::EntityModel& model) {
     return out;
 }
 
+MobCpuMesh BuildStaticMesh(const mc::model::StaticMesh& mesh) {
+    MobCpuMesh out;
+    out.vertices = mesh.vertices;
+    out.indices = mesh.indices;
+    if (!mesh.indices.empty()) {
+        out.bone_ranges.push_back({static_cast<unsigned>(mesh.indices.size()), 0, 0});
+    }
+    return out;
+}
+
 mc::rig::RigMesh BuildShadowDisc(unsigned segments) {
     return mc::buildShadowDisc(static_cast<int>(segments));
 }

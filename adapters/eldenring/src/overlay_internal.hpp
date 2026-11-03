@@ -231,6 +231,7 @@ struct MobSkinEntry {
     unsigned w{0}, h{0};
 };
 inline std::map<std::string, mc::model::EntityModel> g_mob_models;
+inline std::map<std::string, mc::model::StaticMesh> g_static_models;
 inline std::map<std::string, MobSkinEntry> g_mob_skins;
 inline D3D12_CPU_DESCRIPTOR_HANDLE g_depth_copy_cpu{}; // slot 6: the same depth view again, in front of the atlas (held item table)
 inline D3D12_GPU_DESCRIPTOR_HANDLE g_held_table_gpu{};

@@ -3,6 +3,7 @@
 #include "eldenring_mobs.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -18,6 +19,22 @@ struct PlayerPose {
     float pos[3]{0.0f, 0.0f, 0.0f};
     float yaw{0.0f};
 };
+
+// Maps mc_er_summon.txt to a model type: the Minecraft names first, then any loaded model name
+// (the Pokemon models and any extra Bedrock files), then the creeper fallback.
+inline std::string pickSummonModel(std::string_view text, const std::vector<std::string>& known = {}) {
+    std::string content(text);
+    for (char& c : content) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (content.find("creeper") != std::string::npos) return "creeper";
+    if (content.find("skeleton") != std::string::npos) return "skeleton";
+    if (content.find("iron_golem") != std::string::npos || content.find("golem") != std::string::npos) return "iron_golem";
+    if (content.find("wolf") != std::string::npos) return "wolf";
+    if (content.find("zombie") != std::string::npos) return "zombie";
+    for (const std::string& name : known) {
+        if (!name.empty() && content.find(name) != std::string::npos) return name;
+    }
+    return "creeper";
+}
 
 struct EnemyTarget {
     uintptr_t chr_ins{0};
