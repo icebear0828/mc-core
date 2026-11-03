@@ -1,19 +1,26 @@
 #include "eldenring_memory_scanner.hpp"
+#include "eldenring_perfstats.hpp"
 
 namespace eldenring::memory {
 
 bool SafeCopy(uintptr_t address, void* out, size_t size) {
     if (size == 0) return true;
-    if (address < 0x10000) return false;
+    if (address < 0x10000) {
+        perfstats::noteRead(false);
+        return false;
+    }
 #ifdef _WIN32
     __try {
         std::memcpy(out, reinterpret_cast<const void*>(address), size);
-        return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        perfstats::noteRead(false);
         return false;
     }
+    perfstats::noteRead(true);
+    return true;
 #else
     std::memcpy(out, reinterpret_cast<const void*>(address), size);
+    perfstats::noteRead(true);
     return true;
 #endif
 }

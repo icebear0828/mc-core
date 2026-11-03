@@ -1,4 +1,5 @@
 #include "core/loader_internal.hpp"
+#include "eldenring_perfstats.hpp"
 
 namespace eldenring::loader_detail {
 
@@ -17,7 +18,7 @@ bool BlocksPresent() {
 
 void SendBlockMesh(const std::optional<blocks::MiningOverlay>& mining,
                    const std::optional<blocks::TerrainMiningOverlay>& terrain_mining) {
-    std::lock_guard<std::mutex> g(g_blocks_mutex);
+    perfstats::ScopedTimedLock g(g_blocks_mutex, perfstats::LockKind::Blocks);
     const size_t tnt_count = g_tnt_mgr.activeCount();
     const int stage = mining.has_value() ? mining->stage : -1;
     const blocks::Cell cell = mining.has_value() ? mining->cell : blocks::Cell{};

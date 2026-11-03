@@ -98,6 +98,9 @@ public:
     // First-person sneak eye height. Runs from the general per-frame camera update, independent of block collision.
     void stepSneakEyeHeight(float dt, RuntimeContext& ctx);
     void stepEnemyBlockCollision(const float player_feet[3], RuntimeContext& ctx);
+    // The same step with an already-enumerated list: the caller (the camera step) has one and the
+    // old entry point enumerated the whole world a second time for the same frame.
+    void stepEnemyBlockCollision(const float player_feet[3], const std::vector<EnemyInfo>& enemies, RuntimeContext& ctx);
     void processTntExplosions(const std::vector<EnemyInfo>& enemies, RuntimeContext& ctx);
     void processCreeperExplosions(const std::vector<EnemyInfo>& enemies, const float player_feet[3], RuntimeContext& ctx);
     void triggerTntExplosion(const float center[3], RuntimeContext& ctx);

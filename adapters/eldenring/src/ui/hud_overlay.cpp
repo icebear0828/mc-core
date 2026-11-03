@@ -1,4 +1,5 @@
 #include "core/loader_internal.hpp"
+#include "eldenring_perfstats.hpp"
 #include "mc/elytra_models.hpp"
 
 #include <fstream>
@@ -42,7 +43,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
                             readFadeAlpha(g_reader, readSingleton(g_reader, g_img.base, g_rva_fade, sigs::kCSFade), fade);
 
     {
-        std::lock_guard<std::mutex> g(g_melee_mutex);
+        perfstats::ScopedTimedLock g(g_melee_mutex, perfstats::LockKind::Melee);
         eldenring::ui::PopulateHudStateFromContext(out, g_ctx);
         static int last_logged_armor_pts = -1;
         if (out.armor_points != last_logged_armor_pts) {
@@ -103,13 +104,14 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.feet[2] = feet[2];
         steve.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]) + g_steve_yaw_offset;
         if (g_flying.load(std::memory_order_relaxed)) steve.yaw = g_fly_yaw.load(std::memory_order_relaxed); // the game does not turn a character that never sees a key
+        const bool need_grace = ms.menu_focused || fade >= 0.02f;
         float grace_dist = 999.f;
-        const bool near_grace = findNearestGrace(g_reader, g_img.base, world, feet, 2.8f, &grace_dist);
-        steve.sleeping = near_grace && (ms.menu_focused || fade >= 0.02f);
+        const bool near_grace = need_grace && findNearestGrace(g_reader, g_img.base, world, feet, 2.8f, &grace_dist);
+        steve.sleeping = near_grace;
     }
     const bool steve_dead_now = v.max_hp > 0 && v.hp <= 0;
     {
-        std::lock_guard<std::mutex> g(g_melee_mutex);
+        perfstats::ScopedTimedLock g(g_melee_mutex, perfstats::LockKind::Melee);
         eldenring::ui::PopulateSteveStateFromContext(steve, g_ctx, steve_dead_now, steve.sleeping);
     }
     {
@@ -153,6 +155,8 @@ void SetupOverlay() {
         Log("overlay: disabled (no mc_er_overlay.txt)");
         return;
     }
+    perfstats::setEnabled(FileExists(g_game_dir + "mc_er_perfstats.txt"));
+    if (perfstats::on()) Log("perfstats: on (mc_er_perfstats.txt): per-second read/RTTI/scan/lock counters");
     if (!EnsureMinHook()) {
         Log("overlay: MH_Initialize failed");
         return;

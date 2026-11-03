@@ -50,13 +50,16 @@ void HideSummonModels() {
         g_summon_list.clear();
         return;
     }
-    std::vector<EnemyInfo> list;
+    std::vector<EnemyInfo> local_list;
     std::vector<eldenring::mobs::MobSnapshot> seen;
-    if (!enumerateEnemies(g_reader, g_img.base, list, 4000, /*include_dead=*/true)) { // the corpses too: the mob over a dead summon plays its death scene
+    // The camera step already enumerated this frame (corpses included); reuse it when it is fresh.
+    const auto shared = eldenring::live::gameThreadEnemySnapshot().fresh(GetTickCount64(), 100);
+    if (shared == nullptr && !enumerateEnemies(g_reader, g_img.base, local_list, 4000, /*include_dead=*/true)) { // the corpses too: the mob over a dead summon plays its death scene
         std::lock_guard<std::mutex> g(g_summon_mutex);
         g_summon_list.clear();
         return;
     }
+    const std::vector<EnemyInfo>& list = shared != nullptr ? *shared : local_list;
     static unsigned logged = 0;
     for (const EnemyInfo& e : list) {
         if (e.team != eldenring::live::summon::kTeam) continue;

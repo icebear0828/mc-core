@@ -5,6 +5,7 @@
 // against fake memory. Offsets are those of eldenring.exe 2.7.1.0 (docs/ELDENRING_REVERSE.md).
 
 #include "eldenring_live.hpp"
+#include "eldenring_perfstats.hpp"
 #include "eldenring_rtti.hpp"
 
 #include <algorithm>
@@ -190,6 +191,7 @@ inline bool isCharacterClass(const IMemoryReader& reader, uintptr_t image_base, 
 // entries, duplicates reachable from several sets. At most `max` entries.
 // Characters that are dead (hp <= 0) are left out unless `include_dead`: a summoned character killed in one hit is otherwise just gone.
 inline bool enumerateEnemies(const IMemoryReader& reader, uintptr_t image_base, std::vector<EnemyInfo>& out, size_t max, bool include_dead = false) {
+    perfstats::noteEnumerate();
     out.clear();
     uint64_t world = 0, player = 0;
     if (!reader.read(image_base + layout::kWorldChrManGlobalRva, &world, sizeof(world)) || world == 0) return false;
@@ -232,6 +234,7 @@ inline bool enumerateEnemies(const IMemoryReader& reader, uintptr_t image_base, 
     }
 
     std::vector<EnemyInfo> found;
+    uint64_t scanned = 0;
     for (uintptr_t set : sets_to_scan) {
         if (found.size() >= max) break;
         uint32_t capacity = 0;
@@ -240,6 +243,7 @@ inline bool enumerateEnemies(const IMemoryReader& reader, uintptr_t image_base, 
         if (!reader.read(set + layout::kChrSetEntries, &entries, sizeof(entries)) || entries == 0) continue;
         if (capacity == 0 || capacity > layout::kMaxChrSetCapacity) continue;
         for (uint32_t i = 0; i < capacity && found.size() < max; ++i) {
+            ++scanned;
             uint64_t pair[2];
             if (!reader.read(static_cast<uintptr_t>(entries) + static_cast<uintptr_t>(i) * 16, pair, sizeof(pair))) break;
             const auto chr = static_cast<uintptr_t>(pair[0]);
@@ -267,9 +271,16 @@ inline bool enumerateEnemies(const IMemoryReader& reader, uintptr_t image_base, 
     }
 
     float p1[3];
-    if (!detail::readPhysicsPosition(reader, image_base, player_chr, p1)) return false;
+    if (!detail::readPhysicsPosition(reader, image_base, player_chr, p1)) {
+        perfstats::noteEnumerateSlots(scanned);
+        return false;
+    }
     const float dx = p1[0] - p0[0], dy = p1[1] - p0[1], dz = p1[2] - p0[2];
-    if (std::sqrt(dx * dx + dy * dy + dz * dz) > layout::kMaxPlayerMoveWithinTick) return false;
+    if (std::sqrt(dx * dx + dy * dy + dz * dz) > layout::kMaxPlayerMoveWithinTick) {
+        perfstats::noteEnumerateSlots(scanned);
+        return false;
+    }
+    perfstats::noteEnumerateSlots(scanned);
     out = std::move(found);
     return true;
 }
@@ -277,6 +288,7 @@ inline bool enumerateEnemies(const IMemoryReader& reader, uintptr_t image_base, 
 // Scans active ChrSets for the nearest Site of Grace (kGraceNpcId = 1000) within max_distance.
 inline bool findNearestGrace(const IMemoryReader& reader, uintptr_t image_base, uintptr_t world,
                              const float player_pos[3], float max_distance, float* out_dist = nullptr) {
+    perfstats::noteFindGrace();
     if (world == 0 || player_pos == nullptr) return false;
     uint32_t active_count = 0;
     std::vector<uintptr_t> sets_to_scan;
@@ -304,12 +316,14 @@ inline bool findNearestGrace(const IMemoryReader& reader, uintptr_t image_base, 
 
     const float max_dist_sq = max_distance * max_distance;
     float closest_sq = max_dist_sq + 1.0f;
+    uint64_t scanned = 0;
     for (uintptr_t set : sets_to_scan) {
         uint32_t capacity = 0;
         uint64_t entries = 0;
         if (!reader.read(set + layout::kChrSetCapacity, &capacity, sizeof(capacity)) || capacity == 0 || capacity > layout::kMaxChrSetCapacity) continue;
         if (!reader.read(set + layout::kChrSetEntries, &entries, sizeof(entries)) || entries == 0) continue;
         for (uint32_t i = 0; i < capacity; ++i) {
+            ++scanned;
             uint64_t pair[2];
             if (!reader.read(static_cast<uintptr_t>(entries) + static_cast<uintptr_t>(i) * 16, pair, sizeof(pair))) break;
             const auto chr = static_cast<uintptr_t>(pair[0]);
@@ -325,6 +339,7 @@ inline bool findNearestGrace(const IMemoryReader& reader, uintptr_t image_base, 
             }
         }
     }
+    perfstats::noteFindGraceSlots(scanned);
     if (closest_sq <= max_dist_sq) {
         if (out_dist) *out_dist = std::sqrt(closest_sq);
         return true;

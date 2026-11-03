@@ -1,5 +1,6 @@
 #include "eldenring_world_runtime.hpp"
 
+#include "eldenring_perfstats.hpp"
 #include "eldenring_sneak.hpp"
 
 #include <cstdarg>
@@ -96,7 +97,7 @@ void VoxelWorldRuntime::stepShadowGround(RuntimeContext& ctx) {
 
     const RayCastFn cast = callbacks_.cast_ray ? RayCastFn(callbacks_.cast_ray) : RayCastFn{};
     const auto block_top = [&](float x, float feet_y, float z, float max_drop) -> std::optional<float> {
-        std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+        perfstats::ScopedTimedLock g(ctx.world().blocks_mutex, perfstats::LockKind::Blocks);
         if (ctx.world().block_grid.count() == 0) return std::nullopt;
         const int top_cell = static_cast<int>(std::floor(feet_y + 0.06f));
         const int low_cell = static_cast<int>(std::floor(feet_y - max_drop));
@@ -214,7 +215,7 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
 
     blocks::Resolve r{};
     if (has_blocks) {
-        std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+        perfstats::ScopedTimedLock g(ctx.world().blocks_mutex, perfstats::LockKind::Blocks);
         if (jump_active) {
             // Our jump owns the vertical axis, but a placed wall must still stop horizontal movement.
             r = blocks::resolvePlayer(ctx.world().block_grid, feet);
@@ -447,6 +448,15 @@ void VoxelWorldRuntime::stepEnemyBlockCollision(const float player_feet[3], Runt
     if (callbacks_.enumerate_enemies && !callbacks_.enumerate_enemies(enemies)) {
         return;
     }
+    stepEnemyBlockCollision(player_feet, enemies, ctx);
+}
+
+void VoxelWorldRuntime::stepEnemyBlockCollision(const float player_feet[3], const std::vector<EnemyInfo>& enemies,
+                                                RuntimeContext& ctx) {
+    if (!ctx.mode().mc_mode.load(std::memory_order_relaxed) ||
+        !ctx.mode().enemy_block_collision.load(std::memory_order_relaxed)) {
+        return;
+    }
 
     {
         std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
@@ -457,6 +467,10 @@ void VoxelWorldRuntime::stepEnemyBlockCollision(const float player_feet[3], Runt
 
     for (const EnemyInfo& e : enemies) {
         if (e.chr == 0 || e.hp <= 0) continue;
+        // The enumeration already measured this relative to the player. Skip the physics read for
+        // anything clearly out of range; the exact check below still runs after the read for near enemies.
+        const float rel_sq = e.rel_x * e.rel_x + e.rel_y * e.rel_y + e.rel_z * e.rel_z;
+        if (rel_sq > 55.f * 55.f) continue;
         float e_feet[3] = {};
         if (!callbacks_.read_physics_pos || !callbacks_.read_physics_pos(e.chr, e_feet)) continue;
 
@@ -467,7 +481,7 @@ void VoxelWorldRuntime::stepEnemyBlockCollision(const float player_feet[3], Runt
 
         blocks::Resolve er{};
         {
-            std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+            perfstats::ScopedTimedLock g(ctx.world().blocks_mutex, perfstats::LockKind::Blocks);
             if (ctx.world().block_grid.count() == 0) return;
             auto it = prev_enemy_feet_.find(e.chr);
             if (it != prev_enemy_feet_.end()) {

@@ -1,4 +1,5 @@
 #include "core/loader_internal.hpp"
+#include "eldenring_perfstats.hpp"
 
 namespace eldenring::loader_detail {
 
@@ -109,7 +110,7 @@ void EnderPearlStep(float dt) {
 }
 
 void InventoryTick(bool fg) {
-    std::lock_guard<std::mutex> g(g_melee_mutex);
+    perfstats::ScopedTimedLock g(g_melee_mutex, perfstats::LockKind::Melee);
     eldenring::ui::InventoryController::Instance().tick(fg, WantSuppress(), PlayerDead(), g_melee.inventory(), g_ctx);
 }
 

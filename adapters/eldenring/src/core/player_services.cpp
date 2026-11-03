@@ -1,4 +1,5 @@
 #include "core/loader_internal.hpp"
+#include "eldenring_perfstats.hpp"
 
 namespace eldenring::loader_detail {
 
@@ -56,7 +57,10 @@ RayResult CastStaticRay(const float from[3], const float disp[3]) {
     // The Havok world is not queryable while a menu or loading screen owns it; a ray there has
     // crashed the game in a null-pointer read during the load transition.
     if (!WantSuppress()) return {};
-    return eldenring::combat::CombatService::Instance().castStaticRay(from, disp);
+    const uint64_t started = perfstats::nowNs();
+    const RayResult result = eldenring::combat::CombatService::Instance().castStaticRay(from, disp);
+    perfstats::noteCastRay(perfstats::nowNs() - started);
+    return result;
 }
 
 bool PlayerCanSee(const float player_feet[3], const float victim_feet[3]) {
