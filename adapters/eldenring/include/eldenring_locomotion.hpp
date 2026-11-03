@@ -23,6 +23,7 @@
 #include "eldenring_camera.hpp"
 #include "eldenring_flight.hpp"
 #include "mc/elytra_flight.hpp"
+#include "mc/ender_pearl.hpp"
 #include "eldenring_jump.hpp"
 #include "eldenring_los.hpp"
 #include "eldenring_orientation.hpp"
@@ -62,6 +63,10 @@ struct LocomotionCallbacks {
 
     // Diagnostics / logging
     std::function<void(const std::string&)> log;
+
+    // Ender pearl teleport: vanilla's hurtServer(5.0) and PLAYER_TELEPORT sound.
+    std::function<void(float mc_damage)> apply_self_damage;
+    std::function<void(const char* sound, float volume)> play_sound;
 };
 
 class PlayerLocomotion {
@@ -99,6 +104,15 @@ public:
     bool isElytraGliding() const { return elytra_.state().is_gliding; }
     // Vanilla's wing pose blend f0: 1 at level or climbing, falling to 0 in a steep dive (wings fold back).
     float elytraBlend() const;
+    // Minecraft 1.21.8 ender pearl: the throw request is queued on the input thread and launched on the
+    // next camera step, where the owner's velocity is readable. The hit teleports the player to the
+    // pearl's start-of-tick position and holds it for a few frames so the engine accepts the move.
+    void requestEnderPearlThrow();
+    void stepEnderPearl(float dt, uint64_t now_ms, RuntimeContext& ctx);
+    bool isEnderPearlActive() const { return pearl_.active(); }
+    bool isEnderPearlTeleportHolding() const { return pearl_hold_; }
+    // The in-flight pearl's world position for the renderer; false when no pearl is active.
+    bool pearlRenderPos(float out[3]) const;
     // OW rocket punch: forward displacement during state 3's thrust window.
     void stepOwRocketPunch(float dt, RuntimeContext& ctx);
 
@@ -173,6 +187,21 @@ private:
     float elytra_pos_[3]{};
     bool elytra_have_written_{false};
     float elytra_last_written_[3]{};
+
+    // Ender pearl state (y-up, blocks/tick).
+    mc::EnderPearl pearl_;
+    std::atomic<bool> pearl_throw_requested_{false};
+    float pearl_accum_{0.f};
+    bool pearl_hold_{false};
+    float pearl_hold_target_[3]{};
+    int pearl_hold_frames_{0};
+    // After the hold releases, watch for the engine pulling the player back and re-hold a couple of times.
+    bool pearl_watch_{false};
+    int pearl_watch_frames_{0};
+    int pearl_retries_{0};
+    bool pearl_have_player_pos_{false};
+    float pearl_player_pos_[3]{};
+    uint64_t last_pearl_log_ms_{0};
 
     void log(const char* fmt, ...);
 

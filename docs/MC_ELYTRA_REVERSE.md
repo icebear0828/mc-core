@@ -465,6 +465,23 @@ discard()                           // 无论是否传送成功都丢弃珍珠
 4. **珍珠**：初速 1.5、重力 0.03、阻力 0.99，命中后目标 = 上一 tick 位置；5.0 伤害；discard。
 5. **实机 oracle（下一步）**：录一段原版 1.21.8 的滑翔 trace（每 tick 的 position/velocity/xRot/yRot/firework 状态），用 `reverse-engineering` 的 replay 方法对比。当前只有源码级证据（A），trace 是最终验收。
 
+### 8.4 末影珍珠（2026-11-04 落地）
+
+- 纯逻辑：`include/mc/ender_pearl.hpp` / `src/ender_pearl.cpp`，单测 `tests/test_ender_pearl.cpp`。
+  - `launchVelocity()`：`normalize(look) + triangle(0, 0.0172275)` 每轴，再乘 1.5；最后加 owner 速度（x/z 总是加，y 只在不在地面时加）。
+  - `beginTick()`：`v.y -= 0.03`，`v *= 0.99`（水中 0.8），`prev_position = position`；适配器每帧按 `dt/0.05` 积分并用 `CastStaticRay` 解算碰撞。
+  - 纯逻辑的 `teleportTarget()` 仍是 `prev_position`（原版 `oldPosition()`），但适配器不用它：20 Hz tick 的位置最多落后 1.5 格，实机会看起来"落点外"。适配器改用命中点沿法线外推（地面 0.05 m、墙面 0.45 m）。不再做向下射线吸附：那会把墙面/屋檐命中抬到上一层地面，造成落点偏移；穿地已由子步进射线解决。
+- 适配器：`PlayerLocomotion::stepEnderPearl()`，在 `on_camera_step_pre` 里排在 `ElytraStep` 之后。
+  - 右键且手持末影珍珠 → `TryThrowEnderPearl()` 置请求，下一步在相机线程读位置/视线/owner 速度后发射。
+  - 每帧位移按 ≤0.5 m 子步进做射线，防止掉帧时高速珍珠穿过薄地面。
+  - 引擎浮动原点重基只按 8 m 整数格平移珍珠；非整数格的玩家传送/加载直接丢弃珍珠，避免把珍珠（和落点）整体带偏。**hold 期间也要把传送目标一起平移到新坐标系**：否则 hold 每帧写回旧坐标、引擎每帧重基一次，玩家会来回"瞬移"40 m（2026-11-04 实机日志确认）。hold 的第一帧不做重基判断——那时读到的还是传送前的位置，传送距离本身（如 24/-8）可能被误判成 8 m 整数格，把目标平移几十米。
+  - 传送后约 200 ms 内看门狗：如果引擎把角色拉回 >2 m，自动再压 1–2 次，保证传送"粘住"。
+  - 命中后把目标位置**连续写若干帧**（最多 15 帧，读到误差 <0.5 m 且至少 6 帧后释放），同时写 `+0x91` proxy sync、清 fall timer；这与创造飞行/鞘翅的写入方式一致，一次性写会被引擎拉回。
+  - 传送时停掉鞘翅、把创造飞行的 `fly_own_` 同步到目标；按 `scaleToEr(5.0, max_hp)` 扣血（原版 5.0 = 25% 最大生命）；播放 `entity.player.teleport`，丢弃珍珠。
+- 渲染：`BuildPearlMesh()`（`render/steve_mesh_factory.cpp`）用 HUD 图集里的原版珍珠 sprite 生成单个相机朝向的 billboard 四边形（世界矩阵取相机 right/up，像原版物品实体），`SteveRenderer::drawPearls()` 在世界空间绘制；不用箭矢的 Spark 粒子。
+- 音效：投掷用 `entity.ender_eye.launch`（末影之眼 whoosh），命中用 `entity.player.teleport`。原版 `entity.ender_pearl.throw` 就是 `random/bow`（和箭矢音同一文件），演示里听起来像射箭，所以不用它；`tools/extract_mc_sounds.py` 的 `EVENTS` 仍保留它，便于以后按需恢复。
+- 未做：实体命中（只做了静态世界射线）、跨维度限制、末影螨 5% 概率、原版 portal 粒子。
+
 ## 9. 待验证 / 未覆盖
 
 - 原版实机 trace 尚未采集；第 3.4/4.2 的数值是按源码递推模拟得到的，不是游戏内实测。

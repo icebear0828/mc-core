@@ -259,6 +259,9 @@ void SteveRenderer::release() {
     Rel(arrow_vertices_);
     Rel(arrow_indices_);
     arrow_index_count_ = 0;
+    Rel(pearl_vertices_);
+    Rel(pearl_indices_);
+    pearl_index_count_ = 0;
 }
 
 bool SteveRenderer::readStats(uint32_t out[64]) {
@@ -312,6 +315,14 @@ bool SteveRenderer::initHeldItems(ID3D12Device* device, const uint8_t* atlas_rgb
     if (mesh.arrow_valid &&
         d3d12::UploadMesh(device, mesh.arrow_vertices, mesh.arrow_indices, arrow_vertices_, arrow_indices_, arrow_vbv_, arrow_ibv_, index_count)) {
         arrow_index_count_ = index_count;
+    }
+
+    Rel(pearl_vertices_);
+    Rel(pearl_indices_);
+    pearl_index_count_ = 0;
+    if (mesh.pearl_valid &&
+        d3d12::UploadMesh(device, mesh.pearl_vertices, mesh.pearl_indices, pearl_vertices_, pearl_indices_, pearl_vbv_, pearl_ibv_, index_count)) {
+        pearl_index_count_ = index_count;
     }
 
     // Offhand items (left arm, mirrored or forearm-mounted shield).
@@ -534,6 +545,23 @@ void SteveRenderer::drawArrows(ID3D12GraphicsCommandList* list, ID3D12Descriptor
         } else {
             list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
         }
+    }
+}
+
+void SteveRenderer::drawPearls(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
+                               D3D12_GPU_DESCRIPTOR_HANDLE atlas_table, unsigned width, unsigned height,
+                               const mc::rig::Mat4& view_proj, const std::vector<mc::rig::Mat4>& pearl_matrices,
+                               const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
+    if (!ready() || !own_depth_ || !dsv_heap_ || pearl_matrices.empty() || atlas_table.ptr == 0) return;
+    if (pearl_vertices_ == nullptr || pearl_indices_ == nullptr || pearl_index_count_ == 0) return;
+    beginPass(list, srv_heap, rtv, width, height, pipeline_.figure, !params.keep_depth);
+    list->SetGraphicsRootDescriptorTable(1, atlas_table);
+    list->IASetVertexBuffers(0, 1, &pearl_vbv_);
+    list->IASetIndexBuffer(&pearl_ibv_);
+    const float no_tint[4] = {0.f, 0.f, 0.f, 0.f};
+    for (const auto& mat : pearl_matrices) {
+        setConstants(list, view_proj, mat, params, width, height, no_tint);
+        list->DrawIndexedInstanced(pearl_index_count_, 1, 0, 0, 0);
     }
 }
 

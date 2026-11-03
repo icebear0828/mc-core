@@ -40,6 +40,8 @@ EVENTS = [
     # experience
     "entity.experience_orb.pickup", "entity.player.levelup",
     "entity.arrow.shoot", "entity.arrow.hit", "entity.arrow.hit_player", "item.crossbow.shoot",
+    # ender pearl
+    "entity.ender_pearl.throw", "entity.player.teleport", "entity.ender_eye.launch",
     # tnt & explosion
     "entity.tnt.primed", "entity.creeper.primed", "entity.generic.explode",
 ]
@@ -135,7 +137,17 @@ def main() -> int:
             manifest_lines.append(f"{event}|{rel}|{volume:.3f}|{pmin:.3f}|{pmax:.3f}")
         print(f"{event}: {count} file(s)")
 
-    (out_root / "sounds_manifest.txt").write_text("\n".join(manifest_lines) + "\n", encoding="utf-8")
+    manifest_path = out_root / "sounds_manifest.txt"
+    # The CS2 weapon and trident sounds come from other tools and share this manifest: keep the events this run
+    # does not own instead of clobbering them.
+    kept: list[str] = []
+    if manifest_path.is_file():
+        wanted = set(args.events)
+        for line in manifest_path.read_text(encoding="utf-8").splitlines():
+            event = line.split("|", 1)[0]
+            if event and event not in wanted:
+                kept.append(line)
+    manifest_path.write_text("\n".join(kept + manifest_lines) + "\n", encoding="utf-8")
     if missing:
         print("events not in sounds.json: " + ", ".join(missing), file=sys.stderr)
     print(f"wrote {len(manifest_lines)} sound files to {out_root}")

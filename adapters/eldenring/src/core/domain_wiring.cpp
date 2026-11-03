@@ -54,6 +54,15 @@ void SetupLocomotion() {
         return (g_blocks.get(c_low) != mc::BlockId::Air || g_blocks.get(c_high) != mc::BlockId::Air);
     };
     cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
+    cb.apply_self_damage = [](float mc_damage) {
+        const uintptr_t chr = PlayerChrPtr();
+        eldenring::live::Vitals v{};
+        if (chr == 0 || !eldenring::live::readVitals(g_reader, g_img.base, chr, v)) return;
+        const int dmg = eldenring::live::scaleToEr(mc_damage, v.max_hp);
+        if (dmg > 0) SetChrHp(chr, std::max(0, v.hp - dmg));
+        Log("pearl: self damage %d -> hp %d/%d", dmg, std::max(0, v.hp - dmg), v.max_hp);
+    };
+    cb.play_sound = [](const char* snd, float vol) { eraudio::Play(snd, vol); };
     eldenring::movement::PlayerLocomotion::Instance().setCallbacks(cb);
 }
 
@@ -231,6 +240,7 @@ void SetupInput() {
         cb.try_place_block = TryPlaceBlock;
         cb.try_use_spawn_egg = TryUseSpawnEgg;
         cb.use_elytra_firework = TryUseElytraFirework;
+        cb.throw_ender_pearl = TryThrowEnderPearl;
         cb.click_attack = ClickAttack;
         cb.enqueue_nearest_hostile = EnqueueNearestHostile;
         cb.queue_bullet_fire = [](float dmg) { return QueueBulletFire(dmg); };

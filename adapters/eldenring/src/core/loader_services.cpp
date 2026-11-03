@@ -318,6 +318,22 @@ bool TryUseElytraFirework() {
     return true;
 }
 
+bool TryThrowEnderPearl() {
+    auto& ctx = RuntimeContext::Instance();
+    if (!ctx.mode().mc_mode.load(std::memory_order_relaxed)) return false;
+    std::lock_guard<std::mutex> g(g_melee_mutex);
+    if (g_melee.heldItem() != mc::ItemId::EnderPearl || g_melee.countAt(g_melee.selectedSlot()) <= 0) {
+        return false;
+    }
+    // The launch happens on the next camera step, where the owner's velocity and the view are readable.
+    eldenring::movement::PlayerLocomotion::Instance().requestEnderPearlThrow();
+    if (eldenring::creative::consumesItems(ctx.currentGameMode())) {
+        g_melee.consumeFirst(mc::ItemId::EnderPearl);
+    }
+    Log("pearl: throw requested");
+    return true;
+}
+
 DWORD FindGameWindowThread() {
     struct Ctx {
         DWORD pid;

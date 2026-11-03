@@ -87,6 +87,26 @@ void BuildArrowMesh(const mc::rig::ItemSprite& sprite, unsigned atlas_w, unsigne
                                            b_v, static_cast<uint16_t>(b_v + 2), static_cast<uint16_t>(b_v + 3)});
 }
 
+// The flying ender pearl: one camera-facing billboard quad, like Minecraft's item entity. The renderer builds
+// the world matrix from the camera basis, so the sprite always faces the viewer. 4 px = 0.25 m.
+void BuildPearlMesh(const mc::rig::ItemSprite& sprite, unsigned atlas_w, unsigned atlas_h, const FpItemCell& cell,
+                    std::vector<mc::rig::RigVertex>& out_vertices, std::vector<uint16_t>& out_indices) {
+    (void)sprite;
+    const float u0 = static_cast<float>(cell.x) / static_cast<float>(atlas_w);
+    const float v0 = static_cast<float>(cell.y) / static_cast<float>(atlas_h);
+    const float u1 = static_cast<float>(cell.x + cell.w) / static_cast<float>(atlas_w);
+    const float v1 = static_cast<float>(cell.y + cell.h) / static_cast<float>(atlas_h);
+    constexpr float h = 0.125f;
+
+    const uint16_t base = static_cast<uint16_t>(out_vertices.size());
+    out_vertices.push_back({-h, -h, 0.f, u0, v1});
+    out_vertices.push_back({h, -h, 0.f, u1, v1});
+    out_vertices.push_back({h, h, 0.f, u1, v0});
+    out_vertices.push_back({-h, h, 0.f, u0, v0});
+    out_indices.insert(out_indices.end(), {base, static_cast<uint16_t>(base + 1), static_cast<uint16_t>(base + 2),
+                                           base, static_cast<uint16_t>(base + 2), static_cast<uint16_t>(base + 3)});
+}
+
 } // namespace
 
 RigCpuMesh BuildSteveRigMesh() {
@@ -163,6 +183,11 @@ HeldItemsMesh BuildHeldItems(const uint8_t* atlas_rgba, unsigned atlas_w, unsign
             const mc::rig::ItemSprite arrow_sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
             BuildArrowMesh(arrow_sprite, atlas_w, atlas_h, cell, out.arrow_vertices, out.arrow_indices);
             out.arrow_valid = !out.arrow_vertices.empty();
+        }
+        if (item == mc::ItemId::EnderPearl) {
+            const mc::rig::ItemSprite pearl_sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
+            BuildPearlMesh(pearl_sprite, atlas_w, atlas_h, cell, out.pearl_vertices, out.pearl_indices);
+            out.pearl_valid = !out.pearl_vertices.empty();
         }
         if (item == mc::ItemId::Shield) { // the raised shield has its own display transform
             const mc::rig::RigMesh up = mc::rig::buildShieldMesh(ShieldSheet(), eldenring::render::kBasis, mc::rig::Hand::Right, true);

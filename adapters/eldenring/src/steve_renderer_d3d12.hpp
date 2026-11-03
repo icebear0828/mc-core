@@ -143,6 +143,13 @@ public:
                     const std::vector<mc::rig::Mat4>& arrow_matrices,
                     const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv);
 
+    // Draws flying ender pearls in 3D world space using the held item atlas (three crossed billboard quads).
+    void drawPearls(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv_heap,
+                    D3D12_GPU_DESCRIPTOR_HANDLE atlas_table, unsigned width, unsigned height,
+                    const mc::rig::Mat4& view_proj,
+                    const std::vector<mc::rig::Mat4>& pearl_matrices,
+                    const SteveParams& params, D3D12_CPU_DESCRIPTOR_HANDLE rtv);
+
 private:
     static constexpr int kShadowSegments = 24;
 
@@ -205,6 +212,11 @@ private:
     D3D12_VERTEX_BUFFER_VIEW arrow_vbv_{};
     D3D12_INDEX_BUFFER_VIEW arrow_ibv_{};
     unsigned arrow_index_count_{0};
+    ID3D12Resource* pearl_vertices_{nullptr};
+    ID3D12Resource* pearl_indices_{nullptr};
+    D3D12_VERTEX_BUFFER_VIEW pearl_vbv_{};
+    D3D12_INDEX_BUFFER_VIEW pearl_ibv_{};
+    unsigned pearl_index_count_{0};
     struct BlockSlot {
         ID3D12Resource* vb{nullptr};
         ID3D12Resource* ib{nullptr};

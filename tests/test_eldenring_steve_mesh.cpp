@@ -20,6 +20,7 @@ std::vector<erov::steve::FpItemCell> MakeCells() {
         {static_cast<uint16_t>(mc::ItemId::Shield), 0, 0, 16, 16},
         {static_cast<uint16_t>(mc::ItemId::Arrow), 16, 0, 16, 16},
         {static_cast<uint16_t>(mc::ItemId::DiamondSword), 32, 0, 16, 16},
+        {static_cast<uint16_t>(mc::ItemId::EnderPearl), 48, 0, 16, 16},
     };
 }
 
@@ -111,6 +112,24 @@ TEST(EldenRingSteveMesh, ArrowMeshHasFourPlanes) {
     ASSERT_FALSE(base.indices.empty());
     EXPECT_EQ(mesh.arrow_indices.size(), 2 * base.indices.size() + 12);
     EXPECT_EQ(mesh.arrow_vertices.size(), 2 * base.vertices.size() + 8);
+}
+
+TEST(EldenRingSteveMesh, PearlMeshIsASingleBillboardQuad) {
+    const std::vector<uint8_t> atlas = MakeAtlas(64, 64);
+    const erov::steve::HeldItemsMesh mesh = erov::steve::BuildHeldItems(atlas.data(), 64, 64, MakeCells());
+    ASSERT_TRUE(mesh.pearl_valid);
+    EXPECT_EQ(mesh.pearl_vertices.size(), 4u);
+    EXPECT_EQ(mesh.pearl_indices.size(), 6u);
+    const float u0 = 48.f / 64.f, u1 = 64.f / 64.f, v0 = 0.f, v1 = 16.f / 64.f;
+    for (const mc::rig::RigVertex& v : mesh.pearl_vertices) {
+        EXPECT_LE(std::abs(v.x), 0.1251f);
+        EXPECT_LE(std::abs(v.y), 0.1251f);
+        EXPECT_NEAR(v.z, 0.f, 1e-6f);
+        EXPECT_GE(v.u, u0 - 1e-5f);
+        EXPECT_LE(v.u, u1 + 1e-5f);
+        EXPECT_GE(v.v, v0 - 1e-5f);
+        EXPECT_LE(v.v, v1 + 1e-5f);
+    }
 }
 
 TEST(EldenRingSteveMesh, MobMeshHasOneRangePerBone) {

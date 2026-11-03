@@ -18,6 +18,7 @@ add_executable(mc_tests
     test_consumables.cpp
     test_elytra.cpp
     test_elytra_flight.cpp
+    test_ender_pearl.cpp
     test_hud.cpp
     test_hud_layout.cpp
     test_session.cpp
