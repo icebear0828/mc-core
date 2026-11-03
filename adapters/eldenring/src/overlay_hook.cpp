@@ -710,6 +710,18 @@ void STDMETHODCALLTYPE ExecuteDetour(ID3D12CommandQueue* q, UINT n, ID3D12Comman
 }
 
 HRESULT STDMETHODCALLTYPE PresentDetour(IDXGISwapChain* sc, UINT sync, UINT flags) {
+    // Frame-time distribution: Present-to-Present, i.e. what the player actually feels.
+    static std::chrono::steady_clock::time_point s_last_frame{};
+    static bool s_have_last_frame = false;
+    if (eldenring::perfstats::on()) {
+        const auto now = std::chrono::steady_clock::now();
+        if (s_have_last_frame) {
+            eldenring::perfstats::noteFrame(static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(now - s_last_frame).count()));
+        }
+        s_last_frame = now;
+        s_have_last_frame = true;
+    }
     eldenring::perfstats::reportIfDue(GetTickCount64(), [](const char* line) { Logf("%s", line); });
     if (g_steve_cfg.depth_probe) probe::OnPresent();
     if (!g_hook_state.failed()) {

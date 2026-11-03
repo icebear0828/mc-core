@@ -36,6 +36,14 @@ struct Counters {
     std::atomic<uint64_t> melee_lock_wait_ns{0};
     std::atomic<uint64_t> melee_lock_hold_ns{0};
     std::atomic<uint64_t> melee_lock_max_hold_ns{0};
+    std::atomic<uint64_t> native_lock_wait_ns{0};
+    std::atomic<uint64_t> native_lock_hold_ns{0};
+    std::atomic<uint64_t> native_lock_max_hold_ns{0};
+    std::atomic<uint64_t> frames{0};
+    std::atomic<uint64_t> frames_over_16_7{0};
+    std::atomic<uint64_t> frames_over_33{0};
+    std::atomic<uint64_t> frames_over_50{0};
+    std::atomic<uint64_t> worst_frame_ns{0};
 };
 
 struct Delta {
@@ -56,6 +64,14 @@ struct Delta {
     uint64_t melee_lock_wait_ns{0};
     uint64_t melee_lock_hold_ns{0};
     uint64_t melee_lock_max_hold_ns{0};
+    uint64_t native_lock_wait_ns{0};
+    uint64_t native_lock_hold_ns{0};
+    uint64_t native_lock_max_hold_ns{0};
+    uint64_t frames{0};
+    uint64_t frames_over_16_7{0};
+    uint64_t frames_over_33{0};
+    uint64_t frames_over_50{0};
+    uint64_t worst_frame_ns{0};
 };
 
 inline Counters& counters() {
@@ -135,7 +151,44 @@ inline void bumpMax(std::atomic<uint64_t>& slot, uint64_t value) noexcept {
     }
 }
 
-enum class LockKind { Blocks, Melee };
+inline void noteFrame(uint64_t frame_ns) noexcept {
+    if (!on()) return;
+    Counters& c = counters();
+    c.frames.fetch_add(1, std::memory_order_relaxed);
+    if (frame_ns > 16666667ull) c.frames_over_16_7.fetch_add(1, std::memory_order_relaxed);
+    if (frame_ns > 33333333ull) c.frames_over_33.fetch_add(1, std::memory_order_relaxed);
+    if (frame_ns > 50000000ull) c.frames_over_50.fetch_add(1, std::memory_order_relaxed);
+    bumpMax(c.worst_frame_ns, frame_ns);
+}
+
+enum class LockKind { Blocks, Melee, Native };
+
+inline void noteLockWait(LockKind kind, uint64_t ns) noexcept {
+    Counters& c = counters();
+    switch (kind) {
+        case LockKind::Blocks: c.blocks_lock_wait_ns.fetch_add(ns, std::memory_order_relaxed); break;
+        case LockKind::Melee: c.melee_lock_wait_ns.fetch_add(ns, std::memory_order_relaxed); break;
+        case LockKind::Native: c.native_lock_wait_ns.fetch_add(ns, std::memory_order_relaxed); break;
+    }
+}
+
+inline void noteLockHold(LockKind kind, uint64_t ns) noexcept {
+    Counters& c = counters();
+    switch (kind) {
+        case LockKind::Blocks:
+            c.blocks_lock_hold_ns.fetch_add(ns, std::memory_order_relaxed);
+            bumpMax(c.blocks_lock_max_hold_ns, ns);
+            break;
+        case LockKind::Melee:
+            c.melee_lock_hold_ns.fetch_add(ns, std::memory_order_relaxed);
+            bumpMax(c.melee_lock_max_hold_ns, ns);
+            break;
+        case LockKind::Native:
+            c.native_lock_hold_ns.fetch_add(ns, std::memory_order_relaxed);
+            bumpMax(c.native_lock_max_hold_ns, ns);
+            break;
+    }
+}
 
 // Times one std::mutex scope. Wait is the time spent blocked on lock();
 // hold is the time between acquisition and the end of the scope.
@@ -151,26 +204,11 @@ public:
         const uint64_t locked = nowNs();
         locked_at_ = locked;
         timed_ = true;
-        Counters& c = counters();
-        if (kind_ == LockKind::Blocks) {
-            c.blocks_lock_wait_ns.fetch_add(locked - start, std::memory_order_relaxed);
-        } else {
-            c.melee_lock_wait_ns.fetch_add(locked - start, std::memory_order_relaxed);
-        }
+        noteLockWait(kind_, locked - start);
     }
 
     ~ScopedTimedLock() {
-        if (timed_) {
-            const uint64_t held = nowNs() - locked_at_;
-            Counters& c = counters();
-            if (kind_ == LockKind::Blocks) {
-                c.blocks_lock_hold_ns.fetch_add(held, std::memory_order_relaxed);
-                bumpMax(c.blocks_lock_max_hold_ns, held);
-            } else {
-                c.melee_lock_hold_ns.fetch_add(held, std::memory_order_relaxed);
-                bumpMax(c.melee_lock_max_hold_ns, held);
-            }
-        }
+        if (timed_) noteLockHold(kind_, nowNs() - locked_at_);
         mutex_.unlock();
     }
 
@@ -206,6 +244,14 @@ inline Delta takeDelta() noexcept {
     d.melee_lock_wait_ns = c.melee_lock_wait_ns.exchange(0, std::memory_order_relaxed);
     d.melee_lock_hold_ns = c.melee_lock_hold_ns.exchange(0, std::memory_order_relaxed);
     d.melee_lock_max_hold_ns = c.melee_lock_max_hold_ns.exchange(0, std::memory_order_relaxed);
+    d.native_lock_wait_ns = c.native_lock_wait_ns.exchange(0, std::memory_order_relaxed);
+    d.native_lock_hold_ns = c.native_lock_hold_ns.exchange(0, std::memory_order_relaxed);
+    d.native_lock_max_hold_ns = c.native_lock_max_hold_ns.exchange(0, std::memory_order_relaxed);
+    d.frames = c.frames.exchange(0, std::memory_order_relaxed);
+    d.frames_over_16_7 = c.frames_over_16_7.exchange(0, std::memory_order_relaxed);
+    d.frames_over_33 = c.frames_over_33.exchange(0, std::memory_order_relaxed);
+    d.frames_over_50 = c.frames_over_50.exchange(0, std::memory_order_relaxed);
+    d.worst_frame_ns = c.worst_frame_ns.exchange(0, std::memory_order_relaxed);
     return d;
 }
 
@@ -218,16 +264,24 @@ inline void formatDelta(const Delta& d, char* out, std::size_t capacity) noexcep
     const double melee_wait_ms = static_cast<double>(d.melee_lock_wait_ns) / 1e6;
     const double melee_hold_ms = static_cast<double>(d.melee_lock_hold_ns) / 1e6;
     const double melee_max_ms = static_cast<double>(d.melee_lock_max_hold_ns) / 1e6;
+    const double native_wait_ms = static_cast<double>(d.native_lock_wait_ns) / 1e6;
+    const double native_hold_ms = static_cast<double>(d.native_lock_hold_ns) / 1e6;
+    const double native_max_ms = static_cast<double>(d.native_lock_max_hold_ns) / 1e6;
+    const double worst_ms = static_cast<double>(d.worst_frame_ns) / 1e6;
     (void)std::snprintf(
         out, capacity,
         "perfstats/s: read=%llu fail=%llu slow_rtti=%llu rtti_hit=%llu enum=%llu (%llu slots) grace=%llu (%llu slots) unm=%llu "
-        "ray=%llu %.1fus/call | blocks_lock wait=%.3fms hold=%.3fms max=%.3fms | melee_lock wait=%.3fms hold=%.3fms max=%.3fms",
+        "ray=%llu %.1fus/call | blocks_lock wait=%.3fms hold=%.3fms max=%.3fms | melee_lock wait=%.3fms hold=%.3fms max=%.3fms | "
+        "native_lock wait=%.3fms hold=%.3fms max=%.3fms | frames=%llu >16.7=%llu >33=%llu >50=%llu worst=%.1fms",
         static_cast<unsigned long long>(d.read_calls), static_cast<unsigned long long>(d.read_failures),
         static_cast<unsigned long long>(d.slow_rtti), static_cast<unsigned long long>(d.rtti_cache_hits),
         static_cast<unsigned long long>(d.enumerate_calls), static_cast<unsigned long long>(d.enumerate_slots),
         static_cast<unsigned long long>(d.find_grace_calls), static_cast<unsigned long long>(d.find_grace_slots),
         static_cast<unsigned long long>(d.update_native_model), static_cast<unsigned long long>(d.cast_ray_calls), ray_us,
-        blocks_wait_ms, blocks_hold_ms, blocks_max_ms, melee_wait_ms, melee_hold_ms, melee_max_ms);
+        blocks_wait_ms, blocks_hold_ms, blocks_max_ms, melee_wait_ms, melee_hold_ms, melee_max_ms, native_wait_ms,
+        native_hold_ms, native_max_ms, static_cast<unsigned long long>(d.frames),
+        static_cast<unsigned long long>(d.frames_over_16_7), static_cast<unsigned long long>(d.frames_over_33),
+        static_cast<unsigned long long>(d.frames_over_50), worst_ms);
 }
 
 // Reports at most once per second. Safe to call from several threads: only the

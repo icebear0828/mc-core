@@ -39,6 +39,7 @@ TEST(EldenringPerfStats, EnabledCountsEveryCategory) {
     eldenring::perfstats::noteFindGraceSlots(9);
     eldenring::perfstats::noteUpdateNativeModel();
     eldenring::perfstats::noteCastRay(1500);
+    eldenring::perfstats::noteFrame(20000000);
 
     const eldenring::perfstats::Delta d = eldenring::perfstats::takeDelta();
     EXPECT_EQ(d.read_calls, 2u);
@@ -52,6 +53,27 @@ TEST(EldenringPerfStats, EnabledCountsEveryCategory) {
     EXPECT_EQ(d.update_native_model, 1u);
     EXPECT_EQ(d.cast_ray_calls, 1u);
     EXPECT_EQ(d.cast_ray_ns, 1500u);
+    EXPECT_EQ(d.frames, 1u);
+    EXPECT_EQ(d.frames_over_16_7, 1u);
+    EXPECT_EQ(d.frames_over_33, 0u);
+    EXPECT_EQ(d.frames_over_50, 0u);
+    EXPECT_EQ(d.worst_frame_ns, 20000000u);
+    eldenring::perfstats::setEnabled(false);
+}
+
+TEST(EldenringPerfStats, FrameThresholdsAndWorstFrame) {
+    eldenring::perfstats::resetForTesting();
+    eldenring::perfstats::setEnabled(true);
+    eldenring::perfstats::noteFrame(16000000); // under 16.7 ms
+    eldenring::perfstats::noteFrame(20000000); // over 16.7 ms
+    eldenring::perfstats::noteFrame(40000000); // over 33 ms
+    eldenring::perfstats::noteFrame(60000000); // over 50 ms
+    const eldenring::perfstats::Delta d = eldenring::perfstats::takeDelta();
+    EXPECT_EQ(d.frames, 4u);
+    EXPECT_EQ(d.frames_over_16_7, 3u);
+    EXPECT_EQ(d.frames_over_33, 2u);
+    EXPECT_EQ(d.frames_over_50, 1u);
+    EXPECT_EQ(d.worst_frame_ns, 60000000u);
     eldenring::perfstats::setEnabled(false);
 }
 
@@ -71,6 +93,8 @@ TEST(EldenringPerfStats, FormatDeltaContainsKeys) {
     d.read_calls = 10;
     d.cast_ray_calls = 2;
     d.cast_ray_ns = 4000;
+    d.frames = 60;
+    d.worst_frame_ns = 20000000;
     char line[640] = {};
     eldenring::perfstats::formatDelta(d, line, sizeof(line));
     const std::string text(line);
@@ -78,6 +102,9 @@ TEST(EldenringPerfStats, FormatDeltaContainsKeys) {
     EXPECT_NE(text.find("ray=2 2.0us/call"), std::string::npos);
     EXPECT_NE(text.find("blocks_lock"), std::string::npos);
     EXPECT_NE(text.find("melee_lock"), std::string::npos);
+    EXPECT_NE(text.find("native_lock"), std::string::npos);
+    EXPECT_NE(text.find("frames=60"), std::string::npos);
+    EXPECT_NE(text.find("worst=20.0ms"), std::string::npos);
 }
 
 TEST(EldenringPerfStats, ScopedLockReleasesTheMutex) {
@@ -86,6 +113,11 @@ TEST(EldenringPerfStats, ScopedLockReleasesTheMutex) {
     std::mutex mutex;
     {
         eldenring::perfstats::ScopedTimedLock lock(mutex, eldenring::perfstats::LockKind::Blocks);
+    }
+    EXPECT_TRUE(mutex.try_lock());
+    mutex.unlock();
+    {
+        eldenring::perfstats::ScopedTimedLock lock(mutex, eldenring::perfstats::LockKind::Native);
     }
     EXPECT_TRUE(mutex.try_lock());
     mutex.unlock();
