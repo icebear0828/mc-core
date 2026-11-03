@@ -196,26 +196,29 @@ std::pair<float, float> faceURange(const rig::RigMesh& mesh, int face) {
 }
 } // namespace
 
-TEST(EntityModel, MirroredCubeFlipsEveryFaceHorizontallyAndSwapsTheSideFaces) {
+TEST(EntityModel, MirroredCubeMirrorsTheGeometrySoTheTextureRunsTheOtherWay) {
     const rig::RigMesh plain = oneCube(false).buildBoneMesh("leg", identityBasis());
     const rig::RigMesh mirrored = oneCube(true).buildBoneMesh("leg", identityBasis());
     ASSERT_EQ(plain.vertices.size(), 24u);
     ASSERT_EQ(mirrored.vertices.size(), 24u);
-    // same rectangles on the skin for the front/back/top/bottom faces, but running the other way
-    for (int face : {0, 1, 4, 5}) {
+    // ModelPart.mirror keeps every UV rectangle where it is; it swaps the min/max X roles before the vertices
+    // are built, so the same vertex index gets the same UV but sits on the other side of the box.
+    for (int face = 0; face < 6; ++face) {
         EXPECT_EQ(faceURange(plain, face), faceURange(mirrored, face)) << face;
-        EXPECT_NEAR(plain.vertices[static_cast<size_t>(face * 4)].u, mirrored.vertices[static_cast<size_t>(face * 4 + 1)].u, 1e-6f) << face;
-        EXPECT_NEAR(plain.vertices[static_cast<size_t>(face * 4 + 1)].u, mirrored.vertices[static_cast<size_t>(face * 4)].u, 1e-6f) << face;
+        for (int i = 0; i < 4; ++i) {
+            const size_t v = static_cast<size_t>(face * 4 + i);
+            EXPECT_NEAR(plain.vertices[v].u, mirrored.vertices[v].u, 1e-6f) << face;
+        }
     }
-    // the west and east faces take each other's rectangle:
-    // Bedrock standard box UV: East is [0..4], West is [8..12] (for u=0, depth 4, width 4)
-    EXPECT_EQ(faceURange(plain, 2), (std::pair<float, float>{8.f, 12.f}));
-    EXPECT_EQ(faceURange(plain, 3), (std::pair<float, float>{0.f, 4.f}));
+    // Minecraft's box layout: West is [0..4] and East is [8..12] (for u=0, depth 4, width 4).
+    EXPECT_EQ(faceURange(plain, 2), (std::pair<float, float>{0.f, 4.f}));
+    EXPECT_EQ(faceURange(plain, 3), (std::pair<float, float>{8.f, 12.f}));
     EXPECT_EQ(faceURange(mirrored, 2), (std::pair<float, float>{0.f, 4.f}));
     EXPECT_EQ(faceURange(mirrored, 3), (std::pair<float, float>{8.f, 12.f}));
-    // and are flipped too: the first vertex of the west face was on the left of its rectangle, now it is on the right
-    EXPECT_NEAR(plain.vertices[8].u * 64.f, 8.f, 1e-4f);
-    EXPECT_NEAR(mirrored.vertices[8].u * 64.f, 4.f, 1e-4f);
+    // The mirrored cube's west face is built at bedrock x = 4 instead of 0 (host y, since the canonical
+    // frame maps bedrock +X to host +Y).
+    EXPECT_NEAR(plain.vertices[8].y, 0.f, 1e-4f);
+    EXPECT_NEAR(mirrored.vertices[8].y, 22.5f, 1e-4f);
 }
 
 namespace {
@@ -405,8 +408,8 @@ TEST(EntityModel, CreeperHeadFaceUvOrientationMatchesMinecraftStandard) {
     // Bottom (-Y) is at bedrock.y = 18 -> canonical.z = +18 * s (down)
 
     // Check North face (face 0, vertices 0..3):
-    // Standard Bedrock: East side of face connects to East face (U = 8px)
-    // West side of face connects to West face (U = 16px)
+    // Minecraft's ModelPart.Cube unwrap: the East side of the face connects to the East face (U = 16px)
+    // and the West side to the West face (U = 8px); the rect itself is U 8..16.
     // Top of face connects to Top face (V = 8px)
     // Bottom of face connects to Bottom (V = 16px)
     bool found_east_top = false;
@@ -422,23 +425,23 @@ TEST(EntityModel, CreeperHeadFaceUvOrientationMatchesMinecraftStandard) {
         const float v_px = v.v * 32.0f;
 
         if (std::abs(v.y - 4.0f * s) < 1e-3f && std::abs(v.z - 26.0f * s) < 1e-3f) {
-            // East-Top: should be U = 8.0, V = 8.0
-            EXPECT_NEAR(u_px, 8.0f, 1e-3f) << "Front face East-Top U must be 8 (left of face texture)";
+            // East-Top: should be U = 16.0, V = 8.0
+            EXPECT_NEAR(u_px, 16.0f, 1e-3f) << "Front face East-Top U must be 16 (right of face texture)";
             EXPECT_NEAR(v_px, 8.0f, 1e-3f) << "Front face East-Top V must be 8 (top of face texture)";
             found_east_top = true;
         } else if (std::abs(v.y - (-4.0f * s)) < 1e-3f && std::abs(v.z - 26.0f * s) < 1e-3f) {
-            // West-Top: should be U = 16.0, V = 8.0
-            EXPECT_NEAR(u_px, 16.0f, 1e-3f) << "Front face West-Top U must be 16 (right of face texture)";
+            // West-Top: should be U = 8.0, V = 8.0
+            EXPECT_NEAR(u_px, 8.0f, 1e-3f) << "Front face West-Top U must be 8 (left of face texture)";
             EXPECT_NEAR(v_px, 8.0f, 1e-3f) << "Front face West-Top V must be 8 (top of face texture)";
             found_west_top = true;
         } else if (std::abs(v.y - 4.0f * s) < 1e-3f && std::abs(v.z - 18.0f * s) < 1e-3f) {
-            // East-Bottom: should be U = 8.0, V = 16.0
-            EXPECT_NEAR(u_px, 8.0f, 1e-3f) << "Front face East-Bottom U must be 8";
+            // East-Bottom: should be U = 16.0, V = 16.0
+            EXPECT_NEAR(u_px, 16.0f, 1e-3f) << "Front face East-Bottom U must be 16";
             EXPECT_NEAR(v_px, 16.0f, 1e-3f) << "Front face East-Bottom V must be 16";
             found_east_bottom = true;
         } else if (std::abs(v.y - (-4.0f * s)) < 1e-3f && std::abs(v.z - 18.0f * s) < 1e-3f) {
-            // West-Bottom: should be U = 16.0, V = 16.0
-            EXPECT_NEAR(u_px, 16.0f, 1e-3f) << "Front face West-Bottom U must be 16";
+            // West-Bottom: should be U = 8.0, V = 16.0
+            EXPECT_NEAR(u_px, 8.0f, 1e-3f) << "Front face West-Bottom U must be 8";
             EXPECT_NEAR(v_px, 16.0f, 1e-3f) << "Front face West-Bottom V must be 16";
             found_west_bottom = true;
         }
@@ -449,14 +452,14 @@ TEST(EntityModel, CreeperHeadFaceUvOrientationMatchesMinecraftStandard) {
     EXPECT_TRUE(found_west_bottom);
 
     // Also verify East face (+X, left) and West face (-X, right) UV rects:
-    // Bedrock standard: East = [0..8], West = [16..24]
+    // Minecraft's unwrap: West = [0..8], East = [16..24]
     // Face indices in appendCubeMesh: 0=North, 1=South, 2=West, 3=East
     const auto [w_lo, w_hi] = faceURange(mesh, 2);
     const auto [e_lo, e_hi] = faceURange(mesh, 3);
-    EXPECT_NEAR(e_lo, 0.0f, 1e-3f) << "East face U min must be 0";
-    EXPECT_NEAR(e_hi, 8.0f, 1e-3f) << "East face U max must be 8";
-    EXPECT_NEAR(w_lo, 16.0f, 1e-3f) << "West face U min must be 16";
-    EXPECT_NEAR(w_hi, 24.0f, 1e-3f) << "West face U max must be 24";
+    EXPECT_NEAR(e_lo, 16.0f, 1e-3f) << "East face U min must be 16";
+    EXPECT_NEAR(e_hi, 24.0f, 1e-3f) << "East face U max must be 24";
+    EXPECT_NEAR(w_lo, 0.0f, 1e-3f) << "West face U min must be 0";
+    EXPECT_NEAR(w_hi, 8.0f, 1e-3f) << "West face U max must be 8";
 }
 
 } // namespace

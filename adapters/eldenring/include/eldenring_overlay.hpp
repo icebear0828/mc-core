@@ -101,6 +101,7 @@ struct SteveState {
     bool cam_valid{false}; // cam/fov_y are a real camera this frame (also set while the figure itself is not drawn)
     // Phase A debug animation state (mc_er_dbg_anim.txt + Insert/Delete/Home/End).
     bool gliding{false};
+    float glide_blend{1.f}; // vanilla's f0: 1 = level/climbing (wings spread), 0 = diving (wings folded)
     bool riptide{false};
     float trident_charge{0.f};
     uint32_t firework_seq{0};

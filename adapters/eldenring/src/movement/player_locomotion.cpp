@@ -1,6 +1,7 @@
 #include "eldenring_locomotion.hpp"
 #include "eldenring_ow_dash.hpp"
 
+#include <algorithm>
 #include <cstdarg>
 #include <cmath>
 #include <cstring>
@@ -36,6 +37,13 @@ void PlayerLocomotion::resetForTesting() {
     fly_rebases_ = 0;
     flight_tap_.reset();
     last_flight_log_ms_ = 0;
+    last_elytra_log_ms_ = 0;
+    elytra_ = mc::ElytraFlightModel{};
+    prev_elytra_jump_ = false;
+    elytra_accum_ = 0.f;
+    elytra_have_last_pos_ = false;
+    elytra_have_pos_ = false;
+    elytra_have_written_ = false;
 
     mc_jump_speed_.store(eldenring::jump::kMcJumpInitialVelocity, std::memory_order_relaxed);
     prev_jump_key_ = false;
@@ -288,6 +296,17 @@ void PlayerLocomotion::stepJump(float dt, uint64_t now_ms, RuntimeContext& ctx) 
     // Creative flight owns the position; a space press must not also start a jump (the double-tap
     // that enables flight would otherwise write a jump arc on the same frame).
     if (isFlying()) {
+        prev_jump_key_ = false;
+        jump_consumed_ = true;
+        jump_controller_.cancel();
+        ctx.player().jump_active.store(false, std::memory_order_relaxed);
+        return;
+    }
+
+    // The elytra owns the position and velocity. If the jump controller from
+    // the takeoff were still active it would write the same fields every frame
+    // and fight the glide (observed as severe camera shake).
+    if (elytra_.state().is_gliding) {
         prev_jump_key_ = false;
         jump_consumed_ = true;
         jump_controller_.cancel();
@@ -617,6 +636,210 @@ void PlayerLocomotion::stepFlight(float dt, uint64_t now_ms, RuntimeContext& ctx
 
     std::memcpy(fly_last_written_, fly_own_, sizeof(fly_last_written_));
     fly_have_written_ = true;
+}
+
+bool PlayerLocomotion::useElytraFirework(int ticks) {
+    if (!elytra_.state().is_gliding) return false;
+    return elytra_.useFireworkBoost(ticks);
+}
+
+float PlayerLocomotion::elytraBlend() const {
+    // Vanilla PlayerElytraAnimationState: f = 1 while not descending, else 1 - (-vy/|v|)^1.5.
+    const mc::Vec3& v = elytra_.state().velocity;
+    const float len = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    if (len <= 1e-6f || v.y >= 0.f) return 1.f;
+    return 1.f - std::pow(-v.y / len, 1.5f);
+}
+
+void PlayerLocomotion::stepElytra(float dt, uint64_t now_ms, RuntimeContext& ctx, bool ignore_focus) {
+    const bool fg = callbacks_.is_game_in_foreground ? callbacks_.is_game_in_foreground() : true;
+    const bool dead = callbacks_.is_player_dead ? callbacks_.is_player_dead() : false;
+    const bool allowed = ctx.mode().mc_mode.load(std::memory_order_relaxed) && (ignore_focus || fg) && !dead &&
+                         !ctx.ui().inv_open.load(std::memory_order_relaxed) && !isFlying();
+    if (!allowed) {
+        if (elytra_.state().is_gliding) {
+            elytra_.stopGliding();
+            ctx.mode().elytra_gliding.store(false, std::memory_order_relaxed);
+            log("elytra: stopped (mode/focus/inventory/death/flight)");
+        }
+        prev_elytra_jump_ = false;
+        elytra_have_pos_ = false;
+        elytra_have_written_ = false;
+        return;
+    }
+
+    const uintptr_t player = callbacks_.get_player_chr ? callbacks_.get_player_chr() : 0;
+    const uintptr_t module = player != 0 && callbacks_.get_physics_module ? callbacks_.get_physics_module(player) : 0;
+    if (module == 0 || !callbacks_.safe_read) return;
+
+    float pos[3] = {};
+    if (!callbacks_.safe_read(module + layout::kPhysicsPosition, pos, sizeof(pos))) return;
+
+    // Host velocity from the position delta: the vanilla glide starts with the
+    // current deltaMovement. +0x80 is the previous frame's position. Clamp it:
+    // the engine's own gravity pull between ticks is not player motion.
+    float last_pos[3] = {};
+    if (callbacks_.safe_read(module + layout::kPhysicsPosition + 0x10, last_pos, sizeof(last_pos)) && dt > 1e-4f) {
+        const float vx = (pos[0] - last_pos[0]) / dt / 20.f;
+        const float vy = (pos[1] - last_pos[1]) / dt / 20.f;
+        const float vz = (pos[2] - last_pos[2]) / dt / 20.f;
+        const float len = std::sqrt(vx * vx + vy * vy + vz * vz);
+        const float dist = std::sqrt((pos[0] - last_pos[0]) * (pos[0] - last_pos[0]) +
+                                     (pos[1] - last_pos[1]) * (pos[1] - last_pos[1]) +
+                                     (pos[2] - last_pos[2]) * (pos[2] - last_pos[2]));
+        if (dist < 5.f && len < 1.f) {
+            elytra_last_vel_[0] = vx;
+            elytra_last_vel_[1] = vy;
+            elytra_last_vel_[2] = vz;
+        } else {
+            elytra_last_vel_[0] = elytra_last_vel_[1] = elytra_last_vel_[2] = 0.f;
+        }
+    }
+
+    const bool on_ground = callbacks_.is_player_airborne ? !callbacks_.is_player_airborne() : true;
+    const bool has_glider = callbacks_.has_glider ? callbacks_.has_glider() : false;
+    const bool jump_down = isKeyDown(VK_SPACE);
+    const bool jump_edge = jump_down && !prev_elytra_jump_;
+    prev_elytra_jump_ = jump_down;
+
+    if (!elytra_.state().is_gliding) {
+        if (jump_edge && mc::ElytraFlightModel::canGlide(on_ground, false, false, has_glider, isFlying())) {
+            const mc::Vec3 initial{elytra_last_vel_[0], elytra_last_vel_[1], elytra_last_vel_[2]};
+            if (elytra_.startGliding(true, false, initial)) {
+                elytra_accum_ = 0.f;
+                elytra_have_pos_ = true;
+                std::memcpy(elytra_pos_, pos, sizeof(elytra_pos_));
+                elytra_have_written_ = true;
+                std::memcpy(elytra_last_written_, pos, sizeof(elytra_last_written_));
+                jump_controller_.cancel();
+                prev_jump_key_ = false;
+                ctx.player().jump_active.store(false, std::memory_order_relaxed);
+                ctx.mode().elytra_gliding.store(true, std::memory_order_relaxed);
+                log("elytra: started v=(%.2f %.2f %.2f) b/t", static_cast<double>(initial.x),
+                    static_cast<double>(initial.y), static_cast<double>(initial.z));
+            }
+        }
+        return;
+    }
+
+    if (on_ground || !has_glider) {
+        elytra_.stopGliding();
+        ctx.mode().elytra_gliding.store(false, std::memory_order_relaxed);
+        elytra_have_pos_ = false;
+        elytra_have_written_ = false;
+        log("elytra: stopped (%s)", on_ground ? "ground" : "no glider");
+        return;
+    }
+
+    if (!elytra_have_pos_ || !elytra_have_written_) {
+        std::memcpy(elytra_pos_, pos, sizeof(elytra_pos_));
+        std::memcpy(elytra_last_written_, pos, sizeof(elytra_last_written_));
+        elytra_have_pos_ = true;
+        elytra_have_written_ = true;
+    } else if (flight::positionOverwritten(elytra_last_written_, pos, 3.f)) {
+        // The game re-bases Havok coordinates by whole 8 m steps. Follow the
+        // re-base, but treat any residual jump as an engine teleport/load.
+        const float before[3] = {elytra_pos_[0], elytra_pos_[1], elytra_pos_[2]};
+        flight::followRebase(elytra_pos_, elytra_last_written_, pos);
+        const float dx = elytra_pos_[0] - pos[0];
+        const float dy = elytra_pos_[1] - pos[1];
+        const float dz = elytra_pos_[2] - pos[2];
+        const float residual = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (residual > 5.f) {
+            elytra_.stopGliding();
+            ctx.mode().elytra_gliding.store(false, std::memory_order_relaxed);
+            elytra_have_pos_ = false;
+            elytra_have_written_ = false;
+            log("elytra: stopped (engine teleported %.1f m)", static_cast<double>(residual));
+            return;
+        }
+        log("elytra: rebase own=(%.2f %.2f %.2f) -> (%.2f %.2f %.2f) read=(%.2f %.2f %.2f)",
+            static_cast<double>(before[0]), static_cast<double>(before[1]), static_cast<double>(before[2]),
+            static_cast<double>(elytra_pos_[0]), static_cast<double>(elytra_pos_[1]),
+            static_cast<double>(elytra_pos_[2]), static_cast<double>(pos[0]), static_cast<double>(pos[1]),
+            static_cast<double>(pos[2]));
+    }
+
+    CameraPose cam{};
+    const bool have_cam = callbacks_.read_camera && callbacks_.read_camera(cam);
+
+    // 20 Hz velocity update (vanilla tick). The position is integrated every
+    // frame below: holding a 20 Hz position produced a visible stair-step and
+    // let the engine's per-frame gravity pull shake the camera.
+    if (dt > 0.2f) dt = 0.2f;
+    elytra_accum_ += dt;
+    if (elytra_accum_ > 0.25f) elytra_accum_ = 0.05f;
+    while (elytra_accum_ >= 0.05f) {
+        elytra_accum_ -= 0.05f;
+        if (!have_cam) break;
+        const mc::Vec3 look{cam.forward[0], cam.forward[1], cam.forward[2]};
+        elytra_.updateTick(look, false);
+    }
+
+    // Per-frame position integration using the current velocity.
+    const mc::Vec3 v = elytra_.state().velocity;
+    const float frac = std::clamp(dt / 0.05f, 0.f, 2.f);
+    const float step[3] = {v.x * frac, v.y * frac, v.z * frac};
+    float actual[3] = {elytra_pos_[0] + step[0], elytra_pos_[1] + step[1], elytra_pos_[2] + step[2]};
+    bool hit_x = false;
+    bool hit_z = false;
+    if (callbacks_.cast_ray) {
+        float fraction = 1.f;
+        const float heights[3] = {0.4f, 1.0f, 1.6f};
+        for (float h : heights) {
+            const float from[3] = {elytra_pos_[0], elytra_pos_[1] + h, elytra_pos_[2]};
+            const RayResult hit = callbacks_.cast_ray(from, step);
+            if (hit.ok && hit.hit) fraction = std::min(fraction, std::max(0.f, hit.fraction - 0.05f));
+        }
+        if (fraction < 1.f) {
+            actual[0] = elytra_pos_[0] + step[0] * fraction;
+            actual[1] = elytra_pos_[1] + step[1] * fraction;
+            actual[2] = elytra_pos_[2] + step[2] * fraction;
+            hit_x = std::fabs(step[0] * fraction - step[0]) > 1e-4f;
+            hit_z = std::fabs(step[2] * fraction - step[2]) > 1e-4f;
+        }
+    }
+    if (hit_x || hit_z) {
+        const mc::Vec3 after = mc::ElytraFlightModel::afterHorizontalCollision(v, hit_x, hit_z);
+        const float damage = elytra_.collisionDamage(v, after);
+        mc::ElytraFlightState state = elytra_.state();
+        state.velocity = after;
+        elytra_.setState(state);
+        if (damage > 0.f) log("elytra: wall hit damage=%.2f", static_cast<double>(damage));
+    }
+    std::memcpy(elytra_pos_, actual, sizeof(elytra_pos_));
+
+    // Write every frame, not only at 20 Hz: the engine pulls the player down
+    // between ticks (observed +0x80 - +0x70 = 0.836 m per frame).
+    if (callbacks_.safe_write) {
+        callbacks_.safe_write(module + layout::kPhysicsPosition, elytra_pos_, sizeof(elytra_pos_));
+        callbacks_.safe_write(module + layout::kPhysicsPosition + 0x10, elytra_pos_, sizeof(elytra_pos_));
+        const uint8_t one = 1;
+        callbacks_.safe_write(module + layout::kPhysicsProxySyncRequest, &one, 1);
+    }
+    std::memcpy(elytra_last_written_, elytra_pos_, sizeof(elytra_last_written_));
+    elytra_have_written_ = true;
+    writeFallTimer(player, 0.f);
+
+    // Face the glide direction, like creative flight.
+    if (have_cam) {
+        flight::Heading heading{};
+        if (flight::headingFromCamera(cam.forward, cam.right, heading) && callbacks_.safe_write) {
+            const float yaw = flight::bodyYaw(heading);
+            const auto q = eldenring::motion::characterQuatFromHeading(yaw);
+            const float q_raw[4] = {q.x, q.y, q.z, q.w};
+            callbacks_.safe_write(module + layout::kPhysicsOrientation, q_raw, sizeof(q_raw));
+        }
+    }
+
+    if (now_ms - last_elytra_log_ms_ >= 1000) {
+        last_elytra_log_ms_ = now_ms;
+        const auto& vel = elytra_.state().velocity;
+        log("elytra: pos=(%.2f %.2f %.2f) v=(%.2f %.2f %.2f) b/t fall_t=%.2f",
+            static_cast<double>(elytra_pos_[0]), static_cast<double>(elytra_pos_[1]),
+            static_cast<double>(elytra_pos_[2]), static_cast<double>(vel.x), static_cast<double>(vel.y),
+            static_cast<double>(vel.z), static_cast<double>(fallTimer(player)));
+    }
 }
 
 void PlayerLocomotion::stepOwRocketPunch(float dt, RuntimeContext& ctx) {

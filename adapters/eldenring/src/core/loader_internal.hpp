@@ -262,6 +262,7 @@ extern std::atomic<bool> g_no_stagger;
 extern std::atomic<unsigned> g_stagger_skipped;
 extern std::atomic<bool> g_fall_protect;
 extern std::atomic<uint64_t> g_movement_layer_ms;
+extern bool g_elytra_ignore_focus;
 extern std::atomic<unsigned> g_kills_skipped;
 extern std::mutex g_cr_mutex;
 extern creative::FallLogState g_cr_fall_state;
@@ -333,6 +334,7 @@ DWORD WINAPI LoaderThread(LPVOID);
 HRESULT WINAPI DirectInput8CreateImpl(HINSTANCE hinst, DWORD version, REFIID riid, LPVOID* out, LPUNKNOWN outer);
 DWORD WINAPI KeyThread(LPVOID);
 DWORD WINAPI AnimDebugThread(LPVOID);
+DWORD WINAPI PhysWriteTestThread(LPVOID);
 DWORD WINAPI CrackTunerThread(LPVOID);
 DWORD WINAPI InventorySaveThread(LPVOID);
 
@@ -430,6 +432,7 @@ BlockTarget FindBlockTarget();
 bool AimingAtCraftingTable();
 const char* BlockSound(mc::BlockId id);
 bool TryUseSpawnEgg();
+bool TryUseElytraFirework();
 bool TryIgniteTnt();
 bool TryIgniteCreeper();
 bool TryPlaceBlock();
@@ -457,6 +460,9 @@ void GroundSprintStep(float dt);
 void OwRocketPunchStep(float dt);
 void McJumpStep();
 void FlightStep();
+void ElytraStep(float dt);
+void PhysProbeStep(float dt);
+void PhysWriteTestStep();
 void InventoryTick(bool fg);
 
 // ---- hook installation / domain wiring -----------------------------------------------------

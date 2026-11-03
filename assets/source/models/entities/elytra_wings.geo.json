@@ -1,6 +1,5 @@
 {
   "format_version": "1.12.0",
-  "source": "Custom Blockbench recreation, not a Mojang asset. Wings scaled down 20% from the original 10x20 geometry, moved 1.5 px back and 1 px outward to clear the armor arms, and mapped to the 64x32 elytra texture at UV (26,1).",
   "minecraft:geometry": [
     {
       "description": {
@@ -20,67 +19,80 @@
           "name": "upper",
           "pivot": [
             0,
-            12,
+            24,
             0
           ],
           "cubes": []
         },
         {
-          "name": "rightWing",
+          "name": "leftWing",
           "parent": "upper",
           "pivot": [
-            -1,
-            23,
-            3
+            5,
+            24,
+            2
+          ],
+          "rotation": [
+            0,
+            0,
+            0
           ],
           "cubes": [
             {
               "origin": [
-                -10,
-                7,
-                4.1
+                -5,
+                4,
+                2
               ],
               "size": [
-                8,
-                16,
-                1
+                10,
+                20,
+                2
               ],
               "uv": [
-                26,
-                1
-              ]
+                22,
+                0
+              ],
+              "inflate": 1
             }
           ]
         },
         {
-          "name": "leftWing",
+          "name": "rightWing",
           "parent": "upper",
           "pivot": [
-            1,
-            23,
-            3
+            -5,
+            24,
+            2
+          ],
+          "rotation": [
+            0,
+            0,
+            0
           ],
           "cubes": [
             {
               "origin": [
-                2,
-                7,
-                4.1
+                -5,
+                4,
+                2
               ],
               "size": [
-                8,
-                16,
-                1
+                10,
+                20,
+                2
               ],
               "uv": [
-                26,
-                1
+                22,
+                0
               ],
+              "inflate": 1,
               "mirror": true
             }
           ]
         }
       ]
     }
-  ]
+  ],
+  "source": "Vanilla ElytraModel.createLayer (1.21.8), feet-at-origin geometry only: left_wing addBox(-10,0,0,10,20,2) at PartPose.offset(5,0,0), right_wing addBox(0,0,0,10,20,2).mirror() at (-5,0,0), both CubeDeformation(1) texOffs(22,0) on a 64x32 texture. Java y runs down from the shoulder, so Bedrock y = 24 - java y. The pose rotations (standing/crouching/gliding, from PlayerElytraAnimationState) are applied at runtime through boneMatrices' `extra`, not baked here; the crouching pose alone moves the wings down 3 px and uses elytra_wings_crouch.geo.json."
 }

@@ -1,6 +1,8 @@
 #include "core/loader_internal.hpp"
+#include "mc/elytra_models.hpp"
 
 #include <fstream>
+#include <iterator>
 
 namespace eldenring::loader_detail {
 
@@ -134,7 +136,11 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
     }
     {
         const auto& dbg = eldenring::RuntimeContext::Instance().mode();
-        steve.gliding = dbg.dbg_glide.load(std::memory_order_relaxed);
+        steve.gliding = dbg.dbg_glide.load(std::memory_order_relaxed) ||
+                        dbg.elytra_gliding.load(std::memory_order_relaxed);
+        steve.glide_blend = dbg.dbg_glide.load(std::memory_order_relaxed)
+                                ? 1.f
+                                : dbg.elytra_blend.load(std::memory_order_relaxed);
         steve.riptide = dbg.dbg_riptide.load(std::memory_order_relaxed);
         steve.trident_charge = dbg.dbg_trident_charge.load(std::memory_order_relaxed);
         steve.firework_seq = dbg.dbg_firework_seq.load(std::memory_order_relaxed);
@@ -315,8 +321,10 @@ void SetupOverlay() {
                 }
             }
         }
-        {   // Phase A debug props: elytra wings and trident (drawn only when the debug keys turn them on).
-            for (const char* prop : {"elytra_wings", "trident"}) {
+        {   // Phase A debug props: elytra wings (three vanilla poses) and trident.
+            std::vector<const char*> props(std::begin(mc::model::kElytraWingPoses), std::end(mc::model::kElytraWingPoses));
+            props.push_back("trident");
+            for (const char* prop : props) {
                 const std::string model_path = g_game_dir + "mods\\mc_adapter\\models\\" + prop + ".geo.json";
                 std::vector<uint8_t> json;
                 if (!ReadFileAll(model_path, json)) continue;

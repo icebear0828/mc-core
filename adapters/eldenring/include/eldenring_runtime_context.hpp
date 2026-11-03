@@ -131,6 +131,10 @@ struct ModeConfig {
     std::atomic<float> ow_vfx_scale{0.004f};
     // Phase A debug animation state (mc_er_dbg_anim.txt + Insert/Delete/Home/End).
     std::atomic<bool> dbg_glide{false};
+    std::atomic<bool> elytra_gliding{false};
+    // Vanilla's glide pose blend f0 = 1 - (-vy/|v|)^1.5 while descending, 1 otherwise: 1 spreads the wings,
+    // 0 folds them back. Written by the elytra step, read by the renderer.
+    std::atomic<float> elytra_blend{1.f};
     std::atomic<bool> dbg_riptide{false};
     std::atomic<float> dbg_trident_charge{0.f};
     std::atomic<uint32_t> dbg_firework_seq{0};

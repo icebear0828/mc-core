@@ -1,6 +1,322 @@
 #include "core/loader_internal.hpp"
+#include "eldenring_physprobe.hpp"
+#include "eldenring_physwrite.hpp"
+
+#include <cstdlib>
+#include <share.h>
 
 namespace eldenring::loader_detail {
+
+namespace {
+
+FILE* g_physprobe_file = nullptr;
+bool g_physprobe_on = false;
+uint64_t g_physprobe_next_check_ms = 0;
+eldenring::physprobe::State g_physprobe_state;
+eldenring::physprobe::Config g_physprobe_config;
+std::atomic<int> g_physwrite_request{-1};
+eldenring::physwrite::HoldState g_physwrite_hold;
+uint64_t g_physwrite_hold_ms = 1000;
+bool g_physwrite_full = false;
+bool g_physwrite_glide = false;
+float g_physwrite_speed_mps = 10.f;
+uint64_t g_physwrite_hold_log_ms = 0;
+
+void ClosePhysProbe() {
+    if (g_physprobe_file != nullptr) {
+        fprintf(g_physprobe_file, "=== physprobe stop ===\n");
+        fflush(g_physprobe_file);
+        fclose(g_physprobe_file);
+        g_physprobe_file = nullptr;
+    }
+    g_physprobe_on = false;
+}
+
+void OpenPhysProbe(const std::string& config_path) {
+    const std::string log_path = g_game_dir + "mc_er_physlog.txt";
+    // _SH_DENYNO: the trace can be tailed while the game runs, like mc_er.log.
+    FILE* f = _fsopen(log_path.c_str(), "a", _SH_DENYNO);
+    if (f == nullptr) {
+        Log("physprobe: cannot open %s", log_path.c_str());
+        return;
+    }
+
+    eldenring::physprobe::Config cfg;
+    std::vector<uint8_t> bytes;
+    if (ReadFileAll(config_path, bytes)) {
+        const std::string text(bytes.begin(), bytes.end());
+        const auto at = text.find("interval_ms=");
+        if (at != std::string::npos) {
+            const int v = std::atoi(text.c_str() + at + 12);
+            if (v >= 10 && v <= 1000) cfg.interval_ms = static_cast<uint64_t>(v);
+        }
+    }
+
+    g_physprobe_config = cfg;
+    g_physprobe_state = {};
+    g_physprobe_file = f;
+    g_physprobe_on = true;
+    fprintf(g_physprobe_file, "=== physprobe start interval_ms=%llu ===\n",
+                 static_cast<unsigned long long>(cfg.interval_ms));
+    fflush(g_physprobe_file);
+    Log("physprobe: enabled, log=%s interval=%llu ms", log_path.c_str(),
+        static_cast<unsigned long long>(cfg.interval_ms));
+}
+
+void LoadPhysWriteConfig(const std::string& path) {
+    g_physwrite_hold_ms = 1000;
+    g_physwrite_full = false;
+    g_physwrite_glide = false;
+    g_physwrite_speed_mps = 10.f;
+    std::vector<uint8_t> bytes;
+    if (!ReadFileAll(path, bytes)) return;
+    const std::string text(bytes.begin(), bytes.end());
+    const auto hold = text.find("hold_ms=");
+    if (hold != std::string::npos) {
+        const long v = std::atol(text.c_str() + hold + 8);
+        if (v >= 0 && v <= 5000) g_physwrite_hold_ms = static_cast<uint64_t>(v);
+    }
+    const auto full = text.find("full=");
+    if (full != std::string::npos) g_physwrite_full = std::atoi(text.c_str() + full + 5) != 0;
+    const auto glide = text.find("glide=");
+    if (glide != std::string::npos) g_physwrite_glide = std::atoi(text.c_str() + glide + 6) != 0;
+    const auto speed = text.find("speed_mps=");
+    if (speed != std::string::npos) {
+        const float v = static_cast<float>(std::atof(text.c_str() + speed + 10));
+        if (v > 0.f && v <= 100.f) g_physwrite_speed_mps = v;
+    }
+}
+
+// Write the target and request a proxy sync. `full` also mimics the game's own
+// set-position: +0x90 = 0x0101 and +0x1DE = 1.
+bool WritePosition(uintptr_t module, const float target[3], bool full, bool& synced) {
+    const bool wrote = WriteBytesSafe(module + layout::kPhysicsPosition, target, sizeof(float) * 3) &&
+                       WriteBytesSafe(module + layout::kPhysicsPosition + 0x10, target, sizeof(float) * 3);
+    if (full) {
+        const uint16_t word = 0x0101;
+        WriteBytesSafe(module + 0x90, &word, sizeof(word));
+        const uint8_t one = 1;
+        WriteBytesSafe(module + 0x1DE, &one, 1);
+    }
+    const uint8_t one = 1;
+    synced = WriteBytesSafe(module + layout::kPhysicsProxySyncRequest, &one, 1);
+    return wrote;
+}
+
+} // namespace
+// (optional `interval_ms=<10..1000>`); writes mc_er_physlog.txt. It only calls
+// the existing read paths and never writes to the game.
+void PhysProbeStep(float dt) {
+    const uint64_t now = GetTickCount64();
+    if (now >= g_physprobe_next_check_ms) {
+        g_physprobe_next_check_ms = now + 1000;
+        const std::string config_path = g_game_dir + "mc_er_physprobe.txt";
+        const bool exists = FileExists(config_path);
+        if (exists && !g_physprobe_on) {
+            OpenPhysProbe(config_path);
+        } else if (!exists && g_physprobe_on) {
+            ClosePhysProbe();
+        }
+    }
+
+    if (!g_physprobe_on || g_physprobe_file == nullptr) return;
+    if (!GameInForeground()) return;
+    if (!eldenring::physprobe::shouldSample(g_physprobe_state, now, g_physprobe_config)) return;
+
+    const uintptr_t player = PlayerChrPtr();
+    if (player == 0) return;
+    const uintptr_t module = detail::readPhysicsModule(g_reader, g_img.base, player);
+    if (module == 0) return;
+
+    eldenring::physprobe::Sample s;
+    s.now_ms = now;
+    s.dt = dt;
+    s.have_physics = true;
+    if (!SafeCopy(module + layout::kPhysicsPosition, s.pos, sizeof(s.pos))) return;
+    SafeCopy(module + 0x80, s.last_pos, sizeof(s.last_pos));
+    SafeCopy(module + layout::kPhysicsOrientation, s.orientation, sizeof(s.orientation));
+    SafeCopy(module + 0x120, s.v120, sizeof(s.v120));
+    SafeCopy(module + 0x1B8, &s.v1b8, sizeof(s.v1b8));
+    SafeCopy(module + 0x90, &s.word90, sizeof(s.word90));
+    SafeCopy(module + 0x91, &s.b91, 1);
+    SafeCopy(module + 0x92, &s.b92, 1);
+    SafeCopy(module + 0x93, &s.b93, 1);
+    SafeCopy(module + 0x1D0, &s.b1d0, 1);
+    SafeCopy(module + 0x1D1, &s.b1d1, 1);
+    SafeCopy(module + 0x1D5, &s.b1d5, 1);
+    SafeCopy(module + 0xCC, &s.bcc, 1);
+
+    Vitals v;
+    if (readVitals(g_reader, g_img.base, player, v)) {
+        s.have_vitals = true;
+        s.hp = v.hp;
+        s.max_hp = v.max_hp;
+    }
+    s.fall_timer = FallTimer(player);
+
+    CameraPose cam{};
+    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+    if (world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
+        s.have_camera = true;
+        std::memcpy(s.cam_pos, cam.position, sizeof(s.cam_pos));
+        std::memcpy(s.cam_fwd, cam.forward, sizeof(s.cam_fwd));
+        std::memcpy(s.cam_up, cam.up, sizeof(s.cam_up));
+        std::memcpy(s.cam_right, cam.right, sizeof(s.cam_right));
+        s.fov_y = cam.fov_y;
+    }
+
+    const auto event = eldenring::physprobe::detectEvent(g_physprobe_state, s);
+    if (event.any()) {
+        const std::string line = eldenring::physprobe::formatEvent(event, s);
+        fprintf(g_physprobe_file, "%s\n", line.c_str());
+    }
+    const std::string line = eldenring::physprobe::formatSample(s);
+    fprintf(g_physprobe_file, "%s\n", line.c_str());
+    fflush(g_physprobe_file);
+    eldenring::physprobe::commit(g_physprobe_state, s);
+}
+
+// Controlled teleport test. The key thread only posts a request; the game
+// thread performs the writes here, so the engine never sees a write from the
+// input thread. A one-shot write is reverted by the character controller on
+// the next frame; hold_ms > 0 keeps writing the target every frame.
+void PhysWriteTestStep() {
+    const uint64_t now = GetTickCount64();
+
+    if (g_physwrite_hold.active) {
+        if (RuntimeContext::Instance().mode().elytra_gliding.load(std::memory_order_relaxed)) {
+            Log("physwrite: hold released (elytra gliding)");
+            eldenring::physwrite::stopHold(g_physwrite_hold);
+            return;
+        }
+        if (PlayerDead()) {
+            Log("physwrite: hold released (player dead)");
+            eldenring::physwrite::stopHold(g_physwrite_hold);
+            return;
+        }
+        if (!eldenring::physwrite::holdActive(g_physwrite_hold, now)) {
+            Log("physwrite: hold released");
+            eldenring::physwrite::stopHold(g_physwrite_hold);
+        } else {
+            const uintptr_t player = PlayerChrPtr();
+            const uintptr_t module = player != 0 ? detail::readPhysicsModule(g_reader, g_img.base, player) : 0;
+            if (module != 0) {
+                if (g_physwrite_hold.glide) {
+                    CameraPose cam{};
+                    const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
+                    if (world != 0 && readCamera(g_reader, g_img.base, world, cam)) {
+                        eldenring::physwrite::stepGlide(g_physwrite_hold, cam.forward, now);
+                    }
+                }
+                bool synced = false;
+                const bool wrote = WritePosition(module, g_physwrite_hold.target, g_physwrite_full, synced);
+                if (now - g_physwrite_hold_log_ms >= 250) {
+                    g_physwrite_hold_log_ms = now;
+                    float read_back[3] = {};
+                    SafeCopy(module + layout::kPhysicsPosition, read_back, sizeof(read_back));
+                    uint8_t ground = 0;
+                    uint8_t falling = 0;
+                    SafeCopy(module + layout::kStandingOnGroundInPhysics, &ground, 1);
+                    SafeCopy(module + 0x1D0, &falling, 1);
+                    Log("physwrite: hold wrote=%d sync=%d target=(%.3f %.3f %.3f) read=(%.3f %.3f %.3f) ground=%u falling=%u fall_t=%.3f",
+                        wrote ? 1 : 0, synced ? 1 : 0,
+                        static_cast<double>(g_physwrite_hold.target[0]),
+                        static_cast<double>(g_physwrite_hold.target[1]),
+                        static_cast<double>(g_physwrite_hold.target[2]),
+                        static_cast<double>(read_back[0]), static_cast<double>(read_back[1]),
+                        static_cast<double>(read_back[2]), static_cast<unsigned>(ground),
+                        static_cast<unsigned>(falling), static_cast<double>(FallTimer(player)));
+                }
+            }
+            return;
+        }
+    }
+
+    const int index = g_physwrite_request.exchange(-1, std::memory_order_relaxed);
+    if (index < 0) return;
+    if (!eldenring::physwrite::validIndex(index)) return;
+    if (!FileExists(g_game_dir + "mc_er_physwritetest.txt")) {
+        Log("physwrite: ignored (mc_er_physwritetest.txt missing)");
+        return;
+    }
+    if (!GameInForeground()) {
+        Log("physwrite: skipped (not foreground)");
+        return;
+    }
+    if (PlayerDead()) {
+        Log("physwrite: skipped (player dead)");
+        return;
+    }
+
+    const uintptr_t player = PlayerChrPtr();
+    const uintptr_t module = player != 0 ? detail::readPhysicsModule(g_reader, g_img.base, player) : 0;
+    if (module == 0) {
+        Log("physwrite: skipped (no physics module)");
+        return;
+    }
+
+    float before[3] = {};
+    if (!SafeCopy(module + layout::kPhysicsPosition, before, sizeof(before))) {
+        Log("physwrite: skipped (cannot read position)");
+        return;
+    }
+
+    if (g_physwrite_hold_ms > 0) {
+        eldenring::physwrite::startHold(g_physwrite_hold, before, eldenring::physwrite::kHeightsM[index], now,
+                                        g_physwrite_hold_ms);
+        g_physwrite_hold.glide = g_physwrite_glide;
+        g_physwrite_hold.speed_mps = g_physwrite_speed_mps;
+        g_physwrite_hold_log_ms = 0;
+        bool synced = false;
+        const bool wrote = WritePosition(module, g_physwrite_hold.target, g_physwrite_full, synced);
+        Log("physwrite: hold start key=%d +%.0f m for %llu ms wrote=%d sync=%d target=(%.3f %.3f %.3f)",
+            index, static_cast<double>(eldenring::physwrite::kHeightsM[index]),
+            static_cast<unsigned long long>(g_physwrite_hold_ms), wrote ? 1 : 0, synced ? 1 : 0,
+            static_cast<double>(g_physwrite_hold.target[0]),
+            static_cast<double>(g_physwrite_hold.target[1]),
+            static_cast<double>(g_physwrite_hold.target[2]));
+        return;
+    }
+
+    const float after[3] = {before[0], before[1] + eldenring::physwrite::kHeightsM[index], before[2]};
+    bool synced = false;
+    const bool wrote = WritePosition(module, after, g_physwrite_full, synced);
+
+    float read_back[3] = {};
+    SafeCopy(module + layout::kPhysicsPosition, read_back, sizeof(read_back));
+    uint8_t ground = 0;
+    uint8_t falling = 0;
+    SafeCopy(module + layout::kStandingOnGroundInPhysics, &ground, 1);
+    SafeCopy(module + 0x1D0, &falling, 1);
+    const float fall_t = FallTimer(player);
+    Vitals v;
+    const bool have_vitals = readVitals(g_reader, g_img.base, player, v);
+    Log("%s", eldenring::physwrite::formatResult(index, before, after, read_back, wrote, synced,
+                                                 static_cast<int>(ground), static_cast<int>(falling), fall_t,
+                                                 have_vitals ? v.hp : -1, have_vitals ? v.max_hp : -1)
+                  .c_str());
+}
+
+bool TryUseElytraFirework() {
+    auto& ctx = RuntimeContext::Instance();
+    if (!ctx.mode().mc_mode.load(std::memory_order_relaxed) ||
+        !ctx.mode().elytra_gliding.load(std::memory_order_relaxed)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> g(g_melee_mutex);
+    if (g_melee.heldItem() != mc::ItemId::FireworkRocket || g_melee.countAt(g_melee.selectedSlot()) <= 0) {
+        return false;
+    }
+    // Vanilla: 10*(1+flight_duration)+rand(6)+rand(7). We do not track the
+    // component's flight_duration yet; 30 ticks matches the common duration 1.
+    const int ticks = 30;
+    if (!eldenring::movement::PlayerLocomotion::Instance().useElytraFirework(ticks)) return false;
+    if (eldenring::creative::consumesItems(ctx.currentGameMode())) {
+        g_melee.consumeFirst(mc::ItemId::FireworkRocket);
+    }
+    Log("elytra: firework boost %d ticks", ticks);
+    return true;
+}
 
 DWORD FindGameWindowThread() {
     struct Ctx {
@@ -154,12 +470,15 @@ DWORD WINAPI LoaderThread(LPVOID) {
     SetupOverlay();
     SetupZoneProbe();
     SetupInput();
+    g_elytra_ignore_focus = FileExists(g_game_dir + "mc_er_elytra_test.txt");
+    if (g_elytra_ignore_focus) Log("elytra: test mode, foreground check disabled");
     LoadInventorySave();
     CreateThread(nullptr, 0, InventorySaveThread, nullptr, 0, nullptr);
     CreateThread(nullptr, 0, KeyThread, nullptr, 0, nullptr);
     CreateThread(nullptr, 0, CrackTunerThread, nullptr, 0, nullptr);
     CreateThread(nullptr, 0, BuddyThread, nullptr, 0, nullptr);
     CreateThread(nullptr, 0, AnimDebugThread, nullptr, 0, nullptr);
+    CreateThread(nullptr, 0, PhysWriteTestThread, nullptr, 0, nullptr);
 
     for (;;) {
         Sleep(1000);
@@ -207,6 +526,30 @@ DWORD WINAPI AnimDebugThread(LPVOID) {
         if (edge(VK_END, p_end)) {
             m.dbg_firework_seq.fetch_add(1);
             Log("anim-debug: firework");
+        }
+        Sleep(30);
+    }
+    return 0;
+}
+
+// Debug teleport keys. Off unless mc_er_physwritetest.txt exists at launch.
+DWORD WINAPI PhysWriteTestThread(LPVOID) {
+    const std::string config_path = g_game_dir + "mc_er_physwritetest.txt";
+    if (!FileExists(config_path)) return 0;
+    LoadPhysWriteConfig(config_path);
+    Log("physwrite: Numpad0=+1m Numpad1=+5m Numpad2=+10m Numpad3=+20m hold_ms=%llu full=%d glide=%d speed=%.1f m/s",
+        static_cast<unsigned long long>(g_physwrite_hold_ms), g_physwrite_full ? 1 : 0, g_physwrite_glide ? 1 : 0,
+        static_cast<double>(g_physwrite_speed_mps));
+    bool prev[eldenring::physwrite::kHeightCount] = {};
+    for (;;) {
+        const bool fg = GameInForeground();
+        for (int i = 0; i < eldenring::physwrite::kHeightCount; ++i) {
+            const bool down = fg && ((GetAsyncKeyState(VK_NUMPAD0 + i) & 0x8000) != 0);
+            if (down && !prev[i]) {
+                g_physwrite_request.store(i, std::memory_order_relaxed);
+                Log("%s", eldenring::physwrite::formatRequest(i).c_str());
+            }
+            prev[i] = down;
         }
         Sleep(30);
     }

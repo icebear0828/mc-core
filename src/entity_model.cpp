@@ -260,9 +260,8 @@ Vec3 cross(const Vec3& a, const Vec3& b) {
 }
 
 struct FaceDef {
-    Vec3 corners[4]; // in model pixels
+    Vec3 corners[4]; // in model pixels, ordered (U-left, V-bottom), (U-right, V-bottom), (U-right, V-top), (U-left, V-top)
     float u, v, w, h;
-    bool flip_u{false}; // a mirrored cube: the face's texture runs the other way
 };
 
 std::array<FaceDef, 6> cubeFaces(const Cube& c) {
@@ -271,29 +270,30 @@ std::array<FaceDef, 6> cubeFaces(const Cube& c) {
                 z1 = c.origin.z + c.size.z + c.inflate;
     const float u = c.u, v = c.v, w = c.size.x, h = c.size.y, d = c.size.z;
 
-    // Bedrock box UV layout:
-    // [u .. u+d]: East face (+X)
-    // [u+d .. u+d+w]: North face (-Z, Front)
-    // [u+d+w .. u+2d+w]: West face (-X)
-    // [u+2d+w .. u+2d+2w]: South face (+Z, Back)
-    // Mirrored cube (ModelPart.mirror): East and West swap rectangles, and every face is flipped horizontally.
-    const float u_east = c.mirror ? (u + d + w) : u;
-    const float u_west = c.mirror ? u : (u + d + w);
-    const bool m = c.mirror;
+    // Minecraft's box unwrap (ModelPart.Cube), read off the 1.21.8 bytecode: the four side faces sit in the
+    // strip [u .. u+2d+2w] as West, North, East, South, and the top/bottom faces sit above North/East.
+    // [u .. u+d]: West (-X)          [u+d .. u+d+w]: North (-Z, front)
+    // [u+d+w .. u+2d+w]: East (+X)   [u+2d+w .. u+2d+2w]: South (+Z, back)
+    // [u+d .. u+d+w] at V-top: Top (+Y)   [u+d+w .. u+2d+w] at V-top: Bottom (-Y)
+    //
+    // ModelPart.mirror does not move a rectangle: it swaps the min/max X roles before the vertices are built,
+    // so the geometry is mirrored and the texture therefore runs the other way on every face.
+    const float a = c.mirror ? x1 : x0; // the min-X role
+    const float b = c.mirror ? x0 : x1; // the max-X role
 
     return {{
-        // North / Front (-Z): East side (+X) at U-left, West side (-X) at U-right
-        {{{x1, y0, z0}, {x0, y0, z0}, {x0, y1, z0}, {x1, y1, z0}}, u + d, v + d, w, h, m},
-        // South / Back (+Z): West side (-X) at U-left, East side (+X) at U-right
-        {{{x0, y0, z1}, {x1, y0, z1}, {x1, y1, z1}, {x0, y1, z1}}, u + d + w + d, v + d, w, h, m},
-        // West (-X): North side (-Z) at U-left, South side (+Z) at U-right
-        {{{x0, y0, z0}, {x0, y0, z1}, {x0, y1, z1}, {x0, y1, z0}}, u_west, v + d, d, h, m},
-        // East (+X): South side (+Z) at U-left, North side (-Z) at U-right
-        {{{x1, y0, z1}, {x1, y0, z0}, {x1, y1, z0}, {x1, y1, z1}}, u_east, v + d, d, h, m},
-        // Top (+Y): East side (+X) at U-left, West side (-X) at U-right; South at V-top, North at V-bottom
-        {{{x1, y1, z0}, {x0, y1, z0}, {x0, y1, z1}, {x1, y1, z1}}, u + d, v, w, d, m},
-        // Bottom (-Y): West side (-X) at U-left, East side (+X) at U-right; South at V-top, North at V-bottom
-        {{{x0, y0, z0}, {x1, y0, z0}, {x1, y0, z1}, {x0, y0, z1}}, u + d + w, v, w, d, m},
+        // North / Front (-Z)
+        {{{a, y0, z0}, {b, y0, z0}, {b, y1, z0}, {a, y1, z0}}, u + d, v + d, w, h},
+        // South / Back (+Z)
+        {{{b, y0, z1}, {a, y0, z1}, {a, y1, z1}, {b, y1, z1}}, u + d + w + d, v + d, w, h},
+        // West (-X)
+        {{{a, y0, z1}, {a, y0, z0}, {a, y1, z0}, {a, y1, z1}}, u, v + d, d, h},
+        // East (+X)
+        {{{b, y0, z0}, {b, y0, z1}, {b, y1, z1}, {b, y1, z0}}, u + d + w, v + d, d, h},
+        // Top (+Y)
+        {{{a, y1, z0}, {b, y1, z0}, {b, y1, z1}, {a, y1, z1}}, u + d, v, w, d},
+        // Bottom (-Y)
+        {{{a, y0, z0}, {b, y0, z0}, {b, y0, z1}, {a, y0, z1}}, u + d + w, v, w, d},
     }};
 }
 
@@ -322,7 +322,7 @@ void appendCubeMesh(const Cube& cube, const rig::HostBasis& basis, float tex_w, 
 
         for (size_t c = 0; c < 4; ++c) {
             const Vec3 p = positions[fi * 4 + c];
-            const float s = f.flip_u ? 1.0f - s_of[c] : s_of[c];
+            const float s = s_of[c];
             mesh.vertices.push_back({
                 p.x, p.y, p.z,
                 (f.u + s * f.w) * inv_w,
@@ -401,6 +401,29 @@ rig::Mat4 boneRestRotation(const Bone& bone, const rig::HostBasis& basis) {
         m = m * rig::rotationAboutAxis(axes[i], basis.isReflection() ? -angles[i] : angles[i]);
     }
     return m;
+}
+
+Quat bedrockEulerQuat(float rx_deg, float ry_deg, float rz_deg, const rig::HostBasis& basis) {
+    constexpr float kDegToRad = 3.14159265358979f / 180.0f;
+    const Vec3 axes[3] = {basis.fromCanonical({0.f, 1.f, 0.f}) * (1.0f / basis.units_per_cm),
+                          basis.fromCanonical({0.f, 0.f, 1.f}) * (1.0f / basis.units_per_cm),
+                          basis.fromCanonical({-1.f, 0.f, 0.f}) * (1.0f / basis.units_per_cm)};
+    const float angles[3] = {rx_deg * kDegToRad, ry_deg * kDegToRad, rz_deg * kDegToRad};
+    Quat q{}; // identity
+    for (int i = 0; i < 3; ++i) {
+        if (angles[i] == 0.0f) continue;
+        const float angle = basis.isReflection() ? -angles[i] : angles[i];
+        const float len = axes[i].length();
+        const Vec3 a = len > 0.0f ? axes[i] * (1.0f / len) : Vec3{0.f, 0.f, 1.f};
+        const float s = std::sin(angle * 0.5f), c = std::cos(angle * 0.5f);
+        const Quat r{a.x * s, a.y * s, a.z * s, c};
+        // q = r * q: X turns first, then Y, then Z, the same order as boneRestRotation.
+        q = {r.w * q.x + r.x * q.w + r.y * q.z - r.z * q.y,
+             r.w * q.y - r.x * q.z + r.y * q.w + r.z * q.x,
+             r.w * q.z + r.x * q.y - r.y * q.x + r.z * q.w,
+             r.w * q.w - r.x * q.x - r.y * q.y - r.z * q.z};
+    }
+    return q;
 }
 
 std::vector<rig::Mat4> boneMatrices(const EntityModel& model, const std::vector<Quat>& extra, const Vec3& root, float host_yaw,
