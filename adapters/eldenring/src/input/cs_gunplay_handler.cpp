@@ -1,6 +1,7 @@
 #include "eldenring_input_handlers.hpp"
 #include "eldenring_hotkey_dispatcher.hpp"
 #include "eldenring_runtime_context.hpp"
+#include "cs_fire_events.hpp"
 #include "cs_reload_events.hpp"
 #include "cs_weapon_registry.hpp"
 #include "input_keys.hpp"
@@ -267,6 +268,26 @@ void CsGunplayHandler::tickActionTimer(const InputTickContext& ctx) {
                 }
                 ++cs_reload_sound_stage_;
             }
+        } else if (state == 2 && mode.cs_weapon_slot.load() != 0 && max_t > 0.f) {
+            // Post-shot mechanism sounds follow the authored shoot clip (the
+            // AWP works its bolt); stages the weapon does not have are skipped.
+            const uint8_t slot = mode.cs_weapon_slot.load();
+            const char* prefix = soundPrefixForSlot(slot);
+            const eldenring::cs::FireSoundEvents events =
+                eldenring::cs::fireSoundEventsForSlot(slot);
+            eldenring::cs::FireSoundEvent stages[2];
+            const int stage_count = eldenring::cs::fireSoundEventList(events, stages);
+            const float d = max_t;
+            while (cs_fire_sound_stage_ < stage_count &&
+                   t >= d * stages[cs_fire_sound_stage_].at) {
+                if (ctx.cb->play_sound) {
+                    char event[48];
+                    snprintf(event, sizeof(event), "cs.%s.%s", prefix,
+                             stages[cs_fire_sound_stage_].stage);
+                    ctx.cb->play_sound(event, 1.0f);
+                }
+                ++cs_fire_sound_stage_;
+            }
         }
     }
 #else
@@ -374,6 +395,7 @@ void CsGunplayHandler::tickAttack(const InputTickContext& ctx) {
                     mode.cs_knife_state.store(2); // Fire
                     mode.cs_knife_inspect.store(false);
                     mode.cs_knife_anim_time.store(0.f);
+                    cs_fire_sound_stage_ = 0;
                     cs_fire_cooldown_ = 60.f / rpm;
                     if (ctx.cb->queue_cs_shot) {
                         const float damage = def ? def->ballistics.damage : 36.f;

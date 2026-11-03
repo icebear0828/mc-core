@@ -61,6 +61,7 @@ private:
     float cs_fire_cooldown_{0.f};
     float cs_since_shot_{10.f}; // seconds since the last CS round: the first shot is accurate
     int cs_reload_sound_stage_{0}; // next generated reload sound event to play
+    int cs_fire_sound_stage_{0};   // next generated fire-cycle sound event to play
     bool prev_reload_r_{false};
     bool prev_gameplay_f_{false};
     bool prev_q_{false};
