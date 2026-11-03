@@ -92,7 +92,7 @@ protected:
         cb_.play_sound_loop = [this](const char* snd, float) { played_sounds_.push_back(snd); };
         cb_.stop_sound_loop = [this](const char* snd) { stopped_sounds_.push_back(snd); };
         cb_.log = [this](const std::string& msg) { logged_messages_.push_back(msg); };
-        cb_.clip_duration = [](const char* name) -> float {
+        cb_.clip_duration = [this](const char* name) -> float {
             const std::string n = name != nullptr ? name : "";
             if (n == "idle") return 2.0f;
             if (n == "inspect") return 4.1f;
@@ -100,7 +100,7 @@ protected:
             if (n == "inspect3") return 4.867f;
             if (n == "deploy" || n == "deploy2" || n == "draw") return 1.0f;
             if (n == "fire") return 0.767f;
-            if (n == "reload") return 2.433f;
+            if (n == "reload") return reload_duration_;
             if (n.rfind("light_", 0) == 0 || n.rfind("heavy_", 0) == 0 ||
                 n.rfind("backstab", 0) == 0) return 1.167f;
             return 0.f;
@@ -198,6 +198,9 @@ protected:
     std::map<int, bool> key_states_;
     std::vector<std::string> logged_messages_;
     std::vector<std::string> played_sounds_;
+
+    // Authored reload-clip duration returned by the fake clip_duration callback.
+    float reload_duration_{2.433f};
 
     bool foreground_{true};
     bool want_suppress_{true};
@@ -669,7 +672,7 @@ TEST_F(HotkeyDispatcherTest, CsModeDigitKeysSelectWeaponSlotsAndRReloads) {
     EXPECT_EQ(ctx.mode().cs_ammo.load(), 0u);
 }
 
-TEST_F(HotkeyDispatcherTest, CsReloadAudioFollowsTheAnimationTimeline) {
+TEST_F(HotkeyDispatcherTest, CsReloadAudioFollowsTheAk47Timeline) {
     auto& ctx = RuntimeContext::Instance();
 
     setKey(VK_F1, true);
@@ -687,11 +690,14 @@ TEST_F(HotkeyDispatcherTest, CsReloadAudioFollowsTheAnimationTimeline) {
     ASSERT_EQ(ctx.mode().cs_knife_state.load(), 0);
     played_sounds_.clear();
 
+    // AK-47 reload: 74 frames @30fps = 2.433 s. Authored events:
+    // mag out f17 (vmdl AE_CL_EJECT_MAG), mag seated f35, bolt pull starts f51
+    // so the WAV's 0.09 s lead-in lands its click on the f54 bolt peak.
+    reload_duration_ = 2.433f;
     setKey('R', true);
     dispatcher_->tick(0.016f);
     setKey('R', false);
     ASSERT_EQ(ctx.mode().cs_knife_state.load(), 5);
-    // The old code fired one reload sound at t=0; the timeline has none there.
     EXPECT_EQ(std::count(played_sounds_.begin(), played_sounds_.end(), "cs.ak47.magout"), 0);
 
     auto tick_until = [&](float t) {
@@ -701,14 +707,138 @@ TEST_F(HotkeyDispatcherTest, CsReloadAudioFollowsTheAnimationTimeline) {
         return std::count(played_sounds_.begin(), played_sounds_.end(), name);
     };
 
-    tick_until(0.40f); // frame 12: magazine still seated
+    tick_until(0.50f); // frame 15: magazine still seated
     EXPECT_EQ(count("cs.ak47.magout"), 0);
-    tick_until(0.45f); // frame 13
+    tick_until(0.60f); // frame 18: just past the eject event
     EXPECT_EQ(count("cs.ak47.magout"), 1);
-    tick_until(0.80f); // frame 24
+
+    tick_until(1.10f); // frame 33: new magazine not seated yet
+    EXPECT_EQ(count("cs.ak47.magin"), 0);
+    tick_until(1.20f); // frame 36: magazine seated at f35
     EXPECT_EQ(count("cs.ak47.magin"), 1);
-    tick_until(1.60f); // frame 48
+
+    tick_until(1.60f); // frame 48: bolt still closed
+    EXPECT_EQ(count("cs.ak47.bolt"), 0);
+    tick_until(1.75f); // frame 52: bolt pull begins
     EXPECT_EQ(count("cs.ak47.bolt"), 1);
+}
+
+TEST_F(HotkeyDispatcherTest, CsReloadAudioFollowsTheAwpTimeline) {
+    auto& ctx = RuntimeContext::Instance();
+
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    setKey('2', true);
+    dispatcher_->tick(0.016f);
+    setKey('2', false);
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 2);
+    dispatcher_->tick(1.1f);
+    ASSERT_EQ(ctx.mode().cs_knife_state.load(), 0);
+    played_sounds_.clear();
+
+    // AWP reload: 111 frames @30fps = 3.667 s. The authored reload_awp vnmclip
+    // track plays Clipout f11, Clipin f46, Cliphit f60, BoltBack f79 and
+    // BoltForward f89; the magazine bone peaks at f17, seats at f48, and the
+    // bolt starts moving at f78.
+    reload_duration_ = 3.6667f;
+    setKey('R', true);
+    dispatcher_->tick(0.016f);
+    setKey('R', false);
+    ASSERT_EQ(ctx.mode().cs_knife_state.load(), 5);
+
+    auto tick_until = [&](float t) {
+        while (ctx.mode().cs_knife_anim_time.load() < t) dispatcher_->tick(0.05f);
+    };
+    auto count = [&](const char* name) {
+        return std::count(played_sounds_.begin(), played_sounds_.end(), name);
+    };
+
+    tick_until(0.30f);
+    EXPECT_EQ(count("cs.awp.magout"), 0);
+    tick_until(0.40f);
+    EXPECT_EQ(count("cs.awp.magout"), 1);
+
+    tick_until(1.45f);
+    EXPECT_EQ(count("cs.awp.magin"), 0);
+    tick_until(1.60f);
+    EXPECT_EQ(count("cs.awp.magin"), 1);
+
+    tick_until(1.95f);
+    EXPECT_EQ(count("cs.awp.cliphit"), 0);
+    tick_until(2.05f);
+    EXPECT_EQ(count("cs.awp.cliphit"), 1);
+
+    tick_until(2.55f);
+    EXPECT_EQ(count("cs.awp.bolt"), 0);
+    tick_until(2.70f);
+    EXPECT_EQ(count("cs.awp.bolt"), 1);
+
+    tick_until(2.90f);
+    EXPECT_EQ(count("cs.awp.boltforward"), 0);
+    tick_until(3.00f);
+    EXPECT_EQ(count("cs.awp.boltforward"), 1);
+}
+
+TEST_F(HotkeyDispatcherTest, CsReloadAudioSkipsTheBoltWhenTheClipHasNone) {
+    auto& ctx = RuntimeContext::Instance();
+
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    setKey('4', true);
+    dispatcher_->tick(0.016f);
+    setKey('4', false);
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 3);
+    dispatcher_->tick(1.1f);
+    ASSERT_EQ(ctx.mode().cs_knife_state.load(), 0);
+    played_sounds_.clear();
+
+    // M4A1-S reload: 93 frames @30fps = 3.067 s. The authored reload_rifle
+    // vnmclip track plays Clipout at f13, Clipin at f35, AddAmmo at f41 and
+    // ClipHit at f60; the magazine bone peaks at f23 and seats at f40, and
+    // there is no bolt/charging-handle motion at all.
+    reload_duration_ = 3.0667f;
+    setKey('R', true);
+    dispatcher_->tick(0.016f);
+    setKey('R', false);
+    ASSERT_EQ(ctx.mode().cs_knife_state.load(), 5);
+
+    auto tick_until = [&](float t) {
+        while (ctx.mode().cs_knife_anim_time.load() < t) dispatcher_->tick(0.05f);
+    };
+    auto count = [&](const char* name) {
+        return std::count(played_sounds_.begin(), played_sounds_.end(), name);
+    };
+
+    tick_until(0.40f);
+    EXPECT_EQ(count("cs.m4a1_s.magout"), 0);
+    tick_until(0.50f);
+    EXPECT_EQ(count("cs.m4a1_s.magout"), 1);
+
+    tick_until(1.10f);
+    EXPECT_EQ(count("cs.m4a1_s.magin"), 0);
+    tick_until(1.20f);
+    EXPECT_EQ(count("cs.m4a1_s.magin"), 1);
+
+    tick_until(1.30f);
+    EXPECT_EQ(count("cs.m4a1_s.addammo"), 0);
+    tick_until(1.40f);
+    EXPECT_EQ(count("cs.m4a1_s.addammo"), 1);
+
+    tick_until(1.95f);
+    EXPECT_EQ(count("cs.m4a1_s.cliphit"), 0);
+    tick_until(2.05f);
+    EXPECT_EQ(count("cs.m4a1_s.cliphit"), 1);
+
+    // Finish the reload; the bolt stage must never fire.
+    dispatcher_->tick(2.0f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 0);
+    EXPECT_EQ(count("cs.m4a1_s.bolt"), 0);
 }
 
 TEST_F(HotkeyDispatcherTest, CsDigit4SelectsTheM4A1S) {

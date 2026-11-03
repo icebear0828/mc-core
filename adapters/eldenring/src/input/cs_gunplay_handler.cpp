@@ -1,6 +1,7 @@
 #include "eldenring_input_handlers.hpp"
 #include "eldenring_hotkey_dispatcher.hpp"
 #include "eldenring_runtime_context.hpp"
+#include "cs_reload_events.hpp"
 #include "cs_weapon_registry.hpp"
 #include "input_keys.hpp"
 
@@ -243,29 +244,28 @@ void CsGunplayHandler::tickActionTimer(const InputTickContext& ctx) {
     } else {
         mode.cs_knife_anim_time.store(t);
         if (state == 5 && mode.cs_weapon_slot.load() != 0 && max_t > 0.f) {
-            // Reload audio follows the animation instead of one sound at
-            // t=0: mag out, mag in, then the bolt/charging handle. The
-            // ratios match the authored AK timeline and are close enough for
-            // the AWP/M4 takes.
-            const char* prefix = soundPrefixForSlot(mode.cs_weapon_slot.load());
+            // Reload audio follows the authored clip events instead of one
+            // sound at t=0. The frames come from the viewmodel sound-event
+            // tracks where the clip has them, otherwise from the deployed
+            // CSVM curves (tools/cs2/reload_events.py ->
+            // cs_reload_events.hpp); stages the weapon does not have are
+            // skipped.
+            const uint8_t slot = mode.cs_weapon_slot.load();
+            const char* prefix = soundPrefixForSlot(slot);
+            const eldenring::cs::ReloadSoundEvents events =
+                eldenring::cs::reloadSoundEventsForSlot(slot);
+            eldenring::cs::ReloadSoundEvent stages[6];
+            const int stage_count = eldenring::cs::reloadSoundEventList(events, stages);
             const float d = max_t;
-            auto playStage = [&](const char* stage) {
-                if (!ctx.cb->play_sound) return;
-                char event[48];
-                snprintf(event, sizeof(event), "cs.%s.%s", prefix, stage);
-                ctx.cb->play_sound(event, 1.0f);
-            };
-            if (cs_reload_sound_stage_ == 0 && t >= d * 0.176f) {
-                playStage("magout");
-                cs_reload_sound_stage_ = 1;
-            }
-            if (cs_reload_sound_stage_ == 1 && t >= d * 0.324f) {
-                playStage("magin");
-                cs_reload_sound_stage_ = 2;
-            }
-            if (cs_reload_sound_stage_ == 2 && t >= d * 0.649f) {
-                playStage("bolt");
-                cs_reload_sound_stage_ = 3;
+            while (cs_reload_sound_stage_ < stage_count &&
+                   t >= d * stages[cs_reload_sound_stage_].at) {
+                if (ctx.cb->play_sound) {
+                    char event[48];
+                    snprintf(event, sizeof(event), "cs.%s.%s", prefix,
+                             stages[cs_reload_sound_stage_].stage);
+                    ctx.cb->play_sound(event, 1.0f);
+                }
+                ++cs_reload_sound_stage_;
             }
         }
     }
