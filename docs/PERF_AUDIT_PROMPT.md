@@ -875,3 +875,4 @@ perfstats/s: read=N fail=N slow_rtti=N enum=N (N slots) grace=N (N slots) unm=N 
 - **唯一明确的 mod 侧卡顿是 CS 武器模型首次切换**：`overlay_hook.cpp` 的 Init 只预加载了三把枪的贴图（`loadWeaponTextures`），模型（`loadWeapon` → `loadModel`）仍是懒加载；80 秒那次解析了 1.4MB CSVM，约 100ms。
 - `melee_lock` 的 18ms 只在 80 秒出现一次，疑似背包/合成/存档竞争，量级远小于加载卡顿。
 - 如果要消除首次切枪卡顿，需要缓存解析后的 CSVM（CPU 侧）或在 Init 预加载当前槽位的模型；`CsRenderer` 目前只持有一个 `model_`，不能同时缓存三把枪的 GPU 网格。
+- **已修复（本分支）**：`loadModel` 现在按路径缓存解析后的 `CSViewModel`，Init 预加载刀 + AK/AWP/M4 的模型；切枪只拷贝解析结果并绑定已缓存的 GPU mesh。实测切枪窗口（32–46s）`>33=0`、`>50=0`，最差 29.6ms，`melee_lock` max 0.52ms，不再出现 ~100ms 的 CSVM 解析。
