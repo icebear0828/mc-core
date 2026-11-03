@@ -58,7 +58,10 @@ void ApplyScopeFov(uintptr_t pos_addr) {
         erin::SetMouseSensitivityScale(1.f);
         g_scope_fov_wrote.store(false, std::memory_order_relaxed);
         g_scope_fov_logged.store(-1, std::memory_order_relaxed);
-        Log("scope fov: restored native %.4f rad", static_cast<double>(native));
+        Log("scope fov: restored native %.4f rad (cs=%d slot=%u level=%u)", static_cast<double>(native),
+            g_mode.cs_mode.load(std::memory_order_relaxed) ? 1 : 0,
+            static_cast<unsigned>(g_mode.cs_weapon_slot.load(std::memory_order_relaxed)),
+            static_cast<unsigned>(g_mode.cs_scope_level.load(std::memory_order_relaxed)));
     }
 }
 

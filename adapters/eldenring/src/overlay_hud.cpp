@@ -49,27 +49,52 @@ void DrawCsMuzzleFlash(ImDrawList* dl, float w, float h) {
 // the normal green CS crosshair can stay hidden while scoped.
 void DrawCsScopeOverlay(ImDrawList* dl, float w, float h, uint8_t level) {
     const float cx = w * 0.5f, cy = h * 0.5f;
-    const float radius = std::min(w, h) * 0.44f;
-    const float outer = std::sqrt(w * w + h * h);
+    const float radius = std::min(w, h) * 0.445f;
+    const float side = h;
+    const ImVec2 a{cx - side * 0.5f, cy - side * 0.5f};
+    const ImVec2 b{cx + side * 0.5f, cy + side * 0.5f};
     const ImU32 black = IM_COL32(0, 0, 0, 255);
-    constexpr int kSegments = 96;
-    ImVec2 prev_in{cx + radius, cy};
-    ImVec2 prev_out{cx + outer, cy};
-    for (int i = 1; i <= kSegments; ++i) {
-        const float a = 6.28318530718f * static_cast<float>(i) / static_cast<float>(kSegments);
-        const float c = std::cos(a), s = std::sin(a);
-        const ImVec2 in{cx + radius * c, cy + radius * s};
-        const ImVec2 out{cx + outer * c, cy + outer * s};
-        dl->AddQuadFilled(prev_in, in, out, prev_out, black);
-        prev_in = in;
-        prev_out = out;
+    // Draw the lens dirt first: the circular mask is opaque black outside the
+    // scope, so it covers the parts of the lens texture that fall in the corners.
+    if (g_scope_lens_ready) {
+        dl->AddImage(reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(g_scope_lens_gpu.ptr)), a, b);
     }
-    dl->AddCircle({cx, cy}, radius, IM_COL32(0, 0, 0, 255), 128, 3.f);
-    // Soft inner vignette: a hard circle reads as a paper cutout, while a few
-    // translucent rings just inside the edge look like the scope's blurred rim.
-    for (int i = 0; i < 5; ++i) {
-        const float rr = radius - static_cast<float>(i) * 2.5f;
-        dl->AddCircle({cx, cy}, rr, IM_COL32(0, 0, 0, 70 - i * 12), 128, 5.f);
+    if (g_scope_mask_ready) {
+        // The authentic CS2 scope_circle mask: opaque black outside, alpha 0
+        // inside, with its own soft rim. 512 square drawn at screen height.
+        dl->AddImage(reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(g_scope_mask_gpu.ptr)), a, b);
+    } else {
+        const float outer = std::sqrt(w * w + h * h);
+        constexpr int kSegments = 96;
+        ImVec2 prev_in{cx + radius, cy};
+        ImVec2 prev_out{cx + outer, cy};
+        for (int i = 1; i <= kSegments; ++i) {
+            const float ang = 6.28318530718f * static_cast<float>(i) / static_cast<float>(kSegments);
+            const float c = std::cos(ang), s = std::sin(ang);
+            const ImVec2 in{cx + radius * c, cy + radius * s};
+            const ImVec2 out{cx + outer * c, cy + outer * s};
+            dl->AddQuadFilled(prev_in, in, out, prev_out, black);
+            prev_in = in;
+            prev_out = out;
+        }
+        dl->AddCircle({cx, cy}, radius, IM_COL32(0, 0, 0, 255), 128, 3.f);
+        // Soft inner vignette: a hard circle reads as a paper cutout, while a few
+        // translucent rings just inside the edge look like the scope's blurred rim.
+        for (int i = 0; i < 5; ++i) {
+            const float rr = radius - static_cast<float>(i) * 2.5f;
+            dl->AddCircle({cx, cy}, rr, IM_COL32(0, 0, 0, 70 - i * 12), 128, 5.f);
+        }
+    }
+
+    // The mask texture is a square drawn at screen height; on a 16:9 screen
+    // that leaves the left and right strips uncovered. CS2 blacks the whole
+    // screen outside the scope, so fill those strips explicitly.
+    if (w > side) {
+        dl->AddRectFilled({0.f, 0.f}, {a.x, h}, black);
+        dl->AddRectFilled({b.x, 0.f}, {w, h}, black);
+    } else if (h > side) {
+        dl->AddRectFilled({0.f, 0.f}, {w, a.y}, black);
+        dl->AddRectFilled({0.f, b.y}, {w, h}, black);
     }
 
     const ImU32 reticle = IM_COL32(0, 0, 0, 235);

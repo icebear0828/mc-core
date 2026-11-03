@@ -91,6 +91,112 @@ void CreateCsDecalTexture(UINT srv_inc) {
     g_decal_ready = true;
     Logf("overlay: CS decal: %ux%u from %s (slot 44)", g_decal_w, g_decal_h, used.c_str());
 }
+
+namespace {
+
+// Shared upload path for the two AWP scope HUD layers. They are plain RGBA
+// PNGs decoded from the user's own CS2 VPK by the toolkit.
+bool UploadScopeTexture(const std::vector<std::string>& candidates, UINT slot, UINT srv_inc,
+                        ID3D12Resource** out_tex, ID3D12Resource** out_upload,
+                        D3D12_PLACED_SUBRESOURCE_FOOTPRINT& footprint, bool& pending,
+                        D3D12_GPU_DESCRIPTOR_HANDLE& gpu, const char* label) {
+    std::vector<uint8_t> rgba;
+    unsigned w = 0, h = 0;
+    std::string used;
+    for (const auto& p : candidates) {
+        if (!std::filesystem::exists(p)) continue;
+        if (DecodePngFile(p, rgba, w, h)) {
+            used = p;
+            break;
+        }
+    }
+    if (rgba.empty() || w == 0 || h == 0) {
+        Logf("overlay: CS scope %s: no PNG, procedural fallback", label);
+        return false;
+    }
+
+    D3D12_HEAP_PROPERTIES hd{};
+    hd.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC td{};
+    td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    td.Width = w;
+    td.Height = h;
+    td.DepthOrArraySize = 1;
+    td.MipLevels = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    if (FAILED(g_s.device->CreateCommittedResource(&hd, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                   nullptr, IID_PPV_ARGS(out_tex)))) {
+        Logf("overlay: CS scope %s: texture creation failed", label);
+        return false;
+    }
+    UINT rows = 0;
+    UINT64 row_bytes = 0, total = 0;
+    g_s.device->GetCopyableFootprints(&td, 0, 1, 0, &footprint, &rows, &row_bytes, &total);
+    (void)row_bytes;
+    D3D12_HEAP_PROPERTIES hu{};
+    hu.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC ud{};
+    ud.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    ud.Width = total;
+    ud.Height = 1;
+    ud.DepthOrArraySize = 1;
+    ud.MipLevels = 1;
+    ud.SampleDesc.Count = 1;
+    ud.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    void* mapped = nullptr;
+    D3D12_RANGE none{0, 0};
+    if (FAILED(g_s.device->CreateCommittedResource(&hu, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                   nullptr, IID_PPV_ARGS(out_upload))) ||
+        FAILED((*out_upload)->Map(0, &none, &mapped))) {
+        SafeRelease(*out_tex);
+        SafeRelease(*out_upload);
+        Logf("overlay: CS scope %s: upload buffer failed", label);
+        return false;
+    }
+    for (UINT y = 0; y < rows; ++y) {
+        std::memcpy(static_cast<uint8_t*>(mapped) + footprint.Offset +
+                        static_cast<size_t>(y) * footprint.Footprint.RowPitch,
+                    rgba.data() + static_cast<size_t>(y) * w * 4, static_cast<size_t>(w) * 4);
+    }
+    (*out_upload)->Unmap(0, nullptr);
+
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu{};
+    cpu.ptr = static_cast<SIZE_T>(srv_handle(g_s.srv_heap->GetCPUDescriptorHandleForHeapStart().ptr, srv_inc, slot));
+    gpu = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
+    gpu.ptr = srv_handle(gpu.ptr, srv_inc, slot);
+    D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
+    sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    sd.Texture2D.MipLevels = 1;
+    g_s.device->CreateShaderResourceView(*out_tex, &sd, cpu);
+    pending = true;
+    Logf("overlay: CS scope %s: %ux%u from %s (slot %u)", label, w, h, used.c_str(), slot);
+    return true;
+}
+
+} // namespace
+
+void CreateCsScopeTextures(UINT srv_inc) {
+    g_scope_mask_ready = false;
+    g_scope_lens_ready = false;
+    const std::string& game_dir = eldenring::diagnostics::GetGameDir();
+    auto candidates = [&](const char* name) {
+        std::vector<std::string> paths;
+        if (!game_dir.empty()) {
+            paths.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "textures" / "cs" / name).string());
+        }
+        paths.push_back(std::string("mods\\mc_adapter\\textures\\cs\\") + name);
+        return paths;
+    };
+    g_scope_mask_ready = UploadScopeTexture(candidates("scope_circle.png"), 105, srv_inc,
+                                            &g_scope_mask_tex, &g_scope_mask_upload, g_scope_mask_footprint,
+                                            g_scope_mask_pending, g_scope_mask_gpu, "mask");
+    g_scope_lens_ready = UploadScopeTexture(candidates("scope_lens.png"), 106, srv_inc,
+                                            &g_scope_lens_tex, &g_scope_lens_upload, g_scope_lens_footprint,
+                                            g_scope_lens_pending, g_scope_lens_gpu, "lens");
+}
 #endif
 
 void CreateAtlasTexture(UINT srv_inc) {
@@ -182,9 +288,32 @@ void CreateAtlasTexture(UINT srv_inc) {
     Logf(msg);
 }
 
+namespace {
+void RecordOneTextureUpload(ID3D12GraphicsCommandList* list, ID3D12Resource* tex, ID3D12Resource* upload,
+                            const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& footprint, bool& pending) {
+    if (!pending || tex == nullptr || upload == nullptr) return;
+    D3D12_TEXTURE_COPY_LOCATION dst{};
+    dst.pResource = tex;
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dst.SubresourceIndex = 0;
+    D3D12_TEXTURE_COPY_LOCATION src{};
+    src.pResource = upload;
+    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    src.PlacedFootprint = footprint;
+    list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = tex;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    list->ResourceBarrier(1, &b);
+    pending = false;
+}
+} // namespace
+
 // Recorded at the start of the frame's command list, before anything samples the atlas.
-void RecordAtlasUpload(ID3D12GraphicsCommandList* list) {
-    if (g_atlas_pending && g_atlas_tex && g_atlas_upload) {
+void RecordAtlasUpload(ID3D12GraphicsCommandList* list) {    if (g_atlas_pending && g_atlas_tex && g_atlas_upload) {
         D3D12_TEXTURE_COPY_LOCATION dst{};
         dst.pResource = g_atlas_tex;
         dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
@@ -223,6 +352,8 @@ void RecordAtlasUpload(ID3D12GraphicsCommandList* list) {
         list->ResourceBarrier(1, &b);
         g_decal_pending = false;
     }
+    RecordOneTextureUpload(list, g_scope_mask_tex, g_scope_mask_upload, g_scope_mask_footprint, g_scope_mask_pending);
+    RecordOneTextureUpload(list, g_scope_lens_tex, g_scope_lens_upload, g_scope_lens_footprint, g_scope_lens_pending);
 #endif
 }
 

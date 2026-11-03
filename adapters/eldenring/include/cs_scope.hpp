@@ -29,6 +29,13 @@ inline float scopeFovDegrees(uint8_t level, float fov1_deg, float fov2_deg) {
     return 0.f;
 }
 
+// A scoped AWP shot drops out of the scope while the bolt is cycled and
+// re-zooms once it is home. Returns the stage to restore, 0 when the shot was
+// fired without the scope.
+inline uint8_t scopeResumeLevelAfterShot(uint8_t level) {
+    return scopeActive(level) ? level : kScopeOff;
+}
+
 // CS2's scoped sensitivity: base * (scope_fov / native_fov) * ratio.
 // Returns 1.0 when not scoped or when the native FOV is unknown.
 inline float scopeSensitivityScale(uint8_t level, float fov1_deg, float fov2_deg,

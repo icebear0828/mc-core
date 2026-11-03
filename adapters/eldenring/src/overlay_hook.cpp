@@ -324,6 +324,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
         g_depth_dirty.store(true); // bind the captured depth to the new armor and elytra tables too
 #if ENABLE_CS2_VIEWMODEL
         CreateCsDecalTexture(srv_inc);
+        CreateCsScopeTextures(srv_inc);
 #endif
 #if ENABLE_CS2_VIEWMODEL
         // A build without MC gameplay must never start in MC mode, even if a

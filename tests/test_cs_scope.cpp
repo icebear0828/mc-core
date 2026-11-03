@@ -41,6 +41,14 @@ TEST(CsScopeTest, ScopedSensitivityFollowsTheFovRatio) {
     EXPECT_FLOAT_EQ(scopeSensitivityScale(kScopeLevel1, 24.f, 6.f, 0.f, 1.f), 1.f);
 }
 
+TEST(CsScopeTest, ScopedShotRemembersTheStageToReopen) {
+    // CS2 unscopes for the bolt cycle and re-zooms when the bolt is home.
+    EXPECT_EQ(scopeResumeLevelAfterShot(kScopeLevel1), kScopeLevel1);
+    EXPECT_EQ(scopeResumeLevelAfterShot(kScopeLevel2), kScopeLevel2);
+    EXPECT_EQ(scopeResumeLevelAfterShot(kScopeOff), kScopeOff);
+    EXPECT_EQ(scopeResumeLevelAfterShot(3), kScopeOff);
+}
+
 TEST(CsScopeTest, RegistryOnlyMarksTheAwpAsScoped) {
     const auto& reg = CSWeaponRegistry::instance();
     const auto* awp = reg.findWeapon("weapon_awp");

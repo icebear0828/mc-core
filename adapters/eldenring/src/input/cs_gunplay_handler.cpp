@@ -126,6 +126,7 @@ void CsGunplayHandler::reset() {
     last_slot_ = 0;
     RuntimeContext::Instance().mode().cs_buy_open.store(false);
     RuntimeContext::Instance().mode().cs_scope_level.store(eldenring::cs::kScopeOff);
+    RuntimeContext::Instance().mode().cs_scope_resume_level.store(eldenring::cs::kScopeOff);
     for (uint32_t& ammo : slot_ammo_) ammo = 0;
     for (uint32_t& reserve : slot_reserve_) reserve = 0;
     for (bool& ready : slot_ammo_ready_) ready = false;
@@ -172,6 +173,7 @@ void CsGunplayHandler::selectWeaponSlot(uint8_t slot, const InputTickContext& ct
     mode.cs_knife_state.store(4); // Deploy
     mode.cs_knife_inspect.store(false);
     mode.cs_scope_level.store(eldenring::cs::kScopeOff);
+    mode.cs_scope_resume_level.store(eldenring::cs::kScopeOff);
     mode.cs_action_variant.store(static_cast<uint8_t>((mode.cs_action_variant.load() + 1u) & 1u));
     mode.cs_action_hit.store(true);
     mode.cs_knife_anim_time.store(0.f);
@@ -215,6 +217,9 @@ bool CsGunplayHandler::tickRightClick(const InputTickContext& ctx) {
                 const uint8_t before = mode.cs_scope_level.load();
                 const uint8_t after = eldenring::cs::nextScopeLevel(before, true);
                 mode.cs_scope_level.store(after);
+                // A manual zoom overrides the pending bolt re-zoom: the player
+                // is driving the scope now, not the fire cycle.
+                mode.cs_scope_resume_level.store(eldenring::cs::kScopeOff);
                 if (ctx.cb->play_sound) {
                     ctx.cb->play_sound(after == eldenring::cs::kScopeOff ? "cs.awp.zoom_out" : "cs.awp.zoom_in", 1.0f);
                 }
@@ -241,6 +246,7 @@ void CsGunplayHandler::tickActionTimer(const InputTickContext& ctx) {
     mode.cs_ammo_flash.store(std::max(0.f, mode.cs_ammo_flash.load() - ctx.dt * 2.5f));
     if (!mode.cs_mode.load() || ctx.is_dead) {
         mode.cs_scope_level.store(eldenring::cs::kScopeOff);
+        mode.cs_scope_resume_level.store(eldenring::cs::kScopeOff);
     }
     if (!mode.cs_mode.load()) {
         return;
@@ -282,6 +288,22 @@ void CsGunplayHandler::tickActionTimer(const InputTickContext& ctx) {
                 syncSlotReserve(slot);
             }
             cs_reload_sound_stage_ = 0;
+        }
+        // A scoped AWP shot closed the scope for the bolt cycle; the fire clip
+        // ends exactly when the bolt is home, so restore the zoom stage here.
+        if (state == 2) {
+            const uint8_t resume = mode.cs_scope_resume_level.exchange(eldenring::cs::kScopeOff);
+            if (resume != eldenring::cs::kScopeOff && mode.cs_weapon_slot.load() == 2 &&
+                mode.cs_scope_level.load() == eldenring::cs::kScopeOff) {
+                mode.cs_scope_level.store(resume);
+                if (ctx.cb->play_sound) ctx.cb->play_sound("cs.awp.zoom_in", 1.0f);
+                if (ctx.cb->log) {
+                    char msg[64];
+                    snprintf(msg, sizeof(msg), "CS: AWP bolt home, scope re-opened at level %u",
+                             static_cast<unsigned>(resume));
+                    ctx.cb->log(msg);
+                }
+            }
         }
         mode.cs_knife_state.store(0); // Return to Idle
         mode.cs_knife_inspect.store(false);
@@ -363,7 +385,10 @@ void CsGunplayHandler::tickGameplayKeys(const InputTickContext& ctx) {
     const bool f_down = queryKeyDown(*ctx.cb, 'F');
     if (f_down && !prev_gameplay_f_) {
 #if ENABLE_CS2_VIEWMODEL
-        if (mode.cs_mode.load() && !mode.cs_buy_open.load()) {
+        // The AWP bolt cycle cannot be interrupted by an inspect; CS2 queues
+        // nothing and simply ignores the key until the bolt is home.
+        if (mode.cs_mode.load() && !mode.cs_buy_open.load() &&
+            mode.cs_scope_resume_level.load() == eldenring::cs::kScopeOff) {
             const uint8_t take = static_cast<uint8_t>((mode.cs_action_variant.load() + 1u) % 3u);
             mode.cs_action_variant.store(take);
             mode.cs_knife_state.store(1); // Inspect!
@@ -422,6 +447,7 @@ void CsGunplayHandler::tickGameplayKeys(const InputTickContext& ctx) {
         mode.cs_knife_state.store(5); // Reload
         mode.cs_knife_inspect.store(false);
         mode.cs_scope_level.store(eldenring::cs::kScopeOff); // CS2 unscopes on reload
+        mode.cs_scope_resume_level.store(eldenring::cs::kScopeOff);
         mode.cs_knife_anim_time.store(0.f);
         cs_reload_sound_stage_ = 0;
         if (ctx.cb->log) ctx.cb->log("CS: reload");
@@ -456,6 +482,7 @@ void CsGunplayHandler::tickAttack(const InputTickContext& ctx) {
             const float rpm = (def && def->ballistics.fire_rate_rpm > 1.f) ? def->ballistics.fire_rate_rpm : 600.f;
             const bool automatic = def ? def->ballistics.is_automatic : true;
             const bool trigger = automatic ? ctx.left_held : ctx.click_edge;
+            const uint8_t scope_before = mode.cs_scope_level.load();
             if (trigger && cs_fire_cooldown_ <= 0.f) {
                 if (mode.cs_ammo.load() > 0) {
                     mode.cs_ammo.fetch_sub(1);
@@ -464,6 +491,15 @@ void CsGunplayHandler::tickAttack(const InputTickContext& ctx) {
                     mode.cs_knife_anim_time.store(0.f);
                     cs_fire_sound_stage_ = 0;
                     cs_fire_cooldown_ = 60.f / rpm;
+                    if (slot == 2 && eldenring::cs::scopeActive(scope_before)) {
+                        // CS2 unscopes for the bolt cycle and re-zooms when
+                        // the bolt is home; the fire clip ends at that point,
+                        // so tickActionTimer restores the stage there.
+                        mode.cs_scope_resume_level.store(
+                            eldenring::cs::scopeResumeLevelAfterShot(scope_before));
+                        mode.cs_scope_level.store(eldenring::cs::kScopeOff);
+                        if (ctx.cb->log) ctx.cb->log("CS: AWP scoped shot, scope closed for the bolt");
+                    }
                     if (ctx.cb->queue_cs_shot) {
                         const float damage = def ? def->ballistics.damage : 36.f;
                         // CS: the first shot after a pause is perfectly accurate; sustained fire spreads.
