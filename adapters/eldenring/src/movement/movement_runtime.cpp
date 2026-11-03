@@ -89,6 +89,20 @@ void FlightStep() {
     g_fly_yaw.store(loco.flyYaw(), std::memory_order_relaxed);
 }
 
+void ElytraStep(float dt) {
+    const uint64_t now_ms = GetTickCount64();
+    auto& loco = eldenring::movement::PlayerLocomotion::Instance();
+    loco.stepElytra(dt, now_ms, g_ctx, g_elytra_ignore_focus);
+    // Reuse the creative-mode long-fall protection: while gliding, the
+    // 0x14044E3A0 hook answers "do not kill" through g_movement_layer_ms.
+    if (loco.isElytraGliding()) {
+        g_movement_layer_ms.store(now_ms, std::memory_order_relaxed);
+        g_ctx.mode().elytra_blend.store(loco.elytraBlend(), std::memory_order_relaxed);
+    } else {
+        g_ctx.mode().elytra_blend.store(1.f, std::memory_order_relaxed);
+    }
+}
+
 void InventoryTick(bool fg) {
     std::lock_guard<std::mutex> g(g_melee_mutex);
     eldenring::ui::InventoryController::Instance().tick(fg, WantSuppress(), PlayerDead(), g_melee.inventory(), g_ctx);

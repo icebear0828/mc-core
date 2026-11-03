@@ -1,6 +1,7 @@
 #include "overlay_internal.hpp"
 #include "cs_scope.hpp"
 #include "eldenring_ow_feel.hpp"
+#include "mc/elytra_models.hpp"
 
 namespace erov {
 namespace detail {
@@ -24,16 +25,17 @@ const mc::model::EntityModel* PropModel(const char* name) {
 // part since the rest pose; the model's own bone pivots line up with the Steve rig's (same Bedrock coordinates).
 void DrawProp(const char* name, const mc::model::EntityModel* model, const mc::rig::Mat4& delta, const SteveParams& sp,
               const mc::rig::Mat4& vp, const SteveState& steve, D3D12_CPU_DESCRIPTOR_HANDLE rtv,
-              D3D12_GPU_DESCRIPTOR_HANDLE table, bool textured, float r, float g, float b, float flap) {
+              D3D12_GPU_DESCRIPTOR_HANDLE table, bool textured, float r, float g, float b, mc::Vec3 wing_euler_deg) {
     if (model == nullptr || !g_steve.mobModelReady(name)) return;
     const mc::Vec3 feet{steve.feet[0], steve.feet[1], steve.feet[2]};
     std::vector<mc::Quat> extra(model->bones.size());
-    if (flap != 0.f) {
-        const mc::Quat right{std::sin(flap * 0.5f), 0.f, 0.f, std::cos(flap * 0.5f)};
-        const mc::Quat left{-std::sin(flap * 0.5f), 0.f, 0.f, std::cos(flap * 0.5f)};
+    if (wing_euler_deg.x != 0.f || wing_euler_deg.y != 0.f || wing_euler_deg.z != 0.f) {
+        // Vanilla ElytraModel mirrors the right wing: same xRot, negated yRot and zRot.
+        const mc::Quat left = mc::model::bedrockEulerQuat(wing_euler_deg.x, wing_euler_deg.y, wing_euler_deg.z, eldenring::render::kBasis);
+        const mc::Quat right = mc::model::bedrockEulerQuat(wing_euler_deg.x, -wing_euler_deg.y, -wing_euler_deg.z, eldenring::render::kBasis);
         for (size_t i = 0; i < model->bones.size(); ++i) {
-            if (model->bones[i].name == "rightWing") extra[i] = eldenring::render::hostQuat(right);
-            else if (model->bones[i].name == "leftWing") extra[i] = eldenring::render::hostQuat(left);
+            if (model->bones[i].name == "rightWing") extra[i] = right;
+            else if (model->bones[i].name == "leftWing") extra[i] = left;
         }
     }
     auto bones = mc::model::boneMatrices(*model, extra, feet, steve.yaw, eldenring::render::kBasis);
@@ -260,7 +262,11 @@ void RenderFrame(IDXGISwapChain* sc) {
                 for (auto& m : parts) m = m * sleep;
             }
         }
-        if (steve.shadow && g_steve.shadowReady() && g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
+        // The ground ray only searches kFadeHeight (16 m). Above that the
+        // shadow would otherwise fall back to the feet and hang in mid-air;
+        // hide it while gliding instead (vanilla fades it out by then).
+        const bool shadow_ground_known = steve.ground_valid || !steve.gliding;
+        if (steve.shadow && shadow_ground_known && g_steve.shadowReady() && g_steve.ensureDepth(g_s.device, g_s.width, g_s.height)) {
             const float ground = steve.ground_valid ? steve.ground_y : steve.feet[1];
             SteveParams shp;
             shp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.occlusion ? 1.25f : 0.f); // like the blocks: not within 2.2 m of the camera
@@ -319,15 +325,22 @@ void RenderFrame(IDXGISwapChain* sc) {
             const mc::Vec3 hand_posed = mc::rig::transformPoint(parts[static_cast<size_t>(mc::StevePart::RightArm)], trident_pivot);
             const mc::rig::Mat4 trident_delta = mc::rig::translation(hand_posed - hand_rest);
             if (elytra_equipped || steve.gliding) {
-                static float flap_t = 0.f;
-                flap_t += dt;
-                const float flap = steve.gliding ? 0.35f * std::sin(flap_t * 8.f) : 0.f;
-                DrawProp("elytra_wings", PropModel("elytra_wings"), body_delta, sp, vp, steve, f.rtv,
-                         g_elytra_table_gpu, true, 0.82f, 0.84f, 0.9f, flap);
+                // Vanilla PlayerElytraAnimationState: standing 15/0/-15, crouching 40/5/-45, and while fall
+                // flying xRot lerp(f,15,20) with zRot -lerp(f,15,90), where f = 1 - (-vy/|v|)^1.5. The wings
+                // ease 0.3 per tick toward the target, so starting or stopping a glide does not snap.
+                const mc::model::WingPose pose = mc::model::elytraWingPose(steve.gliding, steve.glide_blend, steve.sneaking);
+                const mc::Vec3 target{pose.x_rot, pose.y_rot, pose.z_rot};
+                static mc::Vec3 wing_euler = target;
+                const float ease = 1.f - std::pow(0.7f, dt * 20.f);
+                wing_euler = wing_euler + (target - wing_euler) * ease;
+                // The crouching pose is the only one that moves the wings (3 px down), so it has its own file.
+                const char* wings_name = steve.sneaking ? mc::model::kElytraWingsCrouch : mc::model::kElytraWingsStanding;
+                DrawProp(wings_name, PropModel(wings_name), body_delta, sp, vp, steve, f.rtv,
+                         g_elytra_table_gpu, true, 0.82f, 0.84f, 0.9f, wing_euler);
             }
             if (steve.trident_charge > 0.f) {
                 DrawProp("trident", PropModel("trident"), trident_delta, sp, vp, steve, f.rtv,
-                         D3D12_GPU_DESCRIPTOR_HANDLE{}, false, 0.10f, 0.55f, 0.55f, 0.f);
+                         D3D12_GPU_DESCRIPTOR_HANDLE{}, false, 0.10f, 0.55f, 0.55f, mc::Vec3{});
             }
             g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
         }

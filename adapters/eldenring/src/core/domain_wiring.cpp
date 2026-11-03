@@ -12,6 +12,12 @@ void SetupLocomotion() {
     cb.want_suppress = WantSuppress;
     cb.is_player_dead = PlayerDead;
     cb.is_player_airborne = PlayerAirborne;
+    cb.has_glider = []() {
+        std::lock_guard<std::mutex> g(g_melee_mutex);
+        const auto& inv = g_melee.inventory();
+        if (inv.armor(1).item == mc::ItemId::Elytra) return true;
+        return g_melee.heldItem() == mc::ItemId::Elytra && g_melee.countAt(g_melee.selectedSlot()) > 0;
+    };
     cb.read_camera = [](CameraPose& out_cam) {
         const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
         return world != 0 && readCamera(g_reader, g_img.base, world, out_cam);
@@ -224,6 +230,7 @@ void SetupInput() {
         cb.try_ignite_creeper = TryIgniteCreeper;
         cb.try_place_block = TryPlaceBlock;
         cb.try_use_spawn_egg = TryUseSpawnEgg;
+        cb.use_elytra_firework = TryUseElytraFirework;
         cb.click_attack = ClickAttack;
         cb.enqueue_nearest_hostile = EnqueueNearestHostile;
         cb.queue_bullet_fire = [](float dmg) { return QueueBulletFire(dmg); };

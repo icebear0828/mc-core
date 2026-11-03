@@ -95,6 +95,7 @@ std::optional<HitTemplate>& g_template = g_combat.hit_template;
 std::atomic<bool> g_no_stagger{false};
 std::atomic<unsigned> g_stagger_skipped{0};
 std::atomic<bool> g_fall_protect{true};
+bool g_elytra_ignore_focus = false;
 std::atomic<uint64_t> g_movement_layer_ms{0}; // last time one of our movement features moved the player (tick count)
 std::atomic<unsigned> g_kills_skipped{0};
 std::mutex g_cr_mutex;

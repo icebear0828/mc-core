@@ -63,6 +63,11 @@ Vec3 bonePivotHost(const Bone& bone, const rig::HostBasis& basis);
 // like the right-hand rule in the canonical frame (X forward, Y left, Z up): the zombie's [-90, 0, 0] arms point forward.
 rig::Mat4 boneRestRotation(const Bone& bone, const rig::HostBasis& basis);
 
+// The same rotation as boneRestRotation, as a host-space quaternion for boneMatrices' `extra` (same degrees about the Bedrock axes,
+// applied X then Y then Z). Lets a caller pose a bone at runtime without a per-pose model file; rotationFromQuat(bedrockEulerQuat(rx, ry,
+// rz, basis)) equals boneRestRotation on a bone with that rotation.
+Quat bedrockEulerQuat(float rx_deg, float ry_deg, float rz_deg, const rig::HostBasis& basis);
+
 // `extra` may be shorter than `model.bones` or empty (identity for the missing ones).
 std::vector<rig::Mat4> boneMatrices(const EntityModel& model, const std::vector<Quat>& extra, const Vec3& root, float host_yaw,
                                     const rig::HostBasis& basis);

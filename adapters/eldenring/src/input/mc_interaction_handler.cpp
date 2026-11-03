@@ -30,6 +30,7 @@ void McInteractionHandler::tickRightClick(const InputTickContext& ctx) {
     else if (ctx.cb->try_ignite_creeper && ctx.cb->try_ignite_creeper()) handled = true;
     else if (ctx.cb->try_place_block && ctx.cb->try_place_block()) handled = true;
     else if (ctx.mc_on && ctx.cb->try_use_spawn_egg && ctx.cb->try_use_spawn_egg()) handled = true;
+    else if (ctx.mc_on && ctx.cb->use_elytra_firework && ctx.cb->use_elytra_firework()) handled = true;
     else {
         std::lock_guard<std::mutex> g(combat.melee_mutex);
         const mc::ItemId item = combat.melee.heldItem();

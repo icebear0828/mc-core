@@ -17,6 +17,7 @@ add_executable(mc_tests
     test_sekiro_adapter.cpp
     test_consumables.cpp
     test_elytra.cpp
+    test_elytra_flight.cpp
     test_hud.cpp
     test_hud_layout.cpp
     test_session.cpp
@@ -33,6 +34,8 @@ add_executable(mc_tests
     test_eldenring_world.cpp
     test_eldenring_buddy.cpp
     test_eldenring_creative.cpp
+    test_eldenring_physprobe.cpp
+    test_eldenring_physwrite.cpp
     test_eldenring_mobs.cpp
     test_eldenring_chrscan.cpp
     test_eldenring_flight.cpp

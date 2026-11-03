@@ -53,6 +53,8 @@ void SetupGameHooksCallbacks() {
     cb.safe_copy = [](uintptr_t a, void* d, size_t s) { return SafeCopy(a, d, s); };
 
     cb.on_camera_step_pre = [](float dt) {
+        PhysWriteTestStep();
+        PhysProbeStep(dt);
         if (g_bullet_fire_pending.load(std::memory_order_relaxed) &&
             GetCurrentThreadId() == g_game_tid.load(std::memory_order_relaxed) &&
             g_bullet_fire_pending.exchange(false)) {
@@ -62,6 +64,7 @@ void SetupGameHooksCallbacks() {
         SneakEyeHeightStep(dt);
         BlocksCollisionStep();
         McJumpStep();
+        ElytraStep(dt);
         GroundSprintStep(dt);
         OwRocketPunchStep(dt);
         ShadowGroundStep();

@@ -48,6 +48,7 @@ struct HotkeyCallbacks {
     std::function<bool()> try_ignite_creeper;
     std::function<bool()> try_place_block;
     std::function<bool()> try_use_spawn_egg;
+    std::function<bool()> use_elytra_firework;
     std::function<bool(float charged)> click_attack;
     std::function<void()> enqueue_nearest_hostile;
     std::function<bool(float damage)> queue_bullet_fire;

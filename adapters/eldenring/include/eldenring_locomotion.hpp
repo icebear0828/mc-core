@@ -22,6 +22,7 @@
 #include "eldenring_blocks.hpp"
 #include "eldenring_camera.hpp"
 #include "eldenring_flight.hpp"
+#include "mc/elytra_flight.hpp"
 #include "eldenring_jump.hpp"
 #include "eldenring_los.hpp"
 #include "eldenring_orientation.hpp"
@@ -48,6 +49,7 @@ struct LocomotionCallbacks {
     std::function<bool()> want_suppress;
     std::function<bool()> is_player_dead;
     std::function<bool()> is_player_airborne;
+    std::function<bool()> has_glider;
     std::function<bool(CameraPose& out_cam)> read_camera;
     std::function<RayResult(const float from[3], const float disp[3])> cast_ray;
 
@@ -91,6 +93,12 @@ public:
     void stepGroundSprint(float dt, RuntimeContext& ctx);
     void stepJump(float dt, uint64_t now_ms, RuntimeContext& ctx);
     void stepFlight(float dt, uint64_t now_ms, RuntimeContext& ctx);
+    // Minecraft 1.21.8 elytra: 20 Hz fixed step, continuous position writes.
+    void stepElytra(float dt, uint64_t now_ms, RuntimeContext& ctx, bool ignore_focus = false);
+    bool useElytraFirework(int ticks);
+    bool isElytraGliding() const { return elytra_.state().is_gliding; }
+    // Vanilla's wing pose blend f0: 1 at level or climbing, falling to 0 in a steep dive (wings fold back).
+    float elytraBlend() const;
     // OW rocket punch: forward displacement during state 3's thrust window.
     void stepOwRocketPunch(float dt, RuntimeContext& ctx);
 
@@ -150,8 +158,21 @@ private:
     unsigned fly_rebases_{0};
     flight::DoubleTap flight_tap_;
     uint64_t last_flight_log_ms_{0};
+    uint64_t last_elytra_log_ms_{0};
     bool ow_dash_active_{false};
     float ow_dash_start_[3]{};
+
+    // Elytra state (y-up, blocks/tick).
+    mc::ElytraFlightModel elytra_;
+    bool prev_elytra_jump_{false};
+    float elytra_accum_{0.f};
+    bool elytra_have_last_pos_{false};
+    float elytra_last_pos_[3]{};
+    float elytra_last_vel_[3]{};
+    bool elytra_have_pos_{false};
+    float elytra_pos_[3]{};
+    bool elytra_have_written_{false};
+    float elytra_last_written_[3]{};
 
     void log(const char* fmt, ...);
 
