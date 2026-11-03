@@ -73,13 +73,18 @@ void forEachCsClip(uint8_t state, uint8_t variant, bool hit, bool knife, Fn&& fn
 }
 
 // Used when no clip-duration callback is wired (headless tests, asset missing).
-float fallbackCsDuration(uint8_t state, bool knife) {
+float fallbackCsDuration(uint8_t state, uint8_t slot) {
+    const bool knife = slot == 0;
     switch (state) {
         case 1: return 4.1f;   // lookat01
         case 2: return knife ? 1.167f : 0.767f;
         case 3: return 1.167f;
         case 4: return 1.0f;
-        case 5: return 2.433f;
+        case 5:
+            // Reload lengths differ per gun: AK-47 74f, AWP 111f, M4A1-S 93f
+            // @30fps. A single 2.433 s value cut the M4A1-S reload 20 frames
+            // short whenever the renderer had not published its clip yet.
+            return (slot == 2) ? 3.6667f : (slot == 3) ? 3.0667f : 2.433f;
         case 6: return 1.167f;
         default: return 0.f;
     }
@@ -233,7 +238,7 @@ void CsGunplayHandler::tickActionTimer(const InputTickContext& ctx) {
                 }
             });
         }
-        return duration > 0.f ? duration : fallbackCsDuration(s, is_knife);
+        return duration > 0.f ? duration : fallbackCsDuration(s, mode.cs_weapon_slot.load());
     };
     const float max_t = (state != 0) ? durationFor(state, variant, hit) : 0.f;
     if (state != 0 && max_t > 0.f && t >= max_t) {

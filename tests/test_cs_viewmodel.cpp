@@ -1291,7 +1291,9 @@ TEST(CSViewModelTest, AuthenticKnifeActionClipsVariantsAndDurations) {
     EXPECT_NEAR(anim.clipDuration("inspect3"), 146.f / 30.f, 0.01f);
 
     auto bladeAt = [&](uint8_t state, float t, uint8_t variant, bool hit) {
-        anim.tick(0.016f, state, t, variant, hit);
+        // dt=0 freezes the wall-clock breathing bob so the assertions below
+        // compare authored clip data only.
+        anim.tick(0.0f, state, t, variant, hit);
         const auto* m = anim.currentPose().findTrack("blade");
         EXPECT_NE(m, nullptr);
         return m != nullptr ? *m : eldenring::fp::M4{};
@@ -1394,6 +1396,63 @@ TEST(CSViewModelTest, OwDoomfistPrimaryAttackAnimationForwardThrustAndReturn) {
     anim.tick(0.016f, 2, 0.40f, 0, true);
     const float end_z = anim.basePose().m[11];
     EXPECT_NEAR(end_z, idle_z, 0.01f) << "Gauntlet must return to rest position after attack";
+}
+
+TEST(CSViewModelTest, IdleBobPhaseSurvivesStateChanges) {
+    CSViewModelAnimator anim;
+    // Wall time advances the bob; the dispatcher zeroes cs_knife_anim_time
+    // when an action ends, so anim_time alone cannot drive it.
+    anim.tick(0.4f, 0, 1.0f);
+    const float idle_y = anim.basePose().m[7];
+    EXPECT_GT(std::abs(idle_y), 1e-4f) << "the breathing bob must stay alive";
+
+    anim.tick(0.016f, 5, 0.0f);
+    const float reload_y = anim.basePose().m[7];
+    EXPECT_LT(std::abs(reload_y - idle_y), 5e-4f)
+        << "starting a one-shot action must not snap the bob";
+
+    anim.tick(0.016f, 0, 0.0f);
+    EXPECT_LT(std::abs(anim.basePose().m[7] - reload_y), 5e-4f)
+        << "returning to idle must not snap the bob";
+}
+
+TEST(CSViewModelTest, ReloadTailEasesIntoTheHeldPose) {
+    const std::vector<std::string> candidate_paths = {
+        "build/cs2assets/cs_ak47_viewmodel.bin",
+        "../../build/cs2assets/cs_ak47_viewmodel.bin",
+        "../build/cs2assets/cs_ak47_viewmodel.bin"
+    };
+    std::string model_path;
+    for (const auto& p : candidate_paths) {
+        if (std::filesystem::exists(p)) {
+            model_path = p;
+            break;
+        }
+    }
+    if (model_path.empty()) {
+        GTEST_SKIP() << "cs_ak47_viewmodel.bin not found in workspace candidate paths";
+    }
+
+    CSViewModel vm;
+    ASSERT_TRUE(vm.loadFromFile(model_path));
+    CSViewModelAnimator anim;
+    anim.setModel(&vm);
+    const float duration = anim.clipDuration("reload");
+    ASSERT_GT(duration, 0.3f);
+
+    // The authored AK-47 reload ends with the left upper arm ~2.4 cm above
+    // the held pose. The last rendered frame must already be back at rest.
+    anim.tick(0.016f, 5, duration - 0.01f);
+    const fp::M4* tail = anim.currentPose().findTrack("arm_upper_L");
+    ASSERT_NE(tail, nullptr);
+    const fp::M4 tail_pose = *tail;
+
+    anim.tick(0.016f, 0, 0.0f);
+    const fp::M4* idle = anim.currentPose().findTrack("arm_upper_L");
+    ASSERT_NE(idle, nullptr);
+    for (int i = 0; i < 16; ++i) {
+        EXPECT_NEAR(tail_pose.m[i], idle->m[i], 5e-4f) << "matrix entry " << i;
+    }
 }
 
 TEST(CSViewModelTest, OwDoomfistSecondaryAttackAnimationWindupAndHeavyThrust) {
