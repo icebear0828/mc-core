@@ -313,10 +313,18 @@ void RenderFrame(IDXGISwapChain* sc) {
             const mc::rig::Mat4 rest_body = mc::rig::partMatrix(mc::StevePart::Body, mc::Quat{}, feet_v, steve.yaw, eldenring::render::kBasis);
             const mc::rig::Mat4 body_delta =
                 eldenring::render::inverseRigid(rest_body) * parts[static_cast<size_t>(mc::StevePart::Body)];
-            // The trident is a 3D prop attached to the right arm: use the arm's full rigid delta so it follows the
-            // charge/riptide animation (the flat held-item sprite is suppressed for the trident).
+            // The trident follows the hand's position but not the arm's rotation: the 12-part rig has no wrist, so
+            // inheriting the charge pose's 186-degree arm rotation would swing the shaft down the player's back.
+            // The prop mesh is baked at its rest pose and the trident bone's pivot sits exactly at the hand, so the
+            // delta has to carry that pivot from the rest hand to the posed one.
+            const mc::model::EntityModel* trident_model = PropModel("trident");
+            const mc::model::Bone* trident_bone = trident_model != nullptr ? trident_model->findBone("trident") : nullptr;
+            const mc::Vec3 trident_pivot =
+                trident_bone != nullptr ? mc::model::bonePivotHost(*trident_bone, eldenring::render::kBasis) : mc::Vec3{};
             const mc::rig::Mat4 rest_arm = mc::rig::partMatrix(mc::StevePart::RightArm, mc::Quat{}, feet_v, steve.yaw, eldenring::render::kBasis);
-            const mc::rig::Mat4 trident_delta = eldenring::render::inverseRigid(rest_arm) * parts[static_cast<size_t>(mc::StevePart::RightArm)];
+            const mc::Vec3 hand_rest = mc::rig::transformPoint(rest_arm, trident_pivot);
+            const mc::Vec3 hand_posed = mc::rig::transformPoint(parts[static_cast<size_t>(mc::StevePart::RightArm)], trident_pivot);
+            const mc::rig::Mat4 trident_delta = mc::rig::translation(hand_posed - hand_rest);
             if (elytra_equipped || steve.gliding) {
                 // Vanilla PlayerElytraAnimationState: standing 15/0/-15, crouching 40/5/-45, and while fall
                 // flying xRot lerp(f,15,20) with zRot -lerp(f,15,90), where f = 1 - (-vy/|v|)^1.5. The wings

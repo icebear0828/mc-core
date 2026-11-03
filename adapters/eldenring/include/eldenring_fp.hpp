@@ -132,44 +132,6 @@ inline M4 bowPose(float ticks, float equipped) {
     return mul(p, rotY(-45.f));
 }
 
-// The trident's first-person display (models/item/trident_in_hand.json, firstperson_righthand):
-// rotation (0,-90,25), translation (-3,17,1)/16, scale 1. The JSON is model-space (y down) and our mesh is
-// centred in a y-up view, so the y is negated and x mirrored to keep the trident in the right hand.
-inline M4 tridentFpDisplay() {
-    M4 p = translate(3.f / 16.f, -17.f / 16.f, 1.f / 16.f);
-    p = mul(p, mul(rotX(0.f), mul(rotY(-90.f), rotZ(25.f))));
-    return p;
-}
-
-// Trident charge (ItemInHandRenderer.renderArmWithItem, UseAnim.SPEAR, right hand): the spear turn, the 0..1
-// charge extension/shake and the final -45 turn. `charge` is ticks/10, clamped to 1.
-inline M4 tridentChargePose(float charge, float equipped) {
-    M4 p = translate(0.56f, -0.52f + equipped * -0.6f, -0.72f);
-    p = mul(p, translate(-0.5f, 0.7f, 0.1f));
-    p = mul(p, rotX(-55.f));
-    p = mul(p, rotY(35.3f));
-    p = mul(p, rotZ(-9.785f));
-    const float f = std::clamp(charge, 0.f, 1.f);
-    if (f > 0.1f) {
-        const float shake = std::sin((f * 10.f - 0.1f) * 1.3f) * (f - 0.1f);
-        p = mul(p, translate(0.f, shake * 0.004f, 0.f));
-    }
-    p = mul(p, translate(0.f, 0.f, f * 0.2f));
-    M4 stretch;
-    stretch.m[10] = 1.f + f * 0.2f;
-    p = mul(p, stretch);
-    return mul(p, rotY(-45.f));
-}
-
-// Riptide auto-spin (ItemInHandRenderer.renderArmWithItem, isAutoSpinAttack): the trident held out while the
-// camera/body spins in vanilla; the pose itself is static.
-inline M4 riptidePose(float equipped) {
-    M4 p = translate(0.56f, -0.52f + equipped * -0.6f, -0.72f);
-    p = mul(p, translate(-0.4f, 0.8f, 0.3f));
-    p = mul(p, rotY(65.f));
-    return mul(p, rotZ(-85.f));
-}
-
 // The bare right arm (ItemInHandRenderer.renderPlayerArm): the pose the arm model is drawn in.
 inline M4 bareArmPose(float swing, float equipped) {
     const float sq = std::sqrt(swing);
