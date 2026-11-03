@@ -854,3 +854,24 @@ perfstats/s: read=N fail=N slow_rtti=N enum=N (N slots) grace=N (N slots) unm=N 
 3. 游戏自身的加载/着色器编译（用 `>50` 帧发生的时间点对照 `mc_er.log` 里的 `world=`/`load[...]` 行）。
 
 探针 DLL 部署后哈希 `c4383ef0...`，旧 DLL 备份为游戏目录的 `dinput8.dll.bak_before_probes`。
+
+### 全日志扫描（228 个 perfstats 秒）
+
+上面的 12 秒样本是平静窗口。扫完整日志后，`>33 ms` 的帧集中在这些时间点：
+
+| 时间 | 最差帧 | 同秒日志 | 判断 |
+|---|---|---|---|
+| 10–18s | 3.5s / 2.1s / 1.7s | `world=0`、加载画面 | 游戏启动/加载 |
+| 47–52s | 289 ms | `screen=1`、`fade=1.00` | 游戏加载画面 |
+| 64–70s | 327 / 235 / 118 ms | `fade=0.60→1.00`、`screen=1`、world 指针变化 | 快速旅行/加载 |
+| **80.14s** | **6973 ms** | `CreateDevice keyboard` 反复重建、AK-47 CSVM 懒加载、`melee_lock max=18 ms` | **Alt-Tab/失焦** + CS 武器首次加载 |
+| 210s | 495 ms | `flight`/`elytra` 状态切换、大位移 | 游戏流式加载/飞行 |
+| 224–228s | 256 / 117 / 69 ms | `screen=1`、`fade=1.00`、`blocks: loading screen` | 加载画面 |
+
+结论修正：
+
+- **稳定游戏内没有 `>33 ms` 的帧**；卡顿集中在加载、快速旅行、失焦和首次切枪。
+- **80 秒的 7 秒不是 mod**：同一秒键盘设备反复重建，是窗口失焦/Alt-Tab 的特征。
+- **唯一明确的 mod 侧卡顿是 CS 武器模型首次切换**：`overlay_hook.cpp` 的 Init 只预加载了三把枪的贴图（`loadWeaponTextures`），模型（`loadWeapon` → `loadModel`）仍是懒加载；80 秒那次解析了 1.4MB CSVM，约 100ms。
+- `melee_lock` 的 18ms 只在 80 秒出现一次，疑似背包/合成/存档竞争，量级远小于加载卡顿。
+- 如果要消除首次切枪卡顿，需要缓存解析后的 CSVM（CPU 侧）或在 Init 预加载当前槽位的模型；`CsRenderer` 目前只持有一个 `model_`，不能同时缓存三把枪的 GPU 网格。
