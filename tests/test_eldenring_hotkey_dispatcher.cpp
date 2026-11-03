@@ -1231,6 +1231,39 @@ TEST_F(HotkeyDispatcherTest, CsKnifeActionsUseAuthoredTakesAndClipDurations) {
     EXPECT_EQ(ctx.mode().cs_knife_state.load(), 1); // 4.1/4.5/4.867 s take
 }
 
+TEST_F(HotkeyDispatcherTest, CsReloadFallbackDurationIsPerWeapon) {
+    auto& ctx = RuntimeContext::Instance();
+
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    setKey('4', true);
+    dispatcher_->tick(0.016f);
+    setKey('4', false);
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 3);
+
+    // No renderer yet: the clip duration is unavailable, so the dispatcher
+    // falls back to its per-weapon table.
+    cb_.clip_duration = nullptr;
+    dispatcher_->setCallbacks(cb_);
+    dispatcher_->tick(1.1f);
+    ASSERT_EQ(ctx.mode().cs_knife_state.load(), 0);
+
+    setKey('R', true);
+    dispatcher_->tick(0.016f);
+    setKey('R', false);
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ctx.mode().cs_knife_state.load(), 5);
+
+    // M4A1-S reload is 93 frames @30fps = 3.067 s, not the AK-47's 2.433 s.
+    dispatcher_->tick(2.90f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 5) << "reload was cut before the authored tail";
+    dispatcher_->tick(0.20f);
+    EXPECT_EQ(ctx.mode().cs_knife_state.load(), 0);
+}
+
 #else
 TEST_F(HotkeyDispatcherTest, PureMcBuildDisablesCsHotkeysAndInteractions) {
     auto& ctx = RuntimeContext::Instance();

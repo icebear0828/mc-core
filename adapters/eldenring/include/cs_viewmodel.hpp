@@ -607,12 +607,15 @@ public:
     }
 
     void tick(float dt, uint8_t state, float anim_time, uint8_t variant = 0, bool hit = true) {
-        (void)dt;
         current_state_ = state;
         anim_time_ = anim_time;
         clip_duration_ = 0.f;
 
-        const float bob = std::sin(anim_time * 2.5f) * 0.003f;
+        // The breathing bob follows wall time. anim_time restarts at zero when
+        // the dispatcher begins or ends an action, so driving the bob from it
+        // snapped the whole viewmodel by up to 3 mm on the transition frame.
+        bob_phase_ = std::fmod(bob_phase_ + std::max(0.f, dt) * 2.5f, 6.2831853f);
+        const float bob = std::sin(bob_phase_) * 0.003f;
         const eldenring::fp::M4 base = eldenring::fp::translate(0.f, bob, 0.f);
 
         // Reset legacy slots so a gun clip never inherits stale knife poses.
@@ -692,6 +695,30 @@ public:
                 eldenring::fp::M4 sampled = eldenring::fp::M4{};
                 erov::cs_anims::SampleDynamicTrack(entry.second, clip->fps, clip_time, sampled);
                 pose_.tracks[entry.first] = eldenring::fp::mul(base, sampled);
+            }
+
+            // Reload returns to the held pose. Ease the authored tail into
+            // idle so the completion frame does not snap by the residual
+            // offset (the AK-47's left upper arm ends ~2.4 cm high).
+            if (state == 5) {
+                constexpr float kBlendSeconds = 0.18f;
+                constexpr float kBlendMargin = 0.04f;
+                if (clip_duration_ > kBlendSeconds + kBlendMargin) {
+                    const float blend_end = clip_duration_ - kBlendMargin;
+                    const float blend_start = blend_end - kBlendSeconds;
+                    if (clip_time >= blend_start) {
+                        float alpha = std::clamp((clip_time - blend_start) / (blend_end - blend_start), 0.f, 1.f);
+                        alpha = alpha * alpha * (3.f - 2.f * alpha);
+                        if (const CSVMAnimClip* idle = findClip({"idle"})) {
+                            for (auto& entry : pose_.tracks) {
+                                const auto rest = idle->tracks.find(entry.first);
+                                if (rest == idle->tracks.end() || rest->second.empty()) continue;
+                                entry.second = erov::cs_anims::LerpRigidM4(
+                                    entry.second, eldenring::fp::mul(base, rest->second.front()), alpha);
+                            }
+                        }
+                    }
+                }
             }
 
             // Mirror generic tracks onto the legacy knife accessors.
@@ -792,6 +819,7 @@ private:
     uint8_t current_state_{0};
     float anim_time_{0.0f};
     float clip_duration_{0.0f};
+    float bob_phase_{0.0f};
 };
 
 } // namespace eldenring::cs
