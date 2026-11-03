@@ -269,14 +269,26 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                     Logf("overlay: mob model '%s' ready (%zu bones)", name.c_str(), model.bones.size());
                 }
             }
+            for (const auto& [name, mesh] : g_static_models) {
+                if (g_steve.setStaticMesh(g_s.device, name, mesh)) {
+                    Logf("overlay: static model '%s' ready (%zu vertices)", name.c_str(), mesh.vertices.size());
+                }
+            }
             if (g_mob_model_given) {
                 g_mob_model_gpu = g_steve.setMobModel(g_s.device, g_mob_model);
                 Logf(g_mob_model_gpu ? "overlay: default mob model ready (Bedrock geometry, one mesh per bone)" : "overlay: default mob model upload failed, the mobs use the Steve rig");
             }
             g_mob_registry.setModel(g_mob_model_gpu ? &g_mob_model : nullptr);
 
-            // Mobs list to allocate descriptor tables for
-            const std::vector<std::string> known_mobs = {"creeper", "zombie", "skeleton"};
+            // Mobs list to allocate descriptor tables for: the Minecraft mobs first (the first one with a skin
+            // becomes the default table), then every other loaded model, Bedrock or static.
+            std::vector<std::string> known_mobs = {"creeper", "zombie", "skeleton"};
+            for (const auto& entry : g_mob_models) {
+                if (std::find(known_mobs.begin(), known_mobs.end(), entry.first) == known_mobs.end()) known_mobs.push_back(entry.first);
+            }
+            for (const auto& entry : g_static_models) {
+                if (std::find(known_mobs.begin(), known_mobs.end(), entry.first) == known_mobs.end()) known_mobs.push_back(entry.first);
+            }
             size_t slot_idx = 45;
             for (const auto& mob : known_mobs) {
                 if (slot_idx + 1 >= 64) break;

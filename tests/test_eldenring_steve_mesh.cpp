@@ -147,3 +147,25 @@ TEST(EldenRingSteveMesh, MeshGeometryIsFinite) {
         }
     }
 }
+
+TEST(EldenRingSteveMesh, BuildStaticMeshProducesOneDrawRange) {
+    mc::model::StaticMesh mesh;
+    mesh.identifier = "darkrai";
+    mesh.vertices = {
+        mc::rig::RigVertex{0.f, 0.f, 0.f, 0.f, 0.f},
+        mc::rig::RigVertex{1.f, 0.f, 0.f, 1.f, 0.f},
+        mc::rig::RigVertex{0.f, 1.f, 0.f, 0.f, 1.f},
+    };
+    mesh.indices = {0, 1, 2};
+    mesh.materials.push_back(mc::model::StaticMeshMaterial{"body_a", "darkrai.png", 0, 3});
+
+    const erov::steve::MobCpuMesh cpu = erov::steve::BuildStaticMesh(mesh);
+    EXPECT_EQ(cpu.vertices.size(), 3u);
+    EXPECT_EQ(cpu.indices.size(), 3u);
+    ASSERT_EQ(cpu.bone_ranges.size(), 1u);
+    EXPECT_EQ(cpu.bone_ranges[0].index_count, 3u);
+    EXPECT_EQ(cpu.bone_ranges[0].first_index, 0u);
+    EXPECT_EQ(cpu.bone_ranges[0].base_vertex, 0);
+    EXPECT_EQ(cpu.right_arm_ix, -1);
+    EXPECT_EQ(cpu.left_arm_ix, -1);
+}

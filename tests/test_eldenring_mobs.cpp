@@ -567,3 +567,76 @@ TEST(EldenRingMobs, SkeletonBowAimTiltsHeadAndArmsToMatchAimPitch) {
 
 
 
+
+namespace {
+mc::model::StaticMesh makeStaticMesh(float yaw_offset = 0.f) {
+    mc::model::StaticMesh mesh;
+    mesh.identifier = "darkrai";
+    mesh.yaw_offset = yaw_offset;
+    mesh.vertices = {
+        mc::rig::RigVertex{0.f, 0.f, 0.f, 0.f, 0.f},
+        mc::rig::RigVertex{1.f, 0.f, 1.f, 1.f, 0.f},
+        mc::rig::RigVertex{0.f, 1.f, 0.f, 0.f, 1.f},
+    };
+    mesh.indices = {0, 1, 2};
+    mesh.materials.push_back(mc::model::StaticMeshMaterial{"body_a", "darkrai.png", 0, 3});
+    return mesh;
+}
+} // namespace
+
+TEST(EldenRingMobs, AStaticMeshMobGetsOneWorldMatrixAtItsFeet) {
+    const auto mesh = makeStaticMesh();
+    MobRegistry r;
+    r.registerStaticModel("darkrai", &mesh);
+    MobSnapshot s = at(9, 3.f, -2.f);
+    s.feet[1] = 1.5f;
+    s.model_type = "darkrai";
+    const auto draws = r.update(1.f / 60.f, {s});
+    ASSERT_EQ(draws.size(), 1u);
+    EXPECT_TRUE(draws[0].generic);
+    ASSERT_EQ(draws[0].bones.size(), 1u);
+    const mc::Vec3 origin = mc::rig::transformPoint(draws[0].bones[0], mc::Vec3{0.f, 0.f, 0.f});
+    EXPECT_NEAR(origin.x, 3.f, 1e-4f);
+    EXPECT_NEAR(origin.z, -2.f, 1e-4f);
+    EXPECT_NEAR(origin.y, 1.5f, 0.02f); // the idle bob adds at most 1.5 cm
+}
+
+TEST(EldenRingMobs, TheStaticMeshYawOffsetTurnsTheModel) {
+    const auto mesh = makeStaticMesh(1.5707963f);
+    MobRegistry r;
+    r.registerStaticModel("darkrai", &mesh);
+    MobSnapshot s = at(9, 0.f, 0.f);
+    s.model_type = "darkrai";
+    const auto draws = r.update(1.f / 60.f, {s});
+    ASSERT_EQ(draws[0].bones.size(), 1u);
+    // +Z turned by +90 degrees about +Y is +X (the rig's right-hand rule)
+    const mc::Vec3 forward = mc::rig::transformPoint(draws[0].bones[0], mc::Vec3{0.f, 0.f, 1.f});
+    EXPECT_GT(forward.x, 0.9f);
+    EXPECT_NEAR(forward.z, 0.f, 0.05f);
+}
+
+TEST(EldenRingMobs, TheStaticMeshIdleBobsOverTime) {
+    const auto mesh = makeStaticMesh();
+    MobRegistry r;
+    r.registerStaticModel("darkrai", &mesh);
+    MobSnapshot s = at(1, 0.f, 0.f);
+    s.model_type = "darkrai";
+    auto first = r.update(1.f / 60.f, {s});
+    for (int i = 0; i < 60; ++i) first = r.update(1.f / 60.f, {s});
+    const mc::Vec3 origin = mc::rig::transformPoint(first[0].bones[0], mc::Vec3{0.f, 0.f, 0.f});
+    EXPECT_GT(std::fabs(origin.y), 1e-4f); // a second in, the bob is off its start
+}
+
+TEST(EldenRingMobs, AStaticMeshTakesPriorityOverABedrockModelOfTheSameName) {
+    const auto zombie = loadZombie();
+    const auto mesh = makeStaticMesh();
+    MobRegistry r;
+    r.registerModel("darkrai", &zombie);
+    r.registerStaticModel("darkrai", &mesh);
+    MobSnapshot s = at(1, 0.f, 0.f);
+    s.model_type = "darkrai";
+    const auto draws = r.update(1.f / 60.f, {s});
+    ASSERT_EQ(draws.size(), 1u);
+    EXPECT_TRUE(draws[0].generic);
+    EXPECT_EQ(draws[0].bones.size(), 1u);
+}

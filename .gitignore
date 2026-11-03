@@ -45,3 +45,6 @@ assets/exported/
 *.bin
 
 
+
+# baked static meshes (generated from extracted models, never commit)
+*.mcsm

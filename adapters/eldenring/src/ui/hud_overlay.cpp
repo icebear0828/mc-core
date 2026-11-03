@@ -315,6 +315,35 @@ void SetupOverlay() {
                 }
             }
         }
+        {   // Baked static meshes (Pokemon): one .mcsm + one packed atlas PNG per model. No 64x64 gate here.
+            const std::vector<std::string> static_mobs = {"darkrai", "cresselia", "arceus", "mega_charizard_x"};
+            for (const auto& mob : static_mobs) {
+                const std::string model_path = g_game_dir + "mods\\mc_adapter\\models\\" + mob + ".mcsm";
+                std::vector<uint8_t> mesh_bytes;
+                if (ReadFileAll(model_path, mesh_bytes)) {
+                    const auto mesh = mc::model::StaticMesh::fromBytes(
+                        std::string_view(reinterpret_cast<const char*>(mesh_bytes.data()), mesh_bytes.size()));
+                    if (mesh && !mesh->vertices.empty()) {
+                        erov::SetStaticModel(mob, *mesh);
+                        Log("mobs: static model %s: %zu vertices, %zu indices", mob.c_str(), mesh->vertices.size(),
+                            mesh->indices.size());
+                    } else {
+                        Log("mobs: static model %s failed to parse", model_path.c_str());
+                    }
+                } else {
+                    Log("mobs: static model file missing at %s", model_path.c_str());
+                }
+                const std::string atlas_path = g_game_dir + "mods\\mc_adapter\\" + mob + ".png";
+                std::vector<uint8_t> atlas_rgba;
+                unsigned aw = 0, ah = 0;
+                if (erov::DecodePngFile(atlas_path, atlas_rgba, aw, ah)) {
+                    erov::SetMobSkin(mob, atlas_rgba.data(), aw, ah);
+                    Log("mobs: static atlas %s (%ux%u)", mob.c_str(), aw, ah);
+                } else {
+                    Log("mobs: static atlas missing at %s", atlas_path.c_str());
+                }
+            }
+        }
         {   // Phase A debug props: elytra wings and trident (drawn only when the debug keys turn them on).
             for (const char* prop : {"elytra_wings", "trident"}) {
                 const std::string model_path = g_game_dir + "mods\\mc_adapter\\models\\" + prop + ".geo.json";

@@ -88,6 +88,7 @@ if(WIN32)
         src/render/d3d12_pipeline_builder.cpp
         src/render/steve_pipeline.cpp
         src/render/steve_mesh_factory.cpp
+        src/render/steve_static_mesh.cpp
         src/render/steve_texture_cache.cpp
         src/input_hook.cpp
         src/png_wic.cpp

@@ -573,3 +573,28 @@
 3. 跑基线：`cmake --build build -j8 && ./build/bin/mc_tests`（738 个应全过）和 Python（`uv run --with pillow --with pytest python -m pytest tests -q`，75 个）。
 4. 问用户这次想做什么。第 0 节"未解决 / 待办"里有当前最想做的：弩箭外观与 MC 拉弓输入、盾牌/副手/双持/盔甲、光照（屏幕采样环境光）、召唤/死亡粒子、人形体型的单体骨灰（碰撞体积）、骷髅/苦力怕、站方块走不动；**P0 的 30 分钟稳定性长跑仍没跑过**。
 5. 每个功能结束时：更新清单（F 节新增条目）、项目记忆（`~/.claude/projects/-Users-c-mc-core/memory/`）、如果有新逆向结论写进 `ELDENRING_REVERSE.md` 并分级。
+
+---
+
+## 12. 宝可梦静态世界实体（2026-11-03）
+
+**来源**：解包的 DAE/FBX（`D:\code\universal-modder\pokemon\`，不进仓库）。导出里**没有动画**：DAE 的 92 条 track 101 帧完全相同，FBX 也没有 AnimCurve，所以第一版是静态绑定姿势 + 程序化漂浮/呼吸。
+
+**转换**：
+```
+uv run --with pillow python tools/pokemon/build_static_mesh.py \
+  --dae <path.dae> --name darkrai --out-dir build/pokemon \
+  [--scale 1.0] [--yaw-offset 0] [--atlas 1024]
+```
+输出 `<name>.mcsm`（MCSM v1）+ `<name>.png`（每模型一张图集）+ `<name>.meta.json`。单位自动识别（>20 视为厘米）、脚底归零、X/Z 居中、V 翻转、UV 重映射到图集纹素中心。名字：`darkrai`、`cresselia`、`arceus`、`mega_charizard_x`。
+
+**运行时**：
+- 核心：`include/mc/static_mesh.hpp` / `src/static_mesh.cpp`（`mc::model::StaticMesh::fromBytes`）。
+- 渲染：`SteveRenderer::setStaticMesh`（`src/render/steve_static_mesh.cpp`）复用现有 mob 管线：20 字节 `RigVertex`、单 range、一次 `DrawIndexed`；不碰 `steve.hlsl` 和根签名。
+- 注册：`MobRegistry::registerStaticModel`；每帧只产出一个世界矩阵（脚底 + yaw + yaw_offset + 漂浮/摇摆）。
+- 加载：`hud_overlay.cpp` 读 `mods\mc_adapter\models\<name>.mcsm` 和 `mods\mc_adapter\<name>.png`（绕过 64×64 限制）；`overlay_hook.cpp` 上传并把 7 个模型分到 45..58 槽。
+- 召唤：`mc_er_summon.txt` 写 `darkrai`，F6 开 MC 模式后按 F2；`pickSummonModel` 先匹配原版名，再匹配已加载模型名。
+
+**实机调参**：大小用 `--scale`（Darkrai 现在约 2.47 m，可按设定缩小）；朝向用 `--yaw-offset`（默认 0，模型朝向 +Z）；改完重新转换并跑 `python tools/deploy_eldenring_mod.py`（游戏必须先关）。
+
+**已知**：点采样（图集边缘留 4px gutter）；透明只做 alpha cutout；无骨骼动画。后续拿到游戏 motion 文件再上蒙皮管线。
