@@ -99,7 +99,7 @@ protected:
             if (n == "inspect2") return 4.5f;
             if (n == "inspect3") return 4.867f;
             if (n == "deploy" || n == "deploy2" || n == "draw") return 1.0f;
-            if (n == "fire") return 0.767f;
+            if (n == "fire") return fire_duration_;
             if (n == "reload") return reload_duration_;
             if (n.rfind("light_", 0) == 0 || n.rfind("heavy_", 0) == 0 ||
                 n.rfind("backstab", 0) == 0) return 1.167f;
@@ -201,6 +201,8 @@ protected:
 
     // Authored reload-clip duration returned by the fake clip_duration callback.
     float reload_duration_{2.433f};
+    // Authored fire-clip duration; the AWP's bolt cycle is 49 frames = 1.6 s.
+    float fire_duration_{0.767f};
 
     bool foreground_{true};
     bool want_suppress_{true};
@@ -783,6 +785,50 @@ TEST_F(HotkeyDispatcherTest, CsReloadAudioFollowsTheAwpTimeline) {
     EXPECT_EQ(count("cs.awp.boltforward"), 0);
     tick_until(3.00f);
     EXPECT_EQ(count("cs.awp.boltforward"), 1);
+}
+
+TEST_F(HotkeyDispatcherTest, CsFireAudioPlaysTheAwpBoltCycle) {
+    auto& ctx = RuntimeContext::Instance();
+
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    setKey('2', true);
+    dispatcher_->tick(0.016f);
+    setKey('2', false);
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 2);
+    dispatcher_->tick(1.1f);
+    ASSERT_EQ(ctx.mode().cs_knife_state.load(), 0);
+    played_sounds_.clear();
+
+    // AWP fire clip: 49 frames @30fps = 1.6 s. The authored shoot1_awp track
+    // plays BoltBack_Q f18 and BoltForward_Q f26; the AK/M4 shoot clips carry
+    // no fire-cycle sound.
+    fire_duration_ = 1.6f;
+    left_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ctx.mode().cs_knife_state.load(), 2);
+
+    auto tick_until = [&](float t) {
+        while (ctx.mode().cs_knife_anim_time.load() < t) dispatcher_->tick(0.05f);
+    };
+    auto count = [&](const char* name) {
+        return std::count(played_sounds_.begin(), played_sounds_.end(), name);
+    };
+
+    EXPECT_EQ(count("cs.awp.fire"), 1);
+
+    tick_until(0.50f); // frame 15: bolt still closed
+    EXPECT_EQ(count("cs.awp.boltback_q"), 0);
+    tick_until(0.65f); // frame 19: BoltBack_Q at f18
+    EXPECT_EQ(count("cs.awp.boltback_q"), 1);
+
+    tick_until(0.80f); // frame 24: bolt forward not yet
+    EXPECT_EQ(count("cs.awp.boltforward_q"), 0);
+    tick_until(0.90f); // frame 27: BoltForward_Q at f26
+    EXPECT_EQ(count("cs.awp.boltforward_q"), 1);
 }
 
 TEST_F(HotkeyDispatcherTest, CsReloadAudioSkipsTheBoltWhenTheClipHasNone) {
