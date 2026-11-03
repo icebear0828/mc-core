@@ -189,6 +189,11 @@ private:
     };
     std::unordered_map<std::string, MeshGpu> mesh_cache_;
 
+    // Parsed CSVM data per path. The GPU mesh cache alone still re-parsed the
+    // 1.4 MB file on every switch; this lets a switch copy the parsed model
+    // instead of reading and parsing it on the render thread.
+    std::unordered_map<std::string, eldenring::cs::CSViewModel> model_cache_;
+
     // Dedicated viewmodel depth target.
     ID3D12Device* device_{nullptr};
     ID3D12Resource* depth_tex_{nullptr};
