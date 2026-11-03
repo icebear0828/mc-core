@@ -24,6 +24,8 @@
 #include "eldenring_flight.hpp"
 #include "mc/elytra_flight.hpp"
 #include "mc/ender_pearl.hpp"
+#include "mc/riptide.hpp"
+#include "mc/thrown_trident.hpp"
 #include "eldenring_jump.hpp"
 #include "eldenring_los.hpp"
 #include "eldenring_orientation.hpp"
@@ -113,6 +115,14 @@ public:
     bool isEnderPearlTeleportHolding() const { return pearl_hold_; }
     // The in-flight pearl's world position for the renderer; false when no pearl is active.
     bool pearlRenderPos(float out[3]) const;
+    // Trident Riptide: 10 ticks of charge then a 20-tick spin dash along the look direction.
+    bool startRiptide(int level);
+    void stepRiptide(float dt, uint64_t now_ms, RuntimeContext& ctx);
+    bool isRiptiding() const { return riptide_.active(); }
+    // Plain trident throw (no riptide), used while gliding: an arrow-like projectile that leaves the glide alone.
+    bool requestTridentThrow();
+    void stepThrownTrident(float dt, uint64_t now_ms, RuntimeContext& ctx);
+    bool tridentRenderState(float pos[3], float dir[3]) const;
     // OW rocket punch: forward displacement during state 3's thrust window.
     void stepOwRocketPunch(float dt, RuntimeContext& ctx);
 
@@ -202,6 +212,25 @@ private:
     bool pearl_have_player_pos_{false};
     float pearl_player_pos_[3]{};
     uint64_t last_pearl_log_ms_{0};
+
+    // Trident Riptide state (y-up, blocks/tick).
+    mc::RiptideModel riptide_;
+    std::atomic<int> riptide_request_{0}; // level requested by the input thread, consumed on the camera step
+    float riptide_accum_{0.f};
+    bool riptide_have_pos_{false};
+    float riptide_pos_[3]{};
+    bool riptide_have_written_{false};
+    float riptide_last_written_[3]{};
+    bool riptide_was_gliding_{false}; // resume the elytra at the new position when the dash ends
+    uint64_t last_riptide_log_ms_{0};
+
+    // Thrown trident projectile (y-up, blocks/tick).
+    mc::ThrownTrident thrown_trident_;
+    std::atomic<bool> trident_throw_requested_{false};
+    float trident_accum_{0.f};
+    bool trident_have_player_pos_{false};
+    float trident_player_pos_[3]{};
+    uint64_t last_trident_log_ms_{0};
 
     void log(const char* fmt, ...);
 

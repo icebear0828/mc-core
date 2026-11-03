@@ -78,29 +78,34 @@ TEST(ElytraTridentModels, TridentShaftAndProngsMatchTheExtractedData) {
     const Bone* trident = opt->findBone("trident");
     ASSERT_NE(trident, nullptr);
 
-    // shaft: from [-6.5, 12.5, -15] to [-5.5, 13.5, 10] (the prongs point to -Z, the model's front)
+    // Vanilla TridentModel: pole addBox(-0.5,2,-0.5,1,25,1) at the grip pivot (-6,13,0) (Java y down, so
+    // Bedrock y = -java y; the pole hangs below the hand, the spikes point up).
     const Cube& shaft = trident->cubes[0];
     EXPECT_FLOAT_EQ(shaft.origin.x, -6.5f);
-    EXPECT_FLOAT_EQ(shaft.origin.y, 12.5f);
-    EXPECT_FLOAT_EQ(shaft.origin.z, -15.0f);
+    EXPECT_FLOAT_EQ(shaft.origin.y, 0.5f);
+    EXPECT_FLOAT_EQ(shaft.origin.z, -0.5f);
     EXPECT_FLOAT_EQ(shaft.size.x, 1.0f);
-    EXPECT_FLOAT_EQ(shaft.size.y, 1.0f);
-    EXPECT_FLOAT_EQ(shaft.size.z, 25.0f);
+    EXPECT_FLOAT_EQ(shaft.size.y, 25.0f);
+    EXPECT_FLOAT_EQ(shaft.size.z, 1.0f);
 
-    // prongs reach z = -20 (centre prong), the side prongs stop at z = -18.5
-    const Cube& centre = trident->cubes[2];
-    EXPECT_FLOAT_EQ(centre.origin.z, -20.0f);
-    EXPECT_FLOAT_EQ(trident->cubes[3].origin.z, -18.5f);
-    EXPECT_FLOAT_EQ(trident->cubes[4].origin.z, -18.5f);
+    // base addBox(-1.5,0,-0.5,3,2,1), then left/middle/right spikes addBox(...,1,4,1)
+    const Cube& base = trident->cubes[1];
+    EXPECT_FLOAT_EQ(base.origin.y, 25.5f);
+    EXPECT_FLOAT_EQ(base.size.x, 3.0f);
+    const Cube& middle = trident->cubes[3];
+    EXPECT_FLOAT_EQ(middle.origin.y, 27.5f);
+    EXPECT_FLOAT_EQ(trident->cubes[2].origin.x, -8.5f);
+    EXPECT_FLOAT_EQ(trident->cubes[4].origin.x, -4.5f);
+    EXPECT_TRUE(trident->cubes[4].mirror);
 
-    // overall bounding box: cross bar widens to x -9..-3, prongs reach z = -20, the shaft butt stops at z = 10
+    // overall bounding box: spikes x -8.5..-3.5, pole y -14..17, the flat 1px slab z -0.5..0.5
     const Bounds b = boundsOf(*trident);
-    EXPECT_FLOAT_EQ(b.min.x, -9.0f);
-    EXPECT_FLOAT_EQ(b.max.x, -3.0f);
-    EXPECT_FLOAT_EQ(b.min.y, 12.5f);
-    EXPECT_FLOAT_EQ(b.max.y, 13.5f);
-    EXPECT_FLOAT_EQ(b.min.z, -20.0f);
-    EXPECT_FLOAT_EQ(b.max.z, 10.0f);
+    EXPECT_FLOAT_EQ(b.min.x, -8.5f);
+    EXPECT_FLOAT_EQ(b.max.x, -3.5f);
+    EXPECT_FLOAT_EQ(b.min.y, 0.5f);
+    EXPECT_FLOAT_EQ(b.max.y, 31.5f);
+    EXPECT_FLOAT_EQ(b.min.z, -0.5f);
+    EXPECT_FLOAT_EQ(b.max.z, 0.5f);
 }
 
 TEST(ElytraTridentModels, ElytraFileHasTwoWingsHangingFromTheUpperBody) {

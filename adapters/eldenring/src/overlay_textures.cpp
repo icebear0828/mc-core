@@ -399,6 +399,44 @@ void CreateArmorTextures(UINT srv_inc) {
     }
 }
 
+void CreateTridentTexture(UINT srv_inc) {
+    const size_t slot = 30;
+    D3D12_CPU_DESCRIPTOR_HANDLE depth_slot = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();
+    depth_slot.ptr += static_cast<SIZE_T>(srv_inc) * slot;
+    D3D12_CPU_DESCRIPTOR_HANDLE tex_slot = depth_slot;
+    tex_slot.ptr += srv_inc;
+    g_steve.setDepthView(g_s.device, nullptr, depth_slot);
+
+    const std::string& game_dir = eldenring::diagnostics::GetGameDir();
+    std::vector<std::string> candidates;
+    if (!game_dir.empty()) {
+        candidates.push_back((std::filesystem::path(game_dir) / "mods" / "mc_adapter" / "trident.png").string());
+    }
+    candidates.push_back("mods\\mc_adapter\\trident.png");
+    std::vector<uint8_t> rgba;
+    unsigned w = 0, h = 0;
+    std::string used;
+    for (const auto& p : candidates) {
+        if (!std::filesystem::exists(p)) continue;
+        if (DecodePngFile(p, rgba, w, h)) {
+            used = p;
+            break;
+        }
+    }
+    if (rgba.empty() || w != 32 || h != 32) {
+        Logf("overlay: trident: no 32x32 trident.png (the trident keeps the flat tint)");
+        return;
+    }
+    if (!g_steve.setMobSkin(g_s.device, "trident", rgba.data(), w, h, tex_slot)) {
+        Logf("overlay: trident: texture upload failed");
+        return;
+    }
+    D3D12_GPU_DESCRIPTOR_HANDLE table = g_s.srv_heap->GetGPUDescriptorHandleForHeapStart();
+    table.ptr += static_cast<UINT64>(srv_inc) * slot;
+    g_trident_table_gpu = table;
+    Logf("overlay: trident: %ux%u from %s (slot %zu)", w, h, used.c_str(), slot);
+}
+
 void CreateElytraTexture(UINT srv_inc) {
     const size_t slot = 28;
     D3D12_CPU_DESCRIPTOR_HANDLE depth_slot = g_s.srv_heap->GetCPUDescriptorHandleForHeapStart();

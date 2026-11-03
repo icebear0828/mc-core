@@ -307,23 +307,16 @@ void RenderFrame(IDXGISwapChain* sc) {
         }
         // Phase A debug props: the elytra wings follow the torso, the trident follows the right arm.
         const bool elytra_equipped = static_cast<mc::ItemId>(steve.armor_item[1]) == mc::ItemId::Elytra;
-        if (!steve.dead && (elytra_equipped || steve.gliding || steve.trident_charge > 0.f)) {
+        const bool trident_held = static_cast<mc::ItemId>(steve.held_item) == mc::ItemId::Trident;
+        if (!steve.dead && (elytra_equipped || steve.gliding || trident_held)) {
             const mc::Vec3 feet_v{steve.feet[0], steve.feet[1], steve.feet[2]};
             const mc::rig::Mat4 rest_body = mc::rig::partMatrix(mc::StevePart::Body, mc::Quat{}, feet_v, steve.yaw, eldenring::render::kBasis);
             const mc::rig::Mat4 body_delta =
                 eldenring::render::inverseRigid(rest_body) * parts[static_cast<size_t>(mc::StevePart::Body)];
-            // The trident follows the hand's position but not the arm's rotation: the 12-part rig has no wrist, so
-            // inheriting the charge pose's 186-degree arm rotation would swing the shaft down the player's back.
-            // The prop mesh is baked at its rest pose and the trident bone's pivot sits exactly at the hand, so the
-            // delta has to carry that pivot from the rest hand to the posed one.
-            const mc::model::EntityModel* trident_model = PropModel("trident");
-            const mc::model::Bone* trident_bone = trident_model != nullptr ? trident_model->findBone("trident") : nullptr;
-            const mc::Vec3 trident_pivot =
-                trident_bone != nullptr ? mc::model::bonePivotHost(*trident_bone, eldenring::render::kBasis) : mc::Vec3{};
+            // The trident is a 3D prop attached to the right arm: use the arm's full rigid delta so it follows the
+            // charge/riptide animation (the flat held-item sprite is suppressed for the trident).
             const mc::rig::Mat4 rest_arm = mc::rig::partMatrix(mc::StevePart::RightArm, mc::Quat{}, feet_v, steve.yaw, eldenring::render::kBasis);
-            const mc::Vec3 hand_rest = mc::rig::transformPoint(rest_arm, trident_pivot);
-            const mc::Vec3 hand_posed = mc::rig::transformPoint(parts[static_cast<size_t>(mc::StevePart::RightArm)], trident_pivot);
-            const mc::rig::Mat4 trident_delta = mc::rig::translation(hand_posed - hand_rest);
+            const mc::rig::Mat4 trident_delta = eldenring::render::inverseRigid(rest_arm) * parts[static_cast<size_t>(mc::StevePart::RightArm)];
             if (elytra_equipped || steve.gliding) {
                 // Vanilla PlayerElytraAnimationState: standing 15/0/-15, crouching 40/5/-45, and while fall
                 // flying xRot lerp(f,15,20) with zRot -lerp(f,15,90), where f = 1 - (-vy/|v|)^1.5. The wings
@@ -338,9 +331,9 @@ void RenderFrame(IDXGISwapChain* sc) {
                 DrawProp(wings_name, PropModel(wings_name), body_delta, sp, vp, steve, f.rtv,
                          g_elytra_table_gpu, true, 0.82f, 0.84f, 0.9f, wing_euler);
             }
-            if (steve.trident_charge > 0.f) {
+            if (trident_held) {
                 DrawProp("trident", PropModel("trident"), trident_delta, sp, vp, steve, f.rtv,
-                         D3D12_GPU_DESCRIPTOR_HANDLE{}, false, 0.10f, 0.55f, 0.55f, mc::Vec3{});
+                         g_trident_table_gpu, true, 0.10f, 0.55f, 0.55f, mc::Vec3{});
             }
             g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
         }
@@ -381,7 +374,7 @@ void RenderFrame(IDXGISwapChain* sc) {
             arrow_snapshot = g_arrow_snapshot;
         }
         const auto draws = g_mob_registry.update(dt, snapshot);
-        if (!draws.empty() || !arrow_snapshot.empty() || steve.pearl_active) {
+        if (!draws.empty() || !arrow_snapshot.empty() || steve.pearl_active || steve.trident_active) {
             const float scene_h = g_steve_cfg.scene_height > 0.f ? g_steve_cfg.scene_height : static_cast<float>(g_s.height);
             const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
             bool keep = blocks_drawn || should_draw_steve; // the blocks and Steve left their depth in the figure's buffer
@@ -463,6 +456,62 @@ void RenderFrame(IDXGISwapChain* sc) {
                 pearl_p.depth_h = static_cast<float>(g_depth_h);
                 pearl_p.keep_depth = keep;
                 g_steve.drawPearls(g_s.list, g_s.srv_heap, g_held_table_gpu, g_s.width, g_s.height, vp, pearl_matrices, pearl_p, f.rtv);
+            }
+            if (steve.trident_active) {
+                const mc::model::EntityModel* model = PropModel("trident");
+                if (model != nullptr && g_steve.mobModelReady("trident")) {
+                    // The vanilla TridentModel's prongs point +Y: place the mesh bounds centre at the projectile
+                    // and rotate +Y onto the flight direction.
+                    mc::Vec3 lo{1e9f, 1e9f, 1e9f}, hi{-1e9f, -1e9f, -1e9f};
+                    const mc::model::Bone* bone = model->findBone("trident");
+                    if (bone != nullptr) {
+                        for (const auto& c : bone->cubes) {
+                            lo.x = std::min(lo.x, c.origin.x);
+                            lo.y = std::min(lo.y, c.origin.y);
+                            lo.z = std::min(lo.z, c.origin.z);
+                            hi.x = std::max(hi.x, c.origin.x + c.size.x);
+                            hi.y = std::max(hi.y, c.origin.y + c.size.y);
+                            hi.z = std::max(hi.z, c.origin.z + c.size.z);
+                        }
+                    }
+                    const mc::Vec3 center_b = (lo + hi) * 0.5f;
+                    constexpr float s = mc::rig::kCmPerModelPixel;
+                    const mc::Vec3 center =
+                        eldenring::render::kBasis.fromCanonical({-center_b.z * s, center_b.x * s, center_b.y * s});
+                    const mc::Vec3 dir{steve.trident_dir[0], steve.trident_dir[1], steve.trident_dir[2]};
+                    const mc::Vec3 tip = eldenring::render::kBasis.up;
+                    mc::Vec3 axis{tip.y * dir.z - tip.z * dir.y, tip.z * dir.x - tip.x * dir.z,
+                                  tip.x * dir.y - tip.y * dir.x};
+                    const float cos_angle = std::clamp(tip.x * dir.x + tip.y * dir.y + tip.z * dir.z, -1.f, 1.f);
+                    mc::rig::Mat4 rot;
+                    if (axis.length() < 1e-4f) {
+                        rot = cos_angle >= 0.f ? mc::rig::Mat4{} : mc::rig::rotationAboutAxis({1.f, 0.f, 0.f}, 3.14159265f);
+                    } else {
+                        rot = mc::rig::rotationAboutAxis(axis.normalized(), std::acos(cos_angle));
+                    }
+                    const mc::rig::Mat4 world =
+                        mc::rig::translation(center * -1.f) * rot *
+                        mc::rig::translation({steve.trident_pos[0], steve.trident_pos[1], steve.trident_pos[2]});
+                    std::vector<mc::rig::Mat4> bones(model->bones.size(), mc::rig::Mat4{});
+                    for (size_t i = 0; i < model->bones.size(); ++i) {
+                        if (model->bones[i].name == "trident") bones[i] = world;
+                    }
+                    SteveParams tp;
+                    tp.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.occlusion ? 1.f : 0.f);
+                    tp.depth_const = g_steve_cfg.depth_const;
+                    tp.rel_bias = g_steve_cfg.rel_bias;
+                    tp.abs_bias = g_steve_cfg.abs_bias;
+                    tp.depth_w = static_cast<float>(g_depth_w);
+                    tp.depth_h = static_cast<float>(g_depth_h);
+                    tp.keep_depth = keep;
+                    const bool textured = g_trident_table_gpu.ptr != 0;
+                    tp.tint[0] = textured ? 0.f : 0.10f;
+                    tp.tint[1] = textured ? 0.f : 0.55f;
+                    tp.tint[2] = textured ? 0.f : 0.55f;
+                    tp.tint[3] = textured ? 0.f : 1.f;
+                    g_steve.drawMobModel(g_s.list, g_s.srv_heap, textured ? g_trident_table_gpu : g_depth_gpu, g_s.width,
+                                         g_s.height, vp, bones, tp, f.rtv, "trident");
+                }
             }
             g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
         }
@@ -619,7 +668,9 @@ void RenderFrame(IDXGISwapChain* sc) {
                                  : main_is_shield ? fp::shieldMainHandPose(main_raised, steve.swing, equipped)
                                  : steve.eating > 0.f ? fp::eatPose(steve.eating, equipped) : fp::itemPose(steve.swing, equipped);
         const bool held_block = eldenring::blocks::blockForItem(static_cast<mc::ItemId>(g_hand.shownItem())) != mc::BlockId::Air;
-        const fp::M4 item_disp = main_is_shield ? fp::shieldFpDisplay(false, main_raised) : (held_block ? fp::blockDisplay() : fp::itemDisplay());
+        const fp::M4 item_disp = main_is_shield ? fp::shieldFpDisplay(false, main_raised)
+                                 : held_block ? fp::blockDisplay()
+                                 : fp::itemDisplay();
         const fp::M4 item_world = fp::mul(fp::mul(base, item_pose), item_disp);
         const fp::M4 arm_world = fp::mul(base, fp::bareArmPose(steve.swing, equipped));
         const mc::ItemId shown = eldenring::bow::shownBow(g_hand.shownItem(), drawing_bow ? steve.bow_charge : 0.f); // the bow with the arrow nocked while it is drawn

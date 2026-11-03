@@ -202,6 +202,7 @@ void HotkeyDispatcher::tick(float dt) {
     if (!right_consumed) mc_.tickRightClick(ctx);
 
     mc_.tickBow(ctx);
+    mc_.tickTrident(ctx);
     mc_.tickShield(ctx);
     mc_.tickWheel(ctx);
 

@@ -482,6 +482,31 @@ discard()                           // 无论是否传送成功都丢弃珍珠
 - 音效：投掷用 `entity.ender_eye.launch`（末影之眼 whoosh），命中用 `entity.player.teleport`。原版 `entity.ender_pearl.throw` 就是 `random/bow`（和箭矢音同一文件），演示里听起来像射箭，所以不用它；`tools/extract_mc_sounds.py` 的 `EVENTS` 仍保留它，便于以后按需恢复。
 - 未做：实体命中（只做了静态世界射线）、跨维度限制、末影螨 5% 概率、原版 portal 粒子。
 
+### 8.5 三叉戟激流（2026-11-04）
+
+原版 1.21.8（`TridentItem.releaseUsing` + `Player.startAutoSpinAttack` + `LivingEntity.travelInAir` + `data/minecraft/enchantment/riptide.json`）：
+
+- 蓄力 10 tick（`THROW_THRESHOLD_TIME`）；激流强度 I/II/III = **1.5 / 2.25 / 3.0** block/tick（base 1.5，每级 +0.75）。
+- `push(normalize(look) * strength)`，然后 `startAutoSpinAttack(20 tick, 8.0 伤害, trident)`；落地释放时先 `move(0, 1.2, 0)` 抬升。
+- 普通空中移动：水平阻力 0.91、垂直 0.98、重力 0.08（block/tick²）。
+- 旋转期间碰到实体会造成 8.0 伤害并结束旋转；水平撞墙也会结束。
+- 音效按等级 `item.trident.riptide_1/2/3`；需要 `isInWaterOrRain`。
+
+适配器实现：
+
+- 纯逻辑 `include/mc/riptide.hpp` / `src/riptide.cpp`，单测 `tests/test_riptide.cpp`。
+- `PlayerLocomotion::stepRiptide`：释放请求在相机线程消费；20 tick 内每帧写位置（≤0.5m 子步进射线、跟随 8m 重基），撞墙/引擎传送即停；同时驱动 `steve.riptide`（旋转动画 + 水花粒子）和 `steve.trident_charge`（蓄力动画）。
+- 输入：手持三叉戟按住右键蓄力 10 tick，松开调用 `TryStartRiptide`；`mc_er_steve.txt` 的 `riptide_level=1..3` 控制等级。
+- 动画：第三人称复用 `SteveAnimator` 的 riptide 曲线（root pitch 65°、yaw 360°·progress、四肢局部角），旋转期间把三叉戟 prop 画在右手；第一人称新增 `fp::tridentChargePose`（原版 `UseAnim.SPEAR`）和 `fp::riptidePose`（`isAutoSpinAttack` 的手臂姿态）。
+- 鞘翅 + 三叉戟：激流不再取消滑翔；滑翔在冲刺的 20 tick 内暂停，结束时把 `elytra_pos_` 同步到新位置并继续滑翔。
+- 普通投掷（滑翔时）：滑翔中右键松手改为扔出三叉戟实体（`mc::ThrownTrident`：2.5 b/t、重力 0.05、阻力 0.99），滑翔继续；用现有 `trident.geo.json` 在世界空间绘制（`drawMobModel` + 手动骨骼矩阵），音效 `item.trident.throw` / `item.trident.hit`。地面右键仍是激流。
+- 第一人称三叉戟：原版 `trident_in_hand.json` 的 `firstperson_righthand` 是 rotation (0,-90,25)、translation (-3,17,1)/16、scale 1；`ItemTransform.apply` 的顺序是 translate → rotateXYZ → scale → translate(-0.5,-0.5,-0.5)，模型空间 y 向下。我们的网格已居中、视图 y 向上，所以用 `x=+3, y=-17`（`fp::tridentFpDisplay`）。蓄力用 `tridentChargePose`（UseAnim.SPEAR），激流用 `riptidePose`（isAutoSpinAttack），两者都用物品的手臂变换驱动手臂。
+- 第三人称三叉戟模型：`trident.geo.json` 换成原版 `TridentModel.createLayer` 的 5 个盒子（pole/base/三个 spike，32x32 贴图），贴图 `entity/trident.png` 从 client.jar 提取到 `mods/mc_adapter/trident.png`（Mojang 资产，不提交），`CreateTridentTexture` 在 slot 30 建表。原版 `TridentSpecialRenderer` 对模型做 `scale(1,-1,-1)`；我们已把 Java y 转成 Bedrock y，所以 trident 骨骼用 `rotation [90,0,0]`（kBasis 是反射，实际 -90°）让叉尖朝前。2D 手持图标对三叉戟关闭，3D 道具只要手持就画，并用手臂完整 delta 跟随动画。
+- 未做：投掷的实体命中伤害（目前只做静态世界射线）、拾取/Loyalty、第一人称相机旋转。
+- 音效：`tools/extract_mc_sounds.py` 的 `EVENTS` 已加入三个 riptide 事件，需重新提取一次。
+- `riptide_require_water` 默认 0（适配器还没有水/雨检测，设为 1 会拒绝释放）。
+- 未做：旋转接触实体伤害、水/雨判定、原版实体碰撞。
+
 ## 9. 待验证 / 未覆盖
 
 - 原版实机 trace 尚未采集；第 3.4/4.2 的数值是按源码递推模拟得到的，不是游戏内实测。

@@ -92,6 +92,8 @@ add_library(mc_core STATIC
     src/elytra.cpp
     src/elytra_flight.cpp
     src/ender_pearl.cpp
+    src/riptide.cpp
+    src/thrown_trident.cpp
     src/hud.cpp
     src/hud_layout.cpp
     src/session.cpp

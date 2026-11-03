@@ -123,6 +123,7 @@ void PopulateSteveStateFromContext(erov::SteveState& steve, const RuntimeContext
 
     const auto& loco = eldenring::movement::PlayerLocomotion::Instance();
     steve.pearl_active = loco.pearlRenderPos(steve.pearl_pos);
+    steve.trident_active = loco.tridentRenderState(steve.trident_pos, steve.trident_dir);
 }
 
 #if defined(WIN32)

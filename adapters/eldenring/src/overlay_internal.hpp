@@ -110,6 +110,7 @@ inline bool g_atlas_ready = false;
 void CreateAtlasTexture(UINT srv_inc); // defined with the HUD drawing below
 void CreateArmorTextures(UINT srv_inc); // the 64x32 humanoid/leggings equipment layers
 void CreateElytraTexture(UINT srv_inc); // the 64x32 elytra wings texture
+void CreateTridentTexture(UINT srv_inc); // the 32x32 vanilla trident texture
 #if ENABLE_CS2_VIEWMODEL
 // Authentic CS2 bullet-hole decal (mods/mc_adapter/textures/cs/bullet_hole_concrete.png), heap slot 44.
 inline std::vector<uint8_t> g_decal_rgba;
@@ -234,6 +235,7 @@ inline D3D12_CPU_DESCRIPTOR_HANDLE g_armor_depth_copy_cpus[2]{}; // slots 12 and
 inline D3D12_GPU_DESCRIPTOR_HANDLE g_armor_table_gpu[2]{};       // (depth, humanoid/leggings texture)
 inline D3D12_CPU_DESCRIPTOR_HANDLE g_elytra_depth_copy_cpu{};    // slot 28: elytra wings depth copy
 inline D3D12_GPU_DESCRIPTOR_HANDLE g_elytra_table_gpu{};         // (depth, elytra texture)
+inline D3D12_GPU_DESCRIPTOR_HANDLE g_trident_table_gpu{};        // (depth, vanilla trident texture)
 inline std::map<std::string, D3D12_GPU_DESCRIPTOR_HANDLE> g_mob_tables_gpu;
 inline std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> g_mob_depth_copy_cpus;
 inline mc::model::EntityModel g_mob_model;              // default model file

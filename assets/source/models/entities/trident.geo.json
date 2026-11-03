@@ -1,35 +1,128 @@
 {
   "format_version": "1.12.0",
-  "source": "Custom Blockbench recreation, not a Mojang asset. Extracted from 'replicate-steve-animations-in-blockbench (1)/dist/index.html' (see re_data_cache/model_data.js, bone 'trident'). Coordinates are Bedrock model pixels.",
   "minecraft:geometry": [
     {
       "description": {
         "identifier": "geometry.trident",
-        "texture_width": 64,
-        "texture_height": 64,
+        "texture_width": 32,
+        "texture_height": 32,
         "visible_bounds_width": 2,
-        "visible_bounds_height": 2,
-        "visible_bounds_offset": [0, 1, 0]
+        "visible_bounds_height": 3,
+        "visible_bounds_offset": [
+          0,
+          1,
+          0
+        ]
       },
       "bones": [
         {
           "name": "rightArm",
-          "pivot": [-5, 22, 0],
+          "pivot": [
+            -5,
+            22,
+            0
+          ],
           "cubes": []
         },
         {
           "name": "trident",
           "parent": "rightArm",
-          "pivot": [-6, 13, 0],
+          "pivot": [
+            -6,
+            13,
+            0
+          ],
+          "rotation": [
+            90,
+            0,
+            0
+          ],
           "cubes": [
-            {"origin": [-6.5, 12.5, -15], "size": [1, 1, 25], "color": "teal"},
-            {"origin": [-9, 12.5, -15], "size": [6, 1, 1], "color": "tealLight"},
-            {"origin": [-6.5, 12.5, -20], "size": [1, 1, 5], "color": "tealLight"},
-            {"origin": [-9, 12.5, -18.5], "size": [1, 1, 3.5], "color": "tealLight"},
-            {"origin": [-4, 12.5, -18.5], "size": [1, 1, 3.5], "color": "tealLight"}
+            {
+              "origin": [
+                -6.5,
+                0.5,
+                -0.5
+              ],
+              "size": [
+                1,
+                25,
+                1
+              ],
+              "uv": [
+                0,
+                6
+              ]
+            },
+            {
+              "origin": [
+                -7.5,
+                25.5,
+                -0.5
+              ],
+              "size": [
+                3,
+                2,
+                1
+              ],
+              "uv": [
+                4,
+                0
+              ]
+            },
+            {
+              "origin": [
+                -8.5,
+                26.5,
+                -0.5
+              ],
+              "size": [
+                1,
+                4,
+                1
+              ],
+              "uv": [
+                4,
+                3
+              ]
+            },
+            {
+              "origin": [
+                -6.5,
+                27.5,
+                -0.5
+              ],
+              "size": [
+                1,
+                4,
+                1
+              ],
+              "uv": [
+                0,
+                0
+              ]
+            },
+            {
+              "origin": [
+                -4.5,
+                26.5,
+                -0.5
+              ],
+              "size": [
+                1,
+                4,
+                1
+              ],
+              "uv": [
+                4,
+                3
+              ],
+              "mirror": true
+            }
           ]
         }
       ]
     }
-  ]
+  ],
+  "source": "Vanilla TridentModel.createLayer (1.21.8): pole texOffs(0,6) addBox(-0.5,2,-0.5,1,25,1), base (4,0) addBox(-1.5,0,-0.5,3,2,1), left_spike (4,3) addBox(-2.5,-3,-0.5,1,4,1), middle_spike (0,0) addBox(-0.5,-4,-0.5,1,4,1), right_spike (4,3).mirror() addBox(1.5,-3,-0.5,1,4,1), on a 32x32 texture (textures/entity/trident.png). Java y runs down, so Bedrock y = -java y; the boxes are expressed relative to the hand grip pivot (-6,13,0) used by the prop attachment. The texture is a Mojang asset and is deployed locally by the extractor, never committed."
 }

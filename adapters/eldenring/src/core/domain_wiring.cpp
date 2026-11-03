@@ -241,6 +241,7 @@ void SetupInput() {
         cb.try_use_spawn_egg = TryUseSpawnEgg;
         cb.use_elytra_firework = TryUseElytraFirework;
         cb.throw_ender_pearl = TryThrowEnderPearl;
+        cb.start_riptide = TryStartRiptide;
         cb.click_attack = ClickAttack;
         cb.enqueue_nearest_hostile = EnqueueNearestHostile;
         cb.queue_bullet_fire = [](float dmg) { return QueueBulletFire(dmg); };
