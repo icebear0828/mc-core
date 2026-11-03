@@ -348,7 +348,8 @@ CsShotResult ProjectileService::fireCsShot(const eldenring::cs::CsShotParams& pa
         if (visible) {
             const int er_damage = eldenring::cs::damageToEr(victim.max_hp, params.damage, trace.distance, params);
             const bool queued = er_damage > 0 &&
-                queue.enqueue(victim.chr, er_damage, tick, eldenring::cs::kCsShotTag, true);
+                queue.enqueue(victim.chr, er_damage, tick,
+                              eldenring::cs::csTagWithSlot(eldenring::cs::kCsShotTag, params.weapon_slot), true);
             out.hit = queued;
             out.victim_chr = victim.chr;
             out.distance = trace.distance;

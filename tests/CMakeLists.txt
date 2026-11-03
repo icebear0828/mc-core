@@ -121,6 +121,7 @@ if(ENABLE_CS2_VIEWMODEL)
         test_cs_viewmodel.cpp
         test_cs_ballistics.cpp
         test_cs_impact_decals.cpp
+        test_cs_economy.cpp
         ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/cs_weapon_registry.cpp
     )
 endif()

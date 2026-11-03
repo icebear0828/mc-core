@@ -594,6 +594,7 @@ TEST_F(HotkeyDispatcherTest, CsModeMasksItsVanillaKeys) {
     EXPECT_TRUE(masked('R')); // reload must not also use a quick item
     EXPECT_TRUE(masked('F')); // inspect must not also trigger the vanilla action
     EXPECT_TRUE(masked('Q')); // quick-switch must not reach the vanilla input
+    EXPECT_TRUE(masked('B')); // buy panel must not reach the vanilla input
     for (int d = '1'; d <= '4'; ++d) EXPECT_TRUE(masked(d)); // weapon slots must not select vanilla quick slots
     EXPECT_TRUE(suppressed_wheel_);
 
@@ -608,6 +609,113 @@ TEST_F(HotkeyDispatcherTest, CsModeMasksItsVanillaKeys) {
 #else
     GTEST_SKIP() << "scan codes are Windows-only";
 #endif
+}
+
+TEST_F(HotkeyDispatcherTest, CsBuyPanelBuysAKMagazine) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+
+    auto press = [this](int vk) {
+        setKey(vk, true);
+        dispatcher_->tick(0.016f);
+        setKey(vk, false);
+        dispatcher_->tick(0.016f);
+    };
+
+    // Draw the AK (90), spend most of the reserve, then switch away and back so
+    // the handler's per-slot copy records the lower reserve.
+    press('1');
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 1);
+    ctx.mode().cs_reserve.store(40);
+    press('3'); // knife: saves the AK reserve
+    press('1'); // AK again: 40/90
+    ASSERT_EQ(ctx.mode().cs_reserve.load(), 40u);
+    ASSERT_EQ(ctx.mode().cs_money.load(), 800u);
+
+    press('B');
+    ASSERT_TRUE(ctx.mode().cs_buy_open.load());
+    press('1'); // AK magazine: $200, +30 reserve
+    EXPECT_EQ(ctx.mode().cs_money.load(), 600u);
+    EXPECT_EQ(ctx.mode().cs_reserve.load(), 70u);
+    EXPECT_EQ(ctx.mode().cs_slot_reserve[1].load(), 70u);
+    EXPECT_GT(ctx.mode().cs_ammo_flash.load(), 0.f);
+}
+
+TEST_F(HotkeyDispatcherTest, CsBuyPanelRefusesWhenMoneyIsShort) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+
+    auto press = [this](int vk) {
+        setKey(vk, true);
+        dispatcher_->tick(0.016f);
+        setKey(vk, false);
+        dispatcher_->tick(0.016f);
+    };
+
+    press('1');
+    ctx.mode().cs_reserve.store(40);
+    press('3');
+    press('1');
+    ctx.mode().cs_money.store(100);
+
+    press('B');
+    press('1');
+    EXPECT_EQ(ctx.mode().cs_money.load(), 100u);
+    EXPECT_EQ(ctx.mode().cs_reserve.load(), 40u);
+}
+
+TEST_F(HotkeyDispatcherTest, CsKillRewardDrainsIntoTheWallet) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+
+    ctx.mode().cs_money.store(800);
+    ctx.mode().cs_pending_money.store(300);
+    dispatcher_->tick(0.016f);
+
+    EXPECT_EQ(ctx.mode().cs_money.load(), 1100u);
+    EXPECT_EQ(ctx.mode().cs_money_gain.load(), 300u);
+    EXPECT_EQ(ctx.mode().cs_pending_money.load(), 0u);
+    EXPECT_GT(ctx.mode().cs_money_flash.load(), 0.f);
+}
+
+TEST_F(HotkeyDispatcherTest, CsBuyPanelSuppressesFire) {
+    auto& ctx = RuntimeContext::Instance();
+    setKey(VK_F1, true);
+    dispatcher_->tick(0.016f);
+    setKey(VK_F1, false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_mode.load());
+
+    setKey('1', true);
+    dispatcher_->tick(0.016f);
+    setKey('1', false);
+    dispatcher_->tick(0.016f);
+    ASSERT_EQ(ctx.mode().cs_weapon_slot.load(), 1);
+
+    setKey('B', true);
+    dispatcher_->tick(0.016f);
+    setKey('B', false);
+    dispatcher_->tick(0.016f);
+    ASSERT_TRUE(ctx.mode().cs_buy_open.load());
+
+    const uint32_t ammo_before = ctx.mode().cs_ammo.load();
+    left_held_ = true;
+    dispatcher_->tick(0.016f);
+    left_held_ = false;
+    EXPECT_EQ(ctx.mode().cs_ammo.load(), ammo_before);
+    EXPECT_FALSE(cs_shot_queued_);
 }
 
 TEST_F(HotkeyDispatcherTest, CsModeDoesNotScrollTheMcHotbar) {

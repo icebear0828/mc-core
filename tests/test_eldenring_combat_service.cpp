@@ -10,6 +10,11 @@
 #include "mc/consumables.hpp"
 #include "mc/contracts/combat_adapter.hpp"
 
+#if ENABLE_CS2_VIEWMODEL
+#include "cs_ballistics.hpp"
+#include "cs_economy.hpp"
+#endif
+
 using namespace eldenring::combat;
 using namespace eldenring::live;
 using eldenring::RuntimeContext;
@@ -569,6 +574,66 @@ TEST(EldenRingCombatService, CsKnifeHitsCarryTheCsTag) {
     const auto drained = queue.drain(dc);
     ASSERT_EQ(drained.size(), 1u);
     EXPECT_NE(drained[0].request.tag & eldenring::cs::kCsShotTag, 0u);
+}
+#endif
+
+#if ENABLE_CS2_VIEWMODEL
+namespace {
+void runCsKillRewardTest(uint32_t tag, uint32_t expected) {
+    auto& svc = CombatService::Instance();
+    svc.resetForTesting();
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(false);
+    ctx.mode().cs_mode.store(true);
+    ctx.mode().cs_pending_money.store(0);
+
+    TestCombatMem world = makeTestWorld();
+    HitTemplate tmpl = makeTestTemplate();
+    DamageQueue queue;
+    queue.enqueue(kEnemy2, 50, 100, tag, true);
+
+    bool killed = false;
+    CombatCallbacks cb{};
+    cb.reader = &world;
+    cb.image_base = kBase;
+    cb.safe_read = [&world](uintptr_t addr, void* dst, size_t size) { return world.read(addr, dst, size); };
+    cb.read_physics_pos = [](uintptr_t, float p[3]) {
+        p[0] = 0.f;
+        p[1] = 0.f;
+        p[2] = 0.f;
+        return true;
+    };
+    cb.read_vitals = [&](uintptr_t, Vitals& v) {
+        v.hp = killed ? 0 : 100;
+        v.max_hp = 100;
+        return true;
+    };
+    cb.call_vfunc7 = [&](uintptr_t, uintptr_t, void*) {
+        killed = true;
+        return true;
+    };
+    svc.setCallbacks(cb);
+
+    mc::Inventory inv;
+    HitFeedback feedback;
+    XpModel xp;
+    svc.drainDamageQueue(queue, &tmpl, 0, 100, inv, feedback, xp, ctx);
+
+    EXPECT_EQ(ctx.mode().cs_pending_money.load(), expected);
+}
+} // namespace
+
+TEST(EldenRingCombatService, CsGunKillPaysTheGunReward) {
+    runCsKillRewardTest(eldenring::cs::csTagWithSlot(eldenring::cs::kCsShotTag, 1),
+                        eldenring::cs::kCsGunKillReward);
+}
+
+TEST(EldenRingCombatService, CsKnifeKillPaysTheKnifeReward) {
+    // The CS knife shares the melee path and also carries kCsShotTag; only the
+    // encoded slot separates it from a gun kill.
+    runCsKillRewardTest(eldenring::cs::csTagWithSlot(eldenring::cs::kCsShotTag, 0),
+                        eldenring::cs::kCsKnifeKillReward);
 }
 #endif
 
