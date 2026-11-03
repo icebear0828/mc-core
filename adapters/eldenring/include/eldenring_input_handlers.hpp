@@ -57,6 +57,9 @@ public:
 
 private:
     void selectWeaponSlot(uint8_t slot, const InputTickContext& ctx);
+    void tickEconomy(const InputTickContext& ctx);
+    void buyMagazine(uint8_t buy_key, const InputTickContext& ctx);
+    void syncSlotReserve(uint8_t slot);
 
     float cs_fire_cooldown_{0.f};
     float cs_since_shot_{10.f}; // seconds since the last CS round: the first shot is accurate
@@ -65,6 +68,7 @@ private:
     bool prev_reload_r_{false};
     bool prev_gameplay_f_{false};
     bool prev_q_{false};
+    bool prev_buy_b_{false};
     uint8_t last_slot_{0}; // CS2-style Q target: the weapon held before the current one
     // Per-slot magazines so a switch does not refill ammo.
     uint32_t slot_ammo_[4]{};

@@ -10,6 +10,7 @@
 #include "mc/consumables.hpp"
 #if ENABLE_CS2_VIEWMODEL
 #include "cs_ballistics.hpp" // kCsShotTag: suppress the melee hit sound for CS bullets
+#include "cs_economy.hpp"
 #endif
 
 namespace eldenring::combat {
@@ -400,6 +401,17 @@ void CombatService::drainDamageQueue(DamageQueue& queue, const HitTemplate* tmpl
                     }
                     log("XP: +%d (level %d, %.0f%%)%s", earned_xp, xp.level(), xp.progress() * 100.f, ups > 0 ? " LEVEL UP" : "");
                 }
+#if ENABLE_CS2_VIEWMODEL
+                else if (ctx.mode().cs_mode.load(std::memory_order_relaxed)) {
+                    // CS economy: the tag carries the arsenal slot, so a knife
+                    // kill (slot 0) pays the larger floor that restarts an empty
+                    // loadout, while every gun kill pays the gun reward.
+                    const uint32_t reward = eldenring::cs::csKillReward(
+                        eldenring::cs::csSlotFromTag(r.request.tag));
+                    ctx.mode().cs_pending_money.fetch_add(reward, std::memory_order_relaxed);
+                    log("CS: kill reward +$%u", reward);
+                }
+#endif
             }
         }
         if (r.outcome != DamageOutcome::Applied) {
@@ -523,7 +535,10 @@ bool CombatService::clickAttack(float charged, MeleeController& melee, CombatEng
     // sounds (the knife already plays its own cs.knife.* sound).
     uint32_t source_tag = 0;
 #if ENABLE_CS2_VIEWMODEL
-    if (ctx.mode().cs_mode.load(std::memory_order_relaxed)) source_tag = eldenring::cs::kCsShotTag;
+    if (ctx.mode().cs_mode.load(std::memory_order_relaxed)) {
+        source_tag = eldenring::cs::csTagWithSlot(eldenring::cs::kCsShotTag,
+                                                  ctx.mode().cs_weapon_slot.load(std::memory_order_relaxed));
+    }
 #endif
     const bool ok = dmg > 0 && queue.enqueue(e.chr, dmg, now_tick,
         source_tag | (intent.is_critical ? 1u : 0u) | (intent.is_sweeping ? 2u : 0u) | (charged > 0.848f ? 4u : 0u) |

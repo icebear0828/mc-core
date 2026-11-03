@@ -1,5 +1,7 @@
 #include "overlay_internal.hpp"
 
+#include "cs_economy.hpp"
+#include "cs_weapon_registry.hpp"
 #include "mc/crafting_table_layout.hpp"
 
 namespace erov {
@@ -609,6 +611,72 @@ void DrawCraftingTable(const HudState& hud, float w, float h) {
 }
 
 
+#if ENABLE_CS2_VIEWMODEL
+void DrawCsBuyPanel(ImDrawList* dl, float w, float h, const eldenring::RuntimeContext& ctx) {
+    const auto& mode = ctx.mode();
+    const float s = std::max(0.6f, h / 1080.f);
+    const float panel_w = 360.f * s;
+    const float row_h = 38.f * s;
+    const float header_h = 52.f * s;
+    const float footer_h = 30.f * s;
+    const float panel_h = header_h + eldenring::cs::kCsAmmoOfferCount * row_h + footer_h;
+    const float x = w - panel_w - 25.f * s;
+    const float y = h - panel_h - 145.f * s;
+
+    dl->AddRectFilled({x, y}, {x + panel_w, y + panel_h}, IM_COL32(8, 14, 22, 238), 8.f * s);
+    dl->AddRect({x, y}, {x + panel_w, y + panel_h}, IM_COL32(0, 255, 140, 220), 8.f * s, 0, 2.f * s);
+    dl->AddText(ImGui::GetFont(), 20.f * s, {x + 16.f * s, y + 12.f * s}, IM_COL32(0, 255, 150, 255), "BUY AMMO");
+
+    const uint32_t money = mode.cs_money.load();
+    char balance[32];
+    snprintf(balance, sizeof(balance), "$%u", money);
+    const ImVec2 bsz = ImGui::GetFont()->CalcTextSizeA(16.f * s, 1e9f, 0.f, balance);
+    dl->AddText(ImGui::GetFont(), 16.f * s, {x + panel_w - 16.f * s - bsz.x, y + 14.f * s},
+                IM_COL32(255, 215, 0, 255), balance);
+
+    for (size_t i = 0; i < eldenring::cs::kCsAmmoOfferCount; ++i) {
+        const auto& offer = eldenring::cs::kCsAmmoOffers[i];
+        const float ry = y + header_h + static_cast<float>(i) * row_h;
+        if (i > 0) {
+            dl->AddLine({x + 12.f * s, ry}, {x + panel_w - 12.f * s, ry}, IM_COL32(255, 255, 255, 28), 1.f);
+        }
+        const auto* def = eldenring::cs::CSWeaponRegistry::instance().findWeapon(offer.weapon_id);
+        const uint32_t cap = def ? def->ballistics.reserve_capacity : 0;
+        const bool ready = mode.cs_slot_ready[offer.slot].load();
+        const uint32_t reserve = ready ? mode.cs_slot_reserve[offer.slot].load() : cap;
+        const bool full = !ready || reserve >= cap;
+        const bool affordable = money >= offer.price;
+        const ImU32 color = full ? IM_COL32(130, 140, 150, 220)
+                           : affordable ? IM_COL32(235, 242, 250, 245)
+                                        : IM_COL32(220, 80, 80, 240);
+
+        char key[16];
+        snprintf(key, sizeof(key), "[%u]", static_cast<unsigned>(offer.buy_key));
+        dl->AddText(ImGui::GetFont(), 15.f * s, {x + 16.f * s, ry + 10.f * s}, IM_COL32(0, 220, 140, 240), key);
+        dl->AddText(ImGui::GetFont(), 16.f * s, {x + 52.f * s, ry + 9.f * s}, color, offer.name);
+
+        char price[32];
+        snprintf(price, sizeof(price), "$%u", offer.price);
+        dl->AddText(ImGui::GetFont(), 15.f * s, {x + 160.f * s, ry + 10.f * s}, color, price);
+
+        char state[48];
+        if (full) {
+            snprintf(state, sizeof(state), "%u/%u FULL", reserve, cap);
+        } else {
+            snprintf(state, sizeof(state), "%u/%u", reserve, cap);
+        }
+        const ImVec2 ssz = ImGui::GetFont()->CalcTextSizeA(13.f * s, 1e9f, 0.f, state);
+        dl->AddText(ImGui::GetFont(), 13.f * s, {x + panel_w - 16.f * s - ssz.x, ry + 11.f * s},
+                    full ? IM_COL32(120, 130, 140, 220) : IM_COL32(170, 190, 210, 230), state);
+    }
+
+    const float fy = y + panel_h - footer_h;
+    dl->AddLine({x + 12.f * s, fy}, {x + panel_w - 12.f * s, fy}, IM_COL32(255, 255, 255, 28), 1.f);
+    dl->AddText(ImGui::GetFont(), 13.f * s, {x + 16.f * s, fy + 8.f * s}, IM_COL32(160, 175, 195, 220),
+                "[B] Close   Kills: +$300 gun / +$1500 knife");
+}
+#endif
+
 void DrawHud(const HudState& hud, float w, float h) {
     if (hud.ow_mode) {
         // Overwatch HUD: crosshair + ability legend. The MC hearts/hotbar must
@@ -736,17 +804,32 @@ void DrawHud(const HudState& hud, float w, float h) {
                                  (state == 6) ? "[BACKSTAB]" : "[READY]";
         dl->AddText(ImGui::GetFont(), 19.f, {x + 14.f, y + 10.f}, IM_COL32(0, 255, 150, 255), weapon_name);
         dl->AddText(ImGui::GetFont(), 15.f, {x + 14.f, y + 36.f}, IM_COL32(255, 215, 0, 255), status_str);
+        char money_str[32];
+        snprintf(money_str, sizeof(money_str), "$%u", static_cast<unsigned>(r_mode.cs_money.load()));
+        dl->AddText(ImGui::GetFont(), 17.f, {x + card_w - 96.f, y + 36.f}, IM_COL32(255, 215, 0, 255), money_str);
+        const float gain_flash = std::clamp(r_mode.cs_money_flash.load(), 0.f, 1.f);
+        if (gain_flash > 0.f) {
+            char gain_str[32];
+            snprintf(gain_str, sizeof(gain_str), "+$%u", static_cast<unsigned>(r_mode.cs_money_gain.load()));
+            dl->AddText(ImGui::GetFont(), 14.f, {x + card_w - 96.f, y + 58.f},
+                        IM_COL32(80, 255, 140, static_cast<int>(255 * gain_flash)), gain_str);
+        }
         if (is_gun) {
             char ammo_str[64];
             snprintf(ammo_str, sizeof(ammo_str), "%u / %u",
                      static_cast<unsigned>(r_mode.cs_ammo.load()),
                      static_cast<unsigned>(r_mode.cs_reserve.load()));
-            dl->AddText(ImGui::GetFont(), 22.f, {x + card_w - 96.f, y + 10.f}, IM_COL32(255, 255, 255, 245), ammo_str);
+            const ImU32 ammo_col = r_mode.cs_ammo_flash.load() > 0.f ? IM_COL32(120, 255, 160, 255)
+                                                                     : IM_COL32(255, 255, 255, 245);
+            dl->AddText(ImGui::GetFont(), 22.f, {x + card_w - 96.f, y + 10.f}, ammo_col, ammo_str);
             dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 60.f}, IM_COL32(200, 210, 225, 230), "[F] Inspect | [LMB] Fire | [R] Reload");
-            dl->AddText(ImGui::GetFont(), 12.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[Q] Last | [1]AK [2]AWP [3]Knife [4]M4 | [F1]");
+            dl->AddText(ImGui::GetFont(), 12.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[Q] Last | [1-4] Slots | [B] Buy | [F1]");
         } else {
             dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 60.f}, IM_COL32(200, 210, 225, 230), "[F] Spin Inspect  |  [LMB] Slash");
-            dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[RMB] Heavy Attack  |  [F1] Mode Toggle");
+            dl->AddText(ImGui::GetFont(), 13.f, {x + 14.f, y + 80.f}, IM_COL32(160, 175, 195, 210), "[RMB] Heavy | [B] Buy | [F1]");
+        }
+        if (r_mode.cs_buy_open.load()) {
+            DrawCsBuyPanel(dl, w, h, eldenring::RuntimeContext::Instance());
         }
         return;
     }

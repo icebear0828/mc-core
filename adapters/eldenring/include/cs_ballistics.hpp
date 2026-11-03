@@ -21,6 +21,21 @@ inline constexpr float kCsPi = hitscan::kPi;
 // for the hitmarker instead of the Minecraft melee sounds.
 inline constexpr uint32_t kCsShotTag = 8u;
 
+// Tag bits 5-6 carry the CS arsenal slot for the kill economy: 0 knife, 1 AK,
+// 2 AWP, 3 M4. The gun and knife paths both tag CS hits with kCsShotTag, so the
+// slot is what separates a $300 gun kill from a $1500 knife kill.
+inline constexpr uint32_t kCsSlotShift = 5u;
+inline constexpr uint32_t kCsSlotMask = 3u;
+
+inline uint32_t csTagWithSlot(uint32_t tag, uint8_t slot) {
+    return (tag & ~(kCsSlotMask << kCsSlotShift)) |
+           ((static_cast<uint32_t>(slot) & kCsSlotMask) << kCsSlotShift);
+}
+
+inline uint8_t csSlotFromTag(uint32_t tag) {
+    return static_cast<uint8_t>((tag >> kCsSlotShift) & kCsSlotMask);
+}
+
 struct CsShotParams : hitscan::ShotParams {
     // CS2 m_nTracerFrequency: a tracer every N rounds (AK/M4 = 3, AWP = 1, 0 = never).
     uint32_t tracer_frequency{1};

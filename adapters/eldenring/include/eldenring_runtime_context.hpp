@@ -19,6 +19,7 @@
 #include "eldenring_survival.hpp"
 #include "eldenring_tnt.hpp"
 #include "eldenring_xp.hpp"
+#include "cs_economy.hpp"
 #include "mc/consumables.hpp"
 #include "mc/contracts/mod_manager.hpp"
 #include "mc/control_policy.hpp"
@@ -145,6 +146,16 @@ struct ModeConfig {
     std::atomic<uint32_t> cs_ammo{30};
     std::atomic<uint32_t> cs_reserve{90};
     std::atomic<uint32_t> cs_mag_capacity{30};
+    // Buy economy: kills pay money, B opens the panel and 1/2/3 buy a magazine.
+    std::atomic<uint32_t> cs_money{cs::kCsStartingMoney};
+    std::atomic<uint32_t> cs_pending_money{0}; // game thread -> input thread
+    std::atomic<bool> cs_buy_open{false};
+    std::atomic<uint32_t> cs_money_gain{0};  // last kill payout, for the HUD
+    std::atomic<float> cs_money_flash{0.f};  // 1 just paid .. 0
+    std::atomic<float> cs_ammo_flash{0.f};   // 1 just bought .. 0
+    // Per-slot reserve mirror for the buy panel (the handler owns the real arrays).
+    std::atomic<uint32_t> cs_slot_reserve[4]{};
+    std::atomic<bool> cs_slot_ready[4]{};
     std::atomic<uint8_t> game_mode{static_cast<uint8_t>(creative::GameMode::Survival)};
     std::atomic<uint64_t> mode_toast_ms{0};
     std::atomic<bool> damage_enabled{false};
@@ -353,6 +364,14 @@ public:
         mode_.cs_ammo.store(30);
         mode_.cs_reserve.store(90);
         mode_.cs_mag_capacity.store(30);
+        mode_.cs_money.store(cs::kCsStartingMoney);
+        mode_.cs_pending_money.store(0);
+        mode_.cs_buy_open.store(false);
+        mode_.cs_money_gain.store(0);
+        mode_.cs_money_flash.store(0.f);
+        mode_.cs_ammo_flash.store(0.f);
+        for (auto& reserve : mode_.cs_slot_reserve) reserve.store(0);
+        for (auto& ready : mode_.cs_slot_ready) ready.store(false);
         mode_.game_mode.store(static_cast<uint8_t>(creative::GameMode::Survival));
         mode_.mode_toast_ms.store(0);
         mode_.damage_enabled.store(false);
