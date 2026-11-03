@@ -321,6 +321,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
         CreateAtlasTexture(srv_inc);
         CreateArmorTextures(srv_inc);
         CreateElytraTexture(srv_inc);
+        CreateTridentTexture(srv_inc);
         g_depth_dirty.store(true); // bind the captured depth to the new armor and elytra tables too
 #if ENABLE_CS2_VIEWMODEL
         CreateCsDecalTexture(srv_inc);
