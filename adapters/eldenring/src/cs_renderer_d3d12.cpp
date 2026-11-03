@@ -113,7 +113,8 @@ cbuffer Root : register(b0) {
     float4 tint;
     float is_arm;
     float skinned;
-    float2 padding;
+    float pearl_scale;
+    float pearl_intensity;
 };
 
 // CSVM v4: rest-bind * per-frame delta, one matrix per compact arm bone.
@@ -336,6 +337,27 @@ float4 PSMain(VSOut i) : SV_Target {
     // washing out the PBR response.
     float3 ambient = (kD * albedo_tex.rgb * ambient_irradiance + env_reflection) * ao;
     float3 color = Lo + ambient + albedo_tex.rgb * 0.08;
+
+    // 5. CS2 Pearlescent Thin-Film Iridescent Spectrum (Printstream & Gungnir)
+    if (pearl_intensity > 0.001) {
+        float NdotV_raw = saturate(dot(N, V));
+        float fresnel_angle = 1.0 - NdotV_raw;
+
+        // CS2 pearlescent scale mapping
+        float pearl_cycle = fresnel_angle * (pearl_scale * 0.15);
+
+        // Soft pastel iridescent spectrum (CIE RGB cosine formulation)
+        float3 rainbow = 0.55 + 0.45 * cos(6.2831853 * (pearl_cycle + float3(0.0, 0.333, 0.667)));
+
+        // Protect matte/black components (grip, mag, screws) via luminance threshold
+        float lum = dot(albedo_tex.rgb, float3(0.299, 0.587, 0.114));
+        float pearl_mask = saturate((lum - 0.22) * 3.0);
+
+        // Shimmer at grazing angles and blend into specular reflection
+        float grazing = pow(fresnel_angle, 1.8);
+        float3 pearl_glow = rainbow * grazing * pearl_mask * pearl_intensity;
+        color += pearl_glow * (1.0 - roughness * 0.5);
+    }
 
     // Rim light: keep it on the weapon. Arms/gloves sit nearly edge-on to the
     // camera, where a strong rim turns the whole forearm white.
@@ -1613,7 +1635,9 @@ void CsRenderer::draw(ID3D12GraphicsCommandList* list, ID3D12DescriptorHeap* srv
         const mc::rig::Mat4 world = skinned_submesh ? mc::rig::Mat4{} : fp::toHost(pose);
         list->SetGraphicsRoot32BitConstants(0, 16, world.m.data(), 16);
         list->SetGraphicsRoot32BitConstants(0, 4, tint, 36);
-        const float arm_param[4] = {is_arm, skinned_submesh ? 1.0f : 0.0f, 0.0f, 0.0f};
+        const auto pearl = eldenring::cs::getWeaponPearlescentParams(
+            active_weapon_def_.type, is_arm < 0.5f);
+        const float arm_param[4] = {is_arm, skinned_submesh ? 1.0f : 0.0f, pearl.scale, pearl.intensity};
         list->SetGraphicsRoot32BitConstants(0, 4, arm_param, 40);
 
         list->DrawIndexedInstanced(sub.index_count, 1, sub.first_index, sub.base_vertex, 0);

@@ -1423,4 +1423,47 @@ TEST(CSViewModelTest, OwDoomfistSecondaryAttackAnimationWindupAndHeavyThrust) {
     EXPECT_NEAR(recovery_z, idle_z, 0.015f);
 }
 
+TEST(CSViewModelTest, PearlescentParametersForPrintstreamAndGungnir) {
+    // M4A1-S Printstream: scale 20.0, high intensity
+    const auto m4_params = getWeaponPearlescentParams(WeaponType::RifleM4A1S, true);
+    EXPECT_FLOAT_EQ(m4_params.scale, 20.0f);
+    EXPECT_GT(m4_params.intensity, 0.5f);
+
+    // AWP Gungnir: scale 0.5, moderate intensity
+    const auto awp_params = getWeaponPearlescentParams(WeaponType::SniperAWP, true);
+    EXPECT_FLOAT_EQ(awp_params.scale, 0.5f);
+    EXPECT_GT(awp_params.intensity, 0.5f);
+
+    // AK47 and Knife: pearlescent disabled (0.0)
+    const auto ak_params = getWeaponPearlescentParams(WeaponType::RifleAK47, true);
+    EXPECT_FLOAT_EQ(ak_params.scale, 0.0f);
+    EXPECT_FLOAT_EQ(ak_params.intensity, 0.0f);
+
+    const auto knife_params = getWeaponPearlescentParams(WeaponType::KnifeButterfly, true);
+    EXPECT_FLOAT_EQ(knife_params.scale, 0.0f);
+    EXPECT_FLOAT_EQ(knife_params.intensity, 0.0f);
+
+    // Weapon submesh false (arms, gloves, sleeves) must always be 0.0
+    const auto m4_arm = getWeaponPearlescentParams(WeaponType::RifleM4A1S, false);
+    EXPECT_FLOAT_EQ(m4_arm.scale, 0.0f);
+    EXPECT_FLOAT_EQ(m4_arm.intensity, 0.0f);
+}
+
+TEST(CSViewModelTest, CosineRainbowSpectrumProducesFullColorWheel) {
+    float rgb_start[3] = {};
+    evaluateCosineRainbow(0.0f, rgb_start);
+    // At t=0.0, red phase is 0.0 -> red channel reaches max (1.0)
+    EXPECT_NEAR(rgb_start[0], 1.0f, 0.05f);
+
+    float rgb_green[3] = {};
+    evaluateCosineRainbow(0.667f, rgb_green);
+    // At t=0.667, green phase aligned -> green channel reaches max
+    EXPECT_GT(rgb_green[1], rgb_green[0]);
+
+    float rgb_blue[3] = {};
+    evaluateCosineRainbow(0.333f, rgb_blue);
+    // At t=0.333, blue channel dominates
+    EXPECT_GT(rgb_blue[2], rgb_blue[0]);
+}
+
 } // namespace

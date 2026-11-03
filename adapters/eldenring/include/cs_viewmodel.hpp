@@ -579,6 +579,20 @@ inline void getEffectiveSubmeshTint(SubmeshType type, bool has_texture, float ou
     }
 }
 
+// CS2 Pearlescent thin-film optical properties
+struct PearlescentParams {
+    float scale{0.0f};
+    float intensity{0.0f};
+};
+
+// Analytical cosine rainbow spectrum approximation for thin-film pearlescence.
+inline void evaluateCosineRainbow(float t, float out_rgb[3]) {
+    constexpr float kPi2 = 6.2831853f;
+    out_rgb[0] = 0.55f + 0.45f * std::cos(kPi2 * (t + 0.000f));
+    out_rgb[1] = 0.55f + 0.45f * std::cos(kPi2 * (t + 0.333f));
+    out_rgb[2] = 0.55f + 0.45f * std::cos(kPi2 * (t + 0.667f));
+}
+
 // -----------------------------------------------------------------------------
 // CS2 Viewmodel State Machine & Animation Evaluation
 // -----------------------------------------------------------------------------

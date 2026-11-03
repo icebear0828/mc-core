@@ -4,6 +4,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "cs_viewmodel.hpp"
 
 namespace eldenring::cs {
 
@@ -18,6 +19,20 @@ enum class WeaponType {
     PistolDeagle,
     Custom
 };
+
+inline PearlescentParams getWeaponPearlescentParams(WeaponType type, bool is_weapon_submesh) {
+    if (!is_weapon_submesh) return {0.0f, 0.0f};
+    switch (type) {
+        case WeaponType::RifleM4A1S:
+            // Printstream uses CS2 g_flPearlescentScale = 20.0
+            return {20.0f, 0.90f};
+        case WeaponType::SniperAWP:
+            // Gungnir uses CS2 g_flPearlescentScale = 0.5
+            return {0.5f, 0.65f};
+        default:
+            return {0.0f, 0.0f};
+    }
+}
 
 enum class WeaponSlot {
     Primary,   // AK-47, M4A1-S, AWP
