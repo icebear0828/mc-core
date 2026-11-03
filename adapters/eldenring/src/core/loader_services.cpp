@@ -210,7 +210,6 @@ DWORD WINAPI AnimDebugThread(LPVOID) {
         }
         Sleep(30);
     }
-    return 0;
 }
 
 DWORD WINAPI KeyThread(LPVOID) {
@@ -242,7 +241,6 @@ DWORD WINAPI CrackTunerThread(LPVOID) {
         prev_fine_up = fine_up;
         Sleep(30);
     }
-    return 0;
 }
 
 // Forwarded by the exported DirectInput8Create in loader.cpp. Kept here so the
