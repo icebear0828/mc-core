@@ -776,7 +776,7 @@ perfstats/s: read=N fail=N slow_rtti=N enum=N (N slots) grace=N (N slots) unm=N 
 
 关闭时每次埋点只是一次 relaxed atomic load + 分支；开启后读取计数器本身有少量开销，只用于短时间 profiling。
 
-测试：`tests/test_eldenring_perfstats.cpp`（7 个用例）。
+测试：`tests/test_eldenring_perfstats.cpp`（8 个用例）。
 
 ---
 
@@ -812,3 +812,45 @@ perfstats/s: read=N fail=N slow_rtti=N enum=N (N slots) grace=N (N slots) unm=N 
 - 渲染 draw call 合批、`viewProjection` 重复计算等，收益在微秒级。
 
 复测方法：游戏目录保留 `mc_er_perfstats.txt`，启动后看 `mc_er.log` 最后一段的 `perfstats/s:` 行。关闭时删掉该文件即可。
+
+---
+
+## §6 卡顿探针实测（2026-11-04）
+
+§5 只统计了每秒平均读取次数，不能回答“卡不卡”。补了两个探针：
+
+1. **帧时间分布**（`overlay_hook.cpp` 的 `PresentDetour`，Present 到 Present）：每秒统计帧数、`>16.7 / >33 / >50 ms` 的帧数和最差帧。
+2. **`native_mutex` 等待/持有**（`hud_bridge.cpp` 的 `UpdateNativeModel` / `RestoreNativeModel`）：这是之前唯一没计时的跨线程锁。
+
+12 秒稳定样本（MC 模式，世界中，60 FPS 上限）：
+
+| 指标 | 数值 |
+|---|---|
+| 帧数 | 58–60/秒 |
+| `>16.7 ms` | 27–34/秒 |
+| `>33 ms` | **0** |
+| `>50 ms` | **0** |
+| 最差帧 | 19.1–31.5 ms（仅一次 31.5 ms） |
+| `native_lock` wait | 0.011–0.015 ms/秒 |
+| `native_lock` hold | 0.96–1.16 ms/秒 |
+| `native_lock` max hold | **12–41 µs** |
+| `melee_lock` wait | 0.009–0.017 ms/秒 |
+| `melee_lock` max hold | 0.16–0.42 ms |
+| `blocks_lock` | 可忽略 |
+| `read` | 55–76 万/秒 |
+| `enum` / `grace` / `slow_rtti` | 61/秒 / 0 / 240/秒 |
+
+结论：
+
+- **`native_mutex` 不是卡顿来源**：单次最长持有 41 µs，每秒总持有约 1 ms，等待约 14 µs。之前担心的“Present 线程持锁阻塞游戏线程”在这个场景没有发生。
+- **`melee_lock` 也不是卡顿来源**：单次最长 0.42 ms，每秒总持有 1–2 ms。
+- **没有 >33 ms 的帧**：12 秒内 0 次。唯一一次 31.5 ms 更像游戏侧的流式加载/着色器编译。
+- `>16.7 ms` 计数偏高是 60 FPS vsync 的正常抖动；判断卡顿应看 `>33` / `>50`。
+
+这组数据把“锁竞争导致卡顿”的假设基本排除。下一步若还有卡顿，优先看：
+
+1. 更繁忙的场景（大量敌人、开背包、TNT、快速移动）复测 `>33` / `>50`；
+2. `enumerateEnemies` 内部的逐角色读取（剩余平均开销的大头）；
+3. 游戏自身的加载/着色器编译（用 `>50` 帧发生的时间点对照 `mc_er.log` 里的 `world=`/`load[...]` 行）。
+
+探针 DLL 部署后哈希 `c4383ef0...`，旧 DLL 备份为游戏目录的 `dinput8.dll.bak_before_probes`。
