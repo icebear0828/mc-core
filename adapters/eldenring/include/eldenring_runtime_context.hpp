@@ -137,6 +137,14 @@ struct ModeConfig {
     std::atomic<uint8_t> cs_knife_state{0}; // 0: Idle, 1: Inspect, 2: Primary, 3: Secondary, 4: Deploy, 5: Reload, 6: Backstab
     std::atomic<float> cs_knife_anim_time{0.f};
     std::atomic<bool> cs_knife_inspect{false};
+    std::atomic<uint8_t> cs_scope_level{0}; // AWP: 0 off, 1 zoom 1, 2 zoom 2
+    // AWP zoom FOV (vertical degrees). Defaults match CS2's 40/10 degree
+    // horizontal scope at 16:9 (2*atan(tan(h/2)/aspect)).
+    std::atomic<float> cs_scope_fov1_deg{23.2f};
+    std::atomic<float> cs_scope_fov2_deg{5.6f};
+    // CS2's zoom_sensitivity_ratio: scoped sensitivity is
+    // base * (scope_fov / native_fov) * this ratio (default 1.0).
+    std::atomic<float> cs_scope_sens_ratio{1.0f};
     // Alternating authored take (light_hit1/2, inspect1/2/3, draw/draw2).
     std::atomic<uint8_t> cs_action_variant{0};
     // Melee attacks have separate hit and miss takes in CS2.
@@ -358,6 +366,10 @@ public:
         mode_.cs_knife_state.store(0);
         mode_.cs_knife_anim_time.store(0.f);
         mode_.cs_knife_inspect.store(false);
+        mode_.cs_scope_level.store(0);
+        mode_.cs_scope_fov1_deg.store(23.2f);
+        mode_.cs_scope_fov2_deg.store(5.6f);
+        mode_.cs_scope_sens_ratio.store(1.0f);
         mode_.cs_action_variant.store(0);
         mode_.cs_action_hit.store(true);
         mode_.cs_weapon_slot.store(0);

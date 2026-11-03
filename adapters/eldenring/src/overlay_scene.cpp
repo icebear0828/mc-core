@@ -1,4 +1,5 @@
 #include "overlay_internal.hpp"
+#include "cs_scope.hpp"
 #include "eldenring_ow_feel.hpp"
 
 namespace erov {
@@ -445,6 +446,9 @@ void RenderFrame(IDXGISwapChain* sc) {
     }
     const bool cs_mode_on = r_mode.cs_mode.load();
     const bool cs_active = cs_mode_on && g_cs.ready() && GameIsForeground();
+    // CS2 hides the whole first-person viewmodel while the AWP scope is up.
+    const bool cs_scoped = r_mode.cs_weapon_slot.load() == 2 &&
+                           eldenring::cs::scopeActive(r_mode.cs_scope_level.load());
 #else
     const bool cs_mode_on = false;
     const bool cs_active = false;
@@ -545,7 +549,7 @@ void RenderFrame(IDXGISwapChain* sc) {
     } else
 #endif
 #if ENABLE_CS2_VIEWMODEL
-    if (cs_active && !steve.dead) {
+    if (cs_active && !steve.dead && !cs_scoped) {
         const mc::rig::Mat4 proj = g_cs.computeViewmodelProjection(g_s.width, g_s.height);
         // The knife and each gun own their descriptor tables; switching is
         // just a handle swap, with no texture upload on the render thread.

@@ -3,6 +3,7 @@
 #include "eldenring_runtime_context.hpp"
 #include "cs_fire_events.hpp"
 #include "cs_reload_events.hpp"
+#include "cs_scope.hpp"
 #include "cs_economy.hpp"
 #include "cs_weapon_registry.hpp"
 #include "input_keys.hpp"
@@ -124,6 +125,7 @@ void CsGunplayHandler::reset() {
     prev_buy_b_ = false;
     last_slot_ = 0;
     RuntimeContext::Instance().mode().cs_buy_open.store(false);
+    RuntimeContext::Instance().mode().cs_scope_level.store(eldenring::cs::kScopeOff);
     for (uint32_t& ammo : slot_ammo_) ammo = 0;
     for (uint32_t& reserve : slot_reserve_) reserve = 0;
     for (bool& ready : slot_ammo_ready_) ready = false;
@@ -169,6 +171,7 @@ void CsGunplayHandler::selectWeaponSlot(uint8_t slot, const InputTickContext& ct
     mode.cs_weapon_slot.store(slot);
     mode.cs_knife_state.store(4); // Deploy
     mode.cs_knife_inspect.store(false);
+    mode.cs_scope_level.store(eldenring::cs::kScopeOff);
     mode.cs_action_variant.store(static_cast<uint8_t>((mode.cs_action_variant.load() + 1u) & 1u));
     mode.cs_action_hit.store(true);
     mode.cs_knife_anim_time.store(0.f);
@@ -196,14 +199,32 @@ bool CsGunplayHandler::tickRightClick(const InputTickContext& ctx) {
 #if ENABLE_CS2_VIEWMODEL
     auto& mode = RuntimeContext::Instance().mode();
     if (mode.cs_mode.load() && ctx.fg && !ctx.is_dead && !mode.cs_buy_open.load() && ctx.right_edge) {
-        // RMB is the knife's heavy attack. Guns consume the click but have no
-        // secondary action yet (AWP scope is a separate HUD feature).
-        if (mode.cs_weapon_slot.load() == 0) {
+        // RMB is the knife's heavy attack and the scoped rifle's zoom cycle.
+        // Other guns consume the click without a secondary action.
+        const uint8_t slot = mode.cs_weapon_slot.load();
+        if (slot == 0) {
             mode.cs_knife_state.store(3); // Heavy attack
             mode.cs_knife_inspect.store(false);
             mode.cs_action_hit.store(true);
             mode.cs_knife_anim_time.store(0.f);
             if (ctx.cb->play_sound) ctx.cb->play_sound("cs.knife.hit", 1.0f);
+        } else {
+            const auto* def = eldenring::cs::CSWeaponRegistry::instance().findWeapon(weaponIdForSlot(slot));
+            const bool has_scope = def != nullptr && def->ballistics.has_scope;
+            if (has_scope) {
+                const uint8_t before = mode.cs_scope_level.load();
+                const uint8_t after = eldenring::cs::nextScopeLevel(before, true);
+                mode.cs_scope_level.store(after);
+                if (ctx.cb->play_sound) {
+                    ctx.cb->play_sound(after == eldenring::cs::kScopeOff ? "cs.awp.zoom_out" : "cs.awp.zoom_in", 1.0f);
+                }
+                if (ctx.cb->log) {
+                    char msg[64];
+                    snprintf(msg, sizeof(msg), "CS scope: level %u -> %u",
+                             static_cast<unsigned>(before), static_cast<unsigned>(after));
+                    ctx.cb->log(msg);
+                }
+            }
         }
         return true;
     }
@@ -218,6 +239,9 @@ void CsGunplayHandler::tickActionTimer(const InputTickContext& ctx) {
     auto& mode = RuntimeContext::Instance().mode();
     mode.cs_money_flash.store(std::max(0.f, mode.cs_money_flash.load() - ctx.dt * 1.25f));
     mode.cs_ammo_flash.store(std::max(0.f, mode.cs_ammo_flash.load() - ctx.dt * 2.5f));
+    if (!mode.cs_mode.load() || ctx.is_dead) {
+        mode.cs_scope_level.store(eldenring::cs::kScopeOff);
+    }
     if (!mode.cs_mode.load()) {
         return;
     }
@@ -397,6 +421,7 @@ void CsGunplayHandler::tickGameplayKeys(const InputTickContext& ctx) {
     if (r_down && !prev_reload_r_ && mode.cs_mode.load() && !mode.cs_buy_open.load() && mode.cs_weapon_slot.load() != 0) {
         mode.cs_knife_state.store(5); // Reload
         mode.cs_knife_inspect.store(false);
+        mode.cs_scope_level.store(eldenring::cs::kScopeOff); // CS2 unscopes on reload
         mode.cs_knife_anim_time.store(0.f);
         cs_reload_sound_stage_ = 0;
         if (ctx.cb->log) ctx.cb->log("CS: reload");
