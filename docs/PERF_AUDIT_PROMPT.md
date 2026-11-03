@@ -876,3 +876,22 @@ perfstats/s: read=N fail=N slow_rtti=N enum=N (N slots) grace=N (N slots) unm=N 
 - `melee_lock` 的 18ms 只在 80 秒出现一次，疑似背包/合成/存档竞争，量级远小于加载卡顿。
 - 如果要消除首次切枪卡顿，需要缓存解析后的 CSVM（CPU 侧）或在 Init 预加载当前槽位的模型；`CsRenderer` 目前只持有一个 `model_`，不能同时缓存三把枪的 GPU 网格。
 - **已修复（本分支）**：`loadModel` 现在按路径缓存解析后的 `CSViewModel`，Init 预加载刀 + AK/AWP/M4 的模型；切枪只拷贝解析结果并绑定已缓存的 GPU mesh。实测切枪窗口（32–46s）`>33=0`、`>50=0`，最差 29.6ms，`melee_lock` max 0.52ms，不再出现 ~100ms 的 CSVM 解析。
+
+### 154–157s 的 4 秒掉帧：失焦，不是 mod
+
+`mc_er.log` 的 `focus:` 行：
+
+```
+[132.922] focus: the game is no longer the foreground window (ForegroundStaging)
+[162.844] focus: the game is now the foreground window (ELDEN RING?)
+```
+
+154–157 秒的掉帧（19–29 FPS、最差 101ms、10 帧 >50ms）完全落在这段**失去前台焦点**的 30 秒窗口内。同秒：
+
+- mod 每帧读取量不变（`read`/帧 ≈ 11k，和 60 FPS 时一致）；
+- `melee_lock` 总持有 13.5ms/秒、单次最高 7ms，远不足以解释 10 帧 >50ms；
+- `native_lock` 正常（max 30µs）；
+- `CreateDevice keyboard` 每秒重建，是游戏在失焦时重新获取输入设备；
+- 没有加载画面、切图或切枪。
+
+结论：这是游戏在后台/失焦下的掉帧，不是 mod。切回前台后立刻恢复到 60 FPS。复测卡顿时要先确认 `focus:` 行显示游戏在前台。
