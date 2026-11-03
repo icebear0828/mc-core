@@ -50,6 +50,7 @@
 
 #include "eldenring_buddy.hpp"
 #include "eldenring_chrscan.hpp"
+#include "eldenring_enemy_snapshot.hpp"
 #include "eldenring_mobs.hpp"
 #include "eldenring_virtual_summon.hpp"
 #include "eldenring_creative.hpp"

@@ -20,7 +20,8 @@ void EnemiesBlockCollisionStep(const float player_feet[3]) {
     if (!mc_on && !cs_on && !ow_on) return;
 
     std::vector<EnemyInfo> enemies;
-    if (!enumerateEnemies(g_reader, g_img.base, enemies, 512)) {
+    // include_dead: the summon-hiding pass needs the corpses too, and this is the one enumeration per frame.
+    if (!enumerateEnemies(g_reader, g_img.base, enemies, 4000, /*include_dead=*/true)) {
         EntityManager::instance().clearCache();
         return;
     }
@@ -28,12 +29,19 @@ void EnemiesBlockCollisionStep(const float player_feet[3]) {
     // The CS hitscan and the OW strikes read this cache on the input thread.
     EntityManager::instance().updateCacheFromGameThread(enemies);
 
-    if (!mc_on) return;
+    if (!mc_on) {
+        eldenring::live::gameThreadEnemySnapshot().publish(
+            std::make_shared<const std::vector<EnemyInfo>>(std::move(enemies)), GetTickCount64());
+        return;
+    }
 
     // Process queued TNT explosion damage intents on game thread!
     ProcessTntExplosionsOnGameThread(enemies);
 
-    eldenring::world::VoxelWorldRuntime::Instance().stepEnemyBlockCollision(player_feet, g_ctx);
+    eldenring::world::VoxelWorldRuntime::Instance().stepEnemyBlockCollision(player_feet, enemies, g_ctx);
+
+    eldenring::live::gameThreadEnemySnapshot().publish(
+        std::make_shared<const std::vector<EnemyInfo>>(std::move(enemies)), GetTickCount64());
 }
 
 void TriggerTntExplosionEffectsAndDamage(const float center[3]) {

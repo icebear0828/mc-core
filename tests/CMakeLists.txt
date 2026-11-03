@@ -98,6 +98,8 @@ add_executable(mc_tests
     test_eldenring_virtual_summon.cpp
     test_eldenring_hotkey_dispatcher.cpp
     test_eldenring_game_hooks.cpp
+    test_eldenring_perfstats.cpp
+    test_eldenring_enemy_snapshot.cpp
     test_mod_plugin_framework.cpp
     test_control_policy.cpp
     test_eldenring_control_policy.cpp

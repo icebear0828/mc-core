@@ -98,6 +98,44 @@ TEST(EldenRingRtti, ObjectIsClassAcceptsMeasuredVtableOrRttiName) {
     EXPECT_FALSE(objectIsClass(m, kBase, 0, 0x2A3A0D8, "DamageModule"));
 }
 
+TEST(EldenRingRtti, CachesSuccessfulNames) {
+    rtti::resetNameCacheForTesting();
+    Mem m;
+    addRttiClass(m, 0x5000, 0x6000, 0x7000, ".?AVCachedClass@CS@@");
+    const auto first = readTypeNameOfVtable(m, kBase, kBase + 0x5000);
+    ASSERT_TRUE(first.has_value());
+    EXPECT_EQ(*first, ".?AVCachedClass@CS@@");
+
+    // Change the name behind the same vtable. The cached read still wins.
+    m.putString(kBase + 0x7000 + 0x10, ".?AVChanged@CS@@");
+    const auto second = readTypeNameOfVtable(m, kBase, kBase + 0x5000);
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(*second, ".?AVCachedClass@CS@@");
+}
+
+TEST(EldenRingRtti, DoesNotCacheFailedReads) {
+    rtti::resetNameCacheForTesting();
+    Mem m;
+    addRttiClass(m, 0x5100, 0x6100, 0x7100, ".?AVRetryClass@CS@@");
+    m.put<uint32_t>(kBase + 0x6100, 0); // bogus COL signature: the read must fail
+    EXPECT_FALSE(readTypeNameOfVtable(m, kBase, kBase + 0x5100).has_value());
+
+    m.put<uint32_t>(kBase + 0x6100, 1); // fixed: the failure must not have been cached
+    const auto name = readTypeNameOfVtable(m, kBase, kBase + 0x5100);
+    ASSERT_TRUE(name.has_value());
+    EXPECT_EQ(*name, ".?AVRetryClass@CS@@");
+}
+
+TEST(EldenRingRtti, CachedNameStillChecksTheToken) {
+    rtti::resetNameCacheForTesting();
+    Mem m;
+    addRttiClass(m, 0x5200, 0x6200, 0x7200, ".?AVCachedEnemy@CS@@");
+    m.region(0x7ff510000000ull, 0x10);
+    m.put<uint64_t>(0x7ff510000000ull, kBase + 0x5200);
+    EXPECT_TRUE(objectIsClass(m, kBase, 0x7ff510000000ull, 0, "CachedEnemy"));
+    EXPECT_FALSE(objectIsClass(m, kBase, 0x7ff510000000ull, 0, "OtherClass"));
+}
+
 // ---- singleton signatures --------------------------------------------------------------------------------
 
 namespace {

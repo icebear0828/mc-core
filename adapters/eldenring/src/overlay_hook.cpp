@@ -1,4 +1,5 @@
 #include "overlay_internal.hpp"
+#include "eldenring_perfstats.hpp"
 
 namespace erov {
 namespace detail {
@@ -321,6 +322,7 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
         CreateAtlasTexture(srv_inc);
         CreateArmorTextures(srv_inc);
         CreateElytraTexture(srv_inc);
+        CreateTridentTexture(srv_inc);
         g_depth_dirty.store(true); // bind the captured depth to the new armor and elytra tables too
 #if ENABLE_CS2_VIEWMODEL
         CreateCsDecalTexture(srv_inc);
@@ -709,6 +711,7 @@ void STDMETHODCALLTYPE ExecuteDetour(ID3D12CommandQueue* q, UINT n, ID3D12Comman
 }
 
 HRESULT STDMETHODCALLTYPE PresentDetour(IDXGISwapChain* sc, UINT sync, UINT flags) {
+    eldenring::perfstats::reportIfDue(GetTickCount64(), [](const char* line) { Logf("%s", line); });
     if (g_steve_cfg.depth_probe) probe::OnPresent();
     if (!g_hook_state.failed()) {
         ID3D12CommandQueue* q = g_queue.load();

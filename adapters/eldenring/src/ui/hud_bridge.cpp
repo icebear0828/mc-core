@@ -9,6 +9,7 @@
 #include "eldenring_model.hpp"
 #include "eldenring_chrscan.hpp"
 #include "eldenring_locomotion.hpp"
+#include "eldenring_perfstats.hpp"
 
 namespace eldenring::ui {
 
@@ -163,6 +164,7 @@ void RestoreNativeModel(std::unordered_map<uintptr_t, debug::HiddenWord>& hidden
 void UpdateNativeModel(uintptr_t player, bool hide, const live::IMemoryReader& reader, uintptr_t base,
                        RuntimeContext& ctx, std::unordered_map<uintptr_t, debug::HiddenWord>& hidden_flags,
                        std::mutex& native_mutex) {
+    perfstats::noteUpdateNativeModel();
     std::lock_guard<std::mutex> lock(native_mutex);
     if (ctx.ui().slots_changed.exchange(false)) {
         // A weapon/model slot change frees and reuses the old display

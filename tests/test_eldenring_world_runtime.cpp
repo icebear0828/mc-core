@@ -264,6 +264,59 @@ TEST(EldenRingWorldRuntime, EnemyBlockCollisionSweptBoxPush) {
     EXPECT_NE(final_feet[0], e_feet[0]);
 }
 
+TEST(EldenRingWorldRuntime, EnemyBlockCollisionUsesTheProvidedListWithoutReEnumerating) {
+    MockMemory mem;
+    const uintptr_t kEnemyChr = 0x3002;
+    const uintptr_t kEnemyModule = 0x6002;
+
+    float e_feet[3] = {5.2f, 0.0f, 0.5f};
+    mem.writeBytes(kEnemyModule + layout::kPhysicsPosition, e_feet, sizeof(e_feet));
+
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+
+    bool enumerated = false;
+    WorldRuntimeCallbacks cb{};
+    cb.get_physics_module = [&](uintptr_t) { return kEnemyModule; };
+    cb.read_physics_pos = [&](uintptr_t, float out_f[3]) {
+        return mem.readBytes(kEnemyModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+    };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.enumerate_enemies = [&](std::vector<EnemyInfo>& out) {
+        enumerated = true;
+        EnemyInfo e{};
+        e.chr = kEnemyChr;
+        e.hp = 100;
+        out.push_back(e);
+        return true;
+    };
+    runtime.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+    ctx.mode().enemy_block_collision.store(true);
+    {
+        std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+        ctx.world().block_grid.place({5, 0, 0}, mc::BlockId::Stone);
+    }
+
+    std::vector<EnemyInfo> enemies;
+    EnemyInfo e{};
+    e.chr = kEnemyChr;
+    e.hp = 100;
+    enemies.push_back(e);
+
+    float player_feet[3] = {0.f, 0.f, 0.f};
+    runtime.stepEnemyBlockCollision(player_feet, enemies, ctx);
+
+    EXPECT_FALSE(enumerated);
+    float final_feet[3] = {};
+    mem.readBytes(kEnemyModule + layout::kPhysicsPosition, final_feet, sizeof(final_feet));
+    EXPECT_NE(final_feet[0], e_feet[0]);
+}
+
 TEST(EldenRingWorldRuntime, StepBlockCollisionDrivesVelocityAndUnlocksAir) {
     MockMemory mem;
     const uintptr_t kChr = 0x1000;
