@@ -776,7 +776,7 @@ perfstats/s: read=N fail=N slow_rtti=N enum=N (N slots) grace=N (N slots) unm=N 
 
 关闭时每次埋点只是一次 relaxed atomic load + 分支；开启后读取计数器本身有少量开销，只用于短时间 profiling。
 
-测试：`tests/test_eldenring_perfstats.cpp`（7 个用例）。
+测试：`tests/test_eldenring_perfstats.cpp`（8 个用例）。
 
 ---
 
@@ -812,3 +812,86 @@ perfstats/s: read=N fail=N slow_rtti=N enum=N (N slots) grace=N (N slots) unm=N 
 - 渲染 draw call 合批、`viewProjection` 重复计算等，收益在微秒级。
 
 复测方法：游戏目录保留 `mc_er_perfstats.txt`，启动后看 `mc_er.log` 最后一段的 `perfstats/s:` 行。关闭时删掉该文件即可。
+
+---
+
+## §6 卡顿探针实测（2026-11-04）
+
+§5 只统计了每秒平均读取次数，不能回答“卡不卡”。补了两个探针：
+
+1. **帧时间分布**（`overlay_hook.cpp` 的 `PresentDetour`，Present 到 Present）：每秒统计帧数、`>16.7 / >33 / >50 ms` 的帧数和最差帧。
+2. **`native_mutex` 等待/持有**（`hud_bridge.cpp` 的 `UpdateNativeModel` / `RestoreNativeModel`）：这是之前唯一没计时的跨线程锁。
+
+12 秒稳定样本（MC 模式，世界中，60 FPS 上限）：
+
+| 指标 | 数值 |
+|---|---|
+| 帧数 | 58–60/秒 |
+| `>16.7 ms` | 27–34/秒 |
+| `>33 ms` | **0** |
+| `>50 ms` | **0** |
+| 最差帧 | 19.1–31.5 ms（仅一次 31.5 ms） |
+| `native_lock` wait | 0.011–0.015 ms/秒 |
+| `native_lock` hold | 0.96–1.16 ms/秒 |
+| `native_lock` max hold | **12–41 µs** |
+| `melee_lock` wait | 0.009–0.017 ms/秒 |
+| `melee_lock` max hold | 0.16–0.42 ms |
+| `blocks_lock` | 可忽略 |
+| `read` | 55–76 万/秒 |
+| `enum` / `grace` / `slow_rtti` | 61/秒 / 0 / 240/秒 |
+
+结论：
+
+- **`native_mutex` 不是卡顿来源**：单次最长持有 41 µs，每秒总持有约 1 ms，等待约 14 µs。之前担心的“Present 线程持锁阻塞游戏线程”在这个场景没有发生。
+- **`melee_lock` 也不是卡顿来源**：单次最长 0.42 ms，每秒总持有 1–2 ms。
+- **没有 >33 ms 的帧**：12 秒内 0 次。唯一一次 31.5 ms 更像游戏侧的流式加载/着色器编译。
+- `>16.7 ms` 计数偏高是 60 FPS vsync 的正常抖动；判断卡顿应看 `>33` / `>50`。
+
+这组数据把“锁竞争导致卡顿”的假设基本排除。下一步若还有卡顿，优先看：
+
+1. 更繁忙的场景（大量敌人、开背包、TNT、快速移动）复测 `>33` / `>50`；
+2. `enumerateEnemies` 内部的逐角色读取（剩余平均开销的大头）；
+3. 游戏自身的加载/着色器编译（用 `>50` 帧发生的时间点对照 `mc_er.log` 里的 `world=`/`load[...]` 行）。
+
+探针 DLL 部署后哈希 `c4383ef0...`，旧 DLL 备份为游戏目录的 `dinput8.dll.bak_before_probes`。
+
+### 全日志扫描（228 个 perfstats 秒）
+
+上面的 12 秒样本是平静窗口。扫完整日志后，`>33 ms` 的帧集中在这些时间点：
+
+| 时间 | 最差帧 | 同秒日志 | 判断 |
+|---|---|---|---|
+| 10–18s | 3.5s / 2.1s / 1.7s | `world=0`、加载画面 | 游戏启动/加载 |
+| 47–52s | 289 ms | `screen=1`、`fade=1.00` | 游戏加载画面 |
+| 64–70s | 327 / 235 / 118 ms | `fade=0.60→1.00`、`screen=1`、world 指针变化 | 快速旅行/加载 |
+| **80.14s** | **6973 ms** | `CreateDevice keyboard` 反复重建、AK-47 CSVM 懒加载、`melee_lock max=18 ms` | **Alt-Tab/失焦** + CS 武器首次加载 |
+| 210s | 495 ms | `flight`/`elytra` 状态切换、大位移 | 游戏流式加载/飞行 |
+| 224–228s | 256 / 117 / 69 ms | `screen=1`、`fade=1.00`、`blocks: loading screen` | 加载画面 |
+
+结论修正：
+
+- **稳定游戏内没有 `>33 ms` 的帧**；卡顿集中在加载、快速旅行、失焦和首次切枪。
+- **80 秒的 7 秒不是 mod**：同一秒键盘设备反复重建，是窗口失焦/Alt-Tab 的特征。
+- **唯一明确的 mod 侧卡顿是 CS 武器模型首次切换**：`overlay_hook.cpp` 的 Init 只预加载了三把枪的贴图（`loadWeaponTextures`），模型（`loadWeapon` → `loadModel`）仍是懒加载；80 秒那次解析了 1.4MB CSVM，约 100ms。
+- `melee_lock` 的 18ms 只在 80 秒出现一次，疑似背包/合成/存档竞争，量级远小于加载卡顿。
+- 如果要消除首次切枪卡顿，需要缓存解析后的 CSVM（CPU 侧）或在 Init 预加载当前槽位的模型；`CsRenderer` 目前只持有一个 `model_`，不能同时缓存三把枪的 GPU 网格。
+- **已修复（本分支）**：`loadModel` 现在按路径缓存解析后的 `CSViewModel`，Init 预加载刀 + AK/AWP/M4 的模型；切枪只拷贝解析结果并绑定已缓存的 GPU mesh。实测切枪窗口（32–46s）`>33=0`、`>50=0`，最差 29.6ms，`melee_lock` max 0.52ms，不再出现 ~100ms 的 CSVM 解析。
+
+### 154–157s 的 4 秒掉帧：失焦，不是 mod
+
+`mc_er.log` 的 `focus:` 行：
+
+```
+[132.922] focus: the game is no longer the foreground window (ForegroundStaging)
+[162.844] focus: the game is now the foreground window (ELDEN RING?)
+```
+
+154–157 秒的掉帧（19–29 FPS、最差 101ms、10 帧 >50ms）完全落在这段**失去前台焦点**的 30 秒窗口内。同秒：
+
+- mod 每帧读取量不变（`read`/帧 ≈ 11k，和 60 FPS 时一致）；
+- `melee_lock` 总持有 13.5ms/秒、单次最高 7ms，远不足以解释 10 帧 >50ms；
+- `native_lock` 正常（max 30µs）；
+- `CreateDevice keyboard` 每秒重建，是游戏在失焦时重新获取输入设备；
+- 没有加载画面、切图或切枪。
+
+结论：这是游戏在后台/失焦下的掉帧，不是 mod。切回前台后立刻恢复到 60 FPS。复测卡顿时要先确认 `focus:` 行显示游戏在前台。

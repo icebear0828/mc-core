@@ -604,6 +604,22 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                 Logf("overlay: CS gun table %u (%s) %s", static_cast<unsigned>(slot), def.display_name.c_str(),
                      any_real ? "preloaded" : "using fallbacks");
             }
+            // Parse every gun's model now, during the loading screen. A switch
+            // then copies the cached model instead of reading and parsing 1.4 MB
+            // on the render thread (the first AK switch used to hitch ~100 ms).
+            for (uint8_t slot = 1; slot <= 3; ++slot) {
+                const auto* found = eldenring::cs::CSWeaponRegistry::instance().findWeapon(gun_ids[slot]);
+                if (!found || found->model_csvm_path.empty()) continue;
+                const std::string model_path = ResolveCsAssetPath(found->model_csvm_path);
+                if (std::filesystem::exists(model_path) && g_cs.loadModel(g_s.device, model_path)) {
+                    Logf("overlay: CS gun model %u preloaded", static_cast<unsigned>(slot));
+                }
+            }
+            // The preload left the last gun as the live model; restore the knife
+            // so the first frame shows the slot the game actually starts on.
+            if (!g_cs_knife_model_path.empty()) {
+                g_cs.loadModel(g_s.device, g_cs_knife_model_path);
+            }
             // All maps are uploaded now; drop the CPU copies.
             erov::ReleaseCsDecodeCache();
         }
@@ -710,6 +726,18 @@ void STDMETHODCALLTYPE ExecuteDetour(ID3D12CommandQueue* q, UINT n, ID3D12Comman
 }
 
 HRESULT STDMETHODCALLTYPE PresentDetour(IDXGISwapChain* sc, UINT sync, UINT flags) {
+    // Frame-time distribution: Present-to-Present, i.e. what the player actually feels.
+    static std::chrono::steady_clock::time_point s_last_frame{};
+    static bool s_have_last_frame = false;
+    if (eldenring::perfstats::on()) {
+        const auto now = std::chrono::steady_clock::now();
+        if (s_have_last_frame) {
+            eldenring::perfstats::noteFrame(static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(now - s_last_frame).count()));
+        }
+        s_last_frame = now;
+        s_have_last_frame = true;
+    }
     eldenring::perfstats::reportIfDue(GetTickCount64(), [](const char* line) { Logf("%s", line); });
     if (g_steve_cfg.depth_probe) probe::OnPresent();
     if (!g_hook_state.failed()) {

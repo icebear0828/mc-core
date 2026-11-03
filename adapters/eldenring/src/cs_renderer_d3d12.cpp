@@ -616,6 +616,7 @@ void CsRenderer::release() {
         Rel(entry.second.ib);
     }
     mesh_cache_.clear();
+    model_cache_.clear();
     vb_ = nullptr;
     ib_ = nullptr;
     Rel(depth_tex_);
@@ -1199,23 +1200,29 @@ bool CsRenderer::loadTexturesFromFiles(ID3D12Device* device,
 
 
 bool CsRenderer::loadModel(ID3D12Device* device, const std::string& path) {
-    if (!model_.loadFromFile(path)) {
-        if (log_) log_("cs_render: failed to load CSVM file from %s", path.c_str());
-        return false;
-    }
-    if (log_) log_("cs_render: CSVM parsed from %s: %u verts, %u indices, %zu submeshes, %zu clips",
-                   path.c_str(), model_.header_.total_vertices, model_.header_.total_indices,
-                   model_.submeshes.size(), model_.anim_clips.size());
-    if (log_) {
-        std::string names;
-        for (size_t i = 0; i < model_.submeshes.size(); ++i) {
-            const auto& sub = model_.submeshes[i];
-            if (!names.empty()) names += ", ";
-            names += sub.bone_name;
-            log_("cs_render: submesh %zu '%s' first=%u base=%d count=%u flags=%u",
-                 i, sub.bone_name.c_str(), sub.first_index, sub.base_vertex, sub.index_count, sub.flags);
+    const auto cached_model = model_cache_.find(path);
+    if (cached_model != model_cache_.end()) {
+        model_ = cached_model->second;
+        if (log_) log_("cs_render: CSVM reused from cache: %s", path.c_str());
+    } else {
+        if (!model_.loadFromFile(path)) {
+            if (log_) log_("cs_render: failed to load CSVM file from %s", path.c_str());
+            return false;
         }
-        log_("cs_render: CSVM submeshes: %s", names.c_str());
+        if (log_) log_("cs_render: CSVM parsed from %s: %u verts, %u indices, %zu submeshes, %zu clips",
+                       path.c_str(), model_.header_.total_vertices, model_.header_.total_indices,
+                       model_.submeshes.size(), model_.anim_clips.size());
+        if (log_) {
+            std::string names;
+            for (size_t i = 0; i < model_.submeshes.size(); ++i) {
+                const auto& sub = model_.submeshes[i];
+                if (!names.empty()) names += ", ";
+                names += sub.bone_name;
+                log_("cs_render: submesh %zu '%s' first=%u base=%d count=%u flags=%u",
+                     i, sub.bone_name.c_str(), sub.first_index, sub.base_vertex, sub.index_count, sub.flags);
+            }
+            log_("cs_render: CSVM submeshes: %s", names.c_str());
+        }
     }
 
     auto cached = mesh_cache_.find(path);
@@ -1244,6 +1251,9 @@ bool CsRenderer::loadModel(ID3D12Device* device, const std::string& path) {
         ib_ = cached->second.ib;
         vbv_ = cached->second.vbv;
         ibv_ = cached->second.ibv;
+    }
+    if (cached_model == model_cache_.end()) {
+        model_cache_.emplace(path, model_);
     }
 
     // Identify submesh roles

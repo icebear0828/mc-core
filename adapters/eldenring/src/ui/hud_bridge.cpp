@@ -157,7 +157,7 @@ static void restoreAll(std::unordered_map<uintptr_t, debug::HiddenWord>& hidden_
 }
 
 void RestoreNativeModel(std::unordered_map<uintptr_t, debug::HiddenWord>& hidden_flags, std::mutex& native_mutex) {
-    std::lock_guard<std::mutex> lock(native_mutex);
+    perfstats::ScopedTimedLock lock(native_mutex, perfstats::LockKind::Native);
     restoreAll(hidden_flags);
 }
 
@@ -165,7 +165,7 @@ void UpdateNativeModel(uintptr_t player, bool hide, const live::IMemoryReader& r
                        RuntimeContext& ctx, std::unordered_map<uintptr_t, debug::HiddenWord>& hidden_flags,
                        std::mutex& native_mutex) {
     perfstats::noteUpdateNativeModel();
-    std::lock_guard<std::mutex> lock(native_mutex);
+    perfstats::ScopedTimedLock lock(native_mutex, perfstats::LockKind::Native);
     if (ctx.ui().slots_changed.exchange(false)) {
         // A weapon/model slot change frees and reuses the old display
         // entities. Writing the cached flag words back would then land in a
