@@ -19,6 +19,8 @@ add_executable(mc_tests
     test_elytra.cpp
     test_elytra_flight.cpp
     test_ender_pearl.cpp
+    test_riptide.cpp
+    test_thrown_trident.cpp
     test_hud.cpp
     test_hud_layout.cpp
     test_session.cpp

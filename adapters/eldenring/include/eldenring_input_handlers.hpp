@@ -109,6 +109,7 @@ public:
 
     void tickRightClick(const InputTickContext& ctx);
     void tickBow(const InputTickContext& ctx);
+    void tickTrident(const InputTickContext& ctx);
     void tickShield(const InputTickContext& ctx);
     void tickWheel(const InputTickContext& ctx);
     void tickGameplayKeys(const InputTickContext& ctx);
@@ -119,6 +120,8 @@ private:
     bool prev_digit_[9]{};
     bow::BowController bow_;
     shield::ShieldController shield_;
+    float trident_charge_ticks_{0.f};
+    bool trident_charging_{false};
 };
 
 class McMovementHandler final : public IInputHandler {

@@ -143,8 +143,9 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.glide_blend = dbg.dbg_glide.load(std::memory_order_relaxed)
                                 ? 1.f
                                 : dbg.elytra_blend.load(std::memory_order_relaxed);
-        steve.riptide = dbg.dbg_riptide.load(std::memory_order_relaxed);
-        steve.trident_charge = dbg.dbg_trident_charge.load(std::memory_order_relaxed);
+        steve.riptide = dbg.dbg_riptide.load(std::memory_order_relaxed) || dbg.riptide_active.load(std::memory_order_relaxed);
+        steve.trident_charge = std::max(dbg.dbg_trident_charge.load(std::memory_order_relaxed),
+                                        dbg.trident_charge.load(std::memory_order_relaxed));
         steve.firework_seq = dbg.dbg_firework_seq.load(std::memory_order_relaxed);
     }
     return true;
@@ -199,6 +200,12 @@ void SetupOverlay() {
                 else if (key == "fly_sync") g_fly_sync.store(value != 0.f);
                 else if (key == "fly_speed") g_fly_h_speed.store(std::clamp(value, 1.f, 40.f));
                 else if (key == "fly_vspeed") g_fly_v_speed.store(std::clamp(value, 1.f, 40.f));
+                else if (key == "riptide_level") {
+                    eldenring::RuntimeContext::Instance().mode().riptide_level.store(std::clamp(static_cast<int>(value), 1, 3));
+                }
+                else if (key == "riptide_require_water") {
+                    eldenring::RuntimeContext::Instance().mode().riptide_require_water.store(value != 0.f);
+                }
                 else if (key == "mc_jump") g_mc_jump.store(value != 0.f);
                 else if (key == "mc_jump_key") g_mc_jump_vk.store(static_cast<int>(value));
                 else if (key == "mc_mode") {

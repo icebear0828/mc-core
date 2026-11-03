@@ -42,6 +42,8 @@ EVENTS = [
     "entity.arrow.shoot", "entity.arrow.hit", "entity.arrow.hit_player", "item.crossbow.shoot",
     # ender pearl
     "entity.ender_pearl.throw", "entity.player.teleport", "entity.ender_eye.launch",
+    # trident riptide (one event per enchantment level)
+    "item.trident.riptide_1", "item.trident.riptide_2", "item.trident.riptide_3",
     # tnt & explosion
     "entity.tnt.primed", "entity.creeper.primed", "entity.generic.explode",
 ]

@@ -566,7 +566,9 @@ void SteveRenderer::drawPearls(ID3D12GraphicsCommandList* list, ID3D12Descriptor
 }
 
 void SteveRenderer::drawAttachments(ID3D12GraphicsCommandList* list, const eldenring::render::PartMatrices& parts, const SteveParams& params) {
-    if (params.held_item != 0 && held_vertices_ && params.held_table.ptr != 0) {
+    // The trident is drawn as the 3D TridentModel prop, not as the flat held-item sprite (otherwise both show).
+    const bool held_is_trident = params.held_item == static_cast<uint16_t>(mc::ItemId::Trident);
+    if (!held_is_trident && params.held_item != 0 && held_vertices_ && params.held_table.ptr != 0) {
         const bool raised = params.held_item == static_cast<uint16_t>(mc::ItemId::Shield) && params.shield_blocking && !params.block_offhand;
         const auto it = held_items_.find(static_cast<uint16_t>(params.held_item | (raised ? kBlockingKeyBit : 0)));
         if (it != held_items_.end()) {

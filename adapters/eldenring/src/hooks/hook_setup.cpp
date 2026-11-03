@@ -66,6 +66,8 @@ void SetupGameHooksCallbacks() {
         McJumpStep();
         ElytraStep(dt);
         EnderPearlStep(dt);
+        RiptideStep(dt);
+        ThrownTridentStep(dt);
         GroundSprintStep(dt);
         OwRocketPunchStep(dt);
         ShadowGroundStep();

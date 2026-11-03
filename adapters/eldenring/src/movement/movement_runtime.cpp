@@ -109,6 +109,16 @@ void EnderPearlStep(float dt) {
     eldenring::movement::PlayerLocomotion::Instance().stepEnderPearl(dt, now_ms, g_ctx);
 }
 
+void RiptideStep(float dt) {
+    const uint64_t now_ms = GetTickCount64();
+    eldenring::movement::PlayerLocomotion::Instance().stepRiptide(dt, now_ms, g_ctx);
+}
+
+void ThrownTridentStep(float dt) {
+    const uint64_t now_ms = GetTickCount64();
+    eldenring::movement::PlayerLocomotion::Instance().stepThrownTrident(dt, now_ms, g_ctx);
+}
+
 void InventoryTick(bool fg) {
     perfstats::ScopedTimedLock g(g_melee_mutex, perfstats::LockKind::Melee);
     eldenring::ui::InventoryController::Instance().tick(fg, WantSuppress(), PlayerDead(), g_melee.inventory(), g_ctx);

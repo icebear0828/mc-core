@@ -561,6 +561,7 @@ void PlayerLocomotion::stepFlight(float dt, uint64_t now_ms, RuntimeContext& ctx
 
     if (!flying_.load(std::memory_order_relaxed)) return;
     if (pearl_hold_) return; // the ender pearl teleport owns the position for these frames
+    if (riptide_.active()) return; // the riptide dash owns the position for its 20 ticks
 
     const uintptr_t player = callbacks_.get_player_chr ? callbacks_.get_player_chr() : 0;
     const uintptr_t module = player != 0 && callbacks_.get_physics_module ? callbacks_.get_physics_module(player) : 0;
@@ -670,6 +671,7 @@ void PlayerLocomotion::stepElytra(float dt, uint64_t now_ms, RuntimeContext& ctx
         return;
     }
     if (pearl_hold_) return; // the ender pearl teleport owns the position for these frames
+    if (riptide_.active()) return; // the riptide dash owns the position for its 20 ticks
 
     const uintptr_t player = callbacks_.get_player_chr ? callbacks_.get_player_chr() : 0;
     const uintptr_t module = player != 0 && callbacks_.get_physics_module ? callbacks_.get_physics_module(player) : 0;
@@ -1112,6 +1114,7 @@ void PlayerLocomotion::stepEnderPearl(float dt, uint64_t now_ms, RuntimeContext&
         pearl_hold_frames_ = 0;
         pearl_watch_ = false;
         pearl_retries_ = 0;
+        if (riptide_.active()) riptide_.stop(); // the teleport takes over the position
         if (elytra_.state().is_gliding) {
             elytra_.stopGliding();
             ctx.mode().elytra_gliding.store(false, std::memory_order_relaxed);
@@ -1147,6 +1150,344 @@ void PlayerLocomotion::stepEnderPearl(float dt, uint64_t now_ms, RuntimeContext&
             static_cast<double>(pearl_.state().position.x), static_cast<double>(pearl_.state().position.y),
             static_cast<double>(pearl_.state().position.z), static_cast<double>(v.x), static_cast<double>(v.y),
             static_cast<double>(v.z));
+    }
+}
+
+bool PlayerLocomotion::startRiptide(int level) {
+    if (level <= 0) return false;
+    riptide_request_.store(level, std::memory_order_relaxed);
+    return true;
+}
+
+void PlayerLocomotion::stepRiptide(float dt, uint64_t now_ms, RuntimeContext& ctx) {
+    const bool fg = callbacks_.is_game_in_foreground ? callbacks_.is_game_in_foreground() : true;
+    const bool dead = callbacks_.is_player_dead ? callbacks_.is_player_dead() : false;
+    const bool allowed = ctx.mode().mc_mode.load(std::memory_order_relaxed) && fg && !dead &&
+                         !ctx.ui().inv_open.load(std::memory_order_relaxed);
+    if (!allowed) {
+        if (riptide_.active()) {
+            riptide_.stop();
+            ctx.mode().riptide_active.store(false, std::memory_order_relaxed);
+            log("riptide: stopped (mode/focus/inventory/death)");
+        }
+        riptide_request_.store(0, std::memory_order_relaxed);
+        riptide_have_pos_ = false;
+        riptide_have_written_ = false;
+        return;
+    }
+
+    const uintptr_t player = callbacks_.get_player_chr ? callbacks_.get_player_chr() : 0;
+    const uintptr_t module = player != 0 && callbacks_.get_physics_module ? callbacks_.get_physics_module(player) : 0;
+    if (module == 0 || !callbacks_.safe_read) return;
+    float pos[3] = {};
+    if (!callbacks_.safe_read(module + layout::kPhysicsPosition, pos, sizeof(pos))) return;
+
+    // A release request from the input thread: start on the camera thread, where the view is readable.
+    const int request = riptide_request_.exchange(0, std::memory_order_relaxed);
+    if (request > 0 && !riptide_.active() && !pearl_hold_) {
+        CameraPose cam{};
+        if (callbacks_.read_camera && callbacks_.read_camera(cam)) {
+            const bool on_ground = callbacks_.is_player_airborne ? !callbacks_.is_player_airborne() : true;
+            if (riptide_.start(request, {cam.forward[0], cam.forward[1], cam.forward[2]}, on_ground, {})) {
+                std::memcpy(riptide_pos_, pos, sizeof(riptide_pos_));
+                std::memcpy(riptide_last_written_, pos, sizeof(riptide_last_written_));
+                riptide_have_pos_ = true;
+                riptide_have_written_ = true;
+                riptide_accum_ = 0.f;
+                ctx.mode().riptide_active.store(true, std::memory_order_relaxed);
+                // The dash owns the position for its 20 ticks; the elytra is paused and resumes at the new
+                // position when the dash ends (using the trident while gliding).
+                riptide_was_gliding_ = elytra_.state().is_gliding;
+                if (isFlying()) setFlying(false);
+                if (callbacks_.play_sound) {
+                    const char* sound = request >= 3 ? "item.trident.riptide_3"
+                                        : request == 2 ? "item.trident.riptide_2"
+                                                       : "item.trident.riptide_1";
+                    callbacks_.play_sound(sound, 1.0f);
+                }
+                const auto& v = riptide_.state().velocity;
+                log("riptide: started level=%d v=(%.2f %.2f %.2f) b/t ground=%d", request,
+                    static_cast<double>(v.x), static_cast<double>(v.y), static_cast<double>(v.z), on_ground ? 1 : 0);
+            }
+        }
+    }
+
+    if (!riptide_.active()) return;
+
+    // The game re-bases its coordinates by whole 8 m steps: follow the grid like the elytra does.
+    if (!riptide_have_pos_ || !riptide_have_written_) {
+        std::memcpy(riptide_pos_, pos, sizeof(riptide_pos_));
+        std::memcpy(riptide_last_written_, pos, sizeof(riptide_last_written_));
+        riptide_have_pos_ = true;
+        riptide_have_written_ = true;
+    } else if (flight::positionOverwritten(riptide_last_written_, pos, 3.f)) {
+        flight::followRebase(riptide_pos_, riptide_last_written_, pos);
+        const float dx = riptide_pos_[0] - pos[0];
+        const float dy = riptide_pos_[1] - pos[1];
+        const float dz = riptide_pos_[2] - pos[2];
+        if (std::sqrt(dx * dx + dy * dy + dz * dz) > 5.f) {
+            riptide_.stop();
+            ctx.mode().riptide_active.store(false, std::memory_order_relaxed);
+            log("riptide: stopped (engine teleported)");
+            riptide_have_pos_ = false;
+            riptide_have_written_ = false;
+            return;
+        }
+    }
+
+    // Per-frame integration with sub-stepped collision (a 3 b/t dash must not tunnel).
+    const mc::Vec3 v = riptide_.state().velocity;
+    const float frac = std::clamp(dt / 0.05f, 0.f, 2.f);
+    const float step[3] = {v.x * frac, v.y * frac, v.z * frac};
+    float now[3] = {riptide_pos_[0], riptide_pos_[1], riptide_pos_[2]};
+    bool hit = false;
+    if (callbacks_.cast_ray) {
+        const float len = std::sqrt(step[0] * step[0] + step[1] * step[1] + step[2] * step[2]);
+        const int n = std::max(1, static_cast<int>(std::ceil(len / 0.5f)));
+        for (int i = 0; i < n && !hit; ++i) {
+            const float seg[3] = {step[0] / static_cast<float>(n), step[1] / static_cast<float>(n),
+                                  step[2] / static_cast<float>(n)};
+            const RayResult r = callbacks_.cast_ray(now, seg);
+            if (r.ok && r.hit) {
+                const float f = std::clamp(r.fraction, 0.f, 1.f);
+                now[0] += seg[0] * f;
+                now[1] += seg[1] * f;
+                now[2] += seg[2] * f;
+                hit = true;
+            } else {
+                now[0] += seg[0];
+                now[1] += seg[1];
+                now[2] += seg[2];
+            }
+        }
+    } else {
+        now[0] += step[0];
+        now[1] += step[1];
+        now[2] += step[2];
+    }
+    std::memcpy(riptide_pos_, now, sizeof(riptide_pos_));
+    if (callbacks_.safe_write) {
+        callbacks_.safe_write(module + layout::kPhysicsPosition, riptide_pos_, sizeof(riptide_pos_));
+        callbacks_.safe_write(module + layout::kPhysicsPosition + 0x10, riptide_pos_, sizeof(riptide_pos_));
+        const uint8_t one = 1;
+        callbacks_.safe_write(module + layout::kPhysicsProxySyncRequest, &one, 1);
+    }
+    writeFallTimer(player, 0.f);
+    std::memcpy(riptide_last_written_, riptide_pos_, sizeof(riptide_last_written_));
+
+    // Vanilla travel order: move first, then apply gravity and drag for the next tick.
+    riptide_accum_ += dt;
+    if (riptide_accum_ > 0.25f) riptide_accum_ = 0.05f;
+    while (riptide_accum_ >= 0.05f) {
+        riptide_accum_ -= 0.05f;
+        riptide_.endTick();
+    }
+    if (hit) {
+        riptide_.stop();
+        log("riptide: stopped (wall)");
+    }
+    if (!riptide_.active()) {
+        ctx.mode().riptide_active.store(false, std::memory_order_relaxed);
+        if (riptide_was_gliding_ && elytra_.state().is_gliding) {
+            std::memcpy(elytra_pos_, riptide_pos_, sizeof(elytra_pos_));
+            std::memcpy(elytra_last_written_, riptide_pos_, sizeof(elytra_last_written_));
+            elytra_have_pos_ = true;
+            elytra_have_written_ = true;
+            log("riptide: resumed the glide at the new position");
+        }
+        riptide_was_gliding_ = false;
+        log("riptide: ended");
+        riptide_have_pos_ = false;
+        riptide_have_written_ = false;
+        return;
+    }
+    if (now_ms - last_riptide_log_ms_ >= 1000) {
+        last_riptide_log_ms_ = now_ms;
+        log("riptide: pos=(%.2f %.2f %.2f) v=(%.2f %.2f %.2f) b/t ticks=%d",
+            static_cast<double>(riptide_pos_[0]), static_cast<double>(riptide_pos_[1]),
+            static_cast<double>(riptide_pos_[2]), static_cast<double>(v.x), static_cast<double>(v.y),
+            static_cast<double>(v.z), riptide_.ticksLeft());
+    }
+}
+
+bool PlayerLocomotion::requestTridentThrow() {
+    trident_throw_requested_.store(true, std::memory_order_relaxed);
+    return true;
+}
+
+bool PlayerLocomotion::tridentRenderState(float pos[3], float dir[3]) const {
+    if (!thrown_trident_.active()) return false;
+    const auto& s = thrown_trident_.state();
+    pos[0] = s.position.x;
+    pos[1] = s.position.y;
+    pos[2] = s.position.z;
+    const float len = s.velocity.length();
+    if (len > 1e-5f) {
+        dir[0] = s.velocity.x / len;
+        dir[1] = s.velocity.y / len;
+        dir[2] = s.velocity.z / len;
+    } else {
+        dir[0] = 0.f;
+        dir[1] = 0.f;
+        dir[2] = 1.f;
+    }
+    return true;
+}
+
+void PlayerLocomotion::stepThrownTrident(float dt, uint64_t now_ms, RuntimeContext& ctx) {
+    const bool fg = callbacks_.is_game_in_foreground ? callbacks_.is_game_in_foreground() : true;
+    const bool dead = callbacks_.is_player_dead ? callbacks_.is_player_dead() : false;
+    const bool allowed = ctx.mode().mc_mode.load(std::memory_order_relaxed) && fg && !dead &&
+                         !ctx.ui().inv_open.load(std::memory_order_relaxed);
+    if (!allowed) {
+        if (thrown_trident_.active()) {
+            thrown_trident_.discard();
+            log("trident: discarded (mode/focus/inventory/death)");
+        }
+        trident_throw_requested_.store(false, std::memory_order_relaxed);
+        trident_have_player_pos_ = false;
+        return;
+    }
+
+    const uintptr_t player = callbacks_.get_player_chr ? callbacks_.get_player_chr() : 0;
+    const uintptr_t module = player != 0 && callbacks_.get_physics_module ? callbacks_.get_physics_module(player) : 0;
+    if (module == 0 || !callbacks_.safe_read) return;
+    float pos[3] = {};
+    if (!callbacks_.safe_read(module + layout::kPhysicsPosition, pos, sizeof(pos))) return;
+
+    if (trident_throw_requested_.exchange(false, std::memory_order_relaxed)) {
+        CameraPose cam{};
+        if (callbacks_.read_camera && callbacks_.read_camera(cam)) {
+            mc::Vec3 owner{};
+            float last_pos[3] = {};
+            if (callbacks_.safe_read(module + layout::kPhysicsPosition + 0x10, last_pos, sizeof(last_pos)) && dt > 1e-4f) {
+                const float vx = (pos[0] - last_pos[0]) / dt / 20.f;
+                const float vy = (pos[1] - last_pos[1]) / dt / 20.f;
+                const float vz = (pos[2] - last_pos[2]) / dt / 20.f;
+                const float dist = std::sqrt((pos[0] - last_pos[0]) * (pos[0] - last_pos[0]) +
+                                             (pos[1] - last_pos[1]) * (pos[1] - last_pos[1]) +
+                                             (pos[2] - last_pos[2]) * (pos[2] - last_pos[2]));
+                const float len = std::sqrt(vx * vx + vy * vy + vz * vz);
+                if (dist < 5.f && len < 1.f) owner = {vx, vy, vz};
+            }
+            const bool on_ground = callbacks_.is_player_airborne ? !callbacks_.is_player_airborne() : true;
+            static thread_local std::mt19937 rng{std::random_device{}()};
+            std::uniform_real_distribution<float> unit(0.f, 1.f);
+            float jitter[6];
+            for (float& j : jitter) j = unit(rng);
+            if (thrown_trident_.launch({pos[0], pos[1] + 1.52f, pos[2]},
+                                       {cam.forward[0], cam.forward[1], cam.forward[2]}, owner, on_ground, jitter)) {
+                trident_accum_ = 0.f;
+                trident_have_player_pos_ = true;
+                std::memcpy(trident_player_pos_, pos, sizeof(trident_player_pos_));
+                if (callbacks_.play_sound) callbacks_.play_sound("item.trident.throw", 1.0f);
+                const auto& v = thrown_trident_.state().velocity;
+                log("trident: thrown from (%.2f %.2f %.2f) v=(%.2f %.2f %.2f) b/t", static_cast<double>(pos[0]),
+                    static_cast<double>(pos[1] + 1.52f), static_cast<double>(pos[2]), static_cast<double>(v.x),
+                    static_cast<double>(v.y), static_cast<double>(v.z));
+            }
+        }
+    }
+
+    if (!thrown_trident_.active()) {
+        trident_have_player_pos_ = false;
+        return;
+    }
+
+    // Follow the engine's 8 m floating-origin re-bases; a non-grid jump is a player teleport, so drop the trident.
+    if (trident_have_player_pos_) {
+        float shift[3] = {0.f, 0.f, 0.f};
+        bool rebase = false;
+        bool teleported = false;
+        for (int i = 0; i < 3; ++i) {
+            const float d = pos[i] - trident_player_pos_[i];
+            if (std::fabs(d) < 4.f) continue;
+            const float grid = std::round(d / 8.f) * 8.f;
+            if (grid != 0.f && std::fabs(d - grid) < 1.5f) {
+                shift[i] = grid;
+                rebase = true;
+            } else {
+                teleported = true;
+            }
+        }
+        if (teleported) {
+            thrown_trident_.discard();
+            log("trident: discarded (player teleported)");
+            trident_have_player_pos_ = false;
+            return;
+        }
+        if (rebase) {
+            mc::ThrownTridentState st = thrown_trident_.state();
+            st.position.x += shift[0];
+            st.position.y += shift[1];
+            st.position.z += shift[2];
+            thrown_trident_.setState(st);
+            log("trident: followed a re-base (%.1f %.1f %.1f)", static_cast<double>(shift[0]),
+                static_cast<double>(shift[1]), static_cast<double>(shift[2]));
+        }
+    }
+    std::memcpy(trident_player_pos_, pos, sizeof(trident_player_pos_));
+    trident_have_player_pos_ = true;
+
+    // 20 Hz velocity ticks; integrate every frame with sub-stepped collision.
+    if (dt > 0.2f) dt = 0.2f;
+    trident_accum_ += dt;
+    if (trident_accum_ > 0.25f) trident_accum_ = 0.05f;
+    while (trident_accum_ >= 0.05f) {
+        trident_accum_ -= 0.05f;
+        thrown_trident_.beginTick();
+        if (!thrown_trident_.active()) return;
+    }
+
+    const mc::Vec3 v = thrown_trident_.moveVector();
+    const float frac = std::clamp(dt / 0.05f, 0.f, 2.f);
+    const mc::Vec3 cur = thrown_trident_.state().position;
+    const float step[3] = {v.x * frac, v.y * frac, v.z * frac};
+    float now[3] = {cur.x, cur.y, cur.z};
+    bool hit = false;
+    if (callbacks_.cast_ray) {
+        const float len = std::sqrt(step[0] * step[0] + step[1] * step[1] + step[2] * step[2]);
+        const int n = std::max(1, static_cast<int>(std::ceil(len / 0.5f)));
+        for (int i = 0; i < n && !hit; ++i) {
+            const float seg[3] = {step[0] / static_cast<float>(n), step[1] / static_cast<float>(n),
+                                  step[2] / static_cast<float>(n)};
+            const RayResult r = callbacks_.cast_ray(now, seg);
+            if (r.ok && r.hit) {
+                const float f = std::clamp(r.fraction, 0.f, 1.f);
+                now[0] += seg[0] * f;
+                now[1] += seg[1] * f;
+                now[2] += seg[2] * f;
+                hit = true;
+            } else {
+                now[0] += seg[0];
+                now[1] += seg[1];
+                now[2] += seg[2];
+            }
+        }
+    } else {
+        now[0] += step[0];
+        now[1] += step[1];
+        now[2] += step[2];
+    }
+    thrown_trident_.commit({now[0], now[1], now[2]});
+
+    if (hit) {
+        if (callbacks_.play_sound) callbacks_.play_sound("item.trident.hit", 1.0f);
+        log("trident: hit at (%.2f %.2f %.2f)", static_cast<double>(now[0]), static_cast<double>(now[1]),
+            static_cast<double>(now[2]));
+        thrown_trident_.discard();
+        return;
+    }
+    if (thrown_trident_.state().position.y < -200.f) {
+        thrown_trident_.discard();
+        log("trident: discarded (below world)");
+        return;
+    }
+    if (now_ms - last_trident_log_ms_ >= 1000) {
+        last_trident_log_ms_ = now_ms;
+        log("trident: pos=(%.2f %.2f %.2f) v=(%.2f %.2f %.2f) b/t", static_cast<double>(now[0]),
+            static_cast<double>(now[1]), static_cast<double>(now[2]), static_cast<double>(v.x),
+            static_cast<double>(v.y), static_cast<double>(v.z));
     }
 }
 

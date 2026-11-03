@@ -334,6 +334,30 @@ bool TryThrowEnderPearl() {
     return true;
 }
 
+bool TryStartRiptide() {
+    auto& ctx = RuntimeContext::Instance();
+    if (!ctx.mode().mc_mode.load(std::memory_order_relaxed)) return false;
+    if (ctx.mode().riptide_require_water.load(std::memory_order_relaxed)) {
+        // The adapter has no water/rain read yet, so the vanilla gate cannot be satisfied.
+        Log("riptide: require_water=1 but water/rain detection is unavailable; release the gate to use it");
+        return false;
+    }
+    std::lock_guard<std::mutex> g(g_melee_mutex);
+    if (g_melee.heldItem() != mc::ItemId::Trident || g_melee.countAt(g_melee.selectedSlot()) <= 0) return false;
+    auto& loco = eldenring::movement::PlayerLocomotion::Instance();
+    // While gliding, the trident is thrown (the elytra keeps flying); on the ground it riptides.
+    if (loco.isElytraGliding()) {
+        if (!loco.requestTridentThrow()) return false;
+        if (eldenring::creative::consumesItems(ctx.currentGameMode())) g_melee.consumeFirst(mc::ItemId::Trident);
+        Log("trident: throw requested (gliding)");
+        return true;
+    }
+    const int level = std::clamp(ctx.mode().riptide_level.load(std::memory_order_relaxed), 1, 3);
+    if (!loco.startRiptide(level)) return false;
+    Log("riptide: requested level=%d", level);
+    return true;
+}
+
 DWORD FindGameWindowThread() {
     struct Ctx {
         DWORD pid;

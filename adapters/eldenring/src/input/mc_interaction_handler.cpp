@@ -35,12 +35,42 @@ void McInteractionHandler::tickRightClick(const InputTickContext& ctx) {
     else {
         std::lock_guard<std::mutex> g(combat.melee_mutex);
         const mc::ItemId item = combat.melee.heldItem();
+        if (item == mc::ItemId::Trident) return; // charged in tickTrident; never eaten
         if (!player.eating.isEating() && combat.melee.countAt(combat.melee.selectedSlot()) > 0 &&
             player.hunger.canEat(item) && player.eating.startEating(item)) {
             if (ctx.cb->log) ctx.cb->log("SURVIVAL: started eating item " + std::to_string(static_cast<int>(item)));
         }
     }
     (void)handled;
+}
+
+void McInteractionHandler::tickTrident(const InputTickContext& ctx) {
+    auto& runtime = RuntimeContext::Instance();
+    auto& mode = runtime.mode();
+    auto& combat = runtime.combat();
+
+    bool holding = false;
+    {
+        std::lock_guard<std::mutex> g(combat.melee_mutex);
+        holding = combat.melee.heldItem() == mc::ItemId::Trident && combat.melee.countAt(combat.melee.selectedSlot()) > 0;
+    }
+    const bool usable = holding && mode.riptide_level.load(std::memory_order_relaxed) > 0 && ctx.mc_on && ctx.fg &&
+                        ctx.want_suppress && !ctx.inv_open && ctx.input_enabled && !ctx.is_dead;
+    const bool right_held = ctx.input_enabled &&
+                            ((ctx.cb->right_held && ctx.cb->right_held()) || queryKeyDown(*ctx.cb, VK_RBUTTON));
+    if (usable && right_held) {
+        trident_charge_ticks_ += ctx.dt * 20.f;
+        if (trident_charge_ticks_ > 20.f) trident_charge_ticks_ = 20.f;
+        mode.trident_charge.store(std::min(1.f, trident_charge_ticks_ / 10.f), std::memory_order_relaxed);
+        trident_charging_ = true;
+    } else {
+        if (trident_charging_ && trident_charge_ticks_ >= 10.f && usable && ctx.cb->start_riptide) {
+            ctx.cb->start_riptide();
+        }
+        trident_charging_ = false;
+        trident_charge_ticks_ = 0.f;
+        mode.trident_charge.store(0.f, std::memory_order_relaxed);
+    }
 }
 
 void McInteractionHandler::tickBow(const InputTickContext& ctx) {
