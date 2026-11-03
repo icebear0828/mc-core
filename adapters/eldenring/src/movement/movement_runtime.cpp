@@ -103,6 +103,11 @@ void ElytraStep(float dt) {
     }
 }
 
+void EnderPearlStep(float dt) {
+    const uint64_t now_ms = GetTickCount64();
+    eldenring::movement::PlayerLocomotion::Instance().stepEnderPearl(dt, now_ms, g_ctx);
+}
+
 void InventoryTick(bool fg) {
     std::lock_guard<std::mutex> g(g_melee_mutex);
     eldenring::ui::InventoryController::Instance().tick(fg, WantSuppress(), PlayerDead(), g_melee.inventory(), g_ctx);

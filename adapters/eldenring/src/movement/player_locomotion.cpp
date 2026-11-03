@@ -5,6 +5,7 @@
 #include <cstdarg>
 #include <cmath>
 #include <cstring>
+#include <random>
 
 namespace eldenring::movement {
 
@@ -559,6 +560,7 @@ void PlayerLocomotion::stepFlight(float dt, uint64_t now_ms, RuntimeContext& ctx
     }
 
     if (!flying_.load(std::memory_order_relaxed)) return;
+    if (pearl_hold_) return; // the ender pearl teleport owns the position for these frames
 
     const uintptr_t player = callbacks_.get_player_chr ? callbacks_.get_player_chr() : 0;
     const uintptr_t module = player != 0 && callbacks_.get_physics_module ? callbacks_.get_physics_module(player) : 0;
@@ -667,6 +669,7 @@ void PlayerLocomotion::stepElytra(float dt, uint64_t now_ms, RuntimeContext& ctx
         elytra_have_written_ = false;
         return;
     }
+    if (pearl_hold_) return; // the ender pearl teleport owns the position for these frames
 
     const uintptr_t player = callbacks_.get_player_chr ? callbacks_.get_player_chr() : 0;
     const uintptr_t module = player != 0 && callbacks_.get_physics_module ? callbacks_.get_physics_module(player) : 0;
@@ -839,6 +842,311 @@ void PlayerLocomotion::stepElytra(float dt, uint64_t now_ms, RuntimeContext& ctx
             static_cast<double>(elytra_pos_[0]), static_cast<double>(elytra_pos_[1]),
             static_cast<double>(elytra_pos_[2]), static_cast<double>(vel.x), static_cast<double>(vel.y),
             static_cast<double>(vel.z), static_cast<double>(fallTimer(player)));
+    }
+}
+
+void PlayerLocomotion::requestEnderPearlThrow() {
+    pearl_throw_requested_.store(true, std::memory_order_relaxed);
+}
+
+bool PlayerLocomotion::pearlRenderPos(float out[3]) const {
+    if (!pearl_.active()) return false;
+    out[0] = pearl_.state().position.x;
+    out[1] = pearl_.state().position.y;
+    out[2] = pearl_.state().position.z;
+    return true;
+}
+
+void PlayerLocomotion::stepEnderPearl(float dt, uint64_t now_ms, RuntimeContext& ctx) {
+    const bool fg = callbacks_.is_game_in_foreground ? callbacks_.is_game_in_foreground() : true;
+    const bool dead = callbacks_.is_player_dead ? callbacks_.is_player_dead() : false;
+    const bool allowed = ctx.mode().mc_mode.load(std::memory_order_relaxed) && fg && !dead &&
+                         !ctx.ui().inv_open.load(std::memory_order_relaxed);
+    if (!allowed) {
+        if (pearl_.active()) {
+            pearl_.discard();
+            log("pearl: discarded (mode/focus/inventory/death)");
+        }
+        if (pearl_hold_) {
+            pearl_hold_ = false;
+            log("pearl: teleport hold released (mode/focus/inventory/death)");
+        }
+        pearl_watch_ = false;
+        pearl_retries_ = 0;
+        pearl_throw_requested_.store(false, std::memory_order_relaxed);
+        return;
+    }
+
+    const uintptr_t player = callbacks_.get_player_chr ? callbacks_.get_player_chr() : 0;
+    const uintptr_t module = player != 0 && callbacks_.get_physics_module ? callbacks_.get_physics_module(player) : 0;
+    if (module == 0 || !callbacks_.safe_read) return;
+    float pos[3] = {};
+    if (!callbacks_.safe_read(module + layout::kPhysicsPosition, pos, sizeof(pos))) return;
+
+    // The engine re-bases Havok coordinates by whole 8 m steps. While the hold/watch writes a target, the read
+    // position is that target in the engine's current frame: a grid difference is a re-base, so move the target
+    // into the new frame (otherwise the engine re-bases back and forth and the player flips 40 m every frame).
+    // Skip the first hold frame: the read is still the pre-teleport position, and the teleport distance itself
+    // can look like a grid step (e.g. 24 / -8), which used to shift the target tens of metres.
+    const bool first_hold_frame = pearl_hold_ && pearl_hold_frames_ == 0;
+    if (pearl_hold_ || pearl_watch_) {
+        if (!first_hold_frame) {
+            float shift[3] = {0.f, 0.f, 0.f};
+            bool rebase = false;
+            for (int i = 0; i < 3; ++i) {
+                const float d = pos[i] - pearl_hold_target_[i];
+                if (std::fabs(d) < 4.f) continue;
+                const float grid = std::round(d / 8.f) * 8.f;
+                if (grid != 0.f && std::fabs(d - grid) < 1.5f) {
+                    shift[i] = grid;
+                    rebase = true;
+                }
+            }
+            if (rebase) {
+                pearl_hold_target_[0] += shift[0];
+                pearl_hold_target_[1] += shift[1];
+                pearl_hold_target_[2] += shift[2];
+                log("pearl: hold target followed a re-base (%.1f %.1f %.1f)", static_cast<double>(shift[0]),
+                    static_cast<double>(shift[1]), static_cast<double>(shift[2]));
+            }
+        }
+        std::memcpy(pearl_player_pos_, pos, sizeof(pearl_player_pos_));
+        pearl_have_player_pos_ = true;
+    } else if (pearl_.active()) {
+        // In flight: the player's own position is the reference. A grid jump is a re-base; anything else is a
+        // player teleport/load, so the pearl's world reference is gone and it is dropped.
+        if (pearl_have_player_pos_) {
+            float shift[3] = {0.f, 0.f, 0.f};
+            bool rebase = false;
+            bool teleported = false;
+            for (int i = 0; i < 3; ++i) {
+                const float d = pos[i] - pearl_player_pos_[i];
+                if (std::fabs(d) < 4.f) continue;
+                const float grid = std::round(d / 8.f) * 8.f;
+                if (grid != 0.f && std::fabs(d - grid) < 1.5f) {
+                    shift[i] = grid;
+                    rebase = true;
+                } else {
+                    teleported = true;
+                }
+            }
+            if (teleported) {
+                pearl_.discard();
+                log("pearl: discarded (player teleported, not a grid re-base)");
+            } else if (rebase) {
+                mc::EnderPearlState st = pearl_.state();
+                st.position.x += shift[0];
+                st.position.y += shift[1];
+                st.position.z += shift[2];
+                st.prev_position.x += shift[0];
+                st.prev_position.y += shift[1];
+                st.prev_position.z += shift[2];
+                pearl_.setState(st);
+                log("pearl: followed a re-base (%.1f %.1f %.1f)", static_cast<double>(shift[0]),
+                    static_cast<double>(shift[1]), static_cast<double>(shift[2]));
+            }
+        }
+        std::memcpy(pearl_player_pos_, pos, sizeof(pearl_player_pos_));
+        pearl_have_player_pos_ = true;
+    } else {
+        pearl_have_player_pos_ = false;
+    }
+
+    if (pearl_throw_requested_.exchange(false, std::memory_order_relaxed)) {
+        CameraPose cam{};
+        if (!callbacks_.read_camera || !callbacks_.read_camera(cam)) {
+            log("pearl: throw ignored (no camera)");
+        } else {
+            // Vanilla inherits the owner's known movement: +0x80 is the previous frame's position.
+            mc::Vec3 owner_v{};
+            float last_pos[3] = {};
+            if (callbacks_.safe_read(module + layout::kPhysicsPosition + 0x10, last_pos, sizeof(last_pos)) && dt > 1e-4f) {
+                const float vx = (pos[0] - last_pos[0]) / dt / 20.f;
+                const float vy = (pos[1] - last_pos[1]) / dt / 20.f;
+                const float vz = (pos[2] - last_pos[2]) / dt / 20.f;
+                const float dist = std::sqrt((pos[0] - last_pos[0]) * (pos[0] - last_pos[0]) +
+                                             (pos[1] - last_pos[1]) * (pos[1] - last_pos[1]) +
+                                             (pos[2] - last_pos[2]) * (pos[2] - last_pos[2]));
+                const float len = std::sqrt(vx * vx + vy * vy + vz * vz);
+                if (dist < 5.f && len < 1.f) owner_v = {vx, vy, vz};
+            }
+            const bool on_ground = callbacks_.is_player_airborne ? !callbacks_.is_player_airborne() : true;
+            mc::EnderPearlLaunch launch;
+            launch.origin = {pos[0], pos[1] + 1.52f, pos[2]}; // eye height 1.62 minus the vanilla 0.1 offset
+            launch.look = {cam.forward[0], cam.forward[1], cam.forward[2]};
+            launch.owner_velocity = owner_v;
+            launch.owner_on_ground = on_ground;
+            static thread_local std::mt19937 rng{std::random_device{}()};
+            std::uniform_real_distribution<float> unit(0.f, 1.f);
+            float jitter[6];
+            for (float& j : jitter) j = unit(rng);
+            if (pearl_.launch(launch, jitter)) {
+                pearl_accum_ = 0.f;
+                // The vanilla pearl throw is random/bow (the arrow sound); use the ender eye launch whoosh instead.
+                if (callbacks_.play_sound) callbacks_.play_sound("entity.ender_eye.launch", 1.0f);
+                log("pearl: thrown from (%.2f %.2f %.2f) look=(%.2f %.2f %.2f) owner_v=(%.2f %.2f %.2f) ground=%d",
+                    static_cast<double>(launch.origin.x), static_cast<double>(launch.origin.y),
+                    static_cast<double>(launch.origin.z), static_cast<double>(launch.look.x),
+                    static_cast<double>(launch.look.y), static_cast<double>(launch.look.z),
+                    static_cast<double>(owner_v.x), static_cast<double>(owner_v.y), static_cast<double>(owner_v.z),
+                    on_ground ? 1 : 0);
+            }
+        }
+    }
+
+    if (pearl_hold_) {
+        // The engine pulls a one-shot write back on the next frame; hold the target like creative flight
+        // and the elytra do, then release once it has taken.
+        if (callbacks_.safe_write) {
+            callbacks_.safe_write(module + layout::kPhysicsPosition, pearl_hold_target_, sizeof(pearl_hold_target_));
+            callbacks_.safe_write(module + layout::kPhysicsPosition + 0x10, pearl_hold_target_, sizeof(pearl_hold_target_));
+            const uint8_t one = 1;
+            callbacks_.safe_write(module + layout::kPhysicsProxySyncRequest, &one, 1);
+        }
+        writeFallTimer(player, 0.f);
+        ++pearl_hold_frames_;
+        float read_pos[3] = {};
+        const bool have_read = callbacks_.safe_read(module + layout::kPhysicsPosition, read_pos, sizeof(read_pos));
+        float dist = 1e9f;
+        if (have_read) {
+            const float dx = read_pos[0] - pearl_hold_target_[0];
+            const float dy = read_pos[1] - pearl_hold_target_[1];
+            const float dz = read_pos[2] - pearl_hold_target_[2];
+            dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        }
+        if (pearl_hold_frames_ >= 15 || (pearl_hold_frames_ >= 6 && dist < 0.5f)) {
+            pearl_hold_ = false;
+            pearl_watch_ = true;
+            pearl_watch_frames_ = 0;
+            log("pearl: teleport hold done after %d frames (read=(%.2f %.2f %.2f) target=(%.2f %.2f %.2f) dist=%.2f)",
+                pearl_hold_frames_, static_cast<double>(read_pos[0]), static_cast<double>(read_pos[1]),
+                static_cast<double>(read_pos[2]), static_cast<double>(pearl_hold_target_[0]),
+                static_cast<double>(pearl_hold_target_[1]), static_cast<double>(pearl_hold_target_[2]),
+                static_cast<double>(dist));
+        }
+        return;
+    }
+
+    // The engine occasionally resolves the capsule back after the hold; a couple of short re-holds make the
+    // teleport stick without fighting normal movement (the watch only lasts ~200 ms).
+    if (pearl_watch_) {
+        float read_pos[3] = {};
+        if (callbacks_.safe_read && callbacks_.safe_read(module + layout::kPhysicsPosition, read_pos, sizeof(read_pos))) {
+            const float dx = read_pos[0] - pearl_hold_target_[0];
+            const float dy = read_pos[1] - pearl_hold_target_[1];
+            const float dz = read_pos[2] - pearl_hold_target_[2];
+            const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (dist > 2.f && pearl_retries_ < 2) {
+                ++pearl_retries_;
+                pearl_hold_ = true;
+                pearl_hold_frames_ = 0;
+                log("pearl: teleport pulled back %.2f m, holding again (retry %d)", static_cast<double>(dist),
+                    pearl_retries_);
+                return;
+            }
+        }
+        if (++pearl_watch_frames_ >= 12) pearl_watch_ = false;
+    }
+
+    if (!pearl_.active()) return;
+
+    // 20 Hz velocity ticks; integrate every frame so the flight is smooth like the elytra.
+    if (dt > 0.2f) dt = 0.2f;
+    pearl_accum_ += dt;
+    if (pearl_accum_ > 0.25f) pearl_accum_ = 0.05f;
+    while (pearl_accum_ >= 0.05f) {
+        pearl_accum_ -= 0.05f;
+        pearl_.beginTick(false);
+        if (!pearl_.active()) return;
+    }
+
+    const mc::Vec3 v = pearl_.moveVector();
+    const float frac = std::clamp(dt / 0.05f, 0.f, 2.f);
+    const mc::Vec3 cur = pearl_.state().position;
+    const float step[3] = {v.x * frac, v.y * frac, v.z * frac};
+    float now[3] = {cur.x, cur.y, cur.z};
+    float hit_normal[3] = {0.f, 1.f, 0.f};
+    bool hit = false;
+    if (callbacks_.cast_ray) {
+        // Sub-step the frame move so a fast pearl (or a long frame) cannot tunnel through a thin surface.
+        const float len = std::sqrt(step[0] * step[0] + step[1] * step[1] + step[2] * step[2]);
+        const int n = std::max(1, static_cast<int>(std::ceil(len / 0.5f)));
+        for (int i = 0; i < n && !hit; ++i) {
+            const float seg[3] = {step[0] / static_cast<float>(n), step[1] / static_cast<float>(n),
+                                  step[2] / static_cast<float>(n)};
+            const RayResult r = callbacks_.cast_ray(now, seg);
+            if (r.ok && r.hit) {
+                const float f = std::clamp(r.fraction, 0.f, 1.f);
+                now[0] += seg[0] * f;
+                now[1] += seg[1] * f;
+                now[2] += seg[2] * f;
+                hit = true;
+                hit_normal[0] = r.normal[0];
+                hit_normal[1] = r.normal[1];
+                hit_normal[2] = r.normal[2];
+            } else {
+                now[0] += seg[0];
+                now[1] += seg[1];
+                now[2] += seg[2];
+            }
+        }
+    } else {
+        now[0] += step[0];
+        now[1] += step[1];
+        now[2] += step[2];
+    }
+    pearl_.commit({now[0], now[1], now[2]});
+
+    if (hit) {
+        // The vanilla oldPosition() lags up to a full 20 Hz tick (1.5 blocks at throw speed), which reads as
+        // landing short. Use the hit point pushed out along the surface normal instead: a floor needs almost no
+        // push (the feet sit on it), a wall needs the capsule radius so the engine does not resolve the teleport
+        // back through the surface. No downward clamp: it used to lift wall hits onto a higher ledge.
+        const float push = hit_normal[1] > 0.7f ? 0.05f : 0.45f;
+        float target[3] = {now[0] + hit_normal[0] * push, now[1] + hit_normal[1] * push,
+                           now[2] + hit_normal[2] * push};
+        pearl_hold_target_[0] = target[0];
+        pearl_hold_target_[1] = target[1];
+        pearl_hold_target_[2] = target[2];
+        pearl_hold_ = true;
+        pearl_hold_frames_ = 0;
+        pearl_watch_ = false;
+        pearl_retries_ = 0;
+        if (elytra_.state().is_gliding) {
+            elytra_.stopGliding();
+            ctx.mode().elytra_gliding.store(false, std::memory_order_relaxed);
+            elytra_have_pos_ = false;
+            elytra_have_written_ = false;
+        }
+        if (isFlying()) {
+            std::memcpy(fly_own_, pearl_hold_target_, sizeof(fly_own_));
+            std::memcpy(fly_last_written_, pearl_hold_target_, sizeof(fly_last_written_));
+            fly_have_written_ = true;
+        }
+        if (ctx.currentGameMode() == eldenring::creative::GameMode::Survival && callbacks_.apply_self_damage) {
+            callbacks_.apply_self_damage(pearl_.config().damage);
+        }
+        if (callbacks_.play_sound) callbacks_.play_sound("entity.player.teleport", 1.0f);
+        log("pearl: hit at (%.2f %.2f %.2f) normal (%.2f %.2f %.2f), teleport target (%.2f %.2f %.2f)",
+            static_cast<double>(now[0]), static_cast<double>(now[1]), static_cast<double>(now[2]),
+            static_cast<double>(hit_normal[0]), static_cast<double>(hit_normal[1]),
+            static_cast<double>(hit_normal[2]), static_cast<double>(target[0]),
+            static_cast<double>(target[1]), static_cast<double>(target[2]));
+        pearl_.discard();
+        return;
+    }
+
+    if (pearl_.state().position.y < -200.f) {
+        pearl_.discard();
+        log("pearl: discarded (below world)");
+        return;
+    }
+    if (now_ms - last_pearl_log_ms_ >= 1000) {
+        last_pearl_log_ms_ = now_ms;
+        log("pearl: pos=(%.2f %.2f %.2f) v=(%.2f %.2f %.2f) b/t",
+            static_cast<double>(pearl_.state().position.x), static_cast<double>(pearl_.state().position.y),
+            static_cast<double>(pearl_.state().position.z), static_cast<double>(v.x), static_cast<double>(v.y),
+            static_cast<double>(v.z));
     }
 }
 

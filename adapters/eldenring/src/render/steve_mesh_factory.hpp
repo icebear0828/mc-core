@@ -54,6 +54,10 @@ struct HeldItemsMesh {
     std::vector<mc::rig::RigVertex> arrow_vertices;
     std::vector<uint16_t> arrow_indices;
     bool arrow_valid{false};
+    // The flying ender pearl: three crossed billboard quads centred on the origin.
+    std::vector<mc::rig::RigVertex> pearl_vertices;
+    std::vector<uint16_t> pearl_indices;
+    bool pearl_valid{false};
 };
 
 // A Bedrock entity model flattened into one buffer, one draw range per bone.

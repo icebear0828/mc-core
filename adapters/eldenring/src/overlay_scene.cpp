@@ -381,7 +381,7 @@ void RenderFrame(IDXGISwapChain* sc) {
             arrow_snapshot = g_arrow_snapshot;
         }
         const auto draws = g_mob_registry.update(dt, snapshot);
-        if (!draws.empty() || !arrow_snapshot.empty()) {
+        if (!draws.empty() || !arrow_snapshot.empty() || steve.pearl_active) {
             const float scene_h = g_steve_cfg.scene_height > 0.f ? g_steve_cfg.scene_height : static_cast<float>(g_s.height);
             const mc::rig::Mat4 vp = mc::rig::viewProjection(steve.cam, steve.fov_y, static_cast<float>(g_s.width) / scene_h);
             bool keep = blocks_drawn || should_draw_steve; // the blocks and Steve left their depth in the figure's buffer
@@ -444,6 +444,25 @@ void RenderFrame(IDXGISwapChain* sc) {
                 arrow_p.depth_h = static_cast<float>(g_depth_h);
                 arrow_p.keep_depth = keep;
                 g_steve.drawArrows(g_s.list, g_s.srv_heap, g_held_table_gpu, g_s.width, g_s.height, vp, arrow_matrices, arrow_p, f.rtv);
+            }
+            if (steve.pearl_active && g_held_table_gpu.ptr != 0) {
+                std::vector<mc::rig::Mat4> pearl_matrices;
+                // Billboard: local x/y follow the camera's right/up so the sprite always faces the viewer.
+                mc::rig::Mat4 pearl_m;
+                pearl_m.m = {steve.cam.right.x, steve.cam.right.y, steve.cam.right.z, 0.f,
+                             steve.cam.up.x, steve.cam.up.y, steve.cam.up.z, 0.f,
+                             -steve.cam.forward.x, -steve.cam.forward.y, -steve.cam.forward.z, 0.f,
+                             steve.pearl_pos[0], steve.pearl_pos[1], steve.pearl_pos[2], 1.f};
+                pearl_matrices.push_back(pearl_m);
+                SteveParams pearl_p;
+                pearl_p.mode = g_depth_res == nullptr ? 0.f : (g_steve_cfg.occlusion ? 1.f : 0.f);
+                pearl_p.depth_const = g_steve_cfg.depth_const;
+                pearl_p.rel_bias = g_steve_cfg.rel_bias;
+                pearl_p.abs_bias = g_steve_cfg.abs_bias;
+                pearl_p.depth_w = static_cast<float>(g_depth_w);
+                pearl_p.depth_h = static_cast<float>(g_depth_h);
+                pearl_p.keep_depth = keep;
+                g_steve.drawPearls(g_s.list, g_s.srv_heap, g_held_table_gpu, g_s.width, g_s.height, vp, pearl_matrices, pearl_p, f.rtv);
             }
             g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr);
         }

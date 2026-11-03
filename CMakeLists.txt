@@ -91,6 +91,7 @@ add_library(mc_core STATIC
     src/consumables.cpp
     src/elytra.cpp
     src/elytra_flight.cpp
+    src/ender_pearl.cpp
     src/hud.cpp
     src/hud_layout.cpp
     src/session.cpp

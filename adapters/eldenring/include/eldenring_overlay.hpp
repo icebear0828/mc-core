@@ -102,6 +102,8 @@ struct SteveState {
     // Phase A debug animation state (mc_er_dbg_anim.txt + Insert/Delete/Home/End).
     bool gliding{false};
     float glide_blend{1.f}; // vanilla's f0: 1 = level/climbing (wings spread), 0 = diving (wings folded)
+    bool pearl_active{false}; // a thrown ender pearl is in flight
+    float pearl_pos[3]{};     // its world position (game metres)
     bool riptide{false};
     float trident_charge{0.f};
     uint32_t firework_seq{0};
