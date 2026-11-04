@@ -2,6 +2,7 @@
 #include "cs_scope.hpp"
 #include "eldenring_ow_feel.hpp"
 #include "mc/elytra_models.hpp"
+#include "render/steve_mesh_factory.hpp"
 
 namespace erov {
 namespace detail {
@@ -671,12 +672,21 @@ void RenderFrame(IDXGISwapChain* sc) {
         const float equipped = g_hand.equipped();
         const bool drawing_bow = steve.bow_ticks > 0.f && g_hand.shownItem() == mc::ItemId::Bow;
         const bool main_is_shield = g_hand.shownItem() == mc::ItemId::Shield;
+        const bool main_is_trident = g_hand.shownItem() == mc::ItemId::Trident;
+        const bool off_is_trident = static_cast<mc::ItemId>(steve.offhand_item) == mc::ItemId::Trident;
+        // Only one hand drives the charge/riptide animation: the main hand unless the offhand trident is the usable one.
+        const bool main_trident_active = main_is_trident && !steve.trident_offhand;
+        const bool off_trident_active = off_is_trident && steve.trident_offhand;
         const bool main_raised = steve.blocking && !steve.block_offhand; // the shield in the main hand is the one being raised
         const fp::M4 item_pose = drawing_bow ? fp::bowPose(steve.bow_ticks, equipped)
                                  : main_is_shield ? fp::shieldMainHandPose(main_raised, steve.swing, equipped)
+                                 : main_is_trident ? (main_trident_active && steve.riptide ? fp::riptidePose(equipped)
+                                                   : main_trident_active && steve.trident_charge > 0.f ? fp::tridentChargePose(steve.trident_charge, equipped)
+                                                   : fp::itemPose(steve.swing, equipped))
                                  : steve.eating > 0.f ? fp::eatPose(steve.eating, equipped) : fp::itemPose(steve.swing, equipped);
         const bool held_block = eldenring::blocks::blockForItem(static_cast<mc::ItemId>(g_hand.shownItem())) != mc::BlockId::Air;
         const fp::M4 item_disp = main_is_shield ? fp::shieldFpDisplay(false, main_raised)
+                                 : main_is_trident ? fp::tridentFpDisplay()
                                  : held_block ? fp::blockDisplay()
                                  : fp::itemDisplay();
         const fp::M4 item_world = fp::mul(fp::mul(base, item_pose), item_disp);
@@ -684,21 +694,62 @@ void RenderFrame(IDXGISwapChain* sc) {
         const mc::ItemId shown = eldenring::bow::shownBow(g_hand.shownItem(), drawing_bow ? steve.bow_charge : 0.f); // the bow with the arrow nocked while it is drawn
         const mc::rig::Mat4 proj = mc::rig::perspectiveLH(70.f * fp::kDeg, static_cast<float>(g_s.width) / static_cast<float>(g_s.height), 0.05f, 20.f);
         D3D12_GPU_DESCRIPTOR_HANDLE skin_table = g_depth_gpu; // slots 1 and 2: depth, skin
-        g_steve.drawFirstPerson(g_s.list, g_s.srv_heap, skin_table, g_item_table_gpu, g_s.width, g_s.height, proj, fp::toHost(arm_world),
-                                fp::toHost(item_world), static_cast<uint16_t>(shown), f.rtv);
+        // The trident is drawn as its 3D model, not as the flat sprite (the same rule as third person), and the
+        // bare arm is hidden with it: the view model is only the trident.
+        auto draw_trident_fp = [&](const fp::M4& world, bool clear_depth) {
+            const mc::model::EntityModel* trident_model = PropModel("trident");
+            const mc::model::Bone* trident_bone = trident_model != nullptr ? trident_model->findBone("trident") : nullptr;
+            if (trident_model == nullptr || trident_bone == nullptr || !g_steve.mobModelReady("trident_fp")) return;
+            // The geo's [90, 0, 0] rest rotation orients the prop for the third-person hand; the vanilla
+            // first-person display expects the authored (upright) model, so cancel it and let the display
+            // place the whole mesh (no pivot re-basing).
+            const mc::Quat rest = mc::model::bedrockEulerQuat(trident_bone->rotation.x, trident_bone->rotation.y,
+                                                              trident_bone->rotation.z, steve::kFirstPersonItemBasis);
+            std::vector<mc::Quat> extra(trident_model->bones.size());
+            extra[static_cast<size_t>(trident_bone - trident_model->bones.data())] =
+                mc::Quat{-rest.x, -rest.y, -rest.z, rest.w};
+            auto bones = mc::model::boneMatrices(*trident_model, extra, mc::Vec3{}, 0.f, steve::kFirstPersonItemBasis);
+            const mc::rig::Mat4 hand = fp::toHost(world);
+            for (auto& bone : bones) bone = bone * hand;
+            SteveParams tp;
+            tp.mode = 0.f;         // the view model is drawn over everything
+            tp.keep_depth = !clear_depth;
+            const bool textured = g_trident_table_gpu.ptr != 0;
+            tp.tint[0] = textured ? 0.f : 0.10f;
+            tp.tint[1] = textured ? 0.f : 0.55f;
+            tp.tint[2] = textured ? 0.f : 0.55f;
+            tp.tint[3] = textured ? 0.f : 1.f;
+            g_steve.drawMobModel(g_s.list, g_s.srv_heap, textured ? g_trident_table_gpu : g_depth_gpu,
+                                 g_s.width, g_s.height, proj, bones, tp, f.rtv, "trident_fp");
+        };
+        if (main_is_trident) {
+            draw_trident_fp(item_world, true);
+        } else {
+            g_steve.drawFirstPerson(g_s.list, g_s.srv_heap, skin_table, g_item_table_gpu, g_s.width, g_s.height, proj,
+                                    fp::toHost(arm_world), fp::toHost(item_world), static_cast<uint16_t>(shown), f.rtv);
+        }
         // Offhand item in first person (e.g. shield in offhand, torch, etc.)
         if (steve.offhand_item != 0) {
             const bool off_is_shield = static_cast<mc::ItemId>(steve.offhand_item) == mc::ItemId::Shield;
             const bool off_block = eldenring::blocks::blockForItem(static_cast<mc::ItemId>(steve.offhand_item)) != mc::BlockId::Air;
-            const fp::M4 off_pose = fp::offhandItemPose(0.f); // the offhand only follows the arm transform: raised or not is the display transform
-            const fp::M4 off_disp = off_is_shield ? fp::shieldFpDisplay(true, steve.blocking && steve.block_offhand)
-                                                  : (off_block ? fp::blockDisplay() : fp::itemDisplay());
-            const fp::M4 off_world = fp::mul(fp::mul(base, off_pose), off_disp);
-            const uint16_t off_shown = steve.bow_offhand && steve.bow_ticks > 0.f
-                                           ? static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.offhand_item), steve.bow_charge))
-                                           : steve.offhand_item;
-            g_steve.drawFirstPersonItem(g_s.list, g_s.srv_heap, g_item_table_gpu, g_s.width, g_s.height, proj, fp::toHost(off_world),
-                                        off_shown, f.rtv);
+            if (off_is_trident) {
+                const fp::M4 off_pose = off_trident_active && steve.riptide ? fp::riptidePoseLeft(0.f)
+                                       : off_trident_active && steve.trident_charge > 0.f
+                                           ? fp::tridentChargePoseLeft(steve.trident_charge, 0.f)
+                                           : fp::offhandItemPose(0.f);
+                const fp::M4 off_world = fp::mul(fp::mul(base, off_pose), fp::tridentFpDisplayLeft());
+                draw_trident_fp(off_world, false); // the main-hand pass has already cleared the depth buffer
+            } else {
+                const fp::M4 off_pose = fp::offhandItemPose(0.f); // the offhand only follows the arm transform: raised or not is the display transform
+                const fp::M4 off_disp = off_is_shield ? fp::shieldFpDisplay(true, steve.blocking && steve.block_offhand)
+                                                      : (off_block ? fp::blockDisplay() : fp::itemDisplay());
+                const fp::M4 off_world = fp::mul(fp::mul(base, off_pose), off_disp);
+                const uint16_t off_shown = steve.bow_offhand && steve.bow_ticks > 0.f
+                                               ? static_cast<uint16_t>(eldenring::bow::shownBow(static_cast<mc::ItemId>(steve.offhand_item), steve.bow_charge))
+                                               : steve.offhand_item;
+                g_steve.drawFirstPersonItem(g_s.list, g_s.srv_heap, g_item_table_gpu, g_s.width, g_s.height, proj, fp::toHost(off_world),
+                                            off_shown, f.rtv);
+            }
         }
         g_s.list->OMSetRenderTargets(1, &f.rtv, FALSE, nullptr); // ImGui draws without a depth view
     }

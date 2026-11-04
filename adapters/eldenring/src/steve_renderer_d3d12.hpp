@@ -122,6 +122,9 @@ public:
     // (feet at the origin, rest pose), one matrix per bone from mc::model::boneMatrices. Returns false when the buffers cannot be created.
     bool setMobModel(ID3D12Device* device, const mc::model::EntityModel& model);
     bool setMobModel(ID3D12Device* device, std::string_view name, const mc::model::EntityModel& model);
+    // Same, but builds the mesh in `basis` (e.g. the first-person item space for a 3D held prop).
+    bool setMobModel(ID3D12Device* device, std::string_view name, const mc::model::EntityModel& model,
+                     const mc::rig::HostBasis& basis);
     [[nodiscard]] bool mobModelReady() const { return mob_vertices_ != nullptr && !mob_ranges_.empty(); }
     [[nodiscard]] bool mobModelReady(std::string_view name) const;
     // Same passes as draw() (own depth buffer, depth test against the scene), without the held item and the calibration histogram.

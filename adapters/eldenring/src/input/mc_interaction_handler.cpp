@@ -50,10 +50,20 @@ void McInteractionHandler::tickTrident(const InputTickContext& ctx) {
     auto& combat = runtime.combat();
 
     bool holding = false;
+    bool offhand = false;
     {
         std::lock_guard<std::mutex> g(combat.melee_mutex);
-        holding = combat.melee.heldItem() == mc::ItemId::Trident && combat.melee.countAt(combat.melee.selectedSlot()) > 0;
+        const mc::ItemId main_item = combat.melee.heldItem();
+        const unsigned main_count = combat.melee.countAt(combat.melee.selectedSlot());
+        holding = main_count > 0 && main_item == mc::ItemId::Trident;
+        // Like the bow: the offhand trident is used only when the main hand has no right-click action of its own.
+        if (!holding && combat.melee.offhandCount() > 0 && combat.melee.offhandItem() == mc::ItemId::Trident &&
+            !(main_count > 0 && mc::mainHandClaimsRightClick(main_item))) {
+            holding = true;
+            offhand = true;
+        }
     }
+    mode.trident_offhand.store(offhand, std::memory_order_relaxed);
     const bool usable = holding && mode.riptide_level.load(std::memory_order_relaxed) > 0 && ctx.mc_on && ctx.fg &&
                         ctx.want_suppress && !ctx.inv_open && ctx.input_enabled && !ctx.is_dead;
     const bool right_held = ctx.input_enabled &&

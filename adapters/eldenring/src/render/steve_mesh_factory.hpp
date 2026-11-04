@@ -18,6 +18,12 @@ namespace erov::steve {
 
 static_assert(sizeof(mc::rig::RigVertex) == 20, "the figure input layout assumes a 20-byte RigVertex");
 
+// Minecraft's first-person item space (blocks, +X right, +Y up, -Z forward), the space the item display
+// transforms are written in. A Bedrock model built with it can be placed by the same item pose the flat
+// sprites use.
+inline constexpr mc::rig::HostBasis kFirstPersonItemBasis{{0.f, 0.f, -1.f}, {-1.f, 0.f, 0.f}, {0.f, 1.f, 0.f},
+                                                          1.0f / (mc::rig::kCmPerModelPixel * 16.0f)};
+
 // The 12-part player rig, in one vertex/index buffer with one range per part.
 struct RigCpuMesh {
     std::vector<mc::rig::RigVertex> vertices;
@@ -75,7 +81,8 @@ struct MobCpuMesh {
                                                const std::vector<FpItemCell>& cells);
 [[nodiscard]] HeldItemsMesh BuildHeldItems(const uint8_t* atlas_rgba, unsigned atlas_w, unsigned atlas_h,
                                            const std::vector<FpItemCell>& cells);
-[[nodiscard]] MobCpuMesh BuildMobMesh(const mc::model::EntityModel& model);
+[[nodiscard]] MobCpuMesh BuildMobMesh(const mc::model::EntityModel& model,
+                                      const mc::rig::HostBasis& basis = eldenring::render::kBasis);
 
 // A flat disc of `segments` triangles plus its centre vertex.
 [[nodiscard]] mc::rig::RigMesh BuildShadowDisc(unsigned segments = 24);

@@ -146,6 +146,7 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         steve.riptide = dbg.dbg_riptide.load(std::memory_order_relaxed) || dbg.riptide_active.load(std::memory_order_relaxed);
         steve.trident_charge = std::max(dbg.dbg_trident_charge.load(std::memory_order_relaxed),
                                         dbg.trident_charge.load(std::memory_order_relaxed));
+        steve.trident_offhand = dbg.trident_offhand.load(std::memory_order_relaxed);
         steve.firework_seq = dbg.dbg_firework_seq.load(std::memory_order_relaxed);
     }
     return true;

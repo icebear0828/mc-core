@@ -419,12 +419,17 @@ void SteveRenderer::drawDepthView(ID3D12GraphicsCommandList* list, ID3D12Descrip
 }
 
 bool SteveRenderer::setMobModel(ID3D12Device* device, const mc::model::EntityModel& model) {
-    return setMobModel(device, "", model);
+    return setMobModel(device, "", model, eldenring::render::kBasis);
 }
 
 bool SteveRenderer::setMobModel(ID3D12Device* device, std::string_view name, const mc::model::EntityModel& model) {
+    return setMobModel(device, name, model, eldenring::render::kBasis);
+}
+
+bool SteveRenderer::setMobModel(ID3D12Device* device, std::string_view name, const mc::model::EntityModel& model,
+                                const mc::rig::HostBasis& basis) {
     if (!device || model.bones.empty()) return false;
-    const steve::MobCpuMesh cpu = steve::BuildMobMesh(model);
+    const steve::MobCpuMesh cpu = steve::BuildMobMesh(model, basis);
     if (cpu.vertices.empty() || cpu.indices.empty()) return false;
     MobGpuMesh gpu;
     unsigned index_count = 0;
