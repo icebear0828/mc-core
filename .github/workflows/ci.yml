@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: mc,  mc: "ON",  cs: "OFF", ow: "OFF", tests: "OFF" }
+          - { name: cs,  mc: "OFF", cs: "ON",  ow: "OFF", tests: "OFF" }
+          - { name: ow,  mc: "OFF", cs: "OFF", ow: "ON",  tests: "OFF" }
+          - { name: all, mc: "ON",  cs: "ON",  ow: "ON",  tests: "ON"  }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure
+        run: >
+          cmake -B build-${{ matrix.name }} -S .
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DENABLE_MC_MODE=${{ matrix.mc }}
+          -DENABLE_CS2_VIEWMODEL=${{ matrix.cs }}
+          -DENABLE_OW_VIEWMODEL=${{ matrix.ow }}
+          -DBUILD_TESTING=${{ matrix.tests }}
+
+      - name: Build adapter
+        run: cmake --build build-${{ matrix.name }} --config RelWithDebInfo --target eldenring_adapter
+
+      - name: Build tests
+        if: matrix.tests == 'ON'
+        run: cmake --build build-${{ matrix.name }} --config RelWithDebInfo --target mc_tests
+
+      - name: Run tests
+        if: matrix.tests == 'ON'
+        run: ctest --test-dir build-${{ matrix.name }} -C RelWithDebInfo --output-on-failure
