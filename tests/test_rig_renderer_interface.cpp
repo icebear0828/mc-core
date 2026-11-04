@@ -256,6 +256,64 @@ TEST(RigRendererInterface, OneMatrixPerStevePart) {
 }
 
 #ifdef _WIN32
+// The adapter's SteveParams mapping, tested without a GPU: MakeSteveParams is what buildParams()
+// delegates to, and it is header-inline so the test target needs no D3D12 objects.
+TEST(RigRendererInterface, SteveParamsCarryTheSceneDepthTextureSize) {
+    // steve.hlsl maps a back-buffer pixel onto the scene depth with
+    // `int2(i.pos.xy / dims.zw * dims.xy)`: dims.zw is the depth texture's own size, which a
+    // RigDraw does not carry (it only knows the back buffer). Leaving it at 0 samples texel (0,0)
+    // for every pixel, so one corner of the scene depth decides the whole figure.
+    mc::rig::DepthConvention convention;
+    convention.reverse_z = true;
+    convention.depth_times_distance = 0.0501f;
+    convention.relative_bias = 0.08f;
+    convention.absolute_bias = 0.05f;
+
+    const erov::SteveParams params = erov::MakeSteveParams(convention, /*has_scene_depth=*/true,
+                                                           2560, 1440, mc::HandItems{}, 0, 0.f);
+    EXPECT_FLOAT_EQ(params.mode, 1.f);
+    EXPECT_FLOAT_EQ(params.depth_w, 2560.f);
+    EXPECT_FLOAT_EQ(params.depth_h, 1440.f);
+    EXPECT_FLOAT_EQ(params.depth_const, 0.0501f);
+    EXPECT_FLOAT_EQ(params.rel_bias, 0.08f);
+    EXPECT_FLOAT_EQ(params.abs_bias, 0.05f);
+}
+
+TEST(RigRendererInterface, SteveParamsWithoutASceneDepthDrawOverEverything) {
+    mc::rig::DepthConvention convention;
+    convention.reverse_z = true;
+
+    const erov::SteveParams params =
+        erov::MakeSteveParams(convention, /*has_scene_depth=*/false, 0, 0, mc::HandItems{}, 0, 0.f);
+    EXPECT_FLOAT_EQ(params.mode, 0.f); // no depth SRV: the shader must not compare
+    EXPECT_FLOAT_EQ(params.depth_w, 0.f);
+    EXPECT_FLOAT_EQ(params.depth_h, 0.f);
+}
+
+TEST(RigRendererInterface, SteveParamsWithoutReverseZDrawOverEverything) {
+    // Only reverse-Z is understood; any other convention would occlude the wrong pixels.
+    mc::rig::DepthConvention convention;
+    convention.reverse_z = false;
+
+    const erov::SteveParams params = erov::MakeSteveParams(convention, /*has_scene_depth=*/true,
+                                                           1920, 1080, mc::HandItems{}, 0, 0.f);
+    EXPECT_FLOAT_EQ(params.mode, 0.f);
+}
+
+TEST(RigRendererInterface, SteveParamsCarryTheHandsTheHeldTableAndTheHurtTint) {
+    mc::HandItems hands;
+    hands.main.item = mc::ItemId::DiamondSword;
+    hands.main.present = true;
+
+    const erov::SteveParams params = erov::MakeSteveParams(
+        mc::rig::DepthConvention{}, /*has_scene_depth=*/false, 0, 0, hands, 0x1234, 0.4f);
+    EXPECT_EQ(params.hands.main.item, mc::ItemId::DiamondSword);
+    EXPECT_TRUE(params.hands.main.present);
+    EXPECT_EQ(params.held_table.ptr, 0x1234ull);
+    EXPECT_FLOAT_EQ(params.tint[0], 1.f); // Minecraft's hurt flash is red over the lit skin
+    EXPECT_FLOAT_EQ(params.tint[3], 0.4f);
+}
+
 TEST(RigRendererInterface, ErRigRendererImplementsTheSeam) {
     // Compile-time conformance: the Elden Ring backend derives from the seam and overrides every
     // pure virtual (otherwise it would be abstract and the static_assert below would fail).

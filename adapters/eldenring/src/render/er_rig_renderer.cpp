@@ -37,6 +37,15 @@ bool ErRigRenderer::setSkin(const uint8_t* rgba, unsigned width, unsigned height
 
 void ErRigRenderer::setSceneDepth(mc::rig::HostHandle depth_texture, mc::rig::GpuHandle slot) {
     scene_depth_ = static_cast<ID3D12Resource*>(depth_texture);
+    // The shader maps a back-buffer pixel onto the depth texture with the depth texture's own size
+    // (dims.zw), which RigDraw does not carry: it only knows the back buffer.
+    if (scene_depth_ != nullptr) {
+        const D3D12_RESOURCE_DESC desc = scene_depth_->GetDesc();
+        scene_depth_w_ = static_cast<unsigned>(desc.Width);
+        scene_depth_h_ = desc.Height;
+    } else {
+        scene_depth_w_ = scene_depth_h_ = 0;
+    }
     if (device_ == nullptr) return; // before init there is no descriptor heap to write into
     renderer_.setDepthView(device_, scene_depth_, CpuDescriptor(slot));
 }
@@ -65,18 +74,7 @@ bool ErRigRenderer::initHeldItems(mc::rig::HostHandle device, const uint8_t* atl
 }
 
 SteveParams ErRigRenderer::buildParams() const {
-    SteveParams params;
-    // Mode 1 hides the figure behind the scene; without a calibrated reverse-Z depth buffer the
-    // shader cannot compare and the figure is drawn over everything instead.
-    params.mode = (scene_depth_ != nullptr && depth_.reverse_z) ? 1.f : 0.f;
-    params.depth_const = depth_.depth_times_distance;
-    params.rel_bias = depth_.relative_bias;
-    params.abs_bias = depth_.absolute_bias;
-    params.held_table = GpuDescriptor(held_table_);
-    params.hands = hands_;
-    params.tint[0] = 1.f; // Minecraft's hurt flash: red over the lit skin
-    params.tint[3] = hurt_tint_;
-    return params;
+    return MakeSteveParams(depth_, scene_depth_ != nullptr, scene_depth_w_, scene_depth_h_, hands_, held_table_, hurt_tint_);
 }
 
 void ErRigRenderer::draw(const mc::rig::RigDraw& request) {
