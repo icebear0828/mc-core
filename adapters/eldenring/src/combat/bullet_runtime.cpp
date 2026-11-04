@@ -1,4 +1,5 @@
 #include "core/loader_internal.hpp"
+#include "eldenring_config.hpp"
 
 namespace eldenring::loader_detail {
 
@@ -125,9 +126,11 @@ bool FireOwStrike(int kind) {
 }
 
 void SetupBulletLog() {
+    AdapterConfig& config = AdapterConfig::Instance();
+    config.EnsureLoaded(g_game_dir);
     const bool proj_log = FileExists(g_game_dir + "mc_er_bulletlog.txt");
     const bool arrow_dmg = FileExists(g_game_dir + "mc_er_arrowdmg.txt");
-    const bool fire_enabled = FileExists(g_game_dir + "mc_er_bulletfire.txt");
+    const bool fire_enabled = config.FeatureEnabled(ConfigFeature::BulletFire);
     const bool cs_shot_log = FileExists(g_game_dir + "mc_er_csshotlog.txt");
     g_proj_log.store(proj_log);
     g_arrow_damage.store(arrow_dmg);
@@ -150,7 +153,7 @@ void SetupBulletLog() {
     } else {
         Log("bullet: spawn_bullet request logger at %p (RVA 0x%llX): the first 40 requests are written here%s", reinterpret_cast<void*>(target),
             static_cast<unsigned long long>(target - g_img.base),
-            fire_enabled ? "; mc_er_bulletfire.txt: F3 shoots one bolt of ours from the saved template (a real crossbow shot creates or updates it)" : " (read-only)");
+            fire_enabled ? "; mc_er.ini [core] bulletfire=1 or mc_er_bulletfire.txt: F3 shoots one bolt of ours from the saved template (a real crossbow shot creates or updates it)" : " (read-only)");
     }
 }
 

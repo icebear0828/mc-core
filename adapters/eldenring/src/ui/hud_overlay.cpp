@@ -1,9 +1,7 @@
 #include "core/loader_internal.hpp"
+#include "eldenring_config.hpp"
 #include "eldenring_perfstats.hpp"
 #include "mc/elytra_models.hpp"
-
-#include <fstream>
-#include <iterator>
 
 namespace eldenring::loader_detail {
 
@@ -155,8 +153,18 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
 }
 
 void SetupOverlay() {
-    if (!FileExists(g_game_dir + "mc_er_overlay.txt")) {
-        Log("overlay: disabled (no mc_er_overlay.txt)");
+    AdapterConfig& config = AdapterConfig::Instance();
+    config.EnsureLoaded(g_game_dir);
+    for (const std::string& warning : config.Warnings()) Log("config: %s", warning.c_str());
+    Log("config: source=%s overlay=%d input=%d damage=%d bulletfire=%d mode=%s",
+        config.IniPresent() ? "mc_er.ini" : "legacy",
+        config.FeatureEnabled(ConfigFeature::Overlay) ? 1 : 0,
+        config.FeatureEnabled(ConfigFeature::Input) ? 1 : 0,
+        config.FeatureEnabled(ConfigFeature::Damage) ? 1 : 0,
+        config.FeatureEnabled(ConfigFeature::BulletFire) ? 1 : 0,
+        config.StartMode().empty() ? "(default)" : config.StartMode().c_str());
+    if (!config.FeatureEnabled(ConfigFeature::Overlay)) {
+        Log("overlay: disabled (no mc_er.ini [core] overlay=1 and no mc_er_overlay.txt)");
         return;
     }
     perfstats::setEnabled(FileExists(g_game_dir + "mc_er_perfstats.txt"));
@@ -165,21 +173,14 @@ void SetupOverlay() {
         Log("overlay: MH_Initialize failed");
         return;
     }
-    if (FileExists(g_game_dir + "mc_er_steve.txt")) {
+    {
         erov::SteveConfig cfg;
-        std::vector<uint8_t> bytes;
-        if (ReadFileAll(g_game_dir + "mc_er_steve.txt", bytes)) {
-            const std::string text(bytes.begin(), bytes.end());
-            size_t pos = 0;
-            while (pos < text.size()) {
-                size_t end = text.find('\n', pos);
-                if (end == std::string::npos) end = text.size();
-                const std::string line = text.substr(pos, end - pos);
-                pos = end + 1;
-                const size_t eq = line.find('=');
-                if (eq == std::string::npos) continue;
-                const std::string key = line.substr(0, eq);
-                const float value = static_cast<float>(atof(line.c_str() + eq + 1));
+        const std::vector<ConfigEntry> mc_entries = config.McEntries();
+        Log("mc config: %zu key(s) from %s", mc_entries.size(),
+            config.IniPresent() ? "mc_er.ini [mc] (legacy merged)" : (g_game_dir + "mc_er_steve.txt").c_str());
+        for (const ConfigEntry& entry : mc_entries) {
+            const std::string& key = entry.key;
+            const float value = static_cast<float>(atof(entry.value.c_str()));
                 if (key == "occlusion") cfg.occlusion = value != 0.f;
                 else if (key == "debug") cfg.debug = static_cast<int>(value);
                 else if (key == "depthview_gain") cfg.depthview_gain = value;
@@ -272,16 +273,15 @@ void SetupOverlay() {
                 else if (key == "damage_scale") g_damage_scale.store(std::clamp(value, 0.0f, 200.0f));
                 else if (key == "damage_hp_percent") g_damage_hp_percent.store(std::clamp(value, 0.0f, 1.0f));
                 else if (key == "sweep_radius") g_sweep_radius.store(std::clamp(value, 0.5f, 10.0f));
-                else if (key == "hide_slots") g_hide_slots.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));
-                else if (key == "hide_mask1") g_hide_mask1.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));
-                else if (key == "hide_mask2") g_hide_mask2.store(static_cast<uint32_t>(strtoul(line.c_str() + eq + 1, nullptr, 0)));
+                else if (key == "hide_slots") g_hide_slots.store(static_cast<uint32_t>(strtoul(entry.value.c_str(), nullptr, 0)));
+                else if (key == "hide_mask1") g_hide_mask1.store(static_cast<uint32_t>(strtoul(entry.value.c_str(), nullptr, 0)));
+                else if (key == "hide_mask2") g_hide_mask2.store(static_cast<uint32_t>(strtoul(entry.value.c_str(), nullptr, 0)));
             }
             // The vectors stop growing here (the config is read once), so the spans stay valid.
             g_zone_rules.material_rules = g_zone_material_rules;
             g_zone_rules.area_rules = g_zone_area_rules.empty()
                 ? DefaultZoneAreaRules()
                 : std::span<const mc::ZoneRule>(g_zone_area_rules);
-        }
         cfg.depth_probe = FileExists(g_game_dir + "mc_er_depthprobe.txt");
         erov::SetSteveConfig(cfg);
         eraudio::Init((g_game_dir + "mods\\mc_adapter\\sounds\\").c_str(), g_sound_volume.load(), &Log);
@@ -357,24 +357,13 @@ void SetupOverlay() {
     }
 #if ENABLE_OW_VIEWMODEL
     {
-        // OW has its own config file: the gauntlet's FOV, scale and offset are
-        // independent from the Steve/CS tuning in mc_er_steve.txt, and load
-        // even when that file is absent.
+        // OW tuning: legacy mc_er_ow.txt first, then the mc_er.ini [ow] section.
         erov::OwConfig ow_cfg;
-        std::vector<uint8_t> ow_bytes;
-        if (FileExists(g_game_dir + "mc_er_ow.txt") && ReadFileAll(g_game_dir + "mc_er_ow.txt", ow_bytes)) {
-            const std::string text(ow_bytes.begin(), ow_bytes.end());
-            size_t pos = 0;
-            while (pos < text.size()) {
-                size_t end = text.find('\n', pos);
-                if (end == std::string::npos) end = text.size();
-                const std::string line = text.substr(pos, end - pos);
-                pos = end + 1;
-                const size_t eq = line.find('=');
-                if (eq == std::string::npos) continue;
-                const std::string key = line.substr(0, eq);
-                const float value = static_cast<float>(atof(line.c_str() + eq + 1));
-                if (key == "ow_mode") {
+        const std::vector<ConfigEntry> ow_entries = config.OwEntries();
+        for (const ConfigEntry& entry : ow_entries) {
+            const std::string& key = entry.key;
+            const float value = static_cast<float>(atof(entry.value.c_str()));
+            if (key == "ow_mode") {
                     const bool ow = (value != 0.f);
                     eldenring::RuntimeContext::Instance().mode().ow_mode.store(ow);
                     if (ow) {
@@ -426,34 +415,19 @@ void SetupOverlay() {
                 } else if (key == "ow_blend_time") {
                     ow_cfg.blend_seconds = std::clamp(value, 0.f, 0.5f);
                 }
-            }
-            Log("ow config: %s", (g_game_dir + "mc_er_ow.txt").c_str());
         }
+        Log("ow config: %s", ow_entries.empty()
+                ? "defaults"
+                : (config.IniPresent() ? "mc_er.ini [ow]" : (g_game_dir + "mc_er_ow.txt").c_str()));
         erov::SetOwConfig(ow_cfg);
     }
 #endif
-    // Startup mode: tools/deploy_modes.py writes mc_er_mode.txt with
-    // `start_mode=mc|cs|ow`. It selects the active mode on launch; hotkeys still
-    // switch between every mode this build contains. A deployment that installs
-    // only one mode writes that mode, so an OW-only install never starts in CS
-    // or MC.
+    // Startup mode: mc_er.ini [core] mode= (or the legacy mc_er_mode.txt)
+    // selects the active mode on launch; hotkeys still switch between every
+    // mode this build contains.
     {
-        std::vector<uint8_t> mode_bytes;
-        if (FileExists(g_game_dir + "mc_er_mode.txt") && ReadFileAll(g_game_dir + "mc_er_mode.txt", mode_bytes)) {
-            const std::string text(mode_bytes.begin(), mode_bytes.end());
-            std::string start = "mc";
-            const size_t key_pos = text.find("start_mode");
-            if (key_pos != std::string::npos) {
-                const size_t eq = text.find('=', key_pos);
-                if (eq != std::string::npos) {
-                    size_t begin = eq + 1;
-                    size_t end = text.find_first_of("\r\n", begin);
-                    if (end == std::string::npos) end = text.size();
-                    while (begin < end && (text[begin] == ' ' || text[begin] == '\t')) ++begin;
-                    while (end > begin && (text[end - 1] == ' ' || text[end - 1] == '\t')) --end;
-                    start = text.substr(begin, end - begin);
-                }
-            }
+        const std::string start = config.StartMode();
+        if (!start.empty()) {
             auto& m = eldenring::RuntimeContext::Instance().mode();
             const bool want_mc = start == "mc";
             const bool want_cs = start == "cs";
@@ -481,64 +455,27 @@ void SetupOverlay() {
 
 namespace erov {
 
-// Live OW tuning writes the six view keys back into mc_er_ow.txt, preserving
-// comments and every unrelated key so the next launch starts from the tuned
-// values.
+// Live OW tuning writes the six view keys back to the active config source:
+// the [ow] section of mc_er.ini when it exists, otherwise mc_er_ow.txt. The
+// next launch starts from the tuned values.
 void PersistOwConfig(const OwConfig& cfg) {
     using namespace eldenring::loader_detail;
-    const std::string path = g_game_dir + "mc_er_ow.txt";
-    std::vector<uint8_t> bytes;
-    std::string text;
-    if (ReadFileAll(path, bytes)) text.assign(bytes.begin(), bytes.end());
-
-    char line_buf[64];
-    auto format_line = [&](const char* key, double value) {
-        std::snprintf(line_buf, sizeof(line_buf), "%s=%.4g\n", key, value);
-        return std::string(line_buf);
+    char value[64];
+    auto format = [&](const char* key, double number) {
+        std::snprintf(value, sizeof(value), "%.4g", number);
+        return eldenring::ConfigEntry{key, value};
     };
-    struct Update { const char* key; std::string line; };
-    const Update updates[] = {
-        {"ow_fov", format_line("ow_fov", cfg.fov_deg)},
-        {"ow_scale", format_line("ow_scale", cfg.scale)},
-        {"ow_offset_x", format_line("ow_offset_x", cfg.offset_x)},
-        {"ow_offset_y", format_line("ow_offset_y", cfg.offset_y)},
-        {"ow_offset_z", format_line("ow_offset_z", cfg.offset_z)},
-        {"ow_shoot_motion", format_line("ow_shoot_motion", cfg.shoot_motion)},
+    const std::vector<eldenring::ConfigEntry> updates = {
+        format("ow_fov", cfg.fov_deg),
+        format("ow_scale", cfg.scale),
+        format("ow_offset_x", cfg.offset_x),
+        format("ow_offset_y", cfg.offset_y),
+        format("ow_offset_z", cfg.offset_z),
+        format("ow_shoot_motion", cfg.shoot_motion),
     };
-    constexpr size_t kUpdates = sizeof(updates) / sizeof(updates[0]);
-    bool seen[kUpdates] = {};
-
-    std::string out;
-    size_t pos = 0;
-    while (pos < text.size()) {
-        size_t end = text.find('\n', pos);
-        if (end == std::string::npos) end = text.size();
-        std::string line = text.substr(pos, end - pos);
-        std::string key = line;
-        const size_t eq = line.find('=');
-        if (eq != std::string::npos) key = line.substr(0, eq);
-        if (!key.empty() && key.back() == '\r') key.pop_back();
-        bool replaced = false;
-        for (size_t i = 0; i < kUpdates; ++i) {
-            if (key == updates[i].key) {
-                out += updates[i].line;
-                seen[i] = true;
-                replaced = true;
-                break;
-            }
-        }
-        if (!replaced) {
-            out += line;
-            out += '\n';
-        }
-        pos = end + 1;
-    }
-    for (size_t i = 0; i < kUpdates; ++i) {
-        if (!seen[i]) out += updates[i].line;
-    }
-
-    std::ofstream file(path, std::ios::binary | std::ios::trunc);
-    if (file) file.write(out.data(), static_cast<std::streamsize>(out.size()));
+    eldenring::AdapterConfig& config = eldenring::AdapterConfig::Instance();
+    config.EnsureLoaded(g_game_dir);
+    if (!config.PersistOwKeys(updates)) Log("ow config: failed to persist the live tuning");
 }
 
 } // namespace erov

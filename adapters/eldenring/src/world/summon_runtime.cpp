@@ -1,4 +1,5 @@
 #include "core/loader_internal.hpp"
+#include "eldenring_config.hpp"
 
 namespace eldenring::loader_detail {
 
@@ -255,15 +256,11 @@ bool QueueSummon(const char* source, const char* requested_mob) {
     p.yaw = eldenring::render::yawFromQuat(q[0], q[1], q[2], q[3]);
 
     std::string model_type = (requested_mob != nullptr && requested_mob[0] != '\0') ? requested_mob : "creeper";
-    std::vector<uint8_t> summon_txt;
-    if (requested_mob == nullptr && ReadFileAll(g_game_dir + "mc_er_summon.txt", summon_txt) && !summon_txt.empty()) {
-        std::string content(reinterpret_cast<const char*>(summon_txt.data()), summon_txt.size());
-        for (char& c : content) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        if (content.find("creeper") != std::string::npos) model_type = "creeper";
-        else if (content.find("skeleton") != std::string::npos) model_type = "skeleton";
-        else if (content.find("iron_golem") != std::string::npos || content.find("golem") != std::string::npos) model_type = "iron_golem";
-        else if (content.find("wolf") != std::string::npos) model_type = "wolf";
-        else if (content.find("zombie") != std::string::npos) model_type = "zombie";
+    if (requested_mob == nullptr) {
+        AdapterConfig& config = AdapterConfig::Instance();
+        config.EnsureLoaded(g_game_dir);
+        const std::string configured = config.SummonMob();
+        if (!configured.empty()) model_type = configured;
     }
 
     uint64_t id = g_virtual_summons.spawnMob(model_type, p, 2.5f);

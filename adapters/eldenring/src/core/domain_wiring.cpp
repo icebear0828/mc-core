@@ -1,4 +1,5 @@
 #include "core/loader_internal.hpp"
+#include "eldenring_config.hpp"
 
 namespace eldenring::loader_detail {
 
@@ -289,8 +290,10 @@ void SetupInput() {
         eldenring::input::HotkeyDispatcher::Instance().setCallbacks(cb);
         Log("hotkey_dispatcher: initialized and bound to native game subsystems");
     }
-    if (!FileExists(g_game_dir + "mc_er_input.txt")) {
-        Log("input: disabled (no mc_er_input.txt)");
+    AdapterConfig& config = AdapterConfig::Instance();
+    config.EnsureLoaded(g_game_dir);
+    if (!config.FeatureEnabled(ConfigFeature::Input)) {
+        Log("input: disabled (no mc_er.ini [core] input=1 and no mc_er_input.txt)");
         return;
     }
     g_input_enabled.store(true);

@@ -1,4 +1,5 @@
 #include "core/loader_internal.hpp"
+#include "eldenring_config.hpp"
 #include "eldenring_physprobe.hpp"
 #include "eldenring_physwrite.hpp"
 #include "mc/hand_items.hpp"
@@ -661,8 +662,9 @@ HRESULT WINAPI DirectInput8CreateImpl(HINSTANCE hinst, DWORD version, REFIID rii
     static std::once_flag decided;
     std::call_once(decided, [] {
         InitLogOnce();
-        const DWORD a = GetFileAttributesA((g_game_dir + "mc_er_input.txt").c_str());
-        if (a != INVALID_FILE_ATTRIBUTES && EnsureMinHook()) {
+        AdapterConfig& config = AdapterConfig::Instance();
+        config.EnsureLoaded(g_game_dir);
+        if (config.FeatureEnabled(ConfigFeature::Input) && EnsureMinHook()) {
             erin::SetLog([](const char* fmt, ...) {
                 char msg[512];
                 va_list args;
