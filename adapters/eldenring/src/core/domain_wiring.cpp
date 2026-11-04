@@ -96,8 +96,12 @@ void SetupWorldRuntime() {
         eldenring::movement::PlayerLocomotion::Instance().unlockAirMovement(chr);
     };
     cb.is_air_movement = []() {
-        auto& loco = eldenring::movement::PlayerLocomotion::Instance();
-        return loco.isFlying() || loco.isJumping();
+        // Elytra, riptide and pearl holds own the position too. Leaving them out let the
+        // sneak/shield speed clamp snap a gliding player back every frame.
+        return eldenring::movement::PlayerLocomotion::Instance().ownsPosition();
+    };
+    cb.read_own_position = [](float out[3]) {
+        return eldenring::movement::PlayerLocomotion::Instance().ownPosition(out);
     };
     cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
     cb.on_origin_rebase = [](float rx, float ry, float rz) {

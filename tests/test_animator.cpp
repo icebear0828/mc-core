@@ -840,6 +840,42 @@ TEST(SteveAnimatorTest, GlidingHeldItemKeepsTheWingArmPose) {
     expectQuatNear(holding.getTransforms()[la].rot, plain.getTransforms()[la].rot);
 }
 
+TEST(SteveAnimatorTest, GlidingShieldBlockRaisesTheShieldArm) {
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+    constexpr float kPi = 3.14159265358979323846f;
+
+    mc::SteveAnimator main_anim, off_anim;
+    mc::SteveAnimInput in{};
+    in.is_gliding = true;
+    in.look_yaw = 0.2f;
+    in.look_pitch = -0.3f;
+
+    mc::SteveAnimInput main_in = in;
+    main_in.hands.main.item = mc::ItemId::Shield;
+    main_in.hands.main.present = true;
+    main_in.hands.main.use = mc::HandUse::Block;
+    main_in.hands.main.raised = true;
+
+    mc::SteveAnimInput off_in = in;
+    off_in.hands.off.item = mc::ItemId::Shield;
+    off_in.hands.off.present = true;
+    off_in.hands.off.use = mc::HandUse::Block;
+    off_in.hands.off.raised = true;
+
+    main_anim.update(0.f, main_in);
+    off_anim.update(0.f, off_in);
+
+    // Minecraft ArmPose.BLOCK: the shield arm is up and follows the look; the free arm takes the
+    // ArmPose.ITEM ready pose (pitch -18 deg), not the wing pose.
+    expectQuatNear(main_anim.getTransforms()[ra].rot, quatLegacy(-kPi * 0.3f + in.look_pitch, -kPi / 6.f + in.look_yaw, 0.f));
+    expectQuatNear(main_anim.getTransforms()[la].rot, quatLegacy(-kPi * 0.1f, 0.f, 0.f));
+    expectQuatNear(off_anim.getTransforms()[la].rot, quatLegacy(-kPi * 0.3f + in.look_pitch, kPi / 6.f + in.look_yaw, 0.f));
+    expectQuatNear(off_anim.getTransforms()[ra].rot, quatLegacy(-kPi * 0.1f, 0.f, 0.f));
+    // The elytra root pose is unchanged.
+    expectQuatNear(main_anim.rootTransform().rot, quatXyz(80.f * kDeg, 0.f, 2.f * kDeg));
+}
+
 TEST(SteveAnimatorTest, ZeroNewInputsKeepTheLegacyPoseBitIdentical) {
     const size_t head = static_cast<size_t>(mc::StevePart::Head);
     const size_t body = static_cast<size_t>(mc::StevePart::Body);

@@ -130,6 +130,14 @@ public:
     bool isFlying() const { return flying_.load(std::memory_order_relaxed); }
     void setFlying(bool f) { flying_.store(f, std::memory_order_relaxed); }
     bool isJumping() const { return jump_controller_.isActive(); }
+    // True while one of our movement layers owns the player's position. The block step must not
+    // clamp or re-drive it: a sneak/shield clamp on a gliding player snaps them back every frame.
+    bool ownsPosition() const {
+        return isFlying() || isJumping() || isElytraGliding() || isRiptiding() || isEnderPearlTeleportHolding();
+    }
+    // The position our own movement layer last wrote (flight, elytra, riptide or a pearl hold).
+    // False when the native controller owns the position or our layer has not written yet.
+    bool ownPosition(float out[3]) const;
 
     float mcJumpSpeed() const { return mc_jump_speed_.load(std::memory_order_relaxed); }
     void setMcJumpSpeed(float s) { mc_jump_speed_.store(s, std::memory_order_relaxed); }

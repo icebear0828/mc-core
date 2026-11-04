@@ -555,6 +555,11 @@ TEST(EldenRingWorldRuntime, DoesNotTreatOurAirMovementAsARebase) {
     cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
     cb.is_game_in_foreground = []() { return true; };
     cb.is_air_movement = []() { return true; }; // our jump or flight owns the position
+    float own[3] = {0.0f, 1.17f, 0.0f};
+    cb.read_own_position = [&](float out[3]) {
+        std::memcpy(out, own, sizeof(own));
+        return true;
+    };
     int rebase_calls = 0;
     cb.on_origin_rebase = [&](float, float, float) { ++rebase_calls; };
     runtime.setCallbacks(cb);
@@ -568,11 +573,68 @@ TEST(EldenRingWorldRuntime, DoesNotTreatOurAirMovementAsARebase) {
     mem.writeBytes(kModule + layout::kPhysicsPosition, p1, sizeof(p1));
     runtime.stepPlayerBlockCollision(ctx);
 
-    // An 8 m delta while our own jump/flight is moving the player is not a floating-origin rebase.
+    // An 8 m delta that our own movement layer also wrote is not a floating-origin rebase.
+    float p2[3] = {8.0f, 1.17f, 0.0f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, p2, sizeof(p2));
+    std::memcpy(own, p2, sizeof(own));
+    runtime.stepPlayerBlockCollision(ctx);
+    EXPECT_EQ(rebase_calls, 0);
+}
+
+TEST(EldenRingWorldRuntime, ShiftsWorldWhenRebaseHappensDuringOurFlight) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x5000;
+
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+    runtime.setDeltaTimeOverrideForTesting(0.016f);
+    runtime.setInputProvider([](int) { return false; });
+
+    WorldRuntimeCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.read_physics_pos = [&](uintptr_t, float out_f[3]) {
+        return mem.readBytes(kModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+    };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.is_game_in_foreground = []() { return true; };
+    cb.is_air_movement = []() { return true; };
+    float own[3] = {0.0f, 1.17f, 0.0f};
+    cb.read_own_position = [&](float out[3]) {
+        std::memcpy(out, own, sizeof(own));
+        return true;
+    };
+    int rebase_calls = 0;
+    float rebase_shift[3] = {0.0f, 0.0f, 0.0f};
+    cb.on_origin_rebase = [&](float rx, float ry, float rz) {
+        rebase_shift[0] = rx;
+        rebase_shift[1] = ry;
+        rebase_shift[2] = rz;
+        ++rebase_calls;
+    };
+    runtime.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+    ctx.mode().block_collision.store(true);
+    ctx.world().block_grid.place({1, 1, 1}, mc::BlockId::Dirt);
+
+    float p1[3] = {0.0f, 1.17f, 0.0f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, p1, sizeof(p1));
+    runtime.stepPlayerBlockCollision(ctx);
+
+    // The engine rebases +8 m while our own flight still owns the position: the block grid must follow.
     float p2[3] = {8.0f, 1.17f, 0.0f};
     mem.writeBytes(kModule + layout::kPhysicsPosition, p2, sizeof(p2));
     runtime.stepPlayerBlockCollision(ctx);
-    EXPECT_EQ(rebase_calls, 0);
+
+    EXPECT_EQ(rebase_calls, 1);
+    EXPECT_FLOAT_EQ(rebase_shift[0], 8.0f);
+    EXPECT_EQ(ctx.world().block_grid.get({1, 1, 1}), mc::BlockId::Air);
+    EXPECT_EQ(ctx.world().block_grid.get({9, 1, 1}), mc::BlockId::Dirt);
 }
 
 TEST(EldenRingWorldRuntime, BlockStepClearsTheStaleHorizontalVelocity) {
