@@ -320,6 +320,209 @@ TEST_F(InventoryControllerTest, CraftsASwordThroughTheCraftingTableClicks) {
     EXPECT_FALSE(ctx.ui().craft.hasResult());
 }
 
+TEST_F(InventoryControllerTest, PaletteDigitAssignsAFullStackToTheHotbar) {
+    auto& ctx = RuntimeContext::Instance();
+    ctx.mode().game_mode.store(static_cast<uint8_t>(eldenring::creative::GameMode::Creative));
+    inv_.setSlot(0, mc::ItemStack{mc::ItemId::DiamondSword, 1});
+
+    InventoryInputState input{};
+    input.fg = true;
+    input.want_suppress = true;
+    input.screen_width = 1920.f;
+    input.screen_height = 1080.f;
+    input.key_down = true;
+    controller_.tickWithInput(input, inv_, ctx);
+    ASSERT_TRUE(ctx.ui().inv_open.load());
+    input.key_down = false;
+
+    ctx.ui().inv_page.store(1);
+    const mc::InventoryLayout lay(1920.f, 1080.f, true);
+    const mc::HudRect slot = lay.paletteSlot(0);
+    ctx.ui().inv_mx.store(slot.x + slot.w * 0.5f);
+    ctx.ui().inv_my.store(slot.y + slot.h * 0.5f);
+
+    const mc::ItemId expected = mc::paletteItemAt(1, 0);
+    ASSERT_NE(expected, mc::ItemId::None);
+    input.digit_down[2] = true; // press "3"
+    controller_.tickWithInput(input, inv_, ctx);
+
+    EXPECT_EQ(inv_.slot(2).item, expected);
+    EXPECT_EQ(inv_.slot(2).count, mc::maxStackSize(expected));
+}
+
+TEST_F(InventoryControllerTest, PaletteDigitReplacesAnExistingHotbarStack) {
+    auto& ctx = RuntimeContext::Instance();
+    ctx.mode().game_mode.store(static_cast<uint8_t>(eldenring::creative::GameMode::Creative));
+    inv_.setSlot(0, mc::ItemStack{mc::ItemId::DiamondSword, 1});
+    inv_.setSlot(4, mc::ItemStack{mc::ItemId::BlockDirt, 64});
+
+    InventoryInputState input{};
+    input.fg = true;
+    input.want_suppress = true;
+    input.screen_width = 1920.f;
+    input.screen_height = 1080.f;
+    input.key_down = true;
+    controller_.tickWithInput(input, inv_, ctx);
+    ASSERT_TRUE(ctx.ui().inv_open.load());
+    input.key_down = false;
+
+    ctx.ui().inv_page.store(0);
+    const mc::InventoryLayout lay(1920.f, 1080.f, true);
+    const mc::HudRect slot = lay.paletteSlot(0);
+    ctx.ui().inv_mx.store(slot.x + slot.w * 0.5f);
+    ctx.ui().inv_my.store(slot.y + slot.h * 0.5f);
+
+    const mc::ItemId expected = mc::paletteItemAt(0, 0);
+    ASSERT_NE(expected, mc::ItemId::None);
+    input.digit_down[4] = true; // press "5"
+    controller_.tickWithInput(input, inv_, ctx);
+
+    EXPECT_EQ(inv_.slot(4).item, expected);
+    EXPECT_EQ(inv_.slot(4).count, mc::maxStackSize(expected));
+}
+
+TEST_F(InventoryControllerTest, RightDragPlacesOneItemPerInventorySlot) {
+    auto& ctx = RuntimeContext::Instance();
+    controller_.open(1920.f, 1080.f, ctx);
+    inv_.setCursor(mc::ItemStack{mc::ItemId::BlockDirt, 10});
+
+    const mc::InventoryLayout lay(1920.f, 1080.f, false);
+    auto hover = [&](int slot) {
+        const mc::HudRect r = lay.invSlot(slot);
+        ctx.ui().inv_mx.store(r.x + r.w * 0.5f);
+        ctx.ui().inv_my.store(r.y + r.h * 0.5f);
+    };
+
+    InventoryInputState input{};
+    input.fg = true;
+    input.want_suppress = true;
+    input.screen_width = 1920.f;
+    input.screen_height = 1080.f;
+    input.right_held = true;
+
+    hover(9);
+    input.right_click = true;
+    controller_.tickWithInput(input, inv_, ctx);
+    input.right_click = false;
+    EXPECT_EQ(inv_.slot(9).count, 1u);
+
+    hover(10);
+    controller_.tickWithInput(input, inv_, ctx);
+    EXPECT_EQ(inv_.slot(10).count, 1u);
+
+    hover(11);
+    controller_.tickWithInput(input, inv_, ctx);
+    EXPECT_EQ(inv_.slot(11).count, 1u);
+
+    EXPECT_EQ(inv_.cursor().count, 7u);
+}
+
+TEST_F(InventoryControllerTest, RightDragDoesNotRefillAVisitedSlot) {
+    auto& ctx = RuntimeContext::Instance();
+    controller_.open(1920.f, 1080.f, ctx);
+    inv_.setCursor(mc::ItemStack{mc::ItemId::BlockDirt, 10});
+
+    const mc::InventoryLayout lay(1920.f, 1080.f, false);
+    auto hover = [&](int slot) {
+        const mc::HudRect r = lay.invSlot(slot);
+        ctx.ui().inv_mx.store(r.x + r.w * 0.5f);
+        ctx.ui().inv_my.store(r.y + r.h * 0.5f);
+    };
+
+    InventoryInputState input{};
+    input.fg = true;
+    input.want_suppress = true;
+    input.screen_width = 1920.f;
+    input.screen_height = 1080.f;
+    input.right_held = true;
+
+    hover(9);
+    input.right_click = true;
+    controller_.tickWithInput(input, inv_, ctx);
+    input.right_click = false;
+
+    hover(10);
+    controller_.tickWithInput(input, inv_, ctx);
+    hover(9); // back to the first slot: already filled by this drag
+    controller_.tickWithInput(input, inv_, ctx);
+
+    EXPECT_EQ(inv_.slot(9).count, 1u);
+    EXPECT_EQ(inv_.slot(10).count, 1u);
+    EXPECT_EQ(inv_.cursor().count, 8u);
+}
+
+TEST_F(InventoryControllerTest, RightDragStopsOnRelease) {
+    auto& ctx = RuntimeContext::Instance();
+    controller_.open(1920.f, 1080.f, ctx);
+    inv_.setCursor(mc::ItemStack{mc::ItemId::BlockDirt, 10});
+
+    const mc::InventoryLayout lay(1920.f, 1080.f, false);
+    auto hover = [&](int slot) {
+        const mc::HudRect r = lay.invSlot(slot);
+        ctx.ui().inv_mx.store(r.x + r.w * 0.5f);
+        ctx.ui().inv_my.store(r.y + r.h * 0.5f);
+    };
+
+    InventoryInputState input{};
+    input.fg = true;
+    input.want_suppress = true;
+    input.screen_width = 1920.f;
+    input.screen_height = 1080.f;
+    input.right_held = true;
+
+    hover(9);
+    input.right_click = true;
+    controller_.tickWithInput(input, inv_, ctx);
+    input.right_click = false;
+
+    input.right_held = false;
+    hover(10);
+    controller_.tickWithInput(input, inv_, ctx);
+
+    EXPECT_TRUE(inv_.slot(10).empty());
+    EXPECT_EQ(inv_.cursor().count, 9u);
+}
+
+TEST_F(InventoryControllerTest, RightDragFillsTheCraftingGrid) {
+    auto& ctx = RuntimeContext::Instance();
+    inv_.setSlot(0, mc::ItemStack{mc::ItemId::CraftingTable, 1});
+
+    InventoryInputState input{};
+    input.fg = true;
+    input.want_suppress = true;
+    input.screen_width = 1920.f;
+    input.screen_height = 1080.f;
+    input.key_down = true;
+    controller_.tickWithInput(input, inv_, ctx);
+    ASSERT_TRUE(ctx.ui().craft_open.load());
+    input.key_down = false;
+
+    inv_.setCursor(mc::ItemStack{mc::ItemId::WoodPlanks, 10});
+    const mc::CraftingTableLayout lay(1920.f, 1080.f);
+    auto hover = [&](int slot) {
+        const mc::HudRect r = lay.gridSlot(slot);
+        ctx.ui().inv_mx.store(r.x + r.w * 0.5f);
+        ctx.ui().inv_my.store(r.y + r.h * 0.5f);
+    };
+
+    input.right_held = true;
+    hover(0);
+    input.right_click = true;
+    controller_.tickWithInput(input, inv_, ctx);
+    input.right_click = false;
+
+    hover(1);
+    controller_.tickWithInput(input, inv_, ctx);
+    hover(2);
+    controller_.tickWithInput(input, inv_, ctx);
+
+    EXPECT_EQ(ctx.ui().craft.grid().at(0, 0).item, mc::ItemId::WoodPlanks);
+    EXPECT_EQ(ctx.ui().craft.grid().at(0, 0).count, 1u);
+    EXPECT_EQ(ctx.ui().craft.grid().at(1, 0).count, 1u);
+    EXPECT_EQ(ctx.ui().craft.grid().at(2, 0).count, 1u);
+    EXPECT_EQ(inv_.cursor().count, 7u);
+}
+
 TEST_F(InventoryControllerTest, WheelChangesTheCreativePalettePageAndWraps) {
     auto& ctx = RuntimeContext::Instance();
     ctx.mode().game_mode.store(static_cast<uint8_t>(eldenring::creative::GameMode::Creative));

@@ -135,12 +135,19 @@ constexpr ItemId kNone = ItemId::None;
 
 // The built-in recipe set. Patterns are trimmed to their bounding box; ItemId::None is an empty
 // cell. There is no furnace in this project yet, so the recipes use raw materials directly.
-const std::array<Recipe, 13> kRecipes{{
+const std::array<Recipe, 28> kRecipes{{
     // Materials.
     shapeless(RecipeCategory::Material, {{ItemId::BlockWood, 1}}, {ItemId::WoodPlanks, 4}),
     shaped(RecipeCategory::Material, 1, 2, {ItemId::WoodPlanks, ItemId::WoodPlanks}, {ItemId::Stick, 4}),
     shaped(RecipeCategory::Material, 2, 2,
            {ItemId::WoodPlanks, ItemId::WoodPlanks, ItemId::WoodPlanks, ItemId::WoodPlanks}, {ItemId::CraftingTable, 1}),
+    shaped(RecipeCategory::Material, 2, 2,
+           {ItemId::BlockStone, ItemId::BlockStone, ItemId::BlockStone, ItemId::BlockStone},
+           {ItemId::BlockStoneBricks, 4}),
+    shaped(RecipeCategory::Material, 3, 1, {ItemId::BlockStone, ItemId::BlockStone, ItemId::BlockStone},
+           {ItemId::BlockStoneSlab, 6}),
+    shapeless(RecipeCategory::Material, {{ItemId::String, 4}}, {ItemId::BlockWhiteWool, 1}),
+    shapeless(RecipeCategory::Material, {{ItemId::Coal, 1}, {ItemId::Stick, 1}}, {ItemId::Torch, 4}),
 
     // Sword ladder (craft from scratch).
     shaped(RecipeCategory::WeaponUpgrade, 1, 3, {ItemId::WoodPlanks, ItemId::WoodPlanks, ItemId::Stick},
@@ -154,11 +161,56 @@ const std::array<Recipe, 13> kRecipes{{
     shaped(RecipeCategory::WeaponUpgrade, 1, 3, {ItemId::NetheriteIngot, ItemId::NetheriteIngot, ItemId::Stick},
            {ItemId::NetheriteSword, 1}),
 
+    // Pickaxe ladder: three material blocks on top, two sticks below the middle.
+    shaped(RecipeCategory::Other, 3, 3,
+           {ItemId::WoodPlanks, ItemId::WoodPlanks, ItemId::WoodPlanks, kNone, ItemId::Stick, kNone, kNone,
+            ItemId::Stick, kNone},
+           {ItemId::WoodenPickaxe, 1}),
+    shaped(RecipeCategory::Other, 3, 3,
+           {ItemId::BlockCobblestone, ItemId::BlockCobblestone, ItemId::BlockCobblestone, kNone, ItemId::Stick, kNone,
+            kNone, ItemId::Stick, kNone},
+           {ItemId::StonePickaxe, 1}),
+    shaped(RecipeCategory::Other, 3, 3,
+           {ItemId::IronIngot, ItemId::IronIngot, ItemId::IronIngot, kNone, ItemId::Stick, kNone, kNone, ItemId::Stick,
+            kNone},
+           {ItemId::IronPickaxe, 1}),
+    shaped(RecipeCategory::Other, 3, 3,
+           {ItemId::GoldIngot, ItemId::GoldIngot, ItemId::GoldIngot, kNone, ItemId::Stick, kNone, kNone, ItemId::Stick,
+            kNone},
+           {ItemId::GoldenPickaxe, 1}),
+    shaped(RecipeCategory::Other, 3, 3,
+           {ItemId::Diamond, ItemId::Diamond, ItemId::Diamond, kNone, ItemId::Stick, kNone, kNone, ItemId::Stick, kNone},
+           {ItemId::DiamondPickaxe, 1}),
+    shaped(RecipeCategory::Other, 3, 3,
+           {ItemId::NetheriteIngot, ItemId::NetheriteIngot, ItemId::NetheriteIngot, kNone, ItemId::Stick, kNone, kNone,
+            ItemId::Stick, kNone},
+           {ItemId::NetheritePickaxe, 1}),
+
+    // Diamond armor.
+    shaped(RecipeCategory::Other, 3, 2,
+           {ItemId::Diamond, ItemId::Diamond, ItemId::Diamond, ItemId::Diamond, kNone, ItemId::Diamond},
+           {ItemId::DiamondHelmet, 1}),
+    shaped(RecipeCategory::Other, 3, 3,
+           {ItemId::Diamond, kNone, ItemId::Diamond, ItemId::Diamond, ItemId::Diamond, ItemId::Diamond, ItemId::Diamond,
+            ItemId::Diamond, ItemId::Diamond},
+           {ItemId::DiamondChestplate, 1}),
+    shaped(RecipeCategory::Other, 3, 3,
+           {ItemId::Diamond, ItemId::Diamond, ItemId::Diamond, ItemId::Diamond, kNone, ItemId::Diamond, ItemId::Diamond,
+            kNone, ItemId::Diamond},
+           {ItemId::DiamondLeggings, 1}),
+    shaped(RecipeCategory::Other, 3, 2,
+           {ItemId::Diamond, kNone, ItemId::Diamond, ItemId::Diamond, kNone, ItemId::Diamond},
+           {ItemId::DiamondBoots, 1}),
+
     // Tactical items.
     shaped(RecipeCategory::Tactical, 3, 3,
            {ItemId::WoodPlanks, ItemId::IronIngot, ItemId::WoodPlanks, ItemId::WoodPlanks, ItemId::WoodPlanks,
             ItemId::WoodPlanks, kNone, ItemId::WoodPlanks, kNone},
            {ItemId::Shield, 1}),
+    shaped(RecipeCategory::Tactical, 3, 3,
+           {ItemId::Stick, ItemId::String, kNone, ItemId::Stick, kNone, ItemId::String, ItemId::Stick, ItemId::String,
+            kNone},
+           {ItemId::Bow, 1}),
     shaped(RecipeCategory::Tactical, 3, 3,
            {ItemId::IronIngot, ItemId::IronIngot, ItemId::IronIngot, kNone, ItemId::IronIngot, kNone, ItemId::IronIngot,
             ItemId::IronIngot, ItemId::IronIngot},

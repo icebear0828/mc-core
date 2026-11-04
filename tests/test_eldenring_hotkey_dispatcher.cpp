@@ -145,6 +145,7 @@ protected:
             return false;
         };
         cb_.try_place_block = [this]() {
+            ++place_block_calls_;
             if (place_block_success_) { block_placed_ = true; return true; }
             return false;
         };
@@ -226,6 +227,7 @@ protected:
     bool creeper_ignited_{false};
     bool place_block_success_{false};
     bool block_placed_{false};
+    int place_block_calls_{0};
     bool use_spawn_egg_success_{false};
     bool spawn_egg_used_{false};
     bool attack_called_{false};
@@ -367,6 +369,53 @@ TEST_F(HotkeyDispatcherTest, RightClickPriorityTntThenCreeperThenBlock) {
 
     dispatcher_->tick(0.016f);
     EXPECT_TRUE(block_placed_);
+}
+
+TEST_F(HotkeyDispatcherTest, HoldingRightClickRepeatsBlockPlacement) {
+    place_block_success_ = true;
+    right_click_edge_ = true;
+    right_held_ = true;
+
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(place_block_calls_, 1) << "the edge click places immediately";
+
+    // The repeat cadence is 0.2 s: 12 ticks (0.192 s) are still too early.
+    for (int i = 0; i < 12; ++i) dispatcher_->tick(0.016f);
+    EXPECT_EQ(place_block_calls_, 1);
+    dispatcher_->tick(0.016f); // 13 * 0.016 = 0.208 s
+    EXPECT_EQ(place_block_calls_, 2);
+
+    // Releasing stops the repeat.
+    right_held_ = false;
+    for (int i = 0; i < 30; ++i) dispatcher_->tick(0.016f);
+    EXPECT_EQ(place_block_calls_, 2);
+}
+
+TEST_F(HotkeyDispatcherTest, ReleasingAndPressingAgainRestartsThePlaceCadence) {
+    place_block_success_ = true;
+    right_click_edge_ = true;
+    right_held_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(place_block_calls_, 1);
+
+    right_held_ = false;
+    dispatcher_->tick(0.016f);
+    right_held_ = true;
+    right_click_edge_ = true;
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(place_block_calls_, 2) << "a fresh edge places immediately";
+
+    for (int i = 0; i < 12; ++i) dispatcher_->tick(0.016f);
+    EXPECT_EQ(place_block_calls_, 2);
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(place_block_calls_, 3);
+}
+
+TEST_F(HotkeyDispatcherTest, HoldingRightWithoutAnEdgeDoesNotPlace) {
+    place_block_success_ = true;
+    right_held_ = true; // e.g. the button was already down when the inventory closed
+    for (int i = 0; i < 30; ++i) dispatcher_->tick(0.016f);
+    EXPECT_EQ(place_block_calls_, 0);
 }
 
 TEST_F(HotkeyDispatcherTest, MouseWheelScrollsHotbarSlots) {

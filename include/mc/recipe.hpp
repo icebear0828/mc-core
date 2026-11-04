@@ -65,8 +65,9 @@ struct CraftResult {
     ItemStack output{};
 };
 
-// The built-in recipe set (sword ladder, shield, anvil, TNT, flint and steel, golden apple,
-// plus planks / sticks / crafting table). Defined in src/recipe.cpp.
+// The built-in recipe set (sword and pickaxe ladders, diamond armor, shield, bow, anvil, TNT,
+// flint and steel, golden apple, plus planks / sticks / crafting table / stone bricks / slab /
+// wool / torch). Defined in src/recipe.cpp.
 [[nodiscard]] std::span<const Recipe> defaultRecipes() noexcept;
 
 class RecipeBook {

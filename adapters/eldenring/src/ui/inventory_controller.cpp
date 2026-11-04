@@ -17,6 +17,57 @@
 
 namespace eldenring::ui {
 
+namespace {
+
+bool isDragSlot(const mc::SlotRef& ref) {
+    switch (ref.kind) {
+        case mc::SlotRef::Kind::Inventory:
+        case mc::SlotRef::Kind::Offhand:
+        case mc::SlotRef::Kind::Armor:
+        case mc::SlotRef::Kind::Crafting: return true;
+        default: return false;
+    }
+}
+
+// One bit per slot, so a drag fills each slot at most once. Ranges: inventory 0..35, offhand
+// 36, armor 37..40, crafting 41..49 (the 2x2 and 3x3 grids share the range).
+uint64_t dragSlotKey(const mc::SlotRef& ref) {
+    switch (ref.kind) {
+        case mc::SlotRef::Kind::Inventory:
+            return uint64_t{1} << std::clamp(ref.index, 0, mc::Inventory::kSlots - 1);
+        case mc::SlotRef::Kind::Offhand: return uint64_t{1} << mc::Inventory::kSlots;
+        case mc::SlotRef::Kind::Armor:
+            return uint64_t{1} << (mc::Inventory::kSlots + 1 + std::clamp(ref.index, 0, mc::Inventory::kArmorSlots - 1));
+        case mc::SlotRef::Kind::Crafting:
+            return uint64_t{1} << (mc::Inventory::kSlots + 1 + mc::Inventory::kArmorSlots + std::clamp(ref.index, 0, 8));
+        default: return 0;
+    }
+}
+
+} // namespace
+
+void InventoryController::beginDrag(const mc::SlotRef& ref, bool right_held, bool shift, bool cursor_empty) {
+    drag_visited_ = 0;
+    drag_active_ = right_held && !shift && !cursor_empty && ref.kind != mc::SlotRef::Kind::CraftResult &&
+                   ref.kind != mc::SlotRef::Kind::PalettePrev && ref.kind != mc::SlotRef::Kind::PaletteNext;
+    if (drag_active_ && isDragSlot(ref)) drag_visited_ |= dragSlotKey(ref);
+}
+
+void InventoryController::dragTo(const mc::SlotRef& ref, bool right_held, bool shift, bool cursor_empty,
+                                 const std::function<void()>& place_one) {
+    if (!drag_active_) return;
+    if (!right_held || shift || cursor_empty) {
+        drag_active_ = false;
+        drag_visited_ = 0;
+        return;
+    }
+    if (!isDragSlot(ref)) return;
+    const uint64_t key = dragSlotKey(ref);
+    if (key == 0 || (drag_visited_ & key) != 0) return;
+    place_one();
+    drag_visited_ |= key;
+}
+
 void InventoryController::tickWithInput(const InventoryInputState& input, mc::Inventory& inv, RuntimeContext& ctx) {
     const bool want = input.fg && input.want_suppress && ctx.mode().mc_mode.load(std::memory_order_relaxed) && !input.player_dead;
     bool is_open = ctx.ui().inv_open.load(std::memory_order_relaxed);
@@ -57,6 +108,8 @@ void InventoryController::tickWithInput(const InventoryInputState& input, mc::In
     prev_esc_ = input.esc_down;
 
     if (!is_open) {
+        drag_active_ = false;
+        drag_visited_ = 0;
         for (bool& d : prev_digit_) d = false;
         prev_f_ = input.f_down;
         return;
@@ -75,26 +128,32 @@ void InventoryController::tickWithInput(const InventoryInputState& input, mc::In
         // The crafting table: the 3x3 grid and its result share the same session as the inventory's 2x2 grid.
         const mc::CraftingTableLayout lay(input.screen_width, input.screen_height);
         const mc::SlotRef ref = lay.hitTest(mx, my);
-        auto click = [&](mc::Button button) {
+        auto click = [&](mc::Button button, bool shift) {
             switch (ref.kind) {
                 case mc::SlotRef::Kind::Crafting: {
                     std::lock_guard<std::mutex> lock(ctx.ui().craft_mutex);
                     ctx.ui().craft.clickGrid(ref.index % mc::CraftingTableLayout::kGridSize,
-                                             ref.index / mc::CraftingTableLayout::kGridSize, button, input.shift_down, inv);
+                                             ref.index / mc::CraftingTableLayout::kGridSize, button, shift, inv);
                     break;
                 }
                 case mc::SlotRef::Kind::CraftResult: {
                     std::lock_guard<std::mutex> lock(ctx.ui().craft_mutex);
-                    ctx.ui().craft.clickResult(button, input.shift_down, inv);
+                    ctx.ui().craft.clickResult(button, shift, inv);
                     break;
                 }
-                case mc::SlotRef::Kind::Inventory: inv.click(ref.index, button, input.shift_down); break;
+                case mc::SlotRef::Kind::Inventory: inv.click(ref.index, button, shift); break;
                 case mc::SlotRef::Kind::None: inv.clickOutside(); break;
                 default: break;
             }
         };
-        if (input.left_click) click(mc::Button::Left);
-        if (input.right_click) click(mc::Button::Right);
+        if (input.left_click) click(mc::Button::Left, input.shift_down);
+        if (input.right_click) {
+            click(mc::Button::Right, input.shift_down);
+            beginDrag(ref, input.right_held, input.shift_down, inv.cursor().empty());
+        } else if (drag_active_) {
+            dragTo(ref, input.right_held, input.shift_down, inv.cursor().empty(),
+                   [&]() { click(mc::Button::Right, false); });
+        }
 
         for (int i = 0; i < mc::Inventory::kHotbar; ++i) {
             if (input.digit_down[i] && !prev_digit_[i] && ref.kind == mc::SlotRef::Kind::Inventory) {
@@ -119,21 +178,21 @@ void InventoryController::tickWithInput(const InventoryInputState& input, mc::In
         ctx.ui().inv_page.store(next, std::memory_order_relaxed);
     };
 
-    auto click = [&](mc::Button button) {
+    auto click = [&](mc::Button button, bool shift) {
         switch (ref.kind) {
-            case mc::SlotRef::Kind::Inventory: inv.click(ref.index, button, input.shift_down); break;
-            case mc::SlotRef::Kind::Offhand: inv.clickOffhand(button, input.shift_down); break;
-            case mc::SlotRef::Kind::Armor: inv.clickArmor(ref.index, button, input.shift_down); break;
+            case mc::SlotRef::Kind::Inventory: inv.click(ref.index, button, shift); break;
+            case mc::SlotRef::Kind::Offhand: inv.clickOffhand(button, shift); break;
+            case mc::SlotRef::Kind::Armor: inv.clickArmor(ref.index, button, shift); break;
             case mc::SlotRef::Kind::Crafting: {
                 const int x = ref.index % 2;
                 const int y = ref.index / 2;
                 std::lock_guard<std::mutex> lock(ctx.ui().craft_mutex);
-                ctx.ui().craft.clickGrid(x, y, button, input.shift_down, inv);
+                ctx.ui().craft.clickGrid(x, y, button, shift, inv);
                 break;
             }
             case mc::SlotRef::Kind::CraftResult: {
                 std::lock_guard<std::mutex> lock(ctx.ui().craft_mutex);
-                ctx.ui().craft.clickResult(button, input.shift_down, inv);
+                ctx.ui().craft.clickResult(button, shift, inv);
                 break;
             }
             case mc::SlotRef::Kind::Palette: {
@@ -152,8 +211,14 @@ void InventoryController::tickWithInput(const InventoryInputState& input, mc::In
         }
     };
 
-    if (input.left_click) click(mc::Button::Left);
-    if (input.right_click) click(mc::Button::Right);
+    if (input.left_click) click(mc::Button::Left, input.shift_down);
+    if (input.right_click) {
+        click(mc::Button::Right, input.shift_down);
+        beginDrag(ref, input.right_held, input.shift_down, inv.cursor().empty());
+    } else if (drag_active_) {
+        dragTo(ref, input.right_held, input.shift_down, inv.cursor().empty(),
+               [&]() { click(mc::Button::Right, false); });
+    }
 
     // The wheel changes the creative palette page (the survival inventory has none).
     if (palette && input.wheel_notches != 0) change_page(input.wheel_notches > 0 ? 1 : -1);
@@ -164,8 +229,14 @@ void InventoryController::tickWithInput(const InventoryInputState& input, mc::In
     prev_f_ = input.f_down;
 
     for (int i = 0; i < mc::Inventory::kHotbar; ++i) {
-        if (input.digit_down[i] && !prev_digit_[i] && ref.kind == mc::SlotRef::Kind::Inventory) {
-            inv.swapWithHotbar(ref.index, i);
+        if (input.digit_down[i] && !prev_digit_[i]) {
+            if (ref.kind == mc::SlotRef::Kind::Inventory) {
+                inv.swapWithHotbar(ref.index, i);
+            } else if (ref.kind == mc::SlotRef::Kind::Palette) {
+                // Creative palette: a digit key copies the hovered item into that hotbar slot.
+                const mc::ItemId item = mc::paletteItemAt(page, ref.index);
+                if (item != mc::ItemId::None) inv.setSlot(i, {item, mc::maxStackSize(item)});
+            }
         }
         prev_digit_[i] = input.digit_down[i];
     }
@@ -174,6 +245,8 @@ void InventoryController::tickWithInput(const InventoryInputState& input, mc::In
 void InventoryController::open(float screen_w, float screen_h, RuntimeContext& ctx) {
     ctx.ui().inv_mx.store(screen_w * 0.5f, std::memory_order_relaxed);
     ctx.ui().inv_my.store(screen_h * 0.5f, std::memory_order_relaxed);
+    drag_active_ = false;
+    drag_visited_ = 0;
 #if defined(WIN32) && !defined(MC_CORE_TESTS)
     int dx = 0, dy = 0;
     erin::TakeMouseDelta(dx, dy);
@@ -192,6 +265,8 @@ void InventoryController::open(float screen_w, float screen_h, RuntimeContext& c
 }
 
 void InventoryController::close(const char* why, mc::Inventory& inv, RuntimeContext& ctx) {
+    drag_active_ = false;
+    drag_visited_ = 0;
     {
         std::lock_guard<std::mutex> lock(ctx.ui().craft_mutex);
         ctx.ui().craft.returnGridTo(inv);
@@ -209,6 +284,8 @@ void InventoryController::close(const char* why, mc::Inventory& inv, RuntimeCont
 void InventoryController::openCraft(float screen_w, float screen_h, RuntimeContext& ctx) {
     ctx.ui().inv_mx.store(screen_w * 0.5f, std::memory_order_relaxed);
     ctx.ui().inv_my.store(screen_h * 0.5f, std::memory_order_relaxed);
+    drag_active_ = false;
+    drag_visited_ = 0;
 #if defined(WIN32) && !defined(MC_CORE_TESTS)
     int dx = 0, dy = 0;
     erin::TakeMouseDelta(dx, dy);
@@ -222,6 +299,8 @@ void InventoryController::openCraft(float screen_w, float screen_h, RuntimeConte
 }
 
 void InventoryController::closeCraft(const char* why, mc::Inventory& inv, RuntimeContext& ctx) {
+    drag_active_ = false;
+    drag_visited_ = 0;
     {
         std::lock_guard<std::mutex> lock(ctx.ui().craft_mutex);
         ctx.ui().craft.returnGridTo(inv);
@@ -280,6 +359,7 @@ void InventoryController::tick(bool fg, bool want_suppress, bool player_dead, mc
         erin::TakeMouseDelta(input.mouse_dx, input.mouse_dy);
         input.left_click = erin::TakeLeftClick();
         input.right_click = erin::TakeRightClick();
+        input.right_held = erin::RightHeld();
         input.wheel_notches = erin::TakeWheelNotches();
     }
 

@@ -26,6 +26,7 @@ struct InventoryInputState {
     int mouse_dy{0};
     bool left_click{false};
     bool right_click{false};
+    bool right_held{false}; // held for drag placement across slots
     int wheel_notches{0};
     float screen_width{1920.f};
     float screen_height{1080.f};
@@ -92,16 +93,26 @@ public:
         prev_key_ = false;
         prev_esc_ = false;
         prev_f_ = false;
+        drag_active_ = false;
+        drag_visited_ = 0;
         for (bool& d : prev_digit_) d = false;
     }
 
 private:
     InventoryController() = default;
 
+    // Right-click drag placement: pressing starts a sweep, and every newly entered slot gets
+    // one item from the cursor. Each slot is filled at most once per drag.
+    void beginDrag(const mc::SlotRef& ref, bool right_held, bool shift, bool cursor_empty);
+    void dragTo(const mc::SlotRef& ref, bool right_held, bool shift, bool cursor_empty,
+                const std::function<void()>& place_one);
+
     InventoryCallbacks callbacks_;
     bool prev_key_{false};
     bool prev_esc_{false};
     bool prev_f_{false};
+    bool drag_active_{false};
+    uint64_t drag_visited_{0};
     bool prev_digit_[mc::Inventory::kHotbar]{};
 
     static inline IsInputBlockedFn s_isblocked_orig{nullptr};
