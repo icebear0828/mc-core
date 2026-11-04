@@ -77,6 +77,26 @@ TEST(EldenRingFp, TheItemDisplayTransformScalesAndOffsetsTheModel) {
     EXPECT_NEAR(std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z), 0.5f * 0.68f, 1e-4f);
 }
 
+TEST(EldenRingFp, TheOffhandBowUsesTheBowModelsLeftHandTransform) {
+    // bow.json firstperson_lefthand is [0, 90, -25] / [1.13, 3.2, 1.13]; ItemTransform.apply(true)
+    // negates x and the y/z rotation, leaving the right-hand rotation with x = -1.13/16.
+    const mc::Vec3 c = apply(bowDisplay(false), origin());
+    EXPECT_NEAR(c.x, -1.13f / 16.f, 1e-5f);
+    EXPECT_NEAR(c.y, 3.2f / 16.f, 1e-5f);
+    EXPECT_NEAR(c.z, 1.13f / 16.f, 1e-5f);
+    // The offhand bow keeps the main-hand bow's rotation (-90 about Y), unlike itemDisplay(false),
+    // which uses +90 for the generic offhand item.
+    const mc::Vec3 edge = apply(bowDisplay(false), mc::Vec3{0.5f, 0.f, 0.f});
+    const mc::Vec3 d{edge.x - c.x, edge.y - c.y, edge.z - c.z};
+    const mc::Vec3 main_c = apply(bowDisplay(true), origin());
+    const mc::Vec3 main_edge = apply(bowDisplay(true), mc::Vec3{0.5f, 0.f, 0.f});
+    const mc::Vec3 dm{main_edge.x - main_c.x, main_edge.y - main_c.y, main_edge.z - main_c.z};
+    EXPECT_NEAR(d.x, dm.x, 1e-4f);
+    EXPECT_NEAR(d.y, dm.y, 1e-4f);
+    EXPECT_NEAR(d.z, dm.z, 1e-4f);
+    EXPECT_GT(d.z, 0.f);
+}
+
 TEST(EldenRingFp, BlockDisplayScalesBy04AndTurnsTheCubeBy45Degrees) {
     const mc::Vec3 c = apply(blockDisplay(), origin());
     EXPECT_NEAR(c.x, 0.f, 1e-6f); // block/block display has no translation

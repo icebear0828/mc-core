@@ -1181,8 +1181,8 @@ void UpdateWorldFx(const SteveState& steve, float dt, float w, float h) {
             case FxKind::Damage: g_particles.spawnDamage(e.pos, e.count, g_fx_rng); break;
             case FxKind::Sweep: g_particles.spawnSweep(e.pos); break;
             case FxKind::Spark: g_particles.spawnSpark(e.pos, g_fx_rng); break;
-            case FxKind::Dust: g_particles.spawnDust(e.pos, g_fx_rng); break;
-            case FxKind::Firework: g_particles.spawnFirework(e.pos, e.dir, g_fx_rng); break;
+            case FxKind::Dust: g_particles.spawnDust(e.pos, g_fx_rng, e.count > 0 ? e.count : 6); break;
+            case FxKind::Firework: g_particles.spawnFirework(e.pos, e.dir, g_fx_rng, e.count); break;
             // `count` doubles as a phase index here: each queued event advances the ring a little.
             case FxKind::Riptide: g_particles.spawnRiptide(e.pos, static_cast<float>(e.count) * 0.1f, g_fx_rng); break;
         }

@@ -643,7 +643,10 @@ void PlayerLocomotion::stepFlight(float dt, uint64_t now_ms, RuntimeContext& ctx
 
 bool PlayerLocomotion::useElytraFirework(int ticks) {
     if (!elytra_.state().is_gliding) return false;
-    return elytra_.useFireworkBoost(ticks);
+    if (!elytra_.useFireworkBoost(ticks)) return false;
+    // Vanilla plays FIREWORK_ROCKET_LAUNCH on the rocket's first tick, whichever hand used it.
+    if (callbacks_.play_sound) callbacks_.play_sound("entity.firework_rocket.launch", 1.0f);
+    return true;
 }
 
 float PlayerLocomotion::elytraBlend() const {
@@ -657,9 +660,11 @@ float PlayerLocomotion::elytraBlend() const {
 void PlayerLocomotion::stepElytra(float dt, uint64_t now_ms, RuntimeContext& ctx, bool ignore_focus) {
     const bool fg = callbacks_.is_game_in_foreground ? callbacks_.is_game_in_foreground() : true;
     const bool dead = callbacks_.is_player_dead ? callbacks_.is_player_dead() : false;
+    const bool boost_before = ctx.mode().elytra_boosting.load(std::memory_order_relaxed);
     const bool allowed = ctx.mode().mc_mode.load(std::memory_order_relaxed) && (ignore_focus || fg) && !dead &&
                          !ctx.ui().inv_open.load(std::memory_order_relaxed) && !isFlying();
     if (!allowed) {
+        ctx.mode().elytra_boosting.store(false, std::memory_order_relaxed);
         if (elytra_.state().is_gliding) {
             elytra_.stopGliding();
             ctx.mode().elytra_gliding.store(false, std::memory_order_relaxed);
@@ -730,6 +735,7 @@ void PlayerLocomotion::stepElytra(float dt, uint64_t now_ms, RuntimeContext& ctx
     if (on_ground || !has_glider) {
         elytra_.stopGliding();
         ctx.mode().elytra_gliding.store(false, std::memory_order_relaxed);
+        ctx.mode().elytra_boosting.store(false, std::memory_order_relaxed);
         elytra_have_pos_ = false;
         elytra_have_written_ = false;
         log("elytra: stopped (%s)", on_ground ? "ground" : "no glider");
@@ -753,6 +759,7 @@ void PlayerLocomotion::stepElytra(float dt, uint64_t now_ms, RuntimeContext& ctx
         if (residual > 5.f) {
             elytra_.stopGliding();
             ctx.mode().elytra_gliding.store(false, std::memory_order_relaxed);
+            ctx.mode().elytra_boosting.store(false, std::memory_order_relaxed);
             elytra_have_pos_ = false;
             elytra_have_written_ = false;
             log("elytra: stopped (engine teleported %.1f m)", static_cast<double>(residual));
@@ -779,6 +786,14 @@ void PlayerLocomotion::stepElytra(float dt, uint64_t now_ms, RuntimeContext& ctx
         if (!have_cam) break;
         const mc::Vec3 look{cam.forward[0], cam.forward[1], cam.forward[2]};
         elytra_.updateTick(look, false);
+    }
+
+    // The rocket's lerp runs at 20 Hz; the renderer reads this flag to stream the trail and
+    // bumps the burst counter once when the last boost tick has been consumed (vanilla's POOF).
+    const bool boosting = elytra_.state().firework_ticks_left > 0;
+    ctx.mode().elytra_boosting.store(boosting, std::memory_order_relaxed);
+    if (boost_before && !boosting) {
+        ctx.mode().elytra_firework_burst_seq.fetch_add(1, std::memory_order_relaxed);
     }
 
     // Per-frame position integration using the current velocity.

@@ -150,6 +150,21 @@ void HotkeyDispatcher::tick(float dt) {
     }
 #endif
 
+#if defined(_WIN32)
+    // MC mode owns F (offhand swap). Mask its scan code so the native game does not also act on
+    // it: on layouts that bind F to guard, pressing it would block instead of swapping hands.
+    int mc_scans[1] = {};
+    size_t mc_scan_count = 0;
+    if (control_inputs.mc_mode && ctx.fg && !inv_open_for_policy) {
+        const int mc_keys[] = {'F'};
+        for (const int vk : mc_keys) {
+            const int sc = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC));
+            if (sc > 0) mc_scans[mc_scan_count++] = sc;
+        }
+    }
+    control_inputs.mc_keys = std::span<const int>(mc_scans, mc_scan_count);
+#endif
+
 #if ENABLE_CS2_VIEWMODEL && defined(_WIN32)
     // CS mode owns these keys. Hide them from the game, or R uses a quick item
     // while reloading and 1-4 select vanilla quick slots.

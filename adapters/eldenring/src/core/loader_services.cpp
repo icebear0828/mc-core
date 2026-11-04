@@ -1,6 +1,7 @@
 #include "core/loader_internal.hpp"
 #include "eldenring_physprobe.hpp"
 #include "eldenring_physwrite.hpp"
+#include "mc/hand_items.hpp"
 
 #include <cstdlib>
 #include <share.h>
@@ -304,17 +305,29 @@ bool TryUseElytraFirework() {
         return false;
     }
     std::lock_guard<std::mutex> g(g_melee_mutex);
-    if (g_melee.heldItem() != mc::ItemId::FireworkRocket || g_melee.countAt(g_melee.selectedSlot()) <= 0) {
-        return false;
-    }
+    const mc::ItemId main_item = g_melee.heldItem();
+    const unsigned main_count = g_melee.countAt(g_melee.selectedSlot());
+    const mc::ItemId off_item = g_melee.offhandItem();
+    const unsigned off_count = g_melee.offhandCount();
+    // Same rule as the bow/trident: main hand first, offhand only when the main hand has no
+    // right-click action of its own. This is what lets a firework in the offhand boost a glide
+    // while the main hand keeps a sword.
+    const auto hand = mc::handForUse(mc::ItemId::FireworkRocket,
+                                     main_count > 0 ? main_item : mc::ItemId::None,
+                                     off_count > 0 ? off_item : mc::ItemId::None);
+    if (!hand.has_value()) return false;
     // Vanilla: 10*(1+flight_duration)+rand(6)+rand(7). We do not track the
     // component's flight_duration yet; 30 ticks matches the common duration 1.
     const int ticks = 30;
     if (!eldenring::movement::PlayerLocomotion::Instance().useElytraFirework(ticks)) return false;
     if (eldenring::creative::consumesItems(ctx.currentGameMode())) {
-        g_melee.consumeFirst(mc::ItemId::FireworkRocket);
+        if (*hand == mc::Hand::Main) {
+            g_melee.consumeAt(g_melee.selectedSlot());
+        } else {
+            g_melee.consumeOffhand(mc::ItemId::FireworkRocket);
+        }
     }
-    Log("elytra: firework boost %d ticks", ticks);
+    Log("elytra: firework boost %d ticks hand=%s", ticks, *hand == mc::Hand::Main ? "main" : "off");
     return true;
 }
 

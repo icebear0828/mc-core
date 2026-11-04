@@ -135,6 +135,10 @@ struct ModeConfig {
     // Vanilla's glide pose blend f0 = 1 - (-vy/|v|)^1.5 while descending, 1 otherwise: 1 spreads the wings,
     // 0 folds them back. Written by the elytra step, read by the renderer.
     std::atomic<float> elytra_blend{1.f};
+    // Elytra firework boost: true while the attached rocket is accelerating, and a counter bumped
+    // when it runs out so the renderer can spawn the end poof exactly once.
+    std::atomic<bool> elytra_boosting{false};
+    std::atomic<uint32_t> elytra_firework_burst_seq{0};
     // Trident Riptide: the charge progress [0,1] (10 ticks to full) and the level from mc_er_steve.txt.
     std::atomic<float> trident_charge{0.f};
     std::atomic<bool> trident_offhand{false}; // the active trident is in the offhand
@@ -378,6 +382,8 @@ public:
         mode_.dbg_trident_charge.store(0.f);
         mode_.trident_offhand.store(false);
         mode_.dbg_firework_seq.store(0);
+        mode_.elytra_boosting.store(false);
+        mode_.elytra_firework_burst_seq.store(0);
         mode_.cs_knife_state.store(0);
         mode_.cs_knife_anim_time.store(0.f);
         mode_.cs_knife_inspect.store(false);

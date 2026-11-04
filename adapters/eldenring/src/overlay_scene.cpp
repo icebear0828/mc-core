@@ -245,6 +245,29 @@ void RenderFrame(IDXGISwapChain* sc) {
                 const float dir[3] = {steve.cam.forward.x, steve.cam.forward.y, steve.cam.forward.z};
                 SpawnFx(FxKind::Firework, pos, dir, 0);
             }
+            // Elytra firework boost: vanilla emits one FIREWORK particle per tick from the attached
+            // rocket; a small 20 Hz stream reads as a trail at render rates. When the boost runs out,
+            // ClientLevel.createFireworks spawns 2-4 POOF particles for a rocket with no explosion.
+            {
+                static float trail_acc = 0.f;
+                if (steve.firework_boosting) {
+                    trail_acc += dt;
+                    while (trail_acc >= 0.05f) {
+                        trail_acc -= 0.05f;
+                        const float pos[3] = {steve.feet[0], steve.feet[1] + 1.0f, steve.feet[2]};
+                        const float dir[3] = {steve.cam.forward.x, steve.cam.forward.y, steve.cam.forward.z};
+                        SpawnFx(FxKind::Firework, pos, dir, 4);
+                    }
+                } else {
+                    trail_acc = 0.f;
+                }
+                static uint32_t last_burst = 0;
+                if (steve.firework_burst_seq != last_burst) {
+                    last_burst = steve.firework_burst_seq;
+                    const float pos[3] = {steve.feet[0], steve.feet[1] + 1.0f, steve.feet[2]};
+                    SpawnFx(FxKind::Dust, pos, 4);
+                }
+            }
             if (steve.riptide) {
                 static float acc = 0.f;
                 static float phase = 0.f;

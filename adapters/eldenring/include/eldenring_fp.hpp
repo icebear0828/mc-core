@@ -279,6 +279,18 @@ inline M4 itemDisplay(bool main_hand = true) {
     return mul(p, scale(0.68f));
 }
 
+// The bow's first-person display (models/item/bow.json). Unlike item/generated it defines
+// firstperson_lefthand explicitly: [0, 90, -25] / [1.13, 3.2, 1.13]. ItemTransform.apply(leftHand=true)
+// then negates the x translation and the y/z rotation, so the applied left-hand transform is the
+// right-hand rotation (-90, 25) with x = -1.13/16. itemDisplay(false) would use (+90, -25) and turn
+// the offhand bow the wrong way.
+inline M4 bowDisplay(bool main_hand = true) {
+    const float tx = (main_hand ? 1.13f : -1.13f) / 16.f;
+    M4 p = translate(tx, 3.2f / 16.f, 1.13f / 16.f);
+    p = mul(p, mul(rotX(0.f), mul(rotY(-90.f), rotZ(25.f))));
+    return mul(p, scale(0.68f));
+}
+
 // The display transform of the shield in first person: models/item/shield.json (idle) and shield_blocking.json (`blocking`, the use animation),
 // firstperson_righthand / firstperson_lefthand (1.21.8), as ItemTransform.apply does it: the left hand negates the y and z rotation and the x
 // translation, then translate * rotationXYZ (= Rx * Ry * Rz) * scale. It is applied to the shield model of buildShieldFirstPersonMesh, which
@@ -346,7 +358,7 @@ inline HandView handView(const mc::HandItem& item, bool main_hand, float swing, 
         case mc::HandModel::Shield: view.display = shieldFpDisplay(!main_hand, item.raised); break;
         case mc::HandModel::Trident: view.display = main_hand ? tridentFpDisplay() : tridentFpDisplayLeft(); break;
         case mc::HandModel::Block: view.display = blockDisplay(main_hand); break;
-        default: view.display = itemDisplay(main_hand); break;
+        default: view.display = item.item == mc::ItemId::Bow ? bowDisplay(main_hand) : itemDisplay(main_hand); break;
     }
     return view;
 }

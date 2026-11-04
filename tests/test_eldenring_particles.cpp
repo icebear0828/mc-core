@@ -143,6 +143,27 @@ TEST(EldenRingParticles, FireworkWithoutADirectionStillSpawnsUpwardSparks) {
     }
 }
 
+TEST(EldenRingParticles, FireworkTrailCountIsControllable) {
+    ParticleSystem ps;
+    Rng rng(24);
+    const float at[3] = {0.f, 1.f, 0.f};
+    const float dir[3] = {0.f, 0.f, 1.f};
+    ps.spawnFirework(at, dir, rng, 4); // the 20 Hz glide trail
+    EXPECT_EQ(ps.alive().size(), 4u);
+    ParticleSystem burst;
+    burst.spawnFirework(at, dir, rng, 0); // 0 keeps the one-shot default
+    EXPECT_EQ(burst.alive().size(), 10u);
+}
+
+TEST(EldenRingParticles, DustCountMatchesTheFireworkEndPoof) {
+    ParticleSystem ps;
+    Rng rng(25);
+    const float at[3] = {0.f, 1.f, 0.f};
+    ps.spawnDust(at, rng, 4); // vanilla's 2-4 POOF particles
+    EXPECT_EQ(ps.alive().size(), 4u);
+    for (const Particle& p : ps.alive()) EXPECT_EQ(p.kind, Kind::Dust);
+}
+
 TEST(EldenRingParticles, RiptideDropletsFormARingAroundThePlayer) {
     ParticleSystem ps;
     Rng rng(23);

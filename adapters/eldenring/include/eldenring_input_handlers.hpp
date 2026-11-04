@@ -118,6 +118,8 @@ public:
 private:
     bool prev_gameplay_f_{false};
     bool prev_digit_[9]{};
+    float place_repeat_sec_{0.f}; // hold-to-place cadence, reset on the click edge
+    bool place_repeat_armed_{false}; // only a fresh right-click edge starts the cadence
     bow::BowController bow_;
     shield::ShieldController shield_;
     float trident_charge_ticks_{0.f};

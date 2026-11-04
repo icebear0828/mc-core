@@ -133,8 +133,18 @@ TEST(HandItemsTest, AnActiveUseSuppressesTheSwingOnThatHand) {
 TEST(HandItemsTest, PlaceableBlocksClaimTheRightClick) {
     EXPECT_TRUE(mc::claimsRightClick(ItemId::BlockCobblestone));
     EXPECT_TRUE(mc::claimsRightClick(ItemId::CraftingTable));
+    EXPECT_TRUE(mc::claimsRightClick(ItemId::FireworkRocket));
     EXPECT_FALSE(mc::claimsRightClick(ItemId::DiamondSword));
     EXPECT_FALSE(mc::claimsRightClick(ItemId::DiamondPickaxe));
+}
+
+TEST(HandItemsTest, AFireworkInTheOffhandBoostsWhenTheMainHandDoesNotClaimTheButton) {
+    EXPECT_EQ(mc::handForUse(ItemId::FireworkRocket, ItemId::DiamondSword, ItemId::FireworkRocket), Hand::Off);
+    EXPECT_EQ(mc::handForUse(ItemId::FireworkRocket, ItemId::None, ItemId::FireworkRocket), Hand::Off);
+    EXPECT_EQ(mc::handForUse(ItemId::FireworkRocket, ItemId::FireworkRocket, ItemId::DiamondSword), Hand::Main);
+    // Food/bow/shield/block in the main hand claim the button, so the offhand rocket waits.
+    EXPECT_EQ(mc::handForUse(ItemId::FireworkRocket, ItemId::Bread, ItemId::FireworkRocket), std::nullopt);
+    EXPECT_EQ(mc::handForUse(ItemId::FireworkRocket, ItemId::None, ItemId::DiamondSword), std::nullopt);
 }
 
 TEST(HandItemsTest, HandForUseFollowsTheMainHandFirstRule) {

@@ -76,7 +76,7 @@ ControlPlan（每帧一份：各 domain 的 authority + 要屏蔽的键）
 | Jump | Native | **None**（`mc_jump` 开） | Native | 同 MC | **Mod** | Native |
 | Roll | Native | **None**（禁用翻滚） | Native | 同 MC | Native | Native |
 | Attack / Use | Native | Mod* | Mod* | 不变 | 不变 | Native |
-| 单键屏蔽 | 无 | Space（`mc_jump`）、Shift（禁用翻滚） | R/F/1-4 | 无 | WASD/Space/Shift/Ctrl | 无 |
+| 单键屏蔽 | 无 | Space（`mc_jump`）、Shift（禁用翻滚）、F（副手交换，防止触发原生格挡） | R/F/1-4 | 无 | WASD/Space/Shift/Ctrl | 无 |
 
 说明：
 

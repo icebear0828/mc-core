@@ -44,6 +44,8 @@ EVENTS = [
     "entity.ender_pearl.throw", "entity.player.teleport", "entity.ender_eye.launch",
     # trident riptide (one event per enchantment level)
     "item.trident.riptide_1", "item.trident.riptide_2", "item.trident.riptide_3",
+    # elytra firework boost: the rocket's first tick plays launch (the plain rocket ends with a poof)
+    "entity.firework_rocket.launch",
     # tnt & explosion
     "entity.tnt.primed", "entity.creeper.primed", "entity.generic.explode",
 ]

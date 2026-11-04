@@ -127,6 +127,117 @@ TEST(RecipeBook, ShieldAnvilTntFlintAndSteelAndGoldenAppleRecipesExist) {
     }
 }
 
+// --- Tool ladder ----------------------------------------------------------
+
+TEST(RecipeBook, PickaxeLadderRecipesExistAndCraft) {
+    RecipeBook book;
+    const std::array<ItemId, 6> ladder{ItemId::WoodenPickaxe, ItemId::StonePickaxe, ItemId::IronPickaxe,
+                                       ItemId::GoldenPickaxe, ItemId::DiamondPickaxe, ItemId::NetheritePickaxe};
+    for (ItemId item : ladder) {
+        const Recipe* r = findResult(book, item);
+        ASSERT_NE(r, nullptr) << "missing recipe for pickaxe " << static_cast<int>(item);
+        ASSERT_EQ(r->kind, RecipeKind::Shaped);
+        ASSERT_EQ(r->width, 3);
+        ASSERT_EQ(r->height, 3);
+
+        CraftingGrid grid = placePattern(*r);
+        EXPECT_TRUE(book.matches(*r, grid)) << "pickaxe recipe did not match: " << static_cast<int>(item);
+        EXPECT_EQ(book.find(grid), r);
+
+        Inventory inv;
+        const CraftResult out = book.craft(*r, grid, inv);
+        ASSERT_TRUE(out.ok);
+        EXPECT_EQ(out.output.item, item);
+        EXPECT_TRUE(grid.empty());
+    }
+}
+
+TEST(RecipeBook, PickaxeRecipeDoesNotMatchASwordGrid) {
+    RecipeBook book;
+    const Recipe* pickaxe = findResult(book, ItemId::WoodenPickaxe);
+    const Recipe* sword = findResult(book, ItemId::WoodenSword);
+    ASSERT_NE(pickaxe, nullptr);
+    ASSERT_NE(sword, nullptr);
+    EXPECT_FALSE(book.matches(*pickaxe, placePattern(*sword)));
+}
+
+TEST(RecipeBook, BowRecipeUsesSticksAndString) {
+    RecipeBook book;
+    const Recipe* r = findResult(book, ItemId::Bow);
+    ASSERT_NE(r, nullptr);
+    ASSERT_EQ(r->kind, RecipeKind::Shaped);
+    CraftingGrid grid = placePattern(*r);
+    int sticks = 0;
+    int strings = 0;
+    for (const ItemStack& cell : grid.cells) {
+        if (cell.item == ItemId::Stick) ++sticks;
+        if (cell.item == ItemId::String) ++strings;
+    }
+    EXPECT_EQ(sticks, 3);
+    EXPECT_EQ(strings, 3);
+    Inventory inv;
+    const CraftResult out = book.craft(*r, grid, inv);
+    ASSERT_TRUE(out.ok);
+    EXPECT_EQ(out.output.item, ItemId::Bow);
+}
+
+TEST(RecipeBook, TorchRecipeIsShapelessCoalAndStick) {
+    RecipeBook book;
+    const Recipe* r = findResult(book, ItemId::Torch);
+    ASSERT_NE(r, nullptr);
+    ASSERT_EQ(r->kind, RecipeKind::Shapeless);
+    EXPECT_EQ(r->result.count, 4u);
+    CraftingGrid grid = grid3(ItemId::Coal, ItemId::Stick, ItemId::None, ItemId::None, ItemId::None, ItemId::None,
+                              ItemId::None, ItemId::None, ItemId::None);
+    EXPECT_TRUE(book.matches(*r, grid));
+    Inventory inv;
+    const CraftResult out = book.craft(*r, grid, inv);
+    ASSERT_TRUE(out.ok);
+    EXPECT_EQ(out.output.item, ItemId::Torch);
+    EXPECT_EQ(out.output.count, 4u);
+}
+
+TEST(RecipeBook, DiamondArmorRecipesExistAndCraft) {
+    RecipeBook book;
+    const std::array<ItemId, 4> armor{ItemId::DiamondHelmet, ItemId::DiamondChestplate, ItemId::DiamondLeggings,
+                                      ItemId::DiamondBoots};
+    for (ItemId item : armor) {
+        const Recipe* r = findResult(book, item);
+        ASSERT_NE(r, nullptr) << "missing recipe for armor " << static_cast<int>(item);
+        CraftingGrid grid = placePattern(*r);
+        EXPECT_TRUE(book.matches(*r, grid)) << "armor recipe did not match: " << static_cast<int>(item);
+        Inventory inv;
+        const CraftResult out = book.craft(*r, grid, inv);
+        ASSERT_TRUE(out.ok);
+        EXPECT_EQ(out.output.item, item);
+    }
+}
+
+TEST(RecipeBook, StoneBricksStoneSlabAndWoolRecipesExistAndCraft) {
+    RecipeBook book;
+    const std::array<ItemId, 3> items{ItemId::BlockStoneBricks, ItemId::BlockStoneSlab, ItemId::BlockWhiteWool};
+    for (ItemId item : items) {
+        const Recipe* r = findResult(book, item);
+        ASSERT_NE(r, nullptr) << "missing recipe for item " << static_cast<int>(item);
+        CraftingGrid grid;
+        if (r->kind == RecipeKind::Shaped) {
+            grid = placePattern(*r);
+        } else {
+            int i = 0;
+            for (int k = 0; k < r->ingredient_count; ++k) {
+                for (int n = 0; n < r->ingredients[static_cast<size_t>(k)].count; ++n) {
+                    grid.cells[static_cast<size_t>(i++)] = {r->ingredients[static_cast<size_t>(k)].item, 1};
+                }
+            }
+        }
+        EXPECT_TRUE(book.matches(*r, grid)) << "recipe did not match: " << static_cast<int>(item);
+        Inventory inv;
+        const CraftResult out = book.craft(*r, grid, inv);
+        ASSERT_TRUE(out.ok);
+        EXPECT_EQ(out.output.item, item);
+    }
+}
+
 // --- Shaped matching ------------------------------------------------------
 
 TEST(RecipeBook, ShapedRecipeMatchesAnywhereInTheThreeByThreeGrid) {

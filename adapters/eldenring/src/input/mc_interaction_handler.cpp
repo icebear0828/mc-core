@@ -12,15 +12,45 @@
 
 namespace eldenring::input {
 
+namespace {
+// Minecraft repeats a held right-click placement every 4 ticks (0.2 s).
+constexpr float kPlaceRepeatSec = 0.2f;
+} // namespace
+
 void McInteractionHandler::reset() {
     prev_gameplay_f_ = false;
     for (bool& key : prev_digit_) key = false;
+    place_repeat_sec_ = 0.f;
+    place_repeat_armed_ = false;
 }
 
 void McInteractionHandler::tickRightClick(const InputTickContext& ctx) {
-    if (!(ctx.right_edge && ctx.fg && ctx.want_suppress && !ctx.is_dead)) {
+    const bool active = ctx.fg && ctx.want_suppress && !ctx.is_dead && !ctx.inv_open && ctx.input_enabled;
+    if (!active) {
+        place_repeat_sec_ = 0.f;
+        place_repeat_armed_ = false;
         return;
     }
+
+    if (!ctx.right_edge) {
+        // Hold-to-place: after the edge click, keep placing one block at a time while the
+        // button stays down. Non-block items make the callback fail, which stops the cadence.
+        const bool right_held = ctx.cb->right_held && ctx.cb->right_held();
+        if (right_held && place_repeat_armed_ && ctx.cb->try_place_block) {
+            place_repeat_sec_ += ctx.dt;
+            if (place_repeat_sec_ >= kPlaceRepeatSec) {
+                place_repeat_sec_ -= kPlaceRepeatSec;
+                if (!ctx.cb->try_place_block()) place_repeat_sec_ = 0.f;
+            }
+        } else {
+            place_repeat_sec_ = 0.f;
+            if (!right_held) place_repeat_armed_ = false;
+        }
+        return;
+    }
+
+    place_repeat_sec_ = 0.f;
+    place_repeat_armed_ = true;
     auto& runtime = RuntimeContext::Instance();
     auto& player = runtime.player();
     auto& combat = runtime.combat();

@@ -148,6 +148,8 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
                                         dbg.trident_charge.load(std::memory_order_relaxed));
         steve.trident_offhand = dbg.trident_offhand.load(std::memory_order_relaxed);
         steve.firework_seq = dbg.dbg_firework_seq.load(std::memory_order_relaxed);
+        steve.firework_boosting = dbg.elytra_boosting.load(std::memory_order_relaxed);
+        steve.firework_burst_seq = dbg.elytra_firework_burst_seq.load(std::memory_order_relaxed);
     }
     return true;
 }

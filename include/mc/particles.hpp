@@ -93,8 +93,9 @@ public:
     }
 
     // A small grey dust puff for a bullet hitting a floor or wall. It drifts up and fades; no gravity.
-    void spawnDust(const float at[3], Rng& rng) {
-        for (int i = 0; i < 6 && particles_.size() < kMax; ++i) {
+    // `count` lets the firework's end poof match vanilla's 2-4 POOF particles.
+    void spawnDust(const float at[3], Rng& rng, int count = 6) {
+        for (int i = 0; i < count && particles_.size() < kMax; ++i) {
             Particle p;
             p.kind = ParticleKind::Dust;
             std::copy(at, at + 3, p.pos);
@@ -123,8 +124,11 @@ public:
     }
 
     // Elytra firework boost (#38): a jet of upward sparks and a trail streaming opposite the rocket's
-    // direction of travel. `dir` may be all zeros, which is treated as straight up.
-    void spawnFirework(const float at[3], const float dir[3], Rng& rng) {
+    // direction of travel. `dir` may be all zeros, which is treated as straight up. `count` is the
+    // per-call particle count; 0 uses kFireworkCount (the one-shot burst), while the glide trail
+    // passes a smaller number so it can run every tick without flooding the pool.
+    void spawnFirework(const float at[3], const float dir[3], Rng& rng, int count = kFireworkCount) {
+        if (count <= 0) count = kFireworkCount;
         float f[3] = {dir[0], dir[1], dir[2]};
         float len = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
         if (len < 1e-4f) {
@@ -133,7 +137,7 @@ public:
             f[2] = 0.f;
             len = 1.f;
         }
-        for (int i = 0; i < kFireworkCount && particles_.size() < kMax; ++i) {
+        for (int i = 0; i < count && particles_.size() < kMax; ++i) {
             Particle p;
             p.kind = ParticleKind::Firework;
             p.pos[0] = at[0] + rng.range(-0.12f, 0.12f);
