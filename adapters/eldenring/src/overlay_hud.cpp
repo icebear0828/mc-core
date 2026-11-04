@@ -428,10 +428,10 @@ void DrawInventory(const HudState& hud, float w, float h) {
             sp.abs_bias = 0.f;
             sp.tint[0] = sp.tint[1] = sp.tint[2] = sp.tint[3] = 0.f;
             sp.keep_depth = false;
-            sp.held_item = g_inv_preview.held_item;
-            sp.offhand_item = g_inv_preview.offhand_item;
-            sp.shield_blocking = false;
-            sp.block_offhand = false;
+            mc::HandItemInput hand_in;
+            hand_in.main_item = static_cast<mc::ItemId>(g_inv_preview.held_item);
+            hand_in.off_item = static_cast<mc::ItemId>(g_inv_preview.offhand_item);
+            sp.hands = mc::planHandItems(hand_in);
             sp.held_table = g_atlas_ready ? g_held_table_gpu : D3D12_GPU_DESCRIPTOR_HANDLE{};
 
             g_steve.drawInventoryPreview(g_s.list, g_s.srv_heap, g_depth_gpu, pvp, psc, vp, parts, sp, g_current_rtv);

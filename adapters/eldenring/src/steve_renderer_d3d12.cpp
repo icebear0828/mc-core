@@ -493,10 +493,11 @@ void SteveRenderer::drawMobModel(ID3D12GraphicsCommandList* list, ID3D12Descript
         setConstants(list, view_proj, bones[i], params, width, height, params.tint);
         list->DrawIndexedInstanced(ranges[i].index_count, 1, ranges[i].first_index, ranges[i].base_vertex, 0);
     }
-    if (params.held_item != 0 && held_vertices_ && params.held_table.ptr != 0) {
+    const mc::HandItem& main = params.hands.main;
+    if (main.present && held_vertices_ && params.held_table.ptr != 0) {
         const int arm_ix = mesh ? mesh->right_arm_ix : -1;
         if (arm_ix >= 0 && static_cast<size_t>(arm_ix) < bones.size()) {
-            const auto it = held_items_.find(params.held_item);
+            const auto it = held_items_.find(static_cast<uint16_t>(main.shown));
             if (it != held_items_.end()) {
                 list->SetGraphicsRootDescriptorTable(1, params.held_table);
                 list->IASetVertexBuffers(0, 1, &held_vbv_);
@@ -571,29 +572,25 @@ void SteveRenderer::drawPearls(ID3D12GraphicsCommandList* list, ID3D12Descriptor
 }
 
 void SteveRenderer::drawAttachments(ID3D12GraphicsCommandList* list, const eldenring::render::PartMatrices& parts, const SteveParams& params) {
-    // The trident is drawn as the 3D TridentModel prop, not as the flat held-item sprite (otherwise both show).
-    const bool held_is_trident = params.held_item == static_cast<uint16_t>(mc::ItemId::Trident);
-    if (!held_is_trident && params.held_item != 0 && held_vertices_ && params.held_table.ptr != 0) {
-        const bool raised = params.held_item == static_cast<uint16_t>(mc::ItemId::Shield) && params.shield_blocking && !params.block_offhand;
-        const auto it = held_items_.find(static_cast<uint16_t>(params.held_item | (raised ? kBlockingKeyBit : 0)));
-        if (it != held_items_.end()) {
-            list->SetGraphicsRootDescriptorTable(1, params.held_table);
-            list->IASetVertexBuffers(0, 1, &held_vbv_);
-            list->IASetIndexBuffer(&held_ibv_);
-            list->SetGraphicsRoot32BitConstants(0, 16, parts[static_cast<size_t>(mc::StevePart::RightArm)].m.data(), 16);
-            list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
-        }
-    }
-    if (params.offhand_item != 0 && offhand_vertices_ && params.held_table.ptr != 0) {
-        const bool raised = params.offhand_item == static_cast<uint16_t>(mc::ItemId::Shield) && params.shield_blocking && params.block_offhand;
-        const auto it = offhand_items_.find(static_cast<uint16_t>(params.offhand_item | (raised ? kBlockingKeyBit : 0)));
-        if (it != offhand_items_.end()) {
-            list->SetGraphicsRootDescriptorTable(1, params.held_table);
-            list->IASetVertexBuffers(0, 1, &offhand_vbv_);
-            list->IASetIndexBuffer(&offhand_ibv_);
-            list->SetGraphicsRoot32BitConstants(0, 16, parts[static_cast<size_t>(mc::StevePart::LeftArm)].m.data(), 16);
-            list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
-        }
+    // Both hands use the same path: the sprite meshes are mirrored per hand, and the raised-shield
+    // variant is selected by the hand plan. 3D props (the trident) are drawn by the caller.
+    for (const mc::Hand hand : {mc::Hand::Main, mc::Hand::Off}) {
+        const mc::HandItem& item = params.hands[hand];
+        if (!item.present || item.model == mc::HandModel::Trident || params.held_table.ptr == 0) continue;
+        ID3D12Resource* vertices = hand == mc::Hand::Main ? held_vertices_ : offhand_vertices_;
+        if (vertices == nullptr) continue;
+        const auto& draws = hand == mc::Hand::Main ? held_items_ : offhand_items_;
+        const bool raised = item.use == mc::HandUse::Block && item.raised;
+        const auto it = draws.find(static_cast<uint16_t>(static_cast<uint16_t>(item.shown) | (raised ? kBlockingKeyBit : 0)));
+        if (it == draws.end()) continue;
+        const D3D12_VERTEX_BUFFER_VIEW& vbv = hand == mc::Hand::Main ? held_vbv_ : offhand_vbv_;
+        const D3D12_INDEX_BUFFER_VIEW& ibv = hand == mc::Hand::Main ? held_ibv_ : offhand_ibv_;
+        const auto part = hand == mc::Hand::Main ? mc::StevePart::RightArm : mc::StevePart::LeftArm;
+        list->SetGraphicsRootDescriptorTable(1, params.held_table);
+        list->IASetVertexBuffers(0, 1, &vbv);
+        list->IASetIndexBuffer(&ibv);
+        list->SetGraphicsRoot32BitConstants(0, 16, parts[static_cast<size_t>(part)].m.data(), 16);
+        list->DrawIndexedInstanced(it->second.index_count, 1, it->second.first_index, it->second.base_vertex, 0);
     }
 }
 

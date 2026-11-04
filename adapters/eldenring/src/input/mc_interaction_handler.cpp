@@ -34,11 +34,24 @@ void McInteractionHandler::tickRightClick(const InputTickContext& ctx) {
     else if (ctx.mc_on && ctx.cb->throw_ender_pearl && ctx.cb->throw_ender_pearl()) handled = true;
     else {
         std::lock_guard<std::mutex> g(combat.melee_mutex);
-        const mc::ItemId item = combat.melee.heldItem();
-        if (item == mc::ItemId::Trident) return; // charged in tickTrident; never eaten
-        if (!player.eating.isEating() && combat.melee.countAt(combat.melee.selectedSlot()) > 0 &&
-            player.hunger.canEat(item) && player.eating.startEating(item)) {
-            if (ctx.cb->log) ctx.cb->log("SURVIVAL: started eating item " + std::to_string(static_cast<int>(item)));
+        const mc::ItemId main_item = combat.melee.heldItem();
+        const unsigned main_count = combat.melee.countAt(combat.melee.selectedSlot());
+        const mc::ItemId off_item = combat.melee.offhandItem();
+        const unsigned off_count = combat.melee.offhandCount();
+        if (main_item == mc::ItemId::Trident) return; // charged in tickTrident; never eaten
+        if (player.eating.isEating()) return;
+        // The one priority rule: the main hand first, the offhand only when the main hand has no
+        // right-click action of its own. It also covers offhand food.
+        mc::HandItemInput hi;
+        hi.main_item = main_count > 0 ? main_item : mc::ItemId::None;
+        hi.off_item = off_count > 0 ? off_item : mc::ItemId::None;
+        hi.eating = true;
+        const mc::HandItem* meal = mc::planHandItems(hi).findUse(mc::HandUse::Eat);
+        if (meal != nullptr) {
+            const unsigned count = meal->hand == mc::Hand::Main ? main_count : off_count;
+            if (count > 0 && player.hunger.canEat(meal->item) && player.eating.startEating(meal->item)) {
+                if (ctx.cb->log) ctx.cb->log("SURVIVAL: started eating item " + std::to_string(static_cast<int>(meal->item)));
+            }
         }
     }
     (void)handled;
@@ -55,13 +68,13 @@ void McInteractionHandler::tickTrident(const InputTickContext& ctx) {
         std::lock_guard<std::mutex> g(combat.melee_mutex);
         const mc::ItemId main_item = combat.melee.heldItem();
         const unsigned main_count = combat.melee.countAt(combat.melee.selectedSlot());
-        holding = main_count > 0 && main_item == mc::ItemId::Trident;
+        const mc::ItemId off_item = combat.melee.offhandItem();
+        const unsigned off_count = combat.melee.offhandCount();
         // Like the bow: the offhand trident is used only when the main hand has no right-click action of its own.
-        if (!holding && combat.melee.offhandCount() > 0 && combat.melee.offhandItem() == mc::ItemId::Trident &&
-            !(main_count > 0 && mc::mainHandClaimsRightClick(main_item))) {
-            holding = true;
-            offhand = true;
-        }
+        const auto hand = mc::handForUse(mc::ItemId::Trident, main_count > 0 ? main_item : mc::ItemId::None,
+                                         off_count > 0 ? off_item : mc::ItemId::None);
+        holding = hand.has_value();
+        offhand = hand == mc::Hand::Off;
     }
     mode.trident_offhand.store(offhand, std::memory_order_relaxed);
     const bool usable = holding && mode.riptide_level.load(std::memory_order_relaxed) > 0 && ctx.mc_on && ctx.fg &&
@@ -92,12 +105,14 @@ void McInteractionHandler::tickBow(const InputTickContext& ctx) {
     {
         std::lock_guard<std::mutex> g(combat.melee_mutex);
         combat.melee.select(combat.melee.selectedSlot());
-        const bool in_offhand = bow::bowInOffhand(combat.melee.heldItem(), combat.melee.countAt(combat.melee.selectedSlot()),
-                                                  combat.melee.offhandItem(), combat.melee.offhandCount());
-        mode.bow_offhand.store(in_offhand, std::memory_order_relaxed);
-        usable = bow::bowHandUsable(combat.melee.heldItem(), combat.melee.countAt(combat.melee.selectedSlot()),
-                                    combat.melee.offhandItem(), combat.melee.offhandCount()) &&
-                 (!creative::consumesItems(runtime.currentGameMode()) || combat.melee.has(mc::ItemId::Arrow));
+        const mc::ItemId main_item = combat.melee.heldItem();
+        const unsigned main_count = combat.melee.countAt(combat.melee.selectedSlot());
+        const mc::ItemId off_item = combat.melee.offhandItem();
+        const unsigned off_count = combat.melee.offhandCount();
+        const auto hand = mc::handForUse(mc::ItemId::Bow, main_count > 0 ? main_item : mc::ItemId::None,
+                                         off_count > 0 ? off_item : mc::ItemId::None);
+        mode.bow_offhand.store(hand == mc::Hand::Off, std::memory_order_relaxed);
+        usable = hand.has_value() && (!creative::consumesItems(runtime.currentGameMode()) || combat.melee.has(mc::ItemId::Arrow));
     }
     usable = usable && mode.bullet_fire_enabled.load() && ctx.mc_on && ctx.fg && ctx.want_suppress &&
              !ctx.inv_open && ctx.input_enabled && !ctx.is_dead;

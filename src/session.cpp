@@ -316,7 +316,13 @@ void Session::tick(float dt, const InputSnapshot& in) {
     anim.strafe_speed = (smoothed_vel_.x * right.x + smoothed_vel_.y * right.y) / kCmPerMeter;
     anim.look_pitch = -pitch; // our canonical pitch is positive-up; the rig expects positive-down
     anim.swing_progress = swing_progress;
-    anim.eating_progress = consumables_->getProgress();
+    const float eat_progress = consumables_->getProgress();
+    if (eat_progress > 0.f) {
+        anim.hands.main.item = hud_->getSelectedItem();
+        anim.hands.main.present = true;
+        anim.hands.main.use = HandUse::Eat;
+        anim.hands.main.progress = eat_progress;
+    }
     anim.is_gliding = elytra_->getState().is_gliding;
     anim.roll_angle = elytra_->getState().bank_roll;
     last_anim_input_ = anim;

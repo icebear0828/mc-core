@@ -345,12 +345,13 @@ bool TryStartRiptide() {
     std::lock_guard<std::mutex> g(g_melee_mutex);
     const mc::ItemId main_item = g_melee.heldItem();
     const unsigned main_count = g_melee.countAt(g_melee.selectedSlot());
-    const bool main_trident = main_count > 0 && main_item == mc::ItemId::Trident;
-    // Like the bow: the offhand trident is used only when the main hand has no right-click action of its own.
-    const bool off_trident = !main_trident && g_melee.offhandCount() > 0 &&
-                             g_melee.offhandItem() == mc::ItemId::Trident &&
-                             !(main_count > 0 && mc::mainHandClaimsRightClick(main_item));
-    if (!main_trident && !off_trident) return false;
+    const mc::ItemId off_item = g_melee.offhandItem();
+    const unsigned off_count = g_melee.offhandCount();
+    // The same main-hand-first rule as the interaction handler.
+    const auto hand = mc::handForUse(mc::ItemId::Trident, main_count > 0 ? main_item : mc::ItemId::None,
+                                     off_count > 0 ? off_item : mc::ItemId::None);
+    if (!hand.has_value()) return false;
+    const bool off_trident = *hand == mc::Hand::Off;
     ctx.mode().trident_offhand.store(off_trident, std::memory_order_relaxed);
     auto& loco = eldenring::movement::PlayerLocomotion::Instance();
     // Gliding no longer turns the release into a throw: the dash pauses the glide and resumes it at the new

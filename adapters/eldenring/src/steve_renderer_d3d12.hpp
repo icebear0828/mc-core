@@ -31,14 +31,13 @@ struct SteveParams {
     float abs_bias{0.05f};
     float depth_w{0.f}, depth_h{0.f}; // size of the depth texture, to map back buffer pixels onto it
     float tint[4]{0.f, 0.f, 0.f, 0.f}; // rgb + amount: mixed over the lit skin (hurt flash)
-    uint16_t held_item{0};             // mc::ItemId in the right hand (0 or an item without a sprite: nothing is drawn)
-    uint16_t offhand_item{0};          // mc::ItemId in the left hand / offhand (0 = nothing)
-    bool shield_blocking{false};       // a shield is raised (the arm is up): its display transform is shield_blocking.json
-    bool block_offhand{false};         // ... and it is the offhand's one (else the main hand's)
-    D3D12_GPU_DESCRIPTOR_HANDLE held_table{}; // descriptor table (scene depth, atlas) the held item is drawn with
+    D3D12_GPU_DESCRIPTOR_HANDLE held_table{}; // descriptor table (scene depth, atlas) the held items are drawn with
     uint16_t armor_item[4]{};           // helmet, chestplate, leggings, boots (mc::ItemId; 0 = empty)
     D3D12_GPU_DESCRIPTOR_HANDLE armor_table[2]{}; // (scene depth, humanoid/leggings equipment texture)
     bool keep_depth{false};            // the blocks were drawn just before: do not clear the figure's depth buffer
+    // What each hand holds and which use action it is performing. Both hands are drawn from this:
+    // the same mesh tables, the same arm matrix, and the same rule for the raised-shield variant.
+    mc::HandItems hands{};
 };
 
 class SteveRenderer {

@@ -4,6 +4,7 @@
 // down and whether the bow can be used right now (in hand, arrows or creative, no screen open, alive). Also the aim calibration helpers (quaternion forward,
 // yaw / pitch error) and the request-matrix basis.
 
+#include "mc/hand_items.hpp"
 #include "mc/types.hpp"
 
 #include <algorithm>
@@ -98,25 +99,10 @@ inline ItemId shownBow(ItemId item, float power) {
     return stage < 0 ? item : static_cast<ItemId>(static_cast<int>(ItemId::BowPulling0) + stage);
 }
 
-// Items in the main hand that use the right button themselves (the shield, food, blocks, the spawn egg, a bow): as in Minecraft, the main hand
-// goes first, so a bow in the offhand only draws when the main hand has no right-click action.
-inline bool mainHandClaimsRightClick(ItemId item) {
-    switch (item) {
-        case ItemId::Bow:
-        case ItemId::Shield:
-        case ItemId::GoldenApple:
-        case ItemId::EnchantedGoldenApple:
-        case ItemId::Bread:
-        case ItemId::CookedBeef:
-        case ItemId::BlockDirt:
-        case ItemId::BlockStone:
-        case ItemId::BlockTnt:
-        case ItemId::ZombieSpawnEgg:
-        case ItemId::CreeperSpawnEgg:
-        case ItemId::SkeletonSpawnEgg: return true;
-        default: return false;
-    }
-}
+// Items in the main hand that use the right button themselves: the one table is claimsRightClick
+// (hand_items.hpp). As in Minecraft the main hand goes first, so a bow in the offhand only draws
+// when the main hand has no right-click action.
+inline bool mainHandClaimsRightClick(ItemId item) { return claimsRightClick(item); }
 
 // True when a bow in the main hand, or in the offhand with nothing in the main hand that claims the right button, can be drawn.
 inline bool bowHandUsable(ItemId main_item, uint32_t main_count, ItemId offhand_item, uint32_t offhand_count) {
