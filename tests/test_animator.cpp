@@ -715,6 +715,131 @@ TEST(SteveAnimatorTest, ElytraGlidePoseMatchesExtractedCurvesAndBank) {
     EXPECT_FLOAT_EQ(animator.rootTransform().pos.length(), 0.f);
 }
 
+// Issue #179: the elytra pose owns the root, body, legs and wings, but the arms must still play the
+// active hand action instead of freezing in the glide pose.
+TEST(SteveAnimatorTest, GlidingEatKeepsTheElytraBodyAndPosesTheArmAndHead) {
+    const size_t head = static_cast<size_t>(mc::StevePart::Head);
+    const size_t body = static_cast<size_t>(mc::StevePart::Body);
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+    const size_t rl = static_cast<size_t>(mc::StevePart::RightLeg);
+    const size_t ll = static_cast<size_t>(mc::StevePart::LeftLeg);
+
+    mc::SteveAnimator plain, eating;
+    mc::SteveAnimInput in{};
+    in.is_gliding = true;
+    mc::SteveAnimInput eat_in = in;
+    eat_in.hands.main.item = mc::ItemId::Bread;
+    eat_in.hands.main.present = true;
+    eat_in.hands.main.use = mc::HandUse::Eat;
+    eat_in.hands.main.progress = 0.5f; // the chew phase is sin(3*pi) = 0
+
+    plain.update(0.f, in);
+    eating.update(0.f, eat_in);
+
+    // The whole-body elytra pose and the legs are unchanged.
+    expectQuatNear(eating.rootTransform().rot, quatXyz(80.f * kDeg, 0.f, 2.f * kDeg));
+    EXPECT_NEAR(eating.rootTransform().pos.z, 14.f * 5.625f, 1e-4f);
+    expectQuatNear(eating.getTransforms()[body].rot, mc::Quat{});
+    expectQuatNear(eating.getTransforms()[rl].rot, plain.getTransforms()[rl].rot);
+    expectQuatNear(eating.getTransforms()[ll].rot, plain.getTransforms()[ll].rot);
+
+    // The eating arm takes the eat pose; the other arm stays a wing.
+    expectQuatNear(eating.getTransforms()[ra].rot, quatLegacy(-72.f * kDeg, 32.f * kDeg, 0.f));
+    expectQuatNear(plain.getTransforms()[ra].rot, quatLegacy(14.f * kDeg, 0.f, -10.f * kDeg));
+    expectQuatNear(eating.getTransforms()[la].rot, plain.getTransforms()[la].rot);
+
+    // Head: glide -72 deg plus the 8 deg eat bob (chew 0) and the -6 deg turn.
+    expectQuatNear(eating.getTransforms()[head].rot, quatLegacy(-64.f * kDeg, -6.f * kDeg, 0.f));
+}
+
+TEST(SteveAnimatorTest, GlidingBowDrawRaisesBothArms) {
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+    constexpr float kPi = 3.14159265358979323846f;
+
+    mc::SteveAnimator animator;
+    mc::SteveAnimInput in{};
+    in.is_gliding = true;
+    in.hands.main.item = mc::ItemId::Bow;
+    in.hands.main.present = true;
+    in.hands.main.use = mc::HandUse::BowDraw;
+    in.hands.main.progress = 0.8f;
+    animator.update(0.f, in);
+
+    // The bow hand holds the bow, the drawing arm reaches across the chest, as in the normal state.
+    expectQuatNear(animator.getTransforms()[ra].rot, quatLegacy(-kPi * 0.5f, -0.1f, 0.f));
+    expectQuatNear(animator.getTransforms()[la].rot, quatLegacy(-kPi * 0.5f, 0.5f, 0.f));
+    expectQuatNear(animator.rootTransform().rot, quatXyz(80.f * kDeg, 0.f, 2.f * kDeg));
+}
+
+TEST(SteveAnimatorTest, GlidingTridentChargePosesBothArms) {
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+
+    mc::SteveAnimator animator;
+    mc::SteveAnimInput in{};
+    in.is_gliding = true;
+    in.hands.main.item = mc::ItemId::Trident;
+    in.hands.main.present = true;
+    in.hands.main.use = mc::HandUse::TridentCharge;
+    in.hands.main.progress = 0.5f;
+    animator.update(0.f, in);
+
+    const float t = 0.5f / 0.9f;
+    const float hold_pitch = (-150.f + (-42.f) * t) * kDeg;
+    const float brace_pitch = (-25.f * t) * kDeg;
+    expectQuatNear(animator.getTransforms()[ra].rot, quatLegacy(hold_pitch, 0.f, -4.f * kDeg));
+    expectQuatNear(animator.getTransforms()[la].rot, quatLegacy(brace_pitch, 0.f, 8.f * kDeg));
+    // The trident charge no longer lifts the torso off the elytra pose.
+    expectQuatNear(animator.rootTransform().rot, quatXyz(80.f * kDeg, 0.f, 2.f * kDeg));
+}
+
+TEST(SteveAnimatorTest, GlidingSwingKeepsTheAttackArc) {
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+    constexpr float kPi = 3.14159265358979323846f;
+
+    mc::SteveAnimator animator;
+    mc::SteveAnimInput in{};
+    in.is_gliding = true;
+    in.swing_progress = 0.5f;
+    in.hands.main.item = mc::ItemId::DiamondSword;
+    in.hands.main.present = true;
+    animator.update(0.f, in);
+
+    // The swing arc replaces the glide arm pose and keeps its normal standing arc.
+    const float body_yaw = std::sin(std::sqrt(0.5f) * kPi * 2.f) * 0.2f;
+    float f = 1.f - 0.5f;
+    f *= f;
+    f *= f;
+    const float f1 = std::sin((1.f - f) * kPi);
+    const float f2 = std::sin(0.5f * kPi) * -(0.f - 0.7f) * 0.75f;
+    const float main_pitch = -kPi * 0.1f - (f1 * 1.2f + f2);
+    expectQuatNear(animator.getTransforms()[ra].rot, quatLegacy(main_pitch, body_yaw * 2.f, -0.4f));
+    expectQuatNear(animator.getTransforms()[la].rot, quatLegacy(body_yaw, body_yaw, 0.f));
+    expectQuatNear(animator.rootTransform().rot, quatXyz(80.f * kDeg, 0.f, 2.f * kDeg));
+}
+
+TEST(SteveAnimatorTest, GlidingHeldItemKeepsTheWingArmPose) {
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+
+    mc::SteveAnimator plain, holding;
+    mc::SteveAnimInput in{};
+    in.is_gliding = true;
+    mc::SteveAnimInput hold_in = in;
+    hold_in.hands.main.item = mc::ItemId::FireworkRocket;
+    hold_in.hands.main.present = true; // using a firework has no ArmPose of its own
+
+    plain.update(0.f, in);
+    holding.update(0.f, hold_in);
+
+    // The item stays in the hand (the renderer reads the plan) but the arms keep gliding.
+    expectQuatNear(holding.getTransforms()[ra].rot, plain.getTransforms()[ra].rot);
+    expectQuatNear(holding.getTransforms()[la].rot, plain.getTransforms()[la].rot);
+}
+
 TEST(SteveAnimatorTest, ZeroNewInputsKeepTheLegacyPoseBitIdentical) {
     const size_t head = static_cast<size_t>(mc::StevePart::Head);
     const size_t body = static_cast<size_t>(mc::StevePart::Body);

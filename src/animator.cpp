@@ -52,21 +52,18 @@ Quat fromEulerXyz(float pitch, float yaw, float roll) {
 // One arm pose for both hands. The old right/left blocks were copies with different signs; the
 // only real asymmetries are the authored trident curves (the holding arm thrusts, the other
 // braces) and the swing arc (only the attacking arm follows it). `hand` is the arm being posed.
-void poseArm(const SteveAnimInput& in, Hand hand, float age, float stride, float amplitude,
-             float head_yaw, float head_pitch, float body_yaw, float& pitch, float& yaw, float& roll) {
+//
+// The action branches (shield, bow, trident, eating, swing) are shared with the gliding pose, which
+// keeps its elytra arm base when no action is active. Returns true when an action took over the arm.
+bool poseHandAction(const SteveAnimInput& in, Hand hand, float head_yaw, float head_pitch,
+                    float body_yaw, float& pitch, float& yaw, float& roll) {
     const bool right = hand == Hand::Main;
     const HandItem& self = in.hands[hand];
     const HandItem& other = in.hands.other(hand);
     const bool self_trident = self.use == HandUse::TridentCharge;
     const bool other_trident = other.use == HandUse::TridentCharge;
-    const bool trident_active = self_trident || other_trident;
 
-    pitch = std::cos(stride * 0.6662f + (right ? kPi : 0.f)) * amplitude;
-    if (in.arms_sway_only) {
-        pitch = (right ? 1.f : -1.f) * std::sin(age * 0.067f) * 0.05f;
-    } else if (in.arms_forward) {
-        pitch = -kPi * 0.5f + (right ? 1.f : -1.f) * std::sin(age * 0.067f) * 0.05f;
-    } else if (self.use == HandUse::Block && self.raised) {
+    if (self.use == HandUse::Block && self.raised) {
         // Minecraft ArmPose.BLOCK: the shield arm is up and follows the look.
         pitch = pitch * 0.5f - kPi * 0.3f + head_pitch;
         yaw = (right ? -kPi / 6.f : kPi / 6.f) + head_yaw;
@@ -79,7 +76,7 @@ void poseArm(const SteveAnimInput& in, Hand hand, float age, float stride, float
         pitch = -kPi * 0.5f + head_pitch;
         yaw = (right ? -0.1f : 0.1f) + head_yaw;
         if (self.use != HandUse::BowDraw) yaw += right ? -0.4f : 0.4f;
-    } else if (trident_active) {
+    } else if (self_trident || other_trident) {
         const HandItem& trident = self_trident ? self : other;
         const float t = clamp01(trident.progress / 0.9f);
         if (self_trident) {
@@ -120,13 +117,33 @@ void poseArm(const SteveAnimInput& in, Hand hand, float age, float stride, float
             yaw += body_yaw;
             pitch += body_yaw;
         }
-    } else if (self.present) {
-        // Minecraft ArmPose.ITEM: half the walk swing, lowered 18 degrees.
-        pitch = pitch * 0.5f - kPi * 0.1f;
-        yaw = 0.0f;
     } else {
-        // Idle breathing oscillation
-        roll += (right ? 1.f : -1.f) * std::sin(age * 0.067f) * 0.05f;
+        return false;
+    }
+    return true;
+}
+
+void poseArm(const SteveAnimInput& in, Hand hand, float age, float stride, float amplitude,
+             float head_yaw, float head_pitch, float body_yaw, float& pitch, float& yaw, float& roll) {
+    const bool right = hand == Hand::Main;
+    const HandItem& self = in.hands[hand];
+    const HandItem& other = in.hands.other(hand);
+    const bool trident_active = self.use == HandUse::TridentCharge || other.use == HandUse::TridentCharge;
+
+    pitch = std::cos(stride * 0.6662f + (right ? kPi : 0.f)) * amplitude;
+    if (in.arms_sway_only) {
+        pitch = (right ? 1.f : -1.f) * std::sin(age * 0.067f) * 0.05f;
+    } else if (in.arms_forward) {
+        pitch = -kPi * 0.5f + (right ? 1.f : -1.f) * std::sin(age * 0.067f) * 0.05f;
+    } else if (!poseHandAction(in, hand, head_yaw, head_pitch, body_yaw, pitch, yaw, roll)) {
+        if (self.present) {
+            // Minecraft ArmPose.ITEM: half the walk swing, lowered 18 degrees.
+            pitch = pitch * 0.5f - kPi * 0.1f;
+            yaw = 0.0f;
+        } else {
+            // Idle breathing oscillation
+            roll += (right ? 1.f : -1.f) * std::sin(age * 0.067f) * 0.05f;
+        }
     }
     if (in.is_crouching && !trident_active) {
         pitch += 0.4f;
@@ -290,20 +307,50 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                 case StevePart::Head:
                 case StevePart::Hat:
                     pitch = -72.0f * kDeg;
+                    if (eating_progress > 0.0f) {
+                        // Issue #179: the head still chews while the eating arm plays its pose.
+                        const float chew = std::abs(std::sin(6.0f * kPi * eating_progress));
+                        pitch += (8.0f + 4.0f * chew) * kDeg;
+                        yaw -= 6.0f * kDeg;
+                    }
                     break;
                 case StevePart::Body:
                 case StevePart::Jacket:
                     break; // the root carries the torso
                 case StevePart::RightArm:
-                case StevePart::RightSleeve:
-                    pitch = 14.0f * kDeg;
-                    roll = (-10.0f + 3.0f * glide_s) * kDeg;
+                case StevePart::RightSleeve: {
+                    float action_pitch = 0.f;
+                    float action_yaw = 0.f;
+                    float action_roll = 0.f;
+                    // Issue #179: a hand action replaces the elytra arm pose; the wings are separate props,
+                    // so eating, drawing, charging and swinging still animate on top of the glide.
+                    if (poseHandAction(input, Hand::Main, head_yaw, head_pitch, body_yaw,
+                                       action_pitch, action_yaw, action_roll)) {
+                        pitch = action_pitch;
+                        yaw = action_yaw;
+                        roll = action_roll;
+                    } else {
+                        pitch = 14.0f * kDeg;
+                        roll = (-10.0f + 3.0f * glide_s) * kDeg;
+                    }
                     break;
+                }
                 case StevePart::LeftArm:
-                case StevePart::LeftSleeve:
-                    pitch = 14.0f * kDeg;
-                    roll = (10.0f - 3.0f * glide_s) * kDeg;
+                case StevePart::LeftSleeve: {
+                    float action_pitch = 0.f;
+                    float action_yaw = 0.f;
+                    float action_roll = 0.f;
+                    if (poseHandAction(input, Hand::Off, head_yaw, head_pitch, body_yaw,
+                                       action_pitch, action_yaw, action_roll)) {
+                        pitch = action_pitch;
+                        yaw = action_yaw;
+                        roll = action_roll;
+                    } else {
+                        pitch = 14.0f * kDeg;
+                        roll = (10.0f - 3.0f * glide_s) * kDeg;
+                    }
                     break;
+                }
                 case StevePart::RightLeg:
                 case StevePart::RightPants:
                     pitch = 6.0f * kDeg;
