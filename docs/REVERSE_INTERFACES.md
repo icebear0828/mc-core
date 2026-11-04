@@ -3,6 +3,7 @@
 Minecraft 动作（攻击、盾牌、弓箭、受伤、第一人称……）的规则已经在核心里（`mc::Session`）。接一个新游戏时真正的工作量是：**把下面这些宿主数据和动作找出来**。每一项对应契约 `include/mc/contracts/host_gameplay.hpp` 里的一个 `HostFeature`，适配器只实现自己找到并验证过的，其余保持默认（无操作），`Session::missingHostFeatures()` 会告诉你还缺什么。
 
 总流程见 [PORTING_PLAYBOOK.md](PORTING_PLAYBOOK.md)，工具在 `tools/reverse/`。写规则：**先只读，有证据（RTTI、setter 反汇编、当前值）才写**，一次只写一个字段并记住原值、能还原。
+新宿主的范围与前置重构决策（含 RE4R / RE Engine 的 D3D12 与 REFramework 结论）见 [RE4_ADAPTER_SCOPE.md](RE4_ADAPTER_SCOPE.md)。
 
 ## 0. 总览
 
