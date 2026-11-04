@@ -1,5 +1,6 @@
 import os
 import re
+import subprocess
 from pathlib import Path
 import pytest
 
@@ -160,3 +161,53 @@ def test_reverse_interface_list_is_linked_and_its_paths_exist():
         if "*" in ref or ref.endswith("/"):
             continue
         assert (REPO_ROOT / ref).exists(), f"REVERSE_INTERFACES.md mentions a path that does not exist: {ref}"
+
+
+RE4_SCOPE_DOC = REPO_ROOT / "docs" / "RE4_ADAPTER_SCOPE.md"
+
+
+def _git(*args):
+    return subprocess.run(
+        ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True, check=False
+    )
+
+
+def test_re4_scope_doc_links_resolve():
+    """The scope doc is a map for the next adapter; a dead link sends it to nowhere."""
+    text = RE4_SCOPE_DOC.read_text(encoding="utf-8")
+    links = sorted(set(re.findall(r"\]\(([A-Za-z0-9_./-]+)\)", text)))
+    assert links, "RE4_ADAPTER_SCOPE.md should link the documents it depends on"
+    for ref in links:
+        assert (RE4_SCOPE_DOC.parent / ref).exists(), (
+            f"RE4_ADAPTER_SCOPE.md links to a missing file: {ref}"
+        )
+
+
+def test_re4_scope_doc_cites_only_refactor_branches_that_carry_work():
+    """A `refactor/` branch named as the owner of a P0 item must actually deliver it.
+
+    Issue #177's status table names the branch that carries each P0 refactor. A branch
+    that still points at main carries nothing, so the table would promise the next
+    adapter artifacts that do not exist. A branch merged into main keeps its commits,
+    so its tip sits on an older commit and stays valid evidence.
+    """
+    text = RE4_SCOPE_DOC.read_text(encoding="utf-8")
+    branches = sorted(set(re.findall(r"`(refactor/[a-z0-9-]+)`", text)))
+    assert branches, "RE4_ADAPTER_SCOPE.md should name the refactor branches it relies on"
+
+    base = "origin/main"
+    if _git("rev-parse", "--verify", "--quiet", base).returncode != 0:
+        base = "main"
+    base_tip = _git("rev-parse", "--verify", "--quiet", base)
+    if base_tip.returncode != 0:
+        pytest.skip("no main ref available to compare the refactor branches against")
+    base_tip = base_tip.stdout.strip()
+
+    for branch in branches:
+        tip = _git("rev-parse", "--verify", "--quiet", branch)
+        if tip.returncode != 0:
+            continue  # deleted after merging: the merge is the evidence by then
+        assert tip.stdout.strip() != base_tip, (
+            f"{branch} still points at {base} and carries no commits; the scope doc "
+            f"must not cite it as delivered - mark the item as not started or land the branch"
+        )

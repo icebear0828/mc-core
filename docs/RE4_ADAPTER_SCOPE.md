@@ -5,8 +5,12 @@
 > [PORTING_PLAYBOOK.md](PORTING_PLAYBOOK.md) 为准，宿主接口逐项清单见
 > [REVERSE_INTERFACES.md](REVERSE_INTERFACES.md)，模式仲裁见 [CONTROL_POLICY.md](CONTROL_POLICY.md)。
 >
-> **状态口径**：本文与 #177 的 P0 重构分支同一批合入。每条都写明负责的分支；
-> 未合入的分支按“计划”理解，合入后本文即为现状说明。
+> **状态口径**：本文区分**已交付**与**计划**。已交付项写明承载它的 `refactor/` 分支；
+> 计划项只写决策和依赖顺序，不写分支。**已交付的 `refactor/` 分支都还没有合入 `main`**，
+> 在 `main` 的工作区里看不到这些文件，以分支为准；合入后本文即为现状说明。
+> 本轮实际交付的是：D3D12 无宿主原语下沉、`IRigRenderer` 接缝、`PhysicsFeature` 能力位、
+> 本文（见 §4）。`IHostRuntime` / `Dinput8Runtime` 与 `FirstPersonRig` 抽取**尚未开始**，
+> 没有实现提交，排在 §6 的最前面。
 
 ---
 
@@ -42,9 +46,9 @@
 | 项 | 决策 | 状态 |
 |---|---|---|
 | D3D12 渲染后端下沉 | 先搬无宿主依赖的原语、定 `IRigRenderer` 接缝；`SteveRenderer` 主体推迟（见 §5.2） | 原语已搬、接缝已定；主体推迟（`refactor/d3d12-rig-primitives`、`refactor/rig-renderer-interface`） |
-| HostRuntime / Loader 层 | 定义 `IHostRuntime`，两个实现：`Dinput8Runtime`（法环/只狼）、`ReframeworkRuntime`（RE4R） | 接口与 dinput8 实现（`refactor/host-runtime`）；ReframeworkRuntime 等 spike（§4） |
+| HostRuntime / Loader 层 | 定义 `IHostRuntime`，两个实现：`Dinput8Runtime`（法环/只狼）、`ReframeworkRuntime`（RE4R） | **未开始**：只有决策（§5.4），没有接口也没有实现提交；`Dinput8Runtime` 与 `ReframeworkRuntime` 都待做（§6 第 2、3 项） |
 | 能力位扩展 | 物理能力不进 `HostFeature`，另立 `PhysicsFeature`（见 §5.1） | 已定（`refactor/physics-capabilities`） |
-| 第一人称相机契约定型 | 进入/退出、眼睛位置、FOV、隐藏头部、恢复原相机；纯姿态逻辑抽成通用 `FirstPersonRig`（见 §5.3） | 契约与纯逻辑（`refactor/first-person-rig`）；RE4R 侧相机写入等 spike |
+| 第一人称相机契约定型 | 进入/退出、眼睛位置、FOV、隐藏头部、恢复原相机；纯姿态逻辑抽成通用 `FirstPersonRig`（见 §5.3） | **未开始**：契约行为已定（§5.3），`FirstPersonRig` 抽取没有实现提交；RE4R 侧相机写入等 spike（§6 第 1、5 项） |
 
 ### 3.2 P1 —— 开工前强烈建议
 
@@ -86,6 +90,10 @@ RE4R 的物理模型撑不起这些。方块是否真的能挡住玩家，见 P1
 
 所以本轮只做**不依赖 RE Engine 行为**的部分：无宿主类型的渲染原语、接口接缝、能力位、文档。
 凡是依赖实机标定的（深度约定、ImGui 归属、插件入口、每帧回调时机）一律留给 spike。
+
+两项 P0 本轮**没有做**，也没有任何提交：`IHostRuntime` / `Dinput8Runtime`（接口形状取决于 spike
+对插件入口的结论）和 `FirstPersonRig` 抽取（依赖第一人称契约先在 RE4R 上验证）。它们排在 §6
+剩余工作的最前面，不要当成已有产物。
 
 **四项验收（全过才允许开始写 RE4R 适配器）：**
 
@@ -136,7 +144,8 @@ spike 顺带回答 #177 的“待确认”：REFramework 插件 API 的目标版
   `steve_texture_cache`、`steve_pipeline`、`steve_types`（故意不含 `d3d12.h`，全平台可测）；
 - `steve_renderer_d3d12.*`、`overlay_hook.cpp`、`overlay_d3d12.*`。
 
-**本轮搬走的部分**（目标路径 `adapters/common/d3d12_rig`，与 `adapters/common/d3d11_rig` 并列）：
+**本轮搬走的部分**（在 `refactor/d3d12-rig-primitives` 上，尚未合入 `main`；目标路径
+`adapters/common/d3d12_rig`，与 `adapters/common/d3d11_rig` 并列）：
 
 - 上述 `render/` 下的无宿主依赖原语；
 - 去 ER 化：`erov::` → `mc::d3d12`，`erov::LogFn` → 中立日志回调，去掉 ER 的配置、纹理路径
@@ -145,6 +154,8 @@ spike 顺带回答 #177 的“待确认”：REFramework 插件 API 的目标版
 **`IRigRenderer` 接缝**：新增一个后端无关接口，D3D11 与 D3D12 实现都满足它，表面与
 `adapters/common/d3d11_rig/include/d3d11_rig/rig_renderer.hpp` 对齐
 （`init` / `setSkin` / `setSceneDepth` / `setHeldItem` / `setBlocks` / `draw` / `drawFirstPerson`）。
+接口落在 `include/mc/rig/rig_renderer.hpp`，法环侧的 D3D12 实现是
+`adapters/eldenring/src/render/er_rig_renderer.*`（`refactor/rig-renderer-interface`，尚未合入 `main`）。
 适配器和 `Session` 只依赖接口，不依赖具体后端。
 
 **深度约定保持参数化**：公共层只接受 `mc::rig::DepthConvention`，ER 的
@@ -166,38 +177,51 @@ CreateDepthStencilView）与 `overlay_d3d12` 的归属跟 HostRuntime 一起走�
 进入/退出方法，注释还写着“接口待第一个实现该特性的游戏定型”。
 
 **契约要表达的行为（五项）**：进入/退出、眼睛位置、FOV、隐藏头部、恢复原相机。
-精确签名以 `include/mc/contracts/host_gameplay.hpp` 为准（那里是唯一事实来源）。
+本轮只把行为定下来；具体签名等第一个实现落地时写进 `include/mc/contracts/host_gameplay.hpp`，
+那里是唯一事实来源——目前该头文件里还没有这些方法。
 
 **现状与拆分**：法环的第一人称是“自绘”路径——游戏相机不动，我们画手臂和持物。纯姿态逻辑已经在
 `adapters/eldenring/include/eldenring_fp.hpp` 里，而且**与宿主无关**：Minecraft `ItemInHandRenderer`
 的挥击/进食/拉弓/三叉戟/盾牌/裸臂姿态、走路 bob、转向 sway、`HandAnimator`、`SwayFilter`，
-全部是纯数学。本轮把它抽成通用 `FirstPersonRig`，宿主侧只留“相机在哪、怎么隐藏头”。
+全部是纯数学。**抽取成通用 `FirstPersonRig` 是后续工作，本轮没有做**（见 §6 第 1 项），
+抽取后宿主侧只留“相机在哪、怎么隐藏头”。
 
 **对 RE4R 的含义**：越肩视角意味着第一人称必须**写宿主相机**——在游戏渲染之前改、每帧覆盖、
 退出时还原；头部隐藏和 FOV 约定都要单独验证。这部分依赖 spike，不在本轮。
 
-### 5.4 HostRuntime：入口、钩子、每帧回调收进一个接口
+### 5.4 HostRuntime：入口、钩子、每帧回调收进一个接口（决策，未实现）
 
-`IHostRuntime` 定义注入方式、hook 安装、每帧回调、日志、配置和生命周期；
-`Dinput8Runtime`（法环/只狼）与 `ReframeworkRuntime`（RE4R）是它的两个实现。
+**本轮只定形状，不落地**：仓库里既没有 `IHostRuntime`，也没有 `Dinput8Runtime`。
+
+要定义的 `IHostRuntime` 负责注入方式、hook 安装、每帧回调、日志、配置和生命周期；
+`Dinput8Runtime`（法环/只狼）与 `ReframeworkRuntime`（RE4R）将是它的两个实现。
 适配器只实现 ports 和宿主查询，不再自己写 `DllMain` / `MH_CreateHook` / `PresentDetour`。
 
 验收标准沿用 #177：`skills/mc-game-adapter/assets/plugin-entry.template.cpp` 保持 runtime 无关，
-只驱动 `mc::Session`。`ReframeworkRuntime` 依赖 spike 的结论（插件入口、设备/队列来源、ImGui 归属）。
+只驱动 `mc::Session`。`Dinput8Runtime` 与 `ReframeworkRuntime` 都要等 spike：前者要确认接口形状
+经得起第二种加载方式，后者依赖插件入口、设备/队列来源和 ImGui 归属的结论（§6 第 2、3 项）。
 
 ## 6. 剩余工作
 
-spike 通过后，按依赖顺序：
+### 6.1 P0 里还没做的两项（先做这些）
 
-1. `ReframeworkRuntime`：插件入口、D3D12 设备/队列、ImGui 上下文归属、每帧回调。
-2. `adapters/common/d3d12_rig` 的 D3D12 后端完成：接 `IRigRenderer`，标定 RE Engine 的深度约定，
+1. `FirstPersonRig`：把 `adapters/eldenring/include/eldenring_fp.hpp` 里的纯姿态逻辑（挥击、进食、
+   拉弓、盾牌、裸臂、bob、sway、`HandAnimator`、`SwayFilter`）抽到公共层，宿主侧只留
+   “相机在哪、怎么隐藏头”。
+2. `IHostRuntime` + `Dinput8Runtime`：定义接口，再把法环/只狼现有的 `DllMain`、
+   `MH_CreateHook`、`PresentDetour` 收进第一个实现。
+
+### 6.2 spike 通过后，按依赖顺序
+
+3. `ReframeworkRuntime`：插件入口、D3D12 设备/队列、ImGui 上下文归属、每帧回调。
+4. `adapters/common/d3d12_rig` 的 D3D12 后端完成：接 `IRigRenderer`，标定 RE Engine 的深度约定，
    再决定 `SteveRenderer` 主体怎么拆（盔甲/方块/背包预览按能力开关）。
-3. 第一人称：RE4R 的相机写入与还原、头部隐藏、FOV 换算。
-4. `EntityRegistry`：managed object 句柄 ↔ 稳定 `EntityId`（句柄不得直接当 id）。
-5. `IInputSource`：RawInput / REFramework input；战斗键抑制按宿主路径重写，不复用 DirectInput 包装。
-6. `HudPainter`：法环/只狼/RE4R 共用的 `ImDrawList` 绘制层。
-7. 构建与打包：`MC_ENABLE_RE4` 构建轴、REFramework 插件 DLL 产物、插件路径的标准检查。
-8. 能力降级单测：`test_session_capability_degrade.cpp`，覆盖“没有速度写入时不进入滑翔”等分支。
+5. 第一人称：RE4R 的相机写入与还原、头部隐藏、FOV 换算。
+6. `EntityRegistry`：managed object 句柄 ↔ 稳定 `EntityId`（句柄不得直接当 id）。
+7. `IInputSource`：RawInput / REFramework input；战斗键抑制按宿主路径重写，不复用 DirectInput 包装。
+8. `HudPainter`：法环/只狼/RE4R 共用的 `ImDrawList` 绘制层。
+9. 构建与打包：`MC_ENABLE_RE4` 构建轴、REFramework 插件 DLL 产物、插件路径的标准检查。
+10. 能力降级单测：`test_session_capability_degrade.cpp`，覆盖“没有速度写入时不进入滑翔”等分支。
 
 仍需产品决策：方块是否要真的挡住玩家（视觉 + 自有层拦截，还是第一版砍掉建造）；
 无跳跃宿主的移动映射（蹲伏/攀爬，或直接关闭跳跃相关玩法）。
