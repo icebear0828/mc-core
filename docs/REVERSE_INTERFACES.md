@@ -23,6 +23,21 @@ Minecraft 动作（攻击、盾牌、弓箭、受伤、第一人称……）的�
 
 > **控制策略不在这张表里。** 本清单回答“宿主能提供什么数据和动作”；当前模式该不该让宿主行动，由 [CONTROL_POLICY.md](CONTROL_POLICY.md) 的 `ControlResolver` / `ControlPlan` 仲裁。接新游戏时两者都要做：先找到宿主接口，再把模式写成 `ControlRequest`。
 
+### 0.1 物理端口能力（`PhysicsFeature`）
+
+`HostFeature` 固定是 6 位，描述的是**宿主玩法数据与动作**（血量、敌人列表、输入抑制……）。几何/物理查询不占这 6 位：它们属于 `IPhysicsAdapter`，由 `supportedPhysicsFeatures()` 单独声明（`include/mc/contracts/physics_adapter.hpp`）。所以上表里的 `WorldRaycast` 与 `BlockCollision` 仍然是 `IPhysicsAdapter` 的能力，不是 `HostFeature` 的第 7、8 位。
+
+| `PhysicsFeature` | 解锁的 MC 行为 | 没有它时 |
+|---|---|---|
+| `RaycastWorld` | 选方块、放置、弓箭/投掷物命中真实地形与敌人 | 瞄准射线永远不命中：方块放不下、箭不撞墙 |
+| `BlockCollision` | 放下的方块进入宿主物理，能挡住玩家和敌人 | 方块只存在于我们的体素层（可见、可挖），没有碰撞体 |
+| `LinearImpulse` | 击退/硬直把力施加到宿主实体 | 命中只掉血，不推人 |
+| `LinearVelocityWrite` | 滑翔时由核心驱动玩家速度 | 滑翔仍会计算，但玩家的移动仍归宿主控制 |
+| `JumpImpulse` | 由宿主施加跳跃冲量（接口尚未定型） | 跳跃由适配器自行处理 |
+| `FallControl` | 控制宿主坠落速度/摔落伤害（接口尚未定型） | 摔落仍按宿主规则 |
+
+`Session` 构造时把 `Ports::physics` 包进 `include/mc/degrading_physics_port.hpp` 的 `mc::DegradingPhysicsPort`：声明支持的能力原样转发；不支持的调用降级为安全默认值（`raycastWorld` 返回未命中、`createBlockCollider` 返回 0、`applyLinearImpulse` / `setLinearVelocity` 空操作）。适配器可以先只实现一部分物理能力，规则引擎不会因为一次未实现的调用崩溃。`Session::missingPhysicsFeatures()` 返回还缺的位，和 `missingHostFeatures()` 一样用来告诉玩家/日志“这个宿主还差什么”。
+
 ---
 
 ## 1. InputSuppression —— 吞掉原生战斗输入

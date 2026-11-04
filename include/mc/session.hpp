@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mc/animator.hpp"
+#include "mc/degrading_physics_port.hpp"
 #include "mc/types.hpp"
 
 #include <memory>
@@ -83,6 +84,10 @@ public:
     // HostFeature bits the adapter has not implemented (all of them when there is no gameplay port).
     [[nodiscard]] uint32_t missingHostFeatures() const;
 
+    // PhysicsFeature bits the host physics port has not implemented. The Session talks to the port
+    // through DegradingPhysicsPort, so a missing capability degrades to a no-op instead of a crash.
+    [[nodiscard]] uint32_t missingPhysicsFeatures() const;
+
     HudEngine& hud() { return *hud_; }
     VoxelWorld& voxel() { return *voxel_; }
     BallisticsEngine& ballistics() { return *ballistics_; }
@@ -93,6 +98,9 @@ public:
 private:
     void consumeSelectedOne();
 
+    // Declared before the ports and the engines: every physics call goes through this decorator, and
+    // it must outlive VoxelWorld / BallisticsEngine / ElytraFlight.
+    DegradingPhysicsPort physics_;
     Ports ports_;
     bool active_{false};
 

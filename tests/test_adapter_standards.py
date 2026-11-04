@@ -138,6 +138,17 @@ def test_every_host_feature_is_documented_in_the_reverse_interface_list():
         assert f'"{name}"' in header, f"hostFeatureName() does not name {name}"
 
 
+def test_every_physics_feature_is_documented_in_the_reverse_interface_list():
+    header = (REPO_ROOT / "include" / "mc" / "contracts" / "physics_adapter.hpp").read_text(encoding="utf-8")
+    enum_body = re.search(r"enum class PhysicsFeature[^{]*\{(.*?)\};", header, re.S).group(1)
+    features = re.findall(r"^\s*(\w+)\s*=", enum_body, re.M)
+    assert len(features) >= 6
+    doc = (REPO_ROOT / "docs" / "REVERSE_INTERFACES.md").read_text(encoding="utf-8")
+    for name in features:
+        assert f"`{name}`" in doc, f"REVERSE_INTERFACES.md does not document PhysicsFeature::{name}"
+        assert f'"{name}"' in header, f"physicsFeatureName() does not name {name}"
+
+
 def test_eldenring_loader_is_thin():
     """loader.cpp is the dinput8 entry point; gameplay logic belongs in domain modules.
 
