@@ -458,6 +458,47 @@
 
 `mc_er_overlay.txt`（覆盖层）、`mc_er_damage.txt`（伤害功能）、`mc_er_input.txt`（输入拦截）、`mc_er_hit.bin`（**必须**，见 5.2）、`mc_er_steve.txt`（配置，见下）、`mc_er_physlog.txt`（物理向量日志）、`mc_er_hitlog.txt`（`HIT-IN` 受击日志）、`mc_er_hitvfx.txt`（装受击特效钩子）、`mc_er_buddylog.txt`（召唤管理器只读探针，**会占满一个 CPU 核**）、`mc_er_summon.txt`（让 F2 触发一次群狼召唤）、`mc_er_summonhide.txt`（隐藏召唤物原模型、画 MC 僵尸）、`mc_er_chrscan.txt`（F2 后扫描召唤物结构，只读）、`mc_er_creativelog.txt`（创造模式只读探针：事件分发器、击杀包装等）、`mc_er_bulletlog.txt` / `mc_er_bulletfire.txt` / `mc_er_arrowdmg.txt`（弩箭，见第 0 节）、`mc_er_nolos.txt`（**应急**：关闭墙体遮挡）、`mc_er_anyvictim.txt`（不等受害者被更新，有小概率与 worker 线程竞争）。 **本阶段新增**：`mc_er_noguardhook.txt`（关盾牌的 GuardCheck 与 `vfunc[7]` 钩子）、`mc_er_noknockdownfix.txt`（关去倒地钩子）、`mc_er_noflags.txt`（关体力/HUD/不死标志位的持有）、`mc_er_depthprobe.txt`（开深度探针）、`mc_er_zoneprobe.txt`（开区域/材质探针，日志 `ZONEPROBE:`）。
 
+#### 5.1.1 `mc_er.ini`（可选，替代上面的开关文件）
+
+一个可选的 `mc_er.ini` 可以替代根目录里的多个 `mc_er_*.txt`。它在启动时解析一次：
+
+- ini 里写了的 key **优先**；
+- ini 里没写的 key 仍回退到旧的 sentinel 文件（存在 = 开启）；
+- 两者都没有时保持 **inert**：不接管键鼠、不隐藏原生模型、不强制模式。
+
+```ini
+[core]
+overlay=1
+input=1
+damage=1
+bulletfire=1
+mode=mc
+
+[mc]
+hide_native=1
+first_person=1
+blocks=1
+summon_mob=creeper
+# ... mc_er_steve.txt 的其余 key
+
+[ow]
+ow_fov=68
+# ... mc_er_ow.txt 的其余 key
+```
+
+- `[core]` 的布尔值接受 `1/0`、`true/false`、`yes/no`、`on/off`；无法解析时回退到旧 sentinel 并写日志。
+- `[mc] summon_mob=` 为空表示不配置 F2 召唤；旧 `mc_er_summon.txt` 的“内容选怪、空文件默认 creeper”行为保留。
+- 游戏内 OW 调校键会写回 ini 的 `[ow]` 段（没有 ini 时仍写回 `mc_er_ow.txt`），注释和无关 key 保留。
+- 数据文件不是配置：`mc_er_hit.bin`、`mc_er_bullet.bin`、`sounds/` 仍放在 `mods\mc_adapter\`（或根目录，按原逻辑查找）。
+
+迁移现有安装：
+
+```bash
+uv run python tools/migrate_config.py --game-dir "<游戏目录>"
+uv run python tools/migrate_config.py --game-dir "<游戏目录>" --remove-legacy   # 旧文件改名为 *.bak_migrated
+uv run python tools/migrate_config.py --game-dir "<游戏目录>" --dry-run         # 只打印生成的 ini
+```
+
 ### 5.2 `mc_er_hit.bin`（576 字节，必备）
 
 一次真实"玩家→敌人"命中的 `HitContext` 样本（逆向方采集）。伤害功能靠它构造上下文；缺了日志会写 `damage: mc_er_hit.bin missing`。**仓库里的备份：`tools/reverse/eldenring/templates/mc_er_hit.bin`**，装机时复制到游戏目录。其中 `+0x1D0/0x1D8/0x1E0` 是失效指针，每次构造都会覆盖，无害。

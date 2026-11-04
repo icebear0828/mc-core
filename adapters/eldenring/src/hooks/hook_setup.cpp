@@ -1,4 +1,5 @@
 #include "core/loader_internal.hpp"
+#include "eldenring_config.hpp"
 
 namespace eldenring::loader_detail {
 
@@ -287,8 +288,10 @@ void SetupGameHooksCallbacks() {
 }
 
 void SetupDamage() {
-    if (!FileExists(g_game_dir + "mc_er_damage.txt")) {
-        Log("damage: disabled (no mc_er_damage.txt)");
+    AdapterConfig& config = AdapterConfig::Instance();
+    config.EnsureLoaded(g_game_dir);
+    if (!config.FeatureEnabled(ConfigFeature::Damage)) {
+        Log("damage: disabled (no mc_er.ini [core] damage=1 and no mc_er_damage.txt)");
         return;
     }
     std::vector<uint8_t> bytes;

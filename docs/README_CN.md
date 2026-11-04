@@ -79,6 +79,8 @@
 
 ## ⚙️ 配置文件 `mc_er_steve.txt` 参数说明
 
+> 也可以用一个可选的 `mc_er.ini`（`[core]` / `[mc]` / `[ow]`）代替根目录的多个 `mc_er_*.txt`：ini 里的 key 优先，没写的 key 仍回退到旧文件，两者都没有时保持 inert。迁移现有安装：`uv run python tools/migrate_config.py --game-dir "<游戏目录>"`。详见 `docs/ELDENRING_HANDOFF.md` §5.1.1。
+
 在游戏目录下的 `mc_er_steve.txt` 可按个人喜好自定义高级调校参数：
 
 ```ini

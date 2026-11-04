@@ -9,6 +9,7 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(mc_tests
     test_animator.cpp
+    test_ini.cpp
     test_death.cpp
     test_voxel_world.cpp
     test_combat.cpp
@@ -74,6 +75,7 @@ add_executable(mc_tests
     test_eldenring_depth.cpp
     test_eldenring_d3dstate.cpp
     test_eldenring_overlay_state.cpp
+    test_eldenring_config.cpp
     test_tnt.cpp
     test_eldenring_tnt.cpp
     test_eldenring_mining.cpp
