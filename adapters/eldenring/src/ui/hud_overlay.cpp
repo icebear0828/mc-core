@@ -96,7 +96,10 @@ bool HudProvider(erov::HudState& out, erov::SteveState& steve) {
         } else {
             steve.cam.position = {cam.position[0], cam.position[1], cam.position[2]};
         }
-        steve.fov_y = cam.fov_y * g_sprint_fov.load(std::memory_order_relaxed);
+        // The overlay is composited over the game's own frame, so its projection has to use the
+        // game camera's FOV. Scaling it for sprint drew every placed block with a wider FOV than
+        // the terrain, which made the blocks jump while Ctrl+W was held.
+        steve.fov_y = cam.fov_y;
         steve.feet[0] = feet[0];
         steve.feet[1] = feet[1];
         steve.feet[2] = feet[2];
