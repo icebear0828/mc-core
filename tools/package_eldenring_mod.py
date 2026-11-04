@@ -240,13 +240,7 @@ ELDEN RING/Game/
 ├── mc_er_hit.bin            # Attack / Melee damage template
 ├── mc_er_bullet.bin         # Crossbow projectile template
 ├── steam_appid.txt          # Steam AppID (1245620) for offline launch
-├── mc_er_steve.txt          # Tuned adapter physics & camera configuration
-├── mc_er_damage.txt         # Damage pipeline toggle
-├── mc_er_overlay.txt        # D3D12 UI rendering toggle
-├── mc_er_input.txt          # DirectInput keyboard/mouse hook toggle
-├── mc_er_summon.txt         # Spirit summon toggle
-├── mc_er_summonhide.txt     # Summon model swap toggle
-├── mc_er_bulletfire.txt     # Crossbow shooting toggle
+├── mc_er.ini                # Single adapter configuration (gates + MC tuning)
 ├── README.md                # This manual
 ├── README_INSTALL.txt       # Plain-text quick installation guide
 ├── SHA256SUMS.txt           # Cryptographic file verification checksums
@@ -381,11 +375,21 @@ def build_readme_cn_content(version: str) -> str:
 
 ---
 
-## ⚙️ 配置文件 `mc_er_steve.txt` 参数说明
+## ⚙️ 配置文件 `mc_er.ini` 参数说明
 
-在游戏目录下的 `mc_er_steve.txt` 可按个人喜好自定义高级调校参数：
+游戏目录下的 `mc_er.ini` 同时控制功能开关和调校参数（旧的 `mc_er_*.txt` 仍兼容，ini 里的 key 优先）：
+
+> 从旧安装迁移：`uv run python tools/migrate_config.py --game-dir "<游戏目录>"`（加 `--remove-legacy` 会把旧文件改名为 `*.bak_migrated`）。
 
 ```ini
+[core]
+overlay=1
+input=1
+damage=1
+bulletfire=1
+mode=mc
+
+[mc]
 # 深度测试偏移常量（防止模型穿模穿地）
 depth_const=0.050067
 # 启用瞬时转向（1 为 PC 风格无惯性转向，0 为原版平滑转向）
@@ -408,6 +412,8 @@ inv_key=73
 sound_volume=0.8
 # 交互与挖掘最大距离（米）
 reach=4.5
+# F2 召唤的怪物（creeper / zombie / skeleton / wolf / iron_golem）
+summon_mob=creeper
 ```
 
 ---
@@ -517,8 +523,17 @@ def build_distribution_package(
     (staging_dir / "steam_appid.txt").write_text("1245620\n", encoding="utf-8")
     print("  [OK] steam_appid.txt (AppID 1245620)")
 
-    # 5. Configurations & Toggles
-    steve_cfg_content = """# Elden Ring Minecraft Adapter Configuration
+    # 5. Configuration: one mc_er.ini (the legacy mc_er_*.txt sentinels are
+    # still supported, but the package ships the consolidated form).
+    mc_er_ini = """# Elden Ring Minecraft Adapter Configuration
+[core]
+overlay=1
+input=1
+damage=1
+bulletfire=1
+mode=mc
+
+[mc]
 abs_bias=0.05
 block_drive=1
 block_anchor=0
@@ -544,19 +559,10 @@ sound_volume=0.8
 reach=4.5
 blocks=1
 block_collision=1
+summon_mob=creeper
 """
-    (staging_dir / "mc_er_steve.txt").write_text(steve_cfg_content, encoding="utf-8")
-
-    for toggle in [
-        "mc_er_damage.txt",
-        "mc_er_overlay.txt",
-        "mc_er_input.txt",
-        "mc_er_summon.txt",
-        "mc_er_summonhide.txt",
-        "mc_er_bulletfire.txt",
-    ]:
-        (staging_dir / toggle).write_text("", encoding="utf-8")
-    print("  [OK] Configuration files & runtime feature toggles")
+    (staging_dir / "mc_er.ini").write_text(mc_er_ini, encoding="utf-8")
+    print("  [OK] mc_er.ini (single configuration: gates + MC tuning + summon)")
 
     # 6. Entity Skins
     # Steve skin

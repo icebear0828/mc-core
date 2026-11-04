@@ -104,13 +104,13 @@ def test_build_distribution_package_e2e(tmp_path: Path):
         assert "mc_er_hit.bin" in namelist
         assert "mc_er_bullet.bin" in namelist
         assert "steam_appid.txt" in namelist
-        assert "mc_er_steve.txt" in namelist
-        assert "mc_er_damage.txt" in namelist
-        assert "mc_er_overlay.txt" in namelist
-        assert "mc_er_input.txt" in namelist
-        assert "mc_er_summon.txt" in namelist
-        assert "mc_er_summonhide.txt" in namelist
-        assert "mc_er_bulletfire.txt" in namelist
+        assert "mc_er.ini" in namelist
+        assert "mc_er_steve.txt" not in namelist
+        assert "mc_er_damage.txt" not in namelist
+        assert "mc_er_overlay.txt" not in namelist
+        assert "mc_er_input.txt" not in namelist
+        assert "mc_er_summon.txt" not in namelist
+        assert "mc_er_bulletfire.txt" not in namelist
         assert "README.md" in namelist
         assert "README_CN.md" in namelist
         assert "README_INSTALL.txt" in namelist
