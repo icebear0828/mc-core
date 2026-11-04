@@ -408,16 +408,218 @@ TEST(EldenRingWorldRuntime, StepBlockCollisionDirectDriveMovesPlayerOnBlock) {
         }
     }
 
-    // Step 1: Initialize
+    // Step 1: the first step already moves the player; the step is target_speed * dt.
     runtime.stepPlayerBlockCollision(ctx);
+    float after_one[3] = {};
+    mem.readBytes(kModule + layout::kPhysicsPosition, after_one, sizeof(after_one));
+    EXPECT_NEAR(after_one[2], 0.5f + 4.317f * 0.016f, 0.005f);
 
-    // Step 2: Step forward with W held
+    // Step 2: a second frame adds exactly one more step, not two.
     runtime.stepPlayerBlockCollision(ctx);
 
     float written_feet[3] = {};
     mem.readBytes(kModule + layout::kPhysicsPosition, written_feet, sizeof(written_feet));
-    // The player must have moved forward along Z (Z > 0.505f)!
-    EXPECT_GT(written_feet[2], 0.505f);
+    EXPECT_NEAR(written_feet[2], 0.5f + 2.f * 4.317f * 0.016f, 0.005f);
+}
+
+TEST(EldenRingWorldRuntime, DirectDriveDoesNotDoubleTheNativeBlockMovement) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x2000;
+
+    float feet[3] = {0.5f, 1.0f, 0.5f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, feet, sizeof(feet));
+
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+    runtime.setDeltaTimeOverrideForTesting(0.016f);
+    runtime.setInputProvider([](int vk) { return vk == 'W'; });
+
+    WorldRuntimeCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.read_physics_pos = [&](uintptr_t, float out_f[3]) {
+        return mem.readBytes(kModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+    };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.is_game_in_foreground = []() { return true; };
+    cb.read_camera = [](CameraPose& cam) {
+        cam.forward[0] = 0.f; cam.forward[1] = 0.f; cam.forward[2] = 1.f;
+        cam.right[0] = 1.f; cam.right[1] = 0.f; cam.right[2] = 0.f;
+        return true;
+    };
+    runtime.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+    ctx.mode().block_collision.store(true);
+    {
+        std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+        for (int x = -1; x <= 1; ++x) {
+            for (int z = -1; z <= 3; ++z) {
+                ctx.world().block_grid.place({x, 0, z}, mc::BlockId::Stone);
+            }
+        }
+    }
+
+    runtime.stepPlayerBlockCollision(ctx); // 0.5 -> 0.569 (one direct-drive step)
+
+    // The native controller also moved the player half a walk step this frame (on top of the
+    // position the direct drive wrote last frame). The direct drive must add only the missing half.
+    float native_feet[3] = {0.5f, 1.0f, 0.5f + 1.5f * 4.317f * 0.016f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, native_feet, sizeof(native_feet));
+    runtime.stepPlayerBlockCollision(ctx);
+
+    float written_feet[3] = {};
+    mem.readBytes(kModule + layout::kPhysicsPosition, written_feet, sizeof(written_feet));
+    // One frame of walk speed in total, not native + direct drive (~2x).
+    EXPECT_NEAR(written_feet[2], 0.5f + 2.f * 4.317f * 0.016f, 0.005f);
+}
+
+TEST(EldenRingWorldRuntime, DirectDriveUsesSprintSpeedOnBlocks) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x2000;
+
+    float feet[3] = {0.5f, 1.0f, 0.5f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, feet, sizeof(feet));
+
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+    runtime.setDeltaTimeOverrideForTesting(0.016f);
+    runtime.setInputProvider([](int vk) { return vk == 'W'; });
+
+    WorldRuntimeCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.read_physics_pos = [&](uintptr_t, float out_f[3]) {
+        return mem.readBytes(kModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+    };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.is_game_in_foreground = []() { return true; };
+    cb.read_camera = [](CameraPose& cam) {
+        cam.forward[0] = 0.f; cam.forward[1] = 0.f; cam.forward[2] = 1.f;
+        cam.right[0] = 1.f; cam.right[1] = 0.f; cam.right[2] = 0.f;
+        return true;
+    };
+    runtime.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+    ctx.mode().block_collision.store(true);
+    ctx.player().sprint_active.store(true);
+    {
+        std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+        for (int x = -1; x <= 1; ++x) {
+            for (int z = -1; z <= 2; ++z) {
+                ctx.world().block_grid.place({x, 0, z}, mc::BlockId::Stone);
+            }
+        }
+    }
+
+    runtime.stepPlayerBlockCollision(ctx);
+
+    float written_feet[3] = {};
+    mem.readBytes(kModule + layout::kPhysicsPosition, written_feet, sizeof(written_feet));
+    EXPECT_NEAR(written_feet[2], 0.5f + 5.612f * 0.016f, 0.005f);
+}
+
+TEST(EldenRingWorldRuntime, ClearsTheStaleBlockVelocityOutsideMcMode) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x2000;
+
+    float feet[3] = {0.5f, 1.0f, 0.5f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, feet, sizeof(feet));
+    const float stale[3] = {1.5f, -0.16f, 1.5f};
+    mem.writeBytes(kModule + 0x120, stale, sizeof(stale));
+
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+    runtime.setDeltaTimeOverrideForTesting(0.016f);
+    runtime.setInputProvider([](int) { return false; });
+
+    WorldRuntimeCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.read_physics_pos = [&](uintptr_t, float out_f[3]) {
+        return mem.readBytes(kModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+    };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.is_game_in_foreground = []() { return true; };
+    runtime.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(false); // CS/OW
+    ctx.mode().block_collision.store(true);
+    ctx.world().block_grid.place({0, 0, 0}, mc::BlockId::Stone);
+
+    runtime.stepPlayerBlockCollision(ctx);
+
+    float cleared[3] = {};
+    mem.readBytes(kModule + 0x120, cleared, sizeof(cleared));
+    EXPECT_FLOAT_EQ(cleared[0], 0.f);
+    EXPECT_FLOAT_EQ(cleared[1], 0.f);
+    EXPECT_FLOAT_EQ(cleared[2], 0.f);
+
+    // CS/OW use the native controller, so the block must look grounded, not airborne.
+    uint8_t b92 = 0, b93 = 0, b1d0 = 1, b1d1 = 0;
+    mem.readBytes(kModule + 0x92, &b92, 1);
+    mem.readBytes(kModule + 0x93, &b93, 1);
+    mem.readBytes(kModule + 0x1D0, &b1d0, 1);
+    mem.readBytes(kModule + 0x1D1, &b1d1, 1);
+    EXPECT_EQ(b92, 1);
+    EXPECT_EQ(b93, 1);
+    EXPECT_EQ(b1d0, 0);
+    EXPECT_EQ(b1d1, 1);
+}
+
+TEST(EldenRingWorldRuntime, KeepsTheNativeVelocityWhileMovingOutsideMcMode) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x2000;
+
+    float feet[3] = {0.5f, 1.0f, 0.5f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, feet, sizeof(feet));
+    const float native_velocity[3] = {1.5f, -0.16f, 1.5f};
+    mem.writeBytes(kModule + 0x120, native_velocity, sizeof(native_velocity));
+
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+    runtime.setDeltaTimeOverrideForTesting(0.016f);
+    runtime.setInputProvider([](int vk) { return vk == 'W'; });
+
+    WorldRuntimeCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.read_physics_pos = [&](uintptr_t, float out_f[3]) {
+        return mem.readBytes(kModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+    };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.is_game_in_foreground = []() { return true; };
+    runtime.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(false);
+    ctx.mode().block_collision.store(true);
+    ctx.world().block_grid.place({0, 0, 0}, mc::BlockId::Stone);
+
+    runtime.stepPlayerBlockCollision(ctx);
+
+    // The native controller's horizontal velocity must survive while a movement key is held.
+    float velocity[3] = {};
+    mem.readBytes(kModule + 0x120, velocity, sizeof(velocity));
+    EXPECT_FLOAT_EQ(velocity[0], 1.5f);
+    EXPECT_FLOAT_EQ(velocity[2], 1.5f);
+    EXPECT_FLOAT_EQ(velocity[1], 0.f); // only the vertical stale velocity is cleared
 }
 
 TEST(EldenRingWorldRuntime, StepBlockCollisionClampsNativeTerrainDisplacementWhenShieldingOrSneaking) {
@@ -465,6 +667,53 @@ TEST(EldenRingWorldRuntime, StepBlockCollisionClampsNativeTerrainDisplacementWhe
     mem.readBytes(kModule + layout::kPhysicsPosition, written_feet, sizeof(written_feet));
     EXPECT_LT(written_feet[2], 0.20f);
     EXPECT_GT(written_feet[2], 0.001f);
+}
+
+TEST(EldenRingWorldRuntime, BlockCollisionWorksOutsideMcMode) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x2000;
+
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+    runtime.setDeltaTimeOverrideForTesting(0.016f);
+    runtime.setInputProvider([](int vk) { return vk == 'W'; });
+
+    WorldRuntimeCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.read_physics_pos = [&](uintptr_t, float out_f[3]) {
+        return mem.readBytes(kModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+    };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.is_game_in_foreground = []() { return true; };
+    runtime.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(false); // CS/OW mode: blocks must still be solid
+    ctx.mode().block_collision.store(true);
+    ctx.world().block_grid.place({0, 0, 0}, mc::BlockId::Stone);
+
+    // Inside the block: the collision step must push the player out even outside MC mode.
+    float inside[3] = {0.5f, 0.2f, 0.5f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, inside, sizeof(inside));
+    runtime.stepPlayerBlockCollision(ctx);
+    float pushed[3] = {};
+    mem.readBytes(kModule + layout::kPhysicsPosition, pushed, sizeof(pushed));
+    EXPECT_FALSE(blocks::playerOverlapsBlocks(ctx.world().block_grid, pushed));
+
+    // Standing on top: supported must be reported, but the MC direct drive must not move the player.
+    float top[3] = {0.5f, 1.0f, 0.5f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, top, sizeof(top));
+    runtime.stepPlayerBlockCollision(ctx);
+    EXPECT_TRUE(ctx.mode().block_supported.load());
+    float after[3] = {};
+    mem.readBytes(kModule + layout::kPhysicsPosition, after, sizeof(after));
+    EXPECT_FLOAT_EQ(after[0], top[0]);
+    EXPECT_FLOAT_EQ(after[1], top[1]);
+    EXPECT_FLOAT_EQ(after[2], top[2]);
 }
 
 TEST(EldenRingWorldRuntime, DetectsFloatingOriginRebaseAndShiftsWorld) {

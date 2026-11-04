@@ -71,6 +71,8 @@ struct WorldRuntimeCallbacks {
     // detector compares the engine read to this instead of the collision's previous write, so the
     // mod's own movement cannot be mistaken for a rebase while a real rebase is still followed.
     std::function<bool(float out[3])> read_own_position;
+    // mc_er_blockmove.txt: log the block direct-drive target, native movement and step.
+    std::function<bool()> blockmove_diag;
 
     // Diagnostics / logging
     std::function<void(const std::string&)> log;
