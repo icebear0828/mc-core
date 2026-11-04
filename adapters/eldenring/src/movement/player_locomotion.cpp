@@ -71,6 +71,26 @@ bool PlayerLocomotion::isKeyDown(int vk) const {
 #endif
 }
 
+bool PlayerLocomotion::ownPosition(float out[3]) const {
+    if (flying_.load(std::memory_order_relaxed) && fly_have_written_) {
+        std::memcpy(out, fly_own_, sizeof(fly_own_));
+        return true;
+    }
+    if (elytra_.state().is_gliding && elytra_have_written_) {
+        std::memcpy(out, elytra_pos_, sizeof(elytra_pos_));
+        return true;
+    }
+    if (riptide_.active() && riptide_have_written_) {
+        std::memcpy(out, riptide_pos_, sizeof(riptide_pos_));
+        return true;
+    }
+    if (pearl_hold_) {
+        std::memcpy(out, pearl_hold_target_, sizeof(pearl_hold_target_));
+        return true;
+    }
+    return false;
+}
+
 uintptr_t PlayerLocomotion::fallModuleOf(uintptr_t chr) const {
     if (chr == 0 || !callbacks_.safe_read) return 0;
     uint64_t container = 0, fall = 0;

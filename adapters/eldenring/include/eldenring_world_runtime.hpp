@@ -67,6 +67,10 @@ struct WorldRuntimeCallbacks {
     // True while our own jump or creative flight owns the player's position. The block collision
     // must not read that movement as a floating-origin rebase.
     std::function<bool()> is_air_movement;
+    // The position our own jump/flight/elytra/riptide/pearl last wrote. When present, the rebase
+    // detector compares the engine read to this instead of the collision's previous write, so the
+    // mod's own movement cannot be mistaken for a rebase while a real rebase is still followed.
+    std::function<bool(float out[3])> read_own_position;
 
     // Diagnostics / logging
     std::function<void(const std::string&)> log;

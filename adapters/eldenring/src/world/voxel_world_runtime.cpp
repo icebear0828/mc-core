@@ -144,13 +144,6 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
         return;
     }
 
-    // Creative flight owns the position; block collision must not write it or shift the block grid.
-    if (ctx.mode().flying.load(std::memory_order_relaxed)) {
-        have_prev_player_ = false;
-        ctx.mode().block_supported.store(false, std::memory_order_relaxed);
-        return;
-    }
-
     const uintptr_t player = callbacks_.get_player_chr ? callbacks_.get_player_chr() : 0;
     float feet[3] = {};
     if (player == 0 || !callbacks_.read_physics_pos || !callbacks_.read_physics_pos(player, feet)) {
@@ -162,10 +155,18 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
     float dx = 0.f, dy = 0.f, dz = 0.f;
     const bool jump_active = ctx.player().jump_active.load(std::memory_order_relaxed);
     const bool our_air_movement = callbacks_.is_air_movement && callbacks_.is_air_movement();
-    if (have_prev_player_ && !our_air_movement) {
-        dx = feet[0] - prev_player_feet_[0];
-        dy = feet[1] - prev_player_feet_[1];
-        dz = feet[2] - prev_player_feet_[2];
+
+    // The engine recentres Havok coordinates at any time, including while our own jump or flight
+    // owns the player. Compare the read to the position our movement layer last wrote when it has
+    // one; otherwise to the collision step's previous write. A missed rebase leaves every placed
+    // block in the old coordinate frame (the permanent "blocks teleported" symptom).
+    float own[3] = {};
+    const bool have_own = our_air_movement && callbacks_.read_own_position && callbacks_.read_own_position(own);
+    const float* ref = have_own ? own : prev_player_feet_;
+    if (have_own || have_prev_player_) {
+        dx = feet[0] - ref[0];
+        dy = feet[1] - ref[1];
+        dz = feet[2] - ref[2];
 
         // Check for Dantelion / Havok Floating Origin Rebase (shifts in whole multiples of 8m)
         float rebase_shift[3] = {0.0f, 0.0f, 0.0f};
@@ -205,6 +206,14 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
             dz = feet[2] - prev_player_feet_[2];
         }
     }
+
+    // Creative flight owns the position; block collision must not write it or shift the block grid.
+    if (ctx.mode().flying.load(std::memory_order_relaxed)) {
+        have_prev_player_ = false;
+        ctx.mode().block_supported.store(false, std::memory_order_relaxed);
+        return;
+    }
+
     const bool jumped = our_air_movement || std::sqrt(dx * dx + dy * dy + dz * dz) > 20.f;
 
     bool has_blocks = false;

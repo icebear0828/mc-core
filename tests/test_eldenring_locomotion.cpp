@@ -103,6 +103,49 @@ TEST(EldenRingLocomotion, ActionLockClearingAndFallTimer) {
     EXPECT_FALSE(eldenring::action::hasAirLocks(mem.read<uint64_t>(kActModule + 0x40)));
 }
 
+TEST(EldenRingLocomotion, OwnsPositionWhileCreativeFlight) {
+    auto& loco = PlayerLocomotion::Instance();
+    loco.resetForTesting();
+
+    EXPECT_FALSE(loco.ownsPosition());
+    loco.setFlying(true);
+    EXPECT_TRUE(loco.ownsPosition());
+    loco.setFlying(false);
+    EXPECT_FALSE(loco.ownsPosition());
+}
+
+TEST(EldenRingLocomotion, OwnsPositionWhileElytraGliding) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x5000;
+    float pos[3] = {0.f, 10.f, 0.f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, pos, sizeof(pos));
+
+    auto& loco = PlayerLocomotion::Instance();
+    loco.resetForTesting();
+
+    LocomotionCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.is_game_in_foreground = []() { return true; };
+    cb.is_player_dead = []() { return false; };
+    cb.is_player_airborne = []() { return true; };
+    cb.has_glider = []() { return true; };
+    loco.setCallbacks(cb);
+    loco.setInputProvider([](int vk) { return vk == 0x20; }); // VK_SPACE starts the glide
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+
+    EXPECT_FALSE(loco.ownsPosition());
+    loco.stepElytra(0.016f, 1000, ctx, true);
+    EXPECT_TRUE(loco.isElytraGliding());
+    EXPECT_TRUE(loco.ownsPosition());
+}
+
 TEST(EldenRingLocomotion, FlightDoubleTapStateMachineAndRebase) {
     MockMemory mem;
     const uintptr_t kChr = 0x1000;
