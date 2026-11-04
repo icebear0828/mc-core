@@ -216,3 +216,88 @@ def test_existing_package_specs_valid():
     assert wukong_spec["game_id"] == "wukong"
     assert wukong_spec["dll_name"] == "wukong_adapter.dll"
 
+
+
+def _eldenring_spec(temp_workspace):
+    root = temp_workspace["root"]
+    return {
+        "game_id": "eldenring",
+        "display_name": "Elden Ring Minecraft Mod",
+        "dll_name": "dinput8.dll",
+        "required_files": [
+            {"src": str(temp_workspace["hit_template"].relative_to(root)), "dest": "mc_er_hit.bin"}
+        ],
+        "default_configs": {"mc_er_steve.txt": "occlusion=1\n"},
+        "mode_configs": {"ow": {"mc_er_ow.txt": "ow_fov=68\n"}},
+        "mode_notes": {"cs": ["CS assets are supplied locally."], "ow": ["OW assets are supplied locally."]},
+        "asset_dir": "mods/mc_adapter",
+        "readme_notes": ["Disable EAC before launching"],
+    }
+
+
+def test_parse_modes_accepts_aliases_and_all():
+    from tools.package_mod import parse_modes
+
+    assert parse_modes("all") == ("mc", "cs", "ow")
+    assert parse_modes("cs2,ow") == ("cs", "ow")
+    assert parse_modes("minecraft") == ("mc",)
+    assert parse_modes("") == ()
+    with pytest.raises(ValueError, match="unknown mode"):
+        parse_modes("doom")
+
+
+def test_package_cs_mode_has_mode_file_and_no_mc_files(temp_workspace):
+    root = temp_workspace["root"]
+    packager = ModPackager(
+        repo_root=root,
+        spec=_eldenring_spec(temp_workspace),
+        build_dir=temp_workspace["build_dir"],
+        version="0.1.0",
+        channel="nexus",
+        modes=("cs",),
+    )
+    result = packager.build_package(out_dir=temp_workspace["out_dir"], make_zip=True)
+
+    pkg_dir = Path(result["package_dir"])
+    assert pkg_dir.name == "mc_eldenring_cs_v0.1.0_nexus"
+    assert (pkg_dir / "dinput8.dll").exists()
+    assert (pkg_dir / "mc_er_mode.txt").read_text(encoding="utf-8").splitlines()[1] == "start_mode=cs"
+    # MC-only files are not part of a CS-only package.
+    assert not (pkg_dir / "mc_er_hit.bin").exists()
+    assert not (pkg_dir / "mc_er_steve.txt").exists()
+    assert not (pkg_dir / "mods" / "mc_adapter" / "mc_hud_atlas.png").exists()
+    assert "CS assets are supplied locally." in (pkg_dir / "README_INSTALL.txt").read_text(encoding="utf-8")
+
+
+def test_package_all_modes_includes_every_mode(temp_workspace):
+    root = temp_workspace["root"]
+    packager = ModPackager(
+        repo_root=root,
+        spec=_eldenring_spec(temp_workspace),
+        build_dir=temp_workspace["build_dir"],
+        version="0.1.0",
+        channel="nexus",
+        modes=("mc", "cs", "ow"),
+    )
+    result = packager.build_package(out_dir=temp_workspace["out_dir"], make_zip=True)
+
+    pkg_dir = Path(result["package_dir"])
+    assert pkg_dir.name == "mc_eldenring_mc_cs_ow_v0.1.0_nexus"
+    mode_lines = (pkg_dir / "mc_er_mode.txt").read_text(encoding="utf-8").splitlines()
+    assert "start_mode=mc" in mode_lines
+    assert "available_modes=mc,cs,ow" in mode_lines
+    assert (pkg_dir / "mc_er_hit.bin").exists()
+    assert (pkg_dir / "mc_er_steve.txt").exists()
+    assert (pkg_dir / "mc_er_ow.txt").exists()
+    assert (pkg_dir / "mods" / "mc_adapter" / "mc_hud_atlas.png").exists()
+
+
+def test_start_mode_must_be_in_modes(temp_workspace):
+    with pytest.raises(ValueError, match="not one of"):
+        ModPackager(
+            repo_root=temp_workspace["root"],
+            spec=_eldenring_spec(temp_workspace),
+            build_dir=temp_workspace["build_dir"],
+            modes=("cs",),
+            start_mode="ow",
+        )

@@ -22,6 +22,19 @@
     "mc_er_summonhide.txt": "",
     "mc_er_steve.txt": "# Elden Ring Minecraft Adapter Configuration\nocclusion=1\ndepth_const=0.00456\nyaw_offset_deg=180\nhide_native=1\nfirst_person=1\nfp_persist=1\nsound_volume=0.8\ninv_key=73\nblocks=1\nblock_collision=1\nreach=4.5\nmc_jump=0\nfall_reset=0\n"
   },
+  "mode_configs": {
+    "ow": {
+      "mc_er_ow.txt": "# Overwatch Doomfist viewmodel tuning (written by tools/package_mod.py).\n# Startup mode lives in mc_er_mode.txt; ow_mode here is intentionally absent.\now_fov=68\now_scale=1.0\now_offset_x=0\now_offset_y=0\now_offset_z=0\now_dash_distance=4.0\now_shoot_motion=0.4\now_damage=1\now_damage_scale=1.0\now_fire_interval=0.25\now_punch_cooldown=0.8\now_uppercut_cooldown=1.2\now_slam_cooldown=2.0\now_punch_tail=0.35\now_anim_speed=1.0\now_hitstop=0.05\now_slam_shake=0.06\now_recoil_kick=0.05\now_recoil_recover=0.12\now_fov_pulse=1.5\now_blend_time=0.08\n"
+    }
+  },
+  "mode_notes": {
+    "cs": [
+      "CS2 viewmodel, textures and sounds are not bundled (game-derived assets). Extract them locally with the toolkit's CS deployer, then place them under mods/mc_adapter/."
+    ],
+    "ow": [
+      "Overwatch gauntlet, textures and VFX are not bundled (game-derived assets). Build or extract them locally with the toolkit's OW pipeline, then place them under mods/mc_adapter/."
+    ]
+  },
   "asset_dir": "mods/mc_adapter",
   "readme_notes": [
     "IMPORTANT: Play OFFLINE only with Easy Anti-Cheat (EAC) disabled.",
