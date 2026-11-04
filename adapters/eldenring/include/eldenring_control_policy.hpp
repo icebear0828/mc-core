@@ -44,6 +44,7 @@ struct ModeInputs {
 
     std::span<const int> cs_keys{}; // DirectInput scan codes owned by CS mode
     std::span<const int> ow_keys{}; // DirectInput scan codes owned by OW mode
+    std::span<const int> mc_keys{}; // DirectInput scan codes owned by MC mode (F: offhand swap)
 };
 
 inline mc::ControlPlan buildControlPlan(const ModeInputs& in) {
@@ -114,6 +115,11 @@ inline mc::ControlPlan buildControlPlan(const ModeInputs& in) {
         // The MC locomotion module writes velocity and body yaw, while the host
         // still resolves collision: both sides act.
         resolver.request(mc::ControlDomain::Movement, mc::ControlAuthority::Shared, 50, 0, "mc movement");
+        // MC owns the offhand-swap key: the native game must not also see F, or it triggers the
+        // native guard/block on layouts that bind F to it.
+        for (const int key : in.mc_keys) {
+            if (key > 0) resolver.request(mc::ControlDomain::Key, mc::ControlAuthority::Mod, 100, key, "mc offhand swap");
+        }
         if (in.mc_jump) {
             resolver.request(mc::ControlDomain::Jump, mc::ControlAuthority::None, 100, 0, "mc jump");
             if (in.mc_jump_scan > 0) {

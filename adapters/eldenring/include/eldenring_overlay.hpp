@@ -109,7 +109,10 @@ struct SteveState {
     float trident_dir[3]{0.f, 0.f, 1.f}; // its flight direction (unit)
     bool riptide{false};
     float trident_charge{0.f};
+    bool trident_offhand{false}; // the trident being charged/riptided is in the offhand (the left hand poses it)
     uint32_t firework_seq{0};
+    bool firework_boosting{false};  // an elytra firework is accelerating the player: stream the trail
+    uint32_t firework_burst_seq{0}; // incremented when the boost ends: vanilla's small end poof
 };
 
 // Tuning read from mc_er_steve.txt (key=value lines).

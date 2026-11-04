@@ -67,6 +67,19 @@ TEST(EldenRingControlPolicy, McJumpMasksItsScanCode) {
     EXPECT_TRUE(masksKey(plan, 0x39));
 }
 
+TEST(EldenRingControlPolicy, McModeMasksTheOffhandSwapKey) {
+    ModeInputs in;
+    in.mc_mode = true;
+    in.foreground = true;
+    in.native_input_allowed = true;
+    const int keys[] = {0x21}; // DIK_F
+    in.mc_keys = std::span<const int>(keys, std::size(keys));
+
+    const mc::ControlPlan plan = buildControlPlan(in);
+    for (const int key : keys) EXPECT_TRUE(masksKey(plan, key));
+    EXPECT_TRUE(plan.blocksNative(mc::ControlDomain::MouseButtons));
+}
+
 TEST(EldenRingControlPolicy, FirstPersonWithMcJumpFreezesTheJumpDomain) {
     ModeInputs in;
     in.first_person = true;

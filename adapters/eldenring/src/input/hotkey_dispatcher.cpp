@@ -86,10 +86,14 @@ void HotkeyDispatcher::tick(float dt) {
             const int whole = static_cast<int>(player.hunger_heal_carry);
             player.hunger_heal_carry -= static_cast<float>(whole);
             heal += whole;
-            if (player.eating.isEating() && combat.melee.heldItem() != player.eating.getCurrentItem()) {
+            const mc::ItemId meal = player.eating.getCurrentItem();
+            const bool main_has_meal = player.eating.isEating() && combat.melee.heldItem() == meal &&
+                                       combat.melee.countAt(combat.melee.selectedSlot()) > 0;
+            const bool off_has_meal = player.eating.isEating() && combat.melee.offhandItem() == meal &&
+                                      combat.melee.offhandCount() > 0;
+            if (player.eating.isEating() && !main_has_meal && !off_has_meal) {
                 player.eating.cancel();
             }
-            const mc::ItemId meal = player.eating.getCurrentItem();
             const mc::EatingEvent e = player.eating.update(dt);
             if (e.chew_sound && cb_.play_sound) cb_.play_sound("entity.generic.eat", 0.8f);
             if (e.completed) {
@@ -97,7 +101,8 @@ void HotkeyDispatcher::tick(float dt) {
                 player.survival.apply(e.effects);
                 player.hunger.eat(meal);
                 if (creative::consumesItems(runtime.currentGameMode())) {
-                    combat.melee.consumeAt(combat.melee.selectedSlot());
+                    if (main_has_meal) combat.melee.consumeAt(combat.melee.selectedSlot());
+                    else if (off_has_meal) combat.melee.inventory().consumeOffhand();
                 }
             }
         }
@@ -143,6 +148,21 @@ void HotkeyDispatcher::tick(float dt) {
         control_inputs.mc_jump_scan = static_cast<int>(MapVirtualKeyW(
             static_cast<UINT>(mode.mc_jump_vk.load(std::memory_order_relaxed)), MAPVK_VK_TO_VSC));
     }
+#endif
+
+#if defined(_WIN32)
+    // MC mode owns F (offhand swap). Mask its scan code so the native game does not also act on
+    // it: on layouts that bind F to guard, pressing it would block instead of swapping hands.
+    int mc_scans[1] = {};
+    size_t mc_scan_count = 0;
+    if (control_inputs.mc_mode && ctx.fg && !inv_open_for_policy) {
+        const int mc_keys[] = {'F'};
+        for (const int vk : mc_keys) {
+            const int sc = static_cast<int>(MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC));
+            if (sc > 0) mc_scans[mc_scan_count++] = sc;
+        }
+    }
+    control_inputs.mc_keys = std::span<const int>(mc_scans, mc_scan_count);
 #endif
 
 #if ENABLE_CS2_VIEWMODEL && defined(_WIN32)

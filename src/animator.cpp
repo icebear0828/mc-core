@@ -48,6 +48,90 @@ Quat fromEulerXyz(float pitch, float yaw, float roll) {
     q.w = cp * cy * cr - sp * sy * sr;
     return q;
 }
+
+// One arm pose for both hands. The old right/left blocks were copies with different signs; the
+// only real asymmetries are the authored trident curves (the holding arm thrusts, the other
+// braces) and the swing arc (only the attacking arm follows it). `hand` is the arm being posed.
+void poseArm(const SteveAnimInput& in, Hand hand, float age, float stride, float amplitude,
+             float head_yaw, float head_pitch, float body_yaw, float& pitch, float& yaw, float& roll) {
+    const bool right = hand == Hand::Main;
+    const HandItem& self = in.hands[hand];
+    const HandItem& other = in.hands.other(hand);
+    const bool self_trident = self.use == HandUse::TridentCharge;
+    const bool other_trident = other.use == HandUse::TridentCharge;
+    const bool trident_active = self_trident || other_trident;
+
+    pitch = std::cos(stride * 0.6662f + (right ? kPi : 0.f)) * amplitude;
+    if (in.arms_sway_only) {
+        pitch = (right ? 1.f : -1.f) * std::sin(age * 0.067f) * 0.05f;
+    } else if (in.arms_forward) {
+        pitch = -kPi * 0.5f + (right ? 1.f : -1.f) * std::sin(age * 0.067f) * 0.05f;
+    } else if (self.use == HandUse::Block && self.raised) {
+        // Minecraft ArmPose.BLOCK: the shield arm is up and follows the look.
+        pitch = pitch * 0.5f - kPi * 0.3f + head_pitch;
+        yaw = (right ? -kPi / 6.f : kPi / 6.f) + head_yaw;
+    } else if (other.use == HandUse::Block && other.raised) {
+        // ArmPose.ITEM: the free arm holds its item ready while the offhand blocks.
+        pitch = pitch * 0.5f - kPi * 0.1f;
+        yaw = 0.f;
+    } else if (self.use == HandUse::BowDraw || other.use == HandUse::BowDraw) {
+        // Both arms are raised; the bow hand holds the bow, the other draws the string across the chest.
+        pitch = -kPi * 0.5f + head_pitch;
+        yaw = (right ? -0.1f : 0.1f) + head_yaw;
+        if (self.use != HandUse::BowDraw) yaw += right ? -0.4f : 0.4f;
+    } else if (trident_active) {
+        const HandItem& trident = self_trident ? self : other;
+        const float t = clamp01(trident.progress / 0.9f);
+        if (self_trident) {
+            // anim_data.js trident_charge holding arm: pitch lerp(-150, -192, t) + shake, roll -4.
+            const float n = trident.progress > 0.9f ? std::sin(trident.progress * 55.0f) * 1.2f : 0.0f;
+            pitch = (lerp(-150.0f, -192.0f, t) + n) * kDeg;
+            yaw = 0.f;
+            roll = (right ? -4.f : 4.f) * kDeg;
+        } else {
+            // The other arm braces: pitch lerp(0, -25, t), roll +8 (mirrored for the right arm).
+            pitch = lerp(0.0f, -25.0f, t) * kDeg;
+            yaw = 0.f;
+            roll = (right ? -8.f : 8.f) * kDeg;
+        }
+    } else if (self.use == HandUse::Eat) {
+        // anim_data.js eat: -72 deg with a 6 deg chew, yaw 32 deg toward the mouth (mirrored).
+        const float chew = std::abs(std::sin(6.0f * kPi * self.progress));
+        pitch = (-72.0f + 6.0f * chew) * kDeg;
+        yaw = (right ? 32.0f : -32.0f) * kDeg;
+        roll = 0.0f;
+    } else if (in.swing_progress > 0.0f) {
+        // Java applies the attack swing on top of the hand's ArmPose.ITEM base.
+        if (self.present) {
+            pitch = pitch * 0.5f - kPi * 0.1f;
+            yaw = 0.0f;
+        }
+        if (right) {
+            float f = 1.0f - in.swing_progress;
+            f *= f;
+            f *= f;
+            const float f1 = std::sin((1.0f - f) * kPi);
+            const float f2 = std::sin(in.swing_progress * kPi) * -(head_pitch - 0.7f) * 0.75f;
+            pitch -= f1 * 1.2f + f2;
+            yaw += body_yaw * 2.0f;
+            roll -= std::sin(in.swing_progress * kPi) * 0.4f;
+        } else {
+            // The offhand follows the torso twist without its own arc.
+            yaw += body_yaw;
+            pitch += body_yaw;
+        }
+    } else if (self.present) {
+        // Minecraft ArmPose.ITEM: half the walk swing, lowered 18 degrees.
+        pitch = pitch * 0.5f - kPi * 0.1f;
+        yaw = 0.0f;
+    } else {
+        // Idle breathing oscillation
+        roll += (right ? 1.f : -1.f) * std::sin(age * 0.067f) * 0.05f;
+    }
+    if (in.is_crouching && !trident_active) {
+        pitch += 0.4f;
+    }
+}
 } // namespace
 
 SteveAnimator::SteveAnimator() {
@@ -82,6 +166,12 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
     const float head_yaw = input.look_yaw;
     const float head_pitch = input.look_pitch;
 
+    // The hand plan is the only source of the use actions; the head/torso follow whichever hand is using one.
+    const HandItem* trident_use = input.hands.findUse(HandUse::TridentCharge);
+    const float trident_charge = trident_use != nullptr ? trident_use->progress : 0.f;
+    const HandItem* eat_use = input.hands.findUse(HandUse::Eat);
+    const float eating_progress = eat_use != nullptr ? eat_use->progress : 0.f;
+
     // Body rotation when swinging
     const float body_yaw = (input.swing_progress > 0.0f)
         ? std::sin(std::sqrt(input.swing_progress) * kPi * 2.0f) * 0.2f
@@ -109,9 +199,9 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
         root_.pos = Vec3{0.f, 0.f, (14.0f + glide_s) * kCmPerModelPixel};
         root_.rot = fromEulerXyz((80.0f + 3.0f * glide_s) * kDeg, 0.f,
                                  2.0f * kDeg * std::cos(glide_phase) + input.roll_angle);
-    } else if (!input.is_sleeping && input.trident_charge > 0.0f) {
+    } else if (!input.is_sleeping && trident_charge > 0.0f) {
         // anim_data.js trident_charge: upper pitch lerp(0, -4, t), yaw lerp(0, -14, t).
-        const float t = clamp01(input.trident_charge / 0.9f);
+        const float t = clamp01(trident_charge / 0.9f);
         upper_.rot = fromEulerXyz(-4.0f * kDeg * t, -14.0f * kDeg * t, 0.f);
     }
 
@@ -233,9 +323,9 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                 case StevePart::Hat:
                     pitch = head_pitch;
                     yaw = head_yaw;
-                    if (input.trident_charge > 0.0f) {
+                    if (trident_charge > 0.0f) {
                         // anim_data.js trident_charge head: pitch 0, yaw lerp(0, 14, t) relative to upper.
-                        const float t = clamp01(input.trident_charge / 0.9f);
+                        const float t = clamp01(trident_charge / 0.9f);
                         pitch = 0.0f;
                         yaw = 14.0f * kDeg * t;
                     } else if (input.is_crouching) {
@@ -245,9 +335,9 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                         // Compensate head pitch against torso forward pitch to maintain level gaze
                         pitch -= 0.15f;
                     }
-                    if (input.eating_progress > 0.0f) {
+                    if (eating_progress > 0.0f) {
                         // anim_data.js eat: head 8 deg down plus a 4 deg chew, turned 6 deg.
-                        const float chew = std::abs(std::sin(6.0f * kPi * input.eating_progress));
+                        const float chew = std::abs(std::sin(6.0f * kPi * eating_progress));
                         pitch += (8.0f + 4.0f * chew) * kDeg;
                         yaw -= 6.0f * kDeg;
                     }
@@ -255,7 +345,7 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
 
                 case StevePart::Body:
                 case StevePart::Jacket:
-                    if (input.trident_charge > 0.0f) {
+                    if (trident_charge > 0.0f) {
                         // The torso rotation is carried by upperTransform(); keep the part neutral.
                         break;
                     }
@@ -290,114 +380,14 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
                     break;
 
                 case StevePart::RightArm:
-                case StevePart::RightSleeve: {
-                    pitch = std::cos(stride_ * 0.6662f + kPi) * amplitude;
-                    if (input.arms_sway_only) {
-                        pitch = std::sin(age_ * 0.067f) * 0.05f;
-                    } else if (input.arms_forward) {
-                        pitch = -kPi * 0.5f + std::sin(age_ * 0.067f) * 0.05f; // Minecraft's zombie: arms out in front, a slow sway
-                    } else if (input.is_blocking && !input.block_offhand) {
-                        pitch = pitch * 0.5f - kPi * 0.3f + head_pitch;
-                        yaw = -kPi / 6.0f + head_yaw;
-                    } else if (input.is_blocking && input.block_offhand) {
-                        // Minecraft ArmPose.ITEM: weapon arm held ready with dampened swing while offhand blocks
-                        pitch = pitch * 0.5f - kPi * 0.1f;
-                        yaw = 0.0f;
-                    } else if (input.bow_charge > 0.0f) {
-                        pitch = -kPi * 0.5f + head_pitch;
-                        yaw = -0.1f + head_yaw - (input.bow_offhand ? 0.4f : 0.0f);
-                    } else if (input.trident_charge > 0.0f) {
-                        // anim_data.js trident_charge rightArm: pitch lerp(-150, -192, t) + shake, roll -4.
-                        const float t = clamp01(input.trident_charge / 0.9f);
-                        const float n = input.trident_charge > 0.9f
-                            ? std::sin(input.trident_charge * 55.0f) * 1.2f
-                            : 0.0f;
-                        pitch = (lerp(-150.0f, -192.0f, t) + n) * kDeg;
-                        yaw = 0.0f;
-                        roll = -4.0f * kDeg;
-                    } else if (input.eating_progress > 0.0f && !input.eating_offhand) {
-                        // anim_data.js eat rightArm: -72 deg with a 6 deg chew, yaw 32 deg toward the mouth.
-                        const float chew = std::abs(std::sin(6.0f * kPi * input.eating_progress));
-                        pitch = (-72.0f + 6.0f * chew) * kDeg;
-                        yaw = 32.0f * kDeg;
-                        roll = 0.0f;
-                    } else if (input.swing_progress > 0.0f) {
-                        // Java applies the attack swing on top of the hand's ArmPose.ITEM base.
-                        if (input.right_hand_item) {
-                            pitch = pitch * 0.5f - kPi * 0.1f;
-                            yaw = 0.0f;
-                        }
-                        float f = 1.0f - input.swing_progress;
-                        f *= f;
-                        f *= f;
-                        const float f1 = std::sin((1.0f - f) * kPi);
-                        const float f2 = std::sin(input.swing_progress * kPi) * -(head_pitch - 0.7f) * 0.75f;
-                        pitch -= f1 * 1.2f + f2;
-                        yaw += body_yaw * 2.0f;
-                        roll -= std::sin(input.swing_progress * kPi) * 0.4f;
-                    } else if (input.right_hand_item) {
-                        // Minecraft ArmPose.ITEM: half the walk swing, lowered 18 degrees.
-                        pitch = pitch * 0.5f - kPi * 0.1f;
-                        yaw = 0.0f;
-                    } else {
-                        // Idle breathing oscillation
-                        roll += std::sin(age_ * 0.067f) * 0.05f;
-                    }
-                    if (input.is_crouching && input.trident_charge <= 0.0f) {
-                        pitch += 0.4f;
-                    }
+                case StevePart::RightSleeve:
+                    poseArm(input, Hand::Main, age_, stride_, amplitude, head_yaw, head_pitch, body_yaw, pitch, yaw, roll);
                     break;
-                }
 
                 case StevePart::LeftArm:
-                case StevePart::LeftSleeve: {
-                    pitch = std::cos(stride_ * 0.6662f) * amplitude;
-                    if (input.arms_sway_only) {
-                        pitch = -std::sin(age_ * 0.067f) * 0.05f;
-                    } else if (input.arms_forward) {
-                        pitch = -kPi * 0.5f - std::sin(age_ * 0.067f) * 0.05f;
-                    } else if (input.is_blocking && input.block_offhand) {
-                        pitch = pitch * 0.5f - kPi * 0.3f + head_pitch;
-                        yaw = kPi / 6.0f + head_yaw;
-                    } else if (input.is_blocking && !input.block_offhand) {
-                        // Minecraft ArmPose.ITEM: the offhand item arm keeps half the swing.
-                        pitch = pitch * 0.5f - kPi * 0.1f;
-                        yaw = 0.0f;
-                    } else if (input.bow_charge > 0.0f) {
-                        pitch = -kPi * 0.5f + head_pitch;
-                        yaw = 0.1f + head_yaw + (input.bow_offhand ? 0.0f : 0.4f);
-                    } else if (input.trident_charge > 0.0f) {
-                        // anim_data.js trident_charge leftArm: pitch lerp(0, -25, t), roll +8.
-                        const float t = clamp01(input.trident_charge / 0.9f);
-                        pitch = lerp(0.0f, -25.0f, t) * kDeg;
-                        yaw = 0.0f;
-                        roll = 8.0f * kDeg;
-                    } else if (input.eating_progress > 0.0f && input.eating_offhand) {
-                        // The offhand food uses the mirrored eat pose.
-                        const float chew = std::abs(std::sin(6.0f * kPi * input.eating_progress));
-                        pitch = (-72.0f + 6.0f * chew) * kDeg;
-                        yaw = -32.0f * kDeg;
-                        roll = 0.0f;
-                    } else if (input.swing_progress > 0.0f) {
-                        // Java applies the attack swing on top of the offhand's ArmPose.ITEM base.
-                        if (input.left_hand_item) {
-                            pitch = pitch * 0.5f - kPi * 0.1f;
-                            yaw = 0.0f;
-                        }
-                        yaw += body_yaw;
-                        pitch += body_yaw;
-                    } else if (input.left_hand_item) {
-                        // Minecraft ArmPose.ITEM: half the walk swing, lowered 18 degrees.
-                        pitch = pitch * 0.5f - kPi * 0.1f;
-                        yaw = 0.0f;
-                    } else {
-                        roll -= std::sin(age_ * 0.067f) * 0.05f;
-                    }
-                    if (input.is_crouching && input.trident_charge <= 0.0f) {
-                        pitch += 0.4f;
-                    }
+                case StevePart::LeftSleeve:
+                    poseArm(input, Hand::Off, age_, stride_, amplitude, head_yaw, head_pitch, body_yaw, pitch, yaw, roll);
                     break;
-                }
 
                 default:
                     break;

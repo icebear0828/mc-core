@@ -77,6 +77,26 @@ TEST(EldenRingFp, TheItemDisplayTransformScalesAndOffsetsTheModel) {
     EXPECT_NEAR(std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z), 0.5f * 0.68f, 1e-4f);
 }
 
+TEST(EldenRingFp, TheOffhandBowUsesTheBowModelsLeftHandTransform) {
+    // bow.json firstperson_lefthand is [0, 90, -25] / [1.13, 3.2, 1.13]; ItemTransform.apply(true)
+    // negates x and the y/z rotation, leaving the right-hand rotation with x = -1.13/16.
+    const mc::Vec3 c = apply(bowDisplay(false), origin());
+    EXPECT_NEAR(c.x, -1.13f / 16.f, 1e-5f);
+    EXPECT_NEAR(c.y, 3.2f / 16.f, 1e-5f);
+    EXPECT_NEAR(c.z, 1.13f / 16.f, 1e-5f);
+    // The offhand bow keeps the main-hand bow's rotation (-90 about Y), unlike itemDisplay(false),
+    // which uses +90 for the generic offhand item.
+    const mc::Vec3 edge = apply(bowDisplay(false), mc::Vec3{0.5f, 0.f, 0.f});
+    const mc::Vec3 d{edge.x - c.x, edge.y - c.y, edge.z - c.z};
+    const mc::Vec3 main_c = apply(bowDisplay(true), origin());
+    const mc::Vec3 main_edge = apply(bowDisplay(true), mc::Vec3{0.5f, 0.f, 0.f});
+    const mc::Vec3 dm{main_edge.x - main_c.x, main_edge.y - main_c.y, main_edge.z - main_c.z};
+    EXPECT_NEAR(d.x, dm.x, 1e-4f);
+    EXPECT_NEAR(d.y, dm.y, 1e-4f);
+    EXPECT_NEAR(d.z, dm.z, 1e-4f);
+    EXPECT_GT(d.z, 0.f);
+}
+
 TEST(EldenRingFp, BlockDisplayScalesBy04AndTurnsTheCubeBy45Degrees) {
     const mc::Vec3 c = apply(blockDisplay(), origin());
     EXPECT_NEAR(c.x, 0.f, 1e-6f); // block/block display has no translation
@@ -234,5 +254,65 @@ TEST(EldenRingFp, ShieldRaisesTowardsTheCentreOfTheViewWhenBlocking) {
         EXPECT_LT(std::abs(blocking.x), std::abs(idle.x) - 0.15f);            // towards the middle of the screen
         EXPECT_GT(apply(mul(arm, shieldFpDisplay(left, true)), plateTopBottomY(1.f)).y, -0.05f); // the top edge reaches the middle
     }
+}
+
+namespace {
+// The trident's key points in the first-person item space of kFirstPersonItemBasis (blocks): the vanilla Java model
+// origin (the grip, at the base of the prongs) and the prong tip / pole bottom, from the prop geometry's boxes
+// (geo x -6, geo y 27.5 / 31.5 / 0.5; item = (-geo_x, geo_y, -geo_z) / 16).
+mc::Vec3 tridentGrip() { return {0.375f, 27.5f / 16.f, 0.f}; }
+mc::Vec3 tridentProngTip() { return {0.375f, 31.5f / 16.f, 0.f}; }
+mc::Vec3 tridentPoleBottom() { return {0.375f, 0.5f / 16.f, 0.f}; }
+}
+
+TEST(EldenRingFp, TridentDisplayIsTheVanillaFirstPersonChain) {
+    // trident_in_hand.json firstperson_righthand (translation (-3, 17, 1)/16, rotation (0, -90, 25), scale 1) followed
+    // by the special renderer's scale(1, -1, -1) and translate(-0.5, -0.5, -0.5). The expected points were computed
+    // independently: the vanilla grip (Java origin) lands at (0.3125, 0.3980, -0.1793) in item space.
+    const mc::Vec3 grip = apply(tridentFpDisplay(), tridentGrip());
+    EXPECT_NEAR(grip.x, 0.3125f, 1e-5f);
+    EXPECT_NEAR(grip.y, 0.3980f, 2e-4f);
+    EXPECT_NEAR(grip.z, -0.1793f, 2e-4f);
+
+    // The prongs are above the grip and the pole below it, both on the same centreline.
+    const mc::Vec3 tip = apply(tridentFpDisplay(), tridentProngTip());
+    const mc::Vec3 bottom = apply(tridentFpDisplay(), tridentPoleBottom());
+    EXPECT_GT(tip.y, grip.y);
+    EXPECT_LT(bottom.y, grip.y);
+    EXPECT_NEAR(tip.x, grip.x, 1e-5f);
+    EXPECT_NEAR(bottom.x, grip.x, 1e-5f);
+}
+
+TEST(EldenRingFp, TridentIdleStandsUprightInFrontOfTheRightHand) {
+    const M4 world = mul(itemPose(0.f, 0.f), tridentFpDisplay());
+    const mc::Vec3 grip = apply(world, tridentGrip());
+    const mc::Vec3 tip = apply(world, tridentProngTip());
+    const mc::Vec3 bottom = apply(world, tridentPoleBottom());
+    EXPECT_LT(grip.z, -0.5f);        // in front of the camera, clear of the near plane
+    EXPECT_GT(grip.x, 0.f);          // the right hand
+    EXPECT_LT(tip.z, grip.z);        // the prongs lean away from the camera
+    EXPECT_GT(bottom.z, grip.z);     // and the pole comes back towards it
+    EXPECT_GT(tip.y, grip.y);        // prongs up
+    EXPECT_LT(bottom.y, grip.y);     // pole down
+}
+
+TEST(EldenRingFp, TridentOffhandDisplayIsTheLeftHandChain) {
+    // firstperson_lefthand (translation (13, 17, 1)/16, rotation (0, 90, -25)) through ItemTransform.apply's left-hand
+    // rule: the rotation reduces to the right-hand (0, -90, 25) and x becomes -13/16. Expected point computed independently.
+    const mc::Vec3 grip = apply(tridentFpDisplayLeft(), tridentGrip());
+    EXPECT_NEAR(grip.x, -0.3125f, 1e-5f);
+    EXPECT_NEAR(grip.y, 0.3980f, 2e-4f);
+    EXPECT_NEAR(grip.z, -0.1793f, 2e-4f);
+}
+
+TEST(EldenRingFp, TridentOffhandStandsUprightOnTheLeft) {
+    const M4 world = mul(offhandItemPose(0.f), tridentFpDisplayLeft());
+    const mc::Vec3 grip = apply(world, tridentGrip());
+    const mc::Vec3 tip = apply(world, tridentProngTip());
+    const mc::Vec3 bottom = apply(world, tridentPoleBottom());
+    EXPECT_LT(grip.x, 0.f);          // the left hand
+    EXPECT_LT(grip.z, -0.5f);        // in front of the camera
+    EXPECT_GT(tip.y, grip.y);        // prongs up
+    EXPECT_LT(bottom.y, grip.y);     // pole down
 }
 

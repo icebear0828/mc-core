@@ -507,6 +507,23 @@ discard()                           // 无论是否传送成功都丢弃珍珠
 - `riptide_require_water` 默认 0（适配器还没有水/雨检测，设为 1 会拒绝释放）。
 - 未做：旋转接触实体伤害、水/雨判定、原版实体碰撞。
 
+### 8.6 烟花音效与轨迹（2026-11-04，待实机确认）
+
+原版 `FireworkRocketEntity.tick()`（1.21.8 反编译核对）：
+
+- `life == 0` 时播放 `entity.firework_rocket.launch`（`FIREWORK_ROCKET_LAUNCH`，AMBIENT，音量 3.0）。
+- 客户端每 tick 在火箭位置生成 1 个 `ParticleTypes.FIREWORK`，速度 `(gauss*0.05, -deltaMovement.y*0.5, gauss*0.05)`。
+- 无爆炸星的普通火箭寿命结束时，`ClientLevel.createFireworks()` 走 `explosions.isEmpty()` 分支，只生成 2–4 个 `POOF` 粒子，**没有爆炸音**。
+
+适配器实现：
+
+- 纯逻辑不变；`ElytraFlightModel::useFireworkBoost()` 的 `firework_ticks_left` 仍是 20 Hz 倒计时。
+- `PlayerLocomotion::useElytraFirework()` 在加速真正开始时播放 `entity.firework_rocket.launch`。
+- `stepElytra()` 每帧把 `elytra_boosting = firework_ticks_left > 0` 写进 `RuntimeContext::mode()`；加速结束的那一帧把 `elytra_firework_burst_seq` +1。
+- `overlay_scene` 在 `firework_boosting` 时按 20 Hz 每 tick 发 4 个 `Firework` 粒子（脚上 1 m、沿相机前向的反方向），结束时发 4 个 `Dust`（对应原版 POOF）。
+- 音效事件加入 `tools/extract_mc_sounds.py` 的 `EVENTS`；部署前需重新提取到 `mods/mc_adapter/sounds`。
+- 副手：`TryUseElytraFirework()` 用 `mc::handForUse(ItemId::FireworkRocket, main, off)` 选出手，主手先、副手只在主手没有右键动作时使用；消耗也从对应手扣。这样主手拿剑、副手拿烟花时，滑翔中右键仍能加速。
+
 ## 9. 待验证 / 未覆盖
 
 - 原版实机 trace 尚未采集；第 3.4/4.2 的数值是按源码递推模拟得到的，不是游戏内实测。

@@ -6,6 +6,7 @@
 // exactly as the original does. toHost() converts a pose to the row-vector, left-handed (+Z forward) matrix the D3D12
 // renderer wants. Pure logic, unit-tested.
 
+#include "mc/hand_items.hpp"
 #include "mc/rig.hpp"
 #include "mc/types.hpp"
 
@@ -110,6 +111,20 @@ inline M4 eatPose(float eaten, float equipped, float use_ticks = 32.f) {
     return mul(p, translate(0.56f, -0.52f + equipped * -0.6f, -0.72f));
 }
 
+// The offhand eat: the same curve with the x offsets and the y/z turns mirrored.
+inline M4 eatPoseLeft(float eaten, float equipped, float use_ticks = 32.f) {
+    const float remaining = std::clamp(1.f - eaten, 0.f, 1.f);
+    const float f = remaining * use_ticks;
+    M4 p;
+    if (remaining < 0.8f) p = mul(p, translate(0.f, std::fabs(std::cos(f / 4.f * kPi) * 0.1f), 0.f));
+    const float f3 = 1.f - std::pow(remaining, 27.f);
+    p = mul(p, translate(-f3 * 0.6f, f3 * -0.5f, 0.f));
+    p = mul(p, rotY(-f3 * 90.f));
+    p = mul(p, rotX(f3 * 10.f));
+    p = mul(p, rotZ(-f3 * 30.f));
+    return mul(p, translate(-0.56f, -0.52f + equipped * -0.6f, -0.72f));
+}
+
 // Drawing the bow (ItemInHandRenderer.renderArmWithItem, UseAnim.BOW, right hand): the arm transform, then the bow-specific turn and offset, then the pull
 // of the draw. `ticks` is how many ticks the bow has been drawn; the power curve is the same as the arrow's ((f*f + f*2) / 3, capped at 1).
 inline M4 bowPose(float ticks, float equipped) {
@@ -132,6 +147,109 @@ inline M4 bowPose(float ticks, float equipped) {
     return mul(p, rotY(-45.f));
 }
 
+// The offhand (left hand) bow draw: the arm transform and the bow-specific offsets/turns mirror x, y and z.
+inline M4 bowPoseLeft(float ticks, float equipped) {
+    M4 p = translate(-0.56f, -0.52f + equipped * -0.6f, -0.72f);
+    p = mul(p, translate(0.2785682f, 0.18344387f, 0.15731531f));
+    p = mul(p, rotX(-13.935f));
+    p = mul(p, rotY(-35.3f));
+    p = mul(p, rotZ(9.785f));
+    float f12 = std::max(0.f, ticks) / 20.f;
+    f12 = std::min(1.f, (f12 * f12 + f12 * 2.f) / 3.f);
+    if (f12 > 0.1f) {
+        const float f15 = std::sin((ticks - 0.1f) * 1.3f);
+        const float f20 = f15 * (f12 - 0.1f);
+        p = mul(p, translate(0.f, f20 * 0.004f, 0.f));
+    }
+    p = mul(p, translate(0.f, 0.f, f12 * 0.04f));
+    M4 stretch;
+    stretch.m[10] = 1.f + f12 * 0.2f;
+    p = mul(p, stretch);
+    return mul(p, rotY(45.f));
+}
+
+// The trident's first-person display: models/item/trident_in_hand.json firstperson_righthand (translation (-3, 17,
+// 1)/16, rotation (0, -90, 25), scale 1), then the special renderer's scale(1, -1, -1) and translate(-0.5, -0.5, -0.5).
+// The prop geometry is Bedrock (x runs the other way, Java y is flipped to geo y = 27.5 - java_y, and the boxes are
+// shifted 6 px along x), so the mapping from kFirstPersonItemBasis to the item space is translate(-1/8, -71/32, -1/2)
+// with x mirrored. The item pose places the grip.
+inline M4 tridentFpDisplay() {
+    M4 p = translate(-3.f / 16.f, 17.f / 16.f, 1.f / 16.f);
+    p = mul(p, mul(rotX(0.f), mul(rotY(-90.f), rotZ(25.f))));
+    p = mul(p, translate(-0.125f, -2.21875f, -0.5f));
+    M4 mirror; // the Bedrock model's x axis runs the other way
+    mirror.m[0] = -1.f;
+    return mul(p, mirror);
+}
+
+// The offhand (left hand) variant: trident_in_hand.json firstperson_lefthand is translation (13, 17, 1)/16 and
+// rotation (0, 90, -25); ItemTransform.apply's left-hand rule negates the y/z rotation and the x translation, so it
+// reduces to the right-hand rotation with x = -13/16. The special-renderer mapping is the same.
+inline M4 tridentFpDisplayLeft() {
+    M4 p = translate(-13.f / 16.f, 17.f / 16.f, 1.f / 16.f);
+    p = mul(p, mul(rotX(0.f), mul(rotY(-90.f), rotZ(25.f))));
+    p = mul(p, translate(-0.125f, -2.21875f, -0.5f));
+    M4 mirror;
+    mirror.m[0] = -1.f;
+    return mul(p, mirror);
+}
+
+// Trident charge (ItemInHandRenderer.renderArmWithItem, UseAnim.SPEAR, right hand): the spear turn, the 0..1
+// charge extension/shake and the final -45 turn. `charge` is ticks/10, clamped to 1.
+inline M4 tridentChargePose(float charge, float equipped) {
+    M4 p = translate(0.56f, -0.52f + equipped * -0.6f, -0.72f);
+    p = mul(p, translate(-0.5f, 0.7f, 0.1f));
+    p = mul(p, rotX(-55.f));
+    p = mul(p, rotY(35.3f));
+    p = mul(p, rotZ(-9.785f));
+    const float f = std::clamp(charge, 0.f, 1.f);
+    if (f > 0.1f) {
+        const float shake = std::sin((f * 10.f - 0.1f) * 1.3f) * (f - 0.1f);
+        p = mul(p, translate(0.f, shake * 0.004f, 0.f));
+    }
+    p = mul(p, translate(0.f, 0.f, f * 0.2f));
+    M4 stretch;
+    stretch.m[10] = 1.f + f * 0.2f;
+    p = mul(p, stretch);
+    return mul(p, rotY(-45.f));
+}
+
+// Riptide auto-spin (ItemInHandRenderer.renderArmWithItem, isAutoSpinAttack): the trident held out while the
+// camera/body spins in vanilla; the pose itself is static.
+inline M4 riptidePose(float equipped) {
+    M4 p = translate(0.56f, -0.52f + equipped * -0.6f, -0.72f);
+    p = mul(p, translate(-0.4f, 0.8f, 0.3f));
+    p = mul(p, rotY(65.f));
+    return mul(p, rotZ(-85.f));
+}
+
+// The offhand mirrors of the two poses above: the arm's x, the offsets' x and the Y/Z turns flip; the X turn and the
+// forward stretch stay.
+inline M4 tridentChargePoseLeft(float charge, float equipped) {
+    M4 p = translate(-0.56f, -0.52f + equipped * -0.6f, -0.72f);
+    p = mul(p, translate(0.5f, 0.7f, 0.1f));
+    p = mul(p, rotX(-55.f));
+    p = mul(p, rotY(-35.3f));
+    p = mul(p, rotZ(9.785f));
+    const float f = std::clamp(charge, 0.f, 1.f);
+    if (f > 0.1f) {
+        const float shake = std::sin((f * 10.f - 0.1f) * 1.3f) * (f - 0.1f);
+        p = mul(p, translate(0.f, shake * 0.004f, 0.f));
+    }
+    p = mul(p, translate(0.f, 0.f, f * 0.2f));
+    M4 stretch;
+    stretch.m[10] = 1.f + f * 0.2f;
+    p = mul(p, stretch);
+    return mul(p, rotY(45.f));
+}
+
+inline M4 riptidePoseLeft(float equipped) {
+    M4 p = translate(-0.56f, -0.52f + equipped * -0.6f, -0.72f);
+    p = mul(p, translate(0.4f, 0.8f, 0.3f));
+    p = mul(p, rotY(-65.f));
+    return mul(p, rotZ(85.f));
+}
+
 // The bare right arm (ItemInHandRenderer.renderPlayerArm): the pose the arm model is drawn in.
 inline M4 bareArmPose(float swing, float equipped) {
     const float sq = std::sqrt(swing);
@@ -149,11 +267,27 @@ inline M4 bareArmPose(float swing, float equipped) {
     return p;
 }
 
-// The item's model display transform in the first-person right hand (item/generated and item/handheld share it): applied to a
-// model that is centred on the origin, 1 block = the sprite's width.
-inline M4 itemDisplay() {
-    M4 p = translate(1.13f / 16.f, 3.2f / 16.f, 1.13f / 16.f);
-    p = mul(p, mul(rotX(0.f), mul(rotY(-90.f), rotZ(25.f)))); // rotationXYZ(0, -90, 25) = Rx * Ry * Rz
+// The item's model display transform in the first-person hand (item/generated and item/handheld share it): applied to a
+// model that is centred on the origin, 1 block = the sprite's width. The left hand mirrors the y/z rotation and the x
+// translation (ItemTransform.apply).
+inline M4 itemDisplay(bool main_hand = true) {
+    const float tx = (main_hand ? 1.13f : -1.13f) / 16.f;
+    const float ry = main_hand ? -90.f : 90.f;
+    const float rz = main_hand ? 25.f : -25.f;
+    M4 p = translate(tx, 3.2f / 16.f, 1.13f / 16.f);
+    p = mul(p, mul(rotX(0.f), mul(rotY(ry), rotZ(rz)))); // rotationXYZ(0, ry, rz) = Rx * Ry * Rz
+    return mul(p, scale(0.68f));
+}
+
+// The bow's first-person display (models/item/bow.json). Unlike item/generated it defines
+// firstperson_lefthand explicitly: [0, 90, -25] / [1.13, 3.2, 1.13]. ItemTransform.apply(leftHand=true)
+// then negates the x translation and the y/z rotation, so the applied left-hand transform is the
+// right-hand rotation (-90, 25) with x = -1.13/16. itemDisplay(false) would use (+90, -25) and turn
+// the offhand bow the wrong way.
+inline M4 bowDisplay(bool main_hand = true) {
+    const float tx = (main_hand ? 1.13f : -1.13f) / 16.f;
+    M4 p = translate(tx, 3.2f / 16.f, 1.13f / 16.f);
+    p = mul(p, mul(rotX(0.f), mul(rotY(-90.f), rotZ(25.f))));
     return mul(p, scale(0.68f));
 }
 
@@ -183,9 +317,51 @@ inline M4 offhandItemPose(float equipped) {
     return translate(-0.56f, -0.52f + equipped * -0.6f, -0.72f);
 }
 
-// The display transform of a block held in the first-person right hand (block/block: rotation (0, 45, 0), no translation, scale 0.4),
-// applied to the unit cube centred on the origin.
-inline M4 blockDisplay() { return mul(rotY(45.f), scale(0.4f)); }
+// The display transform of a block held in the first-person hand (block/block: rotation (0, 45, 0), no translation, scale 0.4),
+// applied to the unit cube centred on the origin. The left hand mirrors the rotation.
+inline M4 blockDisplay(bool main_hand = true) { return mul(rotY(main_hand ? 45.f : -45.f), scale(0.4f)); }
+
+// The first-person view of one hand: the arm/item pose, the item's display transform, and what to draw.
+// This is the one place the item presentation is chosen; main and offhand share it.
+struct HandView {
+    M4 pose;
+    M4 display;
+    mc::ItemId shown{mc::ItemId::None};
+    bool draw_3d{false}; // draw the trident model instead of a sprite
+};
+
+inline HandView handView(const mc::HandItem& item, bool main_hand, float swing, float equipped, float bow_ticks) {
+    HandView view;
+    view.shown = item.shown;
+    view.draw_3d = item.model == mc::HandModel::Trident;
+    switch (item.use) {
+        case mc::HandUse::BowDraw:
+            view.pose = main_hand ? bowPose(bow_ticks, equipped) : bowPoseLeft(bow_ticks, equipped);
+            break;
+        case mc::HandUse::Block:
+            view.pose = main_hand ? shieldMainHandPose(item.raised, swing, equipped) : offhandItemPose(equipped);
+            break;
+        case mc::HandUse::TridentCharge:
+            view.pose = main_hand ? tridentChargePose(item.progress, equipped) : tridentChargePoseLeft(item.progress, equipped);
+            break;
+        case mc::HandUse::Riptide:
+            view.pose = main_hand ? riptidePose(equipped) : riptidePoseLeft(equipped);
+            break;
+        case mc::HandUse::Eat:
+            view.pose = main_hand ? eatPose(item.progress, equipped) : eatPoseLeft(item.progress, equipped);
+            break;
+        default:
+            view.pose = main_hand ? itemPose(swing, equipped) : offhandItemPose(equipped);
+            break;
+    }
+    switch (item.model) {
+        case mc::HandModel::Shield: view.display = shieldFpDisplay(!main_hand, item.raised); break;
+        case mc::HandModel::Trident: view.display = main_hand ? tridentFpDisplay() : tridentFpDisplayLeft(); break;
+        case mc::HandModel::Block: view.display = blockDisplay(main_hand); break;
+        default: view.display = item.item == mc::ItemId::Bow ? bowDisplay(main_hand) : itemDisplay(main_hand); break;
+    }
+    return view;
+}
 
 // View bobbing while walking (GameRenderer.bobView). `walk` is the walked distance in Minecraft's units, `bob` the amplitude
 // (0 standing .. 0.1 walking).
