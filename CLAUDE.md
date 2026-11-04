@@ -25,6 +25,7 @@
 - 跨线程只读 `RuntimeContext::mode().control_authority_bits`，用 `modOwns` / `blocksNative` 查询。
 
 ## 构建变体（别部署错）
+**打包前先读 `docs/PACKAGING.md`**：四种发布变体（mc / cs / ow / mc_cs_ow）、包布局、资产归属、本机与 CI 打包流程、新增模式的检查清单。
 三个模式是三个独立的构建轴：`ENABLE_MC_MODE` / `ENABLE_CS2_VIEWMODEL` / `ENABLE_OW_VIEWMODEL`。
 - `build/`：当前三者都 ON 的组合构建（可在运行时切换 MC / CS / OW）。
 - `build_pure_mc/`：`ENABLE_CS2_VIEWMODEL=OFF`；若要连 OW 代码也排除，配置时加 `-DENABLE_OW_VIEWMODEL=OFF`。
