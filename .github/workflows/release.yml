@@ -71,6 +71,23 @@ jobs:
       - name: Build Elden Ring adapter (${{ matrix.mode }})
         run: cmake --build build-${{ matrix.mode }} --config Release --target eldenring_adapter
 
+      - name: Fetch private asset bundle (optional)
+        shell: pwsh
+        env:
+          MC_ASSET_PACK_URL: ${{ secrets.MC_ASSET_PACK_URL }}
+          MC_ASSET_PACK_TOKEN: ${{ secrets.MC_ASSET_PACK_TOKEN }}
+        run: |
+          if (-not $env:MC_ASSET_PACK_URL) {
+            Write-Host "No MC_ASSET_PACK_URL secret; packaging with EULA-safe placeholders only."
+            exit 0
+          }
+          $headers = @{}
+          if ($env:MC_ASSET_PACK_TOKEN) { $headers["Authorization"] = "Bearer $env:MC_ASSET_PACK_TOKEN" }
+          Invoke-WebRequest -Uri $env:MC_ASSET_PACK_URL -Headers $headers -OutFile asset_pack.zip
+          Expand-Archive asset_pack.zip -DestinationPath asset_bundle -Force
+          Write-Host "Asset bundle files:"
+          Get-ChildItem asset_bundle -Recurse -File | Select-Object -First 20 -ExpandProperty FullName
+
       - name: Package Elden Ring (${{ matrix.mode }})
         shell: pwsh
         run: |
@@ -79,9 +96,11 @@ jobs:
           $version = $raw_tag.TrimStart('v')
           if (-not $version) { $version = "0.1.0" }
           Write-Host "Packaging Elden Ring ${{ matrix.mode }} version: $version"
+          $extra = @()
+          if (Test-Path asset_bundle) { $extra = @("--assets-dir", "asset_bundle") }
           uv run python tools/package_mod.py --game eldenring `
             --build-dir build-${{ matrix.mode }}/bin/eldenring `
-            --version $version --channel nexus --modes ${{ matrix.mode }} --out-dir dist
+            --version $version --channel nexus --modes ${{ matrix.mode }} --out-dir dist @extra
 
       - name: Upload Elden Ring package (${{ matrix.mode }})
         uses: actions/upload-artifact@v4

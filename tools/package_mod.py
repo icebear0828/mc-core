@@ -79,6 +79,7 @@ class ModPackager:
         client_jar: Optional[Path] = None,
         modes: Optional[Sequence[str]] = None,
         start_mode: Optional[str] = None,
+        assets_dir: Optional[Path] = None,
     ):
         self.repo_root = repo_root.resolve()
         self.spec = spec
@@ -86,6 +87,7 @@ class ModPackager:
         self.version = version
         self.channel = channel
         self.client_jar = client_jar.resolve() if client_jar else None
+        self.assets_dir = assets_dir.resolve() if assets_dir else None
         self.modes = tuple(mode for mode in CANONICAL_MODES if mode in set(modes or ()))
         if self.modes:
             self.start_mode = start_mode or self.modes[0]
@@ -226,6 +228,19 @@ class ModPackager:
             for cfg_name, cfg_content in mode_configs.get(mode, {}).items():
                 (pkg_dir / cfg_name).write_text(cfg_content, encoding="utf-8")
 
+        # Optional private asset bundle (textures, sounds, viewmodels). The bundle
+        # mirrors the game root, e.g. mods/mc_adapter/ow_gauntlet.bin, and is copied
+        # last so it replaces the EULA-safe placeholders. It is never committed.
+        if self.assets_dir is not None:
+            if not self.assets_dir.is_dir():
+                raise FileNotFoundError(f"Assets directory not found: {self.assets_dir}")
+            for src in sorted(self.assets_dir.rglob("*")):
+                if not src.is_file():
+                    continue
+                dest = pkg_dir / src.relative_to(self.assets_dir)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest)
+
         # The runtime reads start_mode from mc_er_mode.txt on launch.
         if self.modes:
             mode_file = pkg_dir / "mc_er_mode.txt"
@@ -322,6 +337,7 @@ def main() -> None:
     parser.add_argument("--channel", choices=["nexus", "full"], default="nexus", help="Distribution channel")
     parser.add_argument("--modes", help="Elden Ring build modes: mc, cs, ow, mc,cs,ow or all")
     parser.add_argument("--start-mode", help="Mode the package starts in (default: the first of --modes)")
+    parser.add_argument("--assets-dir", type=Path, help="Private asset bundle mirroring the game root (textures/sounds/viewmodels)")
     parser.add_argument("--client-jar", type=Path, help="Minecraft client.jar path for extracting assets")
     parser.add_argument("--no-zip", action="store_true", help="Do not create zip archive")
     parser.add_argument("--package-assets", action="store_true", help="Package a standalone community assets pack")
@@ -372,6 +388,7 @@ def main() -> None:
         client_jar=args.client_jar,
         modes=modes,
         start_mode=args.start_mode,
+        assets_dir=args.assets_dir,
     )
 
     try:

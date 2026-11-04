@@ -301,3 +301,29 @@ def test_start_mode_must_be_in_modes(temp_workspace):
             modes=("cs",),
             start_mode="ow",
         )
+
+
+def test_package_merges_private_asset_bundle(temp_workspace):
+    root = temp_workspace["root"]
+    bundle = root / "asset_bundle"
+    (bundle / "mods" / "mc_adapter" / "textures").mkdir(parents=True)
+    (bundle / "mods" / "mc_adapter" / "textures" / "ow_gauntlet.png").write_bytes(b"PNG_GAUNTLET")
+    (bundle / "mods" / "mc_adapter" / "ow_gauntlet.bin").write_bytes(b"BIN_GAUNTLET")
+    (bundle / "mods" / "mc_adapter" / "mc_hud_atlas.png").write_bytes(b"AUTHENTIC_ATLAS")
+
+    packager = ModPackager(
+        repo_root=root,
+        spec=_eldenring_spec(temp_workspace),
+        build_dir=temp_workspace["build_dir"],
+        version="0.1.0",
+        channel="nexus",
+        modes=("mc", "ow"),
+        assets_dir=bundle,
+    )
+    result = packager.build_package(out_dir=temp_workspace["out_dir"], make_zip=True)
+
+    pkg_dir = Path(result["package_dir"])
+    # The bundle lands under the game-root layout and overrides the placeholder atlas.
+    assert (pkg_dir / "mods" / "mc_adapter" / "textures" / "ow_gauntlet.png").read_bytes() == b"PNG_GAUNTLET"
+    assert (pkg_dir / "mods" / "mc_adapter" / "ow_gauntlet.bin").read_bytes() == b"BIN_GAUNTLET"
+    assert (pkg_dir / "mods" / "mc_adapter" / "mc_hud_atlas.png").read_bytes() == b"AUTHENTIC_ATLAS"
