@@ -103,6 +103,7 @@ void SetupWorldRuntime() {
     cb.read_own_position = [](float out[3]) {
         return eldenring::movement::PlayerLocomotion::Instance().ownPosition(out);
     };
+    cb.blockmove_diag = []() { return FileExists(g_game_dir + "mc_er_blockmove.txt"); };
     cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
     cb.on_origin_rebase = [](float rx, float ry, float rz) {
         {

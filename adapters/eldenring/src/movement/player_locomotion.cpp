@@ -263,6 +263,10 @@ void PlayerLocomotion::stepGroundSprint(float dt, RuntimeContext& ctx) {
         return;
     }
 
+    // On a placed block the block direct drive owns the speed (walk/sprint/sneak); adding the
+    // native-terrain sprint boost on top would double it.
+    if (ctx.mode().block_supported.load(std::memory_order_relaxed)) return;
+
     const float fwd_key = (isKeyDown('W') ? 1.f : 0.f) - (isKeyDown('S') ? 1.f : 0.f);
     const float right_key = (isKeyDown('D') ? 1.f : 0.f) - (isKeyDown('A') ? 1.f : 0.f);
     if (std::abs(fwd_key) < 0.1f && std::abs(right_key) < 0.1f) return;

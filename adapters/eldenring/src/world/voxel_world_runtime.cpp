@@ -138,11 +138,10 @@ void VoxelWorldRuntime::stepSneakEyeHeight(float dt, RuntimeContext& ctx) {
 }
 
 void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
-    if (!ctx.mode().mc_mode.load(std::memory_order_relaxed)) {
-        have_prev_player_ = false;
-        ctx.mode().block_supported.store(false, std::memory_order_relaxed);
-        return;
-    }
+    // Placed blocks are solid in every mode: the mesh is drawn in MC, CS and OW, so the player must
+    // be pushed out of it there too. Only the MC-specific movers (anchor, direct drive, sneak/shield
+    // speed clamp, ground flags) stay behind the mc_mode gate.
+    const bool mc_mode = ctx.mode().mc_mode.load(std::memory_order_relaxed);
 
     const uintptr_t player = callbacks_.get_player_chr ? callbacks_.get_player_chr() : 0;
     float feet[3] = {};
@@ -153,7 +152,7 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
     }
 
     float dx = 0.f, dy = 0.f, dz = 0.f;
-    const bool jump_active = ctx.player().jump_active.load(std::memory_order_relaxed);
+    const bool jump_active = mc_mode && ctx.player().jump_active.load(std::memory_order_relaxed);
     const bool our_air_movement = callbacks_.is_air_movement && callbacks_.is_air_movement();
 
     // The engine recentres Havok coordinates at any time, including while our own jump or flight
@@ -247,6 +246,10 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
         std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
         supported = blocks::supportedByBlock(ctx.world().block_grid, final_feet);
     }
+    // A frame that lifted the player back onto a block top is still a supported frame: the engine
+    // pulls the feet a few millimetres down between frames, and treating that frame as airborne
+    // would stop the ground flags and the native controller.
+    supported = supported || r.standing;
     ctx.mode().block_supported.store(supported, std::memory_order_relaxed);
 
     const uintptr_t module = callbacks_.get_physics_module ? callbacks_.get_physics_module(player) : 0;
@@ -271,7 +274,7 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
     const bool key_s = fg && isKeyDown('S');
     const bool key_d = fg && isKeyDown('D');
     const bool key_space = fg && isKeyDown(VK_SPACE);
-    const bool should_anchor = ctx.mode().block_anchor.load(std::memory_order_relaxed) && !jump_active &&
+    const bool should_anchor = mc_mode && ctx.mode().block_anchor.load(std::memory_order_relaxed) && !jump_active &&
                                blocks::shouldAnchorBlockPosition(supported, key_w, key_a, key_s, key_d, key_space);
 
     if (should_anchor) {
@@ -310,7 +313,7 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
     }
 
     bool sneak_clamped = false;
-    if (sneaking && (supported || was_supported) && have_prev_player_ && !jumped && !pinned && !jump_active) {
+    if (mc_mode && sneaking && (supported || was_supported) && have_prev_player_ && !jumped && !pinned && !jump_active) {
         const float desired_dx = final_feet[0] - prev_player_feet_[0];
         const float desired_dz = final_feet[2] - prev_player_feet_[2];
         blocks::SneakMoveResult sneak_res;
@@ -332,7 +335,7 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
     // directly advance player coordinates by block_walk_speed (4.317 m/s) clamped by block collision.
     // This restores continuous, responsive locomotion on custom voxel surfaces.
     bool direct_moved = false;
-    if (supported && fg && !jumped && !jump_active) {
+    if (mc_mode && supported && fg && !jumped && !jump_active) {
         CameraPose cam{};
         if (callbacks_.read_camera && callbacks_.read_camera(cam)) {
             const float fwd_key = (isKeyDown('W') ? 1.f : 0.f) - (isKeyDown('S') ? 1.f : 0.f);
@@ -353,17 +356,40 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
                     dir[2] /= dlen;
                 }
                 const bool blocking = ctx.mode().shield_blocking.load(std::memory_order_relaxed) || ctx.combat().shield.isBlocking();
+                const bool sprinting = !sneaking && !blocking &&
+                                       ctx.player().sprint_active.load(std::memory_order_relaxed);
                 const float target_speed = eldenring::shield::effectiveMovementSpeed(
                     ctx.mode().block_walk_speed.load(std::memory_order_relaxed),
                     ctx.mode().sprint_speed.load(std::memory_order_relaxed),
                     ctx.mode().sneak_speed.load(std::memory_order_relaxed),
                     sneaking,
-                    false,
+                    sprinting,
                     blocking
                 );
                 const float dir_2d[2] = {dir[0], dir[2]};
+                // The native controller can still move the player (the key mask is not always
+                // enough), and the engine integrates its stale velocity before this step. Add only
+                // the distance still missing from target_speed; adding a full step on top of the
+                // native one is what made block movement run at roughly 2x.
+                const float native_dx = have_prev_player_ ? final_feet[0] - prev_player_feet_[0] : 0.f;
+                const float native_dz = have_prev_player_ ? final_feet[2] - prev_player_feet_[2] : 0.f;
+                const float native_along = native_dx * dir[0] + native_dz * dir[2];
+                const float step_len = target_speed * block_dt - native_along;
+                if (callbacks_.blockmove_diag && callbacks_.blockmove_diag()) {
+                    static uint64_t last_ms = 0;
+                    const uint64_t now_ms = GetTickCount64();
+                    if (now_ms - last_ms >= 100) {
+                        last_ms = now_ms;
+                        float v120[3] = {};
+                        if (callbacks_.safe_read) callbacks_.safe_read(module + 0x120, v120, sizeof(v120));
+                        log("blockmove: target=%.3f native=%.4f step=%.4f dt=%.4f feet=(%.3f %.3f %.3f) final=(%.3f %.3f %.3f) v120=(%.3f %.3f)",
+                            target_speed, native_along, step_len, block_dt, feet[0], feet[1], feet[2],
+                            final_feet[0], final_feet[1], final_feet[2], v120[0], v120[2]);
+                    }
+                }
                 float stepped_feet[3] = {};
-                if (blocks::stepBlockMovement(final_feet, dir_2d, target_speed, block_dt, true, stepped_feet)) {
+                if (step_len > 1e-4f &&
+                    blocks::stepBlockMovement(final_feet, dir_2d, step_len / block_dt, block_dt, true, stepped_feet)) {
                     if (sneaking && has_blocks) {
                         const float desired_dx = stepped_feet[0] - final_feet[0];
                         const float desired_dz = stepped_feet[2] - final_feet[2];
@@ -397,7 +423,7 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
     // Native terrain sneak & shield speed limiting:
     // When walking on Elden Ring's native ground, clamp horizontal displacement per frame to Minecraft sneak speed (1.295 m/s)
     const bool clamp_speed = sneaking || ctx.mode().shield_blocking.load(std::memory_order_relaxed) || ctx.combat().shield.isBlocking();
-    if (!supported && clamp_speed && have_prev_player_ && !jumped && !pinned && fg) {
+    if (mc_mode && !supported && clamp_speed && have_prev_player_ && !jumped && !pinned && fg) {
         const float cur_dx = final_feet[0] - prev_player_feet_[0];
         const float cur_dz = final_feet[2] - prev_player_feet_[2];
         const float h_dist = std::sqrt(cur_dx * cur_dx + cur_dz * cur_dz);
@@ -417,24 +443,36 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
         callbacks_.safe_write(module + layout::kPhysicsProxySyncRequest, &one, sizeof(one));
     }
 
+    // Standing on a block: clear the stale velocity the engine integrates while it thinks the
+    // player is airborne. This is not MC-specific — without it CS/OW players keep sliding forward
+    // on the blocks too.
     if (module != 0 && supported && !jump_active && callbacks_.safe_write) {
         if (ctx.mode().block_ground.load(std::memory_order_relaxed)) {
             const uint8_t one = 1;
             callbacks_.safe_write(module + 0x92, &one, sizeof(one));
             callbacks_.safe_write(module + 0x1D1, &one, sizeof(one));
-            callbacks_.safe_write(module + 0x1D0, &one, sizeof(one));
+            // MC drives the player itself and needs the airborne flag so Havok integrates the
+            // velocity drive. CS/OW use the native controller, so spoof the measured grounded
+            // state (92=1, 93=1, 1D0=0, 1D1=1) or it refuses to move on the block.
+            const uint8_t airborne = mc_mode ? 1 : 0;
+            callbacks_.safe_write(module + 0x1D0, &airborne, sizeof(airborne));
+            if (!mc_mode) callbacks_.safe_write(module + 0x93, &one, sizeof(one));
         }
         const float zero = 0.f;
         callbacks_.safe_write(module + 0x120 + 4, &zero, sizeof(zero));
         callbacks_.safe_write(module + 0x1B8, &zero, sizeof(zero));
-        // The game keeps the horizontal velocity from before landing and integrates it every frame while it
-        // thinks the player is airborne (observed: the player keeps sliding on a block with no keys held).
-        // On a placed block the position drive is the mover, so clear it.
-        callbacks_.safe_write(module + 0x120, &zero, sizeof(zero));
-        callbacks_.safe_write(module + 0x120 + 8, &zero, sizeof(zero));
+        // The game keeps the horizontal velocity from before landing and integrates it every frame
+        // while it thinks the player is airborne (the idle slide). MC's direct drive is the mover,
+        // so clear it every frame there. CS/OW are moved by the native controller: only clear the
+        // stale velocity while no movement key is held, or the player cannot walk at all.
+        const bool movement_input = key_w || key_a || key_s || key_d;
+        if (mc_mode || !movement_input) {
+            callbacks_.safe_write(module + 0x120, &zero, sizeof(zero));
+            callbacks_.safe_write(module + 0x120 + 8, &zero, sizeof(zero));
+        }
     }
 
-    if (module != 0 && supported && !jump_active && ctx.mode().block_drive.load(std::memory_order_relaxed) && callbacks_.drive_velocity) {
+    if (mc_mode && module != 0 && supported && !jump_active && ctx.mode().block_drive.load(std::memory_order_relaxed) && callbacks_.drive_velocity) {
         callbacks_.drive_velocity(module, pinned, ctx);
     }
     if (supported && !jump_active) {
