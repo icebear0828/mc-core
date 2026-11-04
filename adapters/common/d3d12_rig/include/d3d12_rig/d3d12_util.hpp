@@ -1,6 +1,6 @@
 #pragma once
 
-// Small D3D12 resource helpers shared by the Steve renderer, its pipeline builder and its texture cache.
+// Small D3D12 resource helpers shared by the rig renderer, its pipeline builder and its texture cache.
 
 #include <d3d12.h>
 
@@ -8,10 +8,10 @@
 #include <cstdint>
 #include <vector>
 
+#include "d3d12_rig/steve_types.hpp"
 #include "mc/rig.hpp"
-#include "render/steve_types.hpp"
 
-namespace erov::d3d12 {
+namespace mc::rig::d3d12 {
 
 // Releases a COM pointer and clears it.
 template <typename T>
@@ -31,4 +31,4 @@ void Rel(T*& p) {
                               const std::vector<uint16_t>& indices, ID3D12Resource*& vb, ID3D12Resource*& ib,
                               D3D12_VERTEX_BUFFER_VIEW& vbv, D3D12_INDEX_BUFFER_VIEW& ibv, unsigned& index_count);
 
-} // namespace erov::d3d12
+} // namespace mc::rig::d3d12

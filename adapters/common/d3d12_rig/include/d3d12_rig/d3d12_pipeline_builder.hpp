@@ -1,6 +1,6 @@
 #pragma once
 
-// Builds the Steve root signature and graphics pipelines from plain descriptors, so SteveRenderer only
+// Builds the rig root signature and graphics pipelines from plain descriptors, so the renderer only
 // submits draws. The descriptor assembly here is pure (no device, no allocation) and unit-tested; the
 // device-touching helpers live in the .cpp.
 
@@ -8,9 +8,9 @@
 
 #include <cstdint>
 
-#include "render/steve_types.hpp"
+#include "d3d12_rig/steve_types.hpp"
 
-namespace erov::d3d12 {
+namespace mc::rig::d3d12 {
 
 // Descriptor value types for the Steve root signature:
 //   0: 44 root constants (view_proj, world, scene, dims, tint)
@@ -144,4 +144,4 @@ void BeginPass(const PassDesc& pass);
 [[nodiscard]] ID3D12RootSignature* CreateSteveRootSignature(ID3D12Device* device, LogFn log);
 [[nodiscard]] ID3D12PipelineState* CreatePipeline(ID3D12Device* device, const PsoOptions& options, LogFn log);
 
-} // namespace erov::d3d12
+} // namespace mc::rig::d3d12

@@ -28,6 +28,10 @@ if(WIN32)
         endif()
     endif()
 
+    # Game-neutral D3D12 rig primitives (resource helpers, HLSL compile, pipeline builder/owner, texture
+    # cache). The adapter keeps only its own mesh factory and SteveRenderer.
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../common/d3d12_rig" d3d12_rig)
+
     # Dear ImGui with the DX12 backend (own target: the Sekiro build links the DX11 one).
     FetchContent_Declare(
         imgui
@@ -83,12 +87,7 @@ if(WIN32)
         src/overlay_textures.cpp
         src/steve_renderer_d3d12.cpp
         src/steve_draw_first_person.cpp
-        src/render/d3d12_util.cpp
-        src/render/d3d12_shader_lib.cpp
-        src/render/d3d12_pipeline_builder.cpp
-        src/render/steve_pipeline.cpp
         src/render/steve_mesh_factory.cpp
-        src/render/steve_texture_cache.cpp
         src/input_hook.cpp
         src/png_wic.cpp
         src/audio_xaudio2.cpp
@@ -135,7 +134,7 @@ if(WIN32)
         "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
         "${CMAKE_CURRENT_BINARY_DIR}/generated")
-    target_link_libraries(eldenring_adapter PRIVATE eldenring_live mc_core minhook imgui_dx12 psapi d3d12 dxgi dxguid d3dcompiler windowscodecs ole32 xaudio2)
+    target_link_libraries(eldenring_adapter PRIVATE eldenring_live mc_core mc_d3d12_rig minhook imgui_dx12 psapi d3d12 dxgi dxguid d3dcompiler windowscodecs ole32 xaudio2)
     if(MSVC)
         target_compile_options(eldenring_adapter PRIVATE /W4 /WX /permissive- /utf-8)
     endif()

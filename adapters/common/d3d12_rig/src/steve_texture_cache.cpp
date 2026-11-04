@@ -4,11 +4,11 @@
 
 #include <cstring>
 
-#include "render/steve_texture_cache.hpp"
+#include "d3d12_rig/steve_texture_cache.hpp"
 
-#include "render/d3d12_util.hpp"
+#include "d3d12_rig/d3d12_util.hpp"
 
-namespace erov::steve {
+namespace mc::rig::d3d12 {
 
 bool CreateSkinTexture(ID3D12Device* device, const uint8_t* rgba, unsigned width, unsigned height,
                        D3D12_CPU_DESCRIPTOR_HANDLE slot, SkinGpu& out) {
@@ -87,4 +87,4 @@ void RecordUpload(ID3D12GraphicsCommandList* list, SkinGpu& skin) {
     skin.pending = false;
 }
 
-} // namespace erov::steve
+} // namespace mc::rig::d3d12

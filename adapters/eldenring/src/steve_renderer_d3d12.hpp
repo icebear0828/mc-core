@@ -12,13 +12,13 @@
 #include <string_view>
 #include <vector>
 
+#include "d3d12_rig/steve_pipeline.hpp"
+#include "d3d12_rig/steve_texture_cache.hpp"
+#include "d3d12_rig/steve_types.hpp"
 #include "eldenring_shadow.hpp"
 #include "eldenring_steve.hpp"
 #include "mc/entity_model.hpp"
 #include "mc/rig.hpp"
-#include "render/steve_pipeline.hpp"
-#include "render/steve_texture_cache.hpp"
-#include "render/steve_types.hpp"
 
 namespace erov {
 
