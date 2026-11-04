@@ -86,10 +86,14 @@ void HotkeyDispatcher::tick(float dt) {
             const int whole = static_cast<int>(player.hunger_heal_carry);
             player.hunger_heal_carry -= static_cast<float>(whole);
             heal += whole;
-            if (player.eating.isEating() && combat.melee.heldItem() != player.eating.getCurrentItem()) {
+            const mc::ItemId meal = player.eating.getCurrentItem();
+            const bool main_has_meal = player.eating.isEating() && combat.melee.heldItem() == meal &&
+                                       combat.melee.countAt(combat.melee.selectedSlot()) > 0;
+            const bool off_has_meal = player.eating.isEating() && combat.melee.offhandItem() == meal &&
+                                      combat.melee.offhandCount() > 0;
+            if (player.eating.isEating() && !main_has_meal && !off_has_meal) {
                 player.eating.cancel();
             }
-            const mc::ItemId meal = player.eating.getCurrentItem();
             const mc::EatingEvent e = player.eating.update(dt);
             if (e.chew_sound && cb_.play_sound) cb_.play_sound("entity.generic.eat", 0.8f);
             if (e.completed) {
@@ -97,7 +101,8 @@ void HotkeyDispatcher::tick(float dt) {
                 player.survival.apply(e.effects);
                 player.hunger.eat(meal);
                 if (creative::consumesItems(runtime.currentGameMode())) {
-                    combat.melee.consumeAt(combat.melee.selectedSlot());
+                    if (main_has_meal) combat.melee.consumeAt(combat.melee.selectedSlot());
+                    else if (off_has_meal) combat.melee.inventory().consumeOffhand();
                 }
             }
         }

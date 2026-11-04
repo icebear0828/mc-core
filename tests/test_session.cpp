@@ -398,7 +398,8 @@ TEST_F(SessionTest, UseOnFoodStartsEatingAndCompletionConsumesAndHeals) {
     in.use_pressed = true;
     session.tick(0.05f, in);
     EXPECT_TRUE(session.consumables().isEating());
-    EXPECT_GT(session.lastAnimInput().eating_progress, 0.f);
+    EXPECT_EQ(session.lastAnimInput().hands.main.use, mc::HandUse::Eat);
+    EXPECT_GT(session.lastAnimInput().hands.main.progress, 0.f);
 
     session.tick(1.7f, {});
     EXPECT_FALSE(session.consumables().isEating());

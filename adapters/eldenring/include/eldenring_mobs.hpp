@@ -222,7 +222,12 @@ private:
         const mc::model::EntityModel* model = getModel(s.model_type);
         if (!d.dying) {
             mc::SteveAnimInput in = e.motion.update(dt, s.feet, s.yaw);
-            in.bow_charge = s.bow_charge;
+            if (s.bow_charge > 0.f) {
+                in.hands.main.item = mc::ItemId::Bow;
+                in.hands.main.present = true;
+                in.hands.main.use = mc::HandUse::BowDraw;
+                in.hands.main.progress = s.bow_charge;
+            }
             in.swing_progress = s.swing_progress;
             if (s.model_type == "skeleton") {
                 in.arms_sway_only = false;

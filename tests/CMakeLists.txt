@@ -26,6 +26,7 @@ add_executable(mc_tests
     test_session.cpp
     test_rig.cpp
     test_item_model.cpp
+    test_hand_items.cpp
     test_sekiro_live.cpp
     test_sekiro_enemies.cpp
     test_sekiro_host_write.cpp

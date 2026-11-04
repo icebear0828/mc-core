@@ -1,5 +1,6 @@
 #include "overlay_internal.hpp"
 #include "eldenring_perfstats.hpp"
+#include "render/steve_mesh_factory.hpp"
 
 namespace erov {
 namespace detail {
@@ -269,6 +270,12 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
                 if (g_steve.setMobModel(g_s.device, name, model)) {
                     Logf("overlay: mob model '%s' ready (%zu bones)", name.c_str(), model.bones.size());
                 }
+            }
+            // The held trident is a 3D prop in first person too: build a second copy in the item space.
+            const auto trident_model = g_mob_models.find("trident");
+            if (trident_model != g_mob_models.end() &&
+                g_steve.setMobModel(g_s.device, "trident_fp", trident_model->second, steve::kFirstPersonItemBasis)) {
+                Logf("overlay: first-person trident model ready");
             }
             if (g_mob_model_given) {
                 g_mob_model_gpu = g_steve.setMobModel(g_s.device, g_mob_model);

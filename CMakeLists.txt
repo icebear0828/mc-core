@@ -99,6 +99,7 @@ add_library(mc_core STATIC
     src/session.cpp
     src/rig.cpp
     src/item_model.cpp
+    src/hand_items.cpp
     src/entity_model.cpp
     src/tnt.cpp
     src/recipe.cpp

@@ -64,9 +64,11 @@ TEST(ConsumablesTest, EatingRaisesTheThirdPersonArm) {
     const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
     mc::SteveAnimator plain, eating;
     mc::SteveAnimInput input{};
-    input.right_hand_item = true;
+    input.hands.main.item = mc::ItemId::Bread;
+    input.hands.main.present = true;
     mc::SteveAnimInput input_eating = input;
-    input_eating.eating_progress = 0.5f;
+    input_eating.hands.main.use = mc::HandUse::Eat;
+    input_eating.hands.main.progress = 0.5f;
 
     for (int i = 0; i < 5; ++i) {
         plain.update(0.05f, input);

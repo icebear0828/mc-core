@@ -343,18 +343,22 @@ bool TryStartRiptide() {
         return false;
     }
     std::lock_guard<std::mutex> g(g_melee_mutex);
-    if (g_melee.heldItem() != mc::ItemId::Trident || g_melee.countAt(g_melee.selectedSlot()) <= 0) return false;
+    const mc::ItemId main_item = g_melee.heldItem();
+    const unsigned main_count = g_melee.countAt(g_melee.selectedSlot());
+    const mc::ItemId off_item = g_melee.offhandItem();
+    const unsigned off_count = g_melee.offhandCount();
+    // The same main-hand-first rule as the interaction handler.
+    const auto hand = mc::handForUse(mc::ItemId::Trident, main_count > 0 ? main_item : mc::ItemId::None,
+                                     off_count > 0 ? off_item : mc::ItemId::None);
+    if (!hand.has_value()) return false;
+    const bool off_trident = *hand == mc::Hand::Off;
+    ctx.mode().trident_offhand.store(off_trident, std::memory_order_relaxed);
     auto& loco = eldenring::movement::PlayerLocomotion::Instance();
-    // While gliding, the trident is thrown (the elytra keeps flying); on the ground it riptides.
-    if (loco.isElytraGliding()) {
-        if (!loco.requestTridentThrow()) return false;
-        if (eldenring::creative::consumesItems(ctx.currentGameMode())) g_melee.consumeFirst(mc::ItemId::Trident);
-        Log("trident: throw requested (gliding)");
-        return true;
-    }
+    // Gliding no longer turns the release into a throw: the dash pauses the glide and resumes it at the new
+    // position (PlayerLocomotion::stepRiptide's riptide_was_gliding_).
     const int level = std::clamp(ctx.mode().riptide_level.load(std::memory_order_relaxed), 1, 3);
     if (!loco.startRiptide(level)) return false;
-    Log("riptide: requested level=%d", level);
+    Log("riptide: requested level=%d%s", level, off_trident ? " (offhand)" : "");
     return true;
 }
 

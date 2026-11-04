@@ -137,6 +137,7 @@ struct ModeConfig {
     std::atomic<float> elytra_blend{1.f};
     // Trident Riptide: the charge progress [0,1] (10 ticks to full) and the level from mc_er_steve.txt.
     std::atomic<float> trident_charge{0.f};
+    std::atomic<bool> trident_offhand{false}; // the active trident is in the offhand
     std::atomic<int> riptide_level{1};
     std::atomic<bool> riptide_require_water{false};
     std::atomic<bool> riptide_active{false};
@@ -375,6 +376,7 @@ public:
         mode_.dbg_glide.store(false);
         mode_.dbg_riptide.store(false);
         mode_.dbg_trident_charge.store(0.f);
+        mode_.trident_offhand.store(false);
         mode_.dbg_firework_seq.store(0);
         mode_.cs_knife_state.store(0);
         mode_.cs_knife_anim_time.store(0.f);

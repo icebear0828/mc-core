@@ -218,10 +218,10 @@ HeldItemsMesh BuildHeldItems(const uint8_t* atlas_rgba, unsigned atlas_w, unsign
     return out;
 }
 
-MobCpuMesh BuildMobMesh(const mc::model::EntityModel& model) {
+MobCpuMesh BuildMobMesh(const mc::model::EntityModel& model, const mc::rig::HostBasis& basis) {
     MobCpuMesh out;
     for (const mc::model::Bone& bone : model.bones) {
-        const mc::rig::RigMesh mesh = model.buildBoneMesh(bone, eldenring::render::kBasis);
+        const mc::rig::RigMesh mesh = model.buildBoneMesh(bone, basis);
         out.bone_ranges.push_back(AppendMesh(mesh, out.vertices, out.indices));
     }
     for (size_t i = 0; i < model.bones.size(); ++i) {

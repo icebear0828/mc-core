@@ -52,7 +52,8 @@ TEST(SteveAnimatorTest, HoldingAnItemUsesMinecraftItemArmPose) {
     const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
     mc::SteveAnimator animator;
     mc::SteveAnimInput in{};
-    in.right_hand_item = true;
+    in.hands.main.item = mc::ItemId::DiamondSword;
+    in.hands.main.present = true;
     animator.update(0.05f, in);
 
     const auto arm = animator.getTransforms()[ra];
@@ -70,7 +71,8 @@ TEST(SteveAnimatorTest, ItemArmKeepsHalfTheWalkSwingAndNoYaw) {
     mc::SteveAnimInput in{};
     in.forward_speed = 4.317f;
     mc::SteveAnimInput in_held = in;
-    in_held.right_hand_item = true;
+    in_held.hands.main.item = mc::ItemId::DiamondSword;
+    in_held.hands.main.present = true;
     for (int i = 0; i < 7; ++i) {
         plain.update(0.05f, in);
         held.update(0.05f, in_held);
@@ -89,7 +91,8 @@ TEST(SteveAnimatorTest, OffhandItemUsesTheSameItemPose) {
     const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
     mc::SteveAnimator animator;
     mc::SteveAnimInput in{};
-    in.left_hand_item = true;
+    in.hands.off.item = mc::ItemId::DiamondSword;
+    in.hands.off.present = true;
     animator.update(0.05f, in);
 
     const auto arm = animator.getTransforms()[la];
@@ -105,7 +108,10 @@ TEST(SteveAnimatorTest, EatingRaisesTheArmAndTiltsTheHead) {
     const size_t head = static_cast<size_t>(mc::StevePart::Head);
     mc::SteveAnimator animator;
     mc::SteveAnimInput in{};
-    in.eating_progress = 0.5f; // the chew phase is sin(3*pi) = 0
+    in.hands.main.item = mc::ItemId::Bread;
+    in.hands.main.present = true;
+    in.hands.main.use = mc::HandUse::Eat;
+    in.hands.main.progress = 0.5f; // the chew phase is sin(3*pi) = 0
     animator.update(0.05f, in);
 
     const auto arm = animator.getTransforms()[ra];
@@ -176,9 +182,14 @@ TEST(SteveAnimatorTest, TwoHandedBowDrawingPosesBothArmsAuthentically) {
     mc::SteveAnimator idle, main_bow, off_bow;
     mc::SteveAnimInput in{};
     mc::SteveAnimInput main_in = in, off_in = in;
-    main_in.bow_charge = 0.8f;
-    off_in.bow_charge = 0.8f;
-    off_in.bow_offhand = true;
+    main_in.hands.main.item = mc::ItemId::Bow;
+    main_in.hands.main.present = true;
+    main_in.hands.main.use = mc::HandUse::BowDraw;
+    main_in.hands.main.progress = 0.8f;
+    off_in.hands.off.item = mc::ItemId::Bow;
+    off_in.hands.off.present = true;
+    off_in.hands.off.use = mc::HandUse::BowDraw;
+    off_in.hands.off.progress = 0.8f;
     for (int i = 0; i < 10; ++i) {
         idle.update(0.05f, in);
         main_bow.update(0.05f, main_in);
@@ -211,9 +222,14 @@ TEST(SteveAnimatorTest, OnlyTheArmThatHoldsTheRaisedShieldMoves) {
     mc::SteveAnimator idle, main_shield, off_shield;
     mc::SteveAnimInput in{};
     mc::SteveAnimInput main_in = in, off_in = in;
-    main_in.is_blocking = true;
-    off_in.is_blocking = true;
-    off_in.block_offhand = true;
+    main_in.hands.main.item = mc::ItemId::Shield;
+    main_in.hands.main.present = true;
+    main_in.hands.main.use = mc::HandUse::Block;
+    main_in.hands.main.raised = true;
+    off_in.hands.off.item = mc::ItemId::Shield;
+    off_in.hands.off.present = true;
+    off_in.hands.off.use = mc::HandUse::Block;
+    off_in.hands.off.raised = true;
     for (int i = 0; i < 10; ++i) {
         idle.update(0.05f, in);
         main_shield.update(0.05f, main_in);
@@ -237,11 +253,15 @@ TEST(SteveAnimatorTest, ShieldBlockCombatStanceAndCrouchBracing) {
     mc::SteveAnimInput in_stand{}, in_crouch{}, in_wb{}, in_wp{};
 
     // 1. Standing block vs Crouching block
-    in_stand.is_blocking = true;
-    in_stand.block_offhand = true;
+    in_stand.hands.off.item = mc::ItemId::Shield;
+    in_stand.hands.off.present = true;
+    in_stand.hands.off.use = mc::HandUse::Block;
+    in_stand.hands.off.raised = true;
 
-    in_crouch.is_blocking = true;
-    in_crouch.block_offhand = true;
+    in_crouch.hands.off.item = mc::ItemId::Shield;
+    in_crouch.hands.off.present = true;
+    in_crouch.hands.off.use = mc::HandUse::Block;
+    in_crouch.hands.off.raised = true;
     in_crouch.is_crouching = true;
 
     anim_stand_block.update(0.05f, in_stand);
@@ -257,8 +277,10 @@ TEST(SteveAnimatorTest, ShieldBlockCombatStanceAndCrouchBracing) {
     // 2. Weapon arm swing is dampened while offhand blocks on the move
     in_wp.forward_speed = 4.317f;
     in_wb.forward_speed = 4.317f;
-    in_wb.is_blocking = true;
-    in_wb.block_offhand = true;
+    in_wb.hands.off.item = mc::ItemId::Shield;
+    in_wb.hands.off.present = true;
+    in_wb.hands.off.use = mc::HandUse::Block;
+    in_wb.hands.off.raised = true;
 
     for (int i = 0; i < 5; ++i) {
         anim_walk_plain.update(0.05f, in_wp);
@@ -560,7 +582,10 @@ TEST(SteveAnimatorTest, TridentChargeFollowsExtractedBlockbenchCurves) {
 
     mc::SteveAnimator animator;
     mc::SteveAnimInput in{};
-    in.trident_charge = 0.5f;
+    in.hands.main.item = mc::ItemId::Trident;
+    in.hands.main.present = true;
+    in.hands.main.use = mc::HandUse::TridentCharge;
+    in.hands.main.progress = 0.5f;
     animator.update(0.f, in);
 
     const float t = 0.5f / 0.9f; // clamp(charge / 0.9)
@@ -593,7 +618,10 @@ TEST(SteveAnimatorTest, TridentChargeFullDrawAddsBoundedShake) {
 
     mc::SteveAnimator animator;
     mc::SteveAnimInput in{};
-    in.trident_charge = 1.0f;
+    in.hands.main.item = mc::ItemId::Trident;
+    in.hands.main.present = true;
+    in.hands.main.use = mc::HandUse::TridentCharge;
+    in.hands.main.progress = 1.0f;
     animator.update(0.f, in);
 
     // Full draw: base pitch -192 deg plus sin(charge * 55) * 1.2 deg of shake.
@@ -725,3 +753,57 @@ TEST(SteveAnimatorTest, ZeroNewInputsKeepTheLegacyPoseBitIdentical) {
 
 
 
+
+TEST(SteveAnimatorTest, OffhandTridentChargePosesTheLeftArmAndBracesTheRight) {
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+    mc::SteveAnimator animator;
+    mc::SteveAnimInput in{};
+    in.hands.off.item = mc::ItemId::Trident;
+    in.hands.off.present = true;
+    in.hands.off.use = mc::HandUse::TridentCharge;
+    in.hands.off.progress = 0.5f;
+    animator.update(0.f, in);
+
+    const float t = 0.5f / 0.9f;
+    // The holding (left) arm takes the full charge curve, mirrored: roll +4.
+    expectQuatNear(animator.getTransforms()[la].rot, quatLegacy((-150.f + (-42.f) * t) * kDeg, 0.f, 4.f * kDeg));
+    // The right arm braces: pitch lerp(0, -25), roll -8.
+    expectQuatNear(animator.getTransforms()[ra].rot, quatLegacy(-25.f * t * kDeg, 0.f, -8.f * kDeg));
+}
+
+TEST(SteveAnimatorTest, OffhandBowDrawPosesTheLeftArmAsTheBowHand) {
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+    mc::SteveAnimator animator;
+    mc::SteveAnimInput in{};
+    in.hands.off.item = mc::ItemId::Bow;
+    in.hands.off.present = true;
+    in.hands.off.use = mc::HandUse::BowDraw;
+    in.hands.off.progress = 0.8f;
+    animator.update(0.05f, in);
+
+    // Both arms are raised. The bow hand (left) holds yaw +0.1; the right draws across the chest with yaw -0.5.
+    const auto left = animator.getTransforms()[la].rot;
+    const auto right = animator.getTransforms()[ra].rot;
+    EXPECT_NEAR(2.f * std::atan2(left.z, left.w), 0.1f, 0.02f);
+    EXPECT_NEAR(2.f * std::atan2(right.z, right.w), -0.5f, 0.02f);
+    EXPECT_LT(left.w, 0.75f);
+    EXPECT_LT(right.w, 0.75f);
+}
+
+TEST(SteveAnimatorTest, OffhandEatingRaisesTheLeftArmOnly) {
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+    mc::SteveAnimator animator;
+    mc::SteveAnimInput in{};
+    in.hands.off.item = mc::ItemId::Bread;
+    in.hands.off.present = true;
+    in.hands.off.use = mc::HandUse::Eat;
+    in.hands.off.progress = 0.5f; // the chew phase is sin(3*pi) = 0
+    animator.update(0.05f, in);
+
+    const auto left = animator.getTransforms()[la].rot;
+    EXPECT_NEAR(2.f * std::atan2(left.y, left.w), -72.0f * kDeg, 0.05f);
+    EXPECT_GT(animator.getTransforms()[ra].rot.w, 0.95f); // the right arm stays down
+}
