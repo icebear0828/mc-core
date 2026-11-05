@@ -103,6 +103,18 @@ void SetupWorldRuntime() {
     cb.read_own_position = [](float out[3]) {
         return eldenring::movement::PlayerLocomotion::Instance().ownPosition(out);
     };
+    cb.is_teleporting = []() {
+        return eldenring::movement::PlayerLocomotion::Instance().isEnderPearlTeleportActive();
+    };
+    cb.is_loading = []() {
+        LoadingState ls;
+        if (readLoadingState(g_reader, readSingleton(g_reader, g_img.base, g_rva_loading, sigs::kCSNowLoadingHelper), ls) &&
+            (ls.job_active || ls.screen_loading)) {
+            return true;
+        }
+        float fade = 0.f;
+        return readFadeAlpha(g_reader, readSingleton(g_reader, g_img.base, g_rva_fade, sigs::kCSFade), fade) && fade > 0.5f;
+    };
     cb.blockmove_diag = []() { return FileExists(g_game_dir + "mc_er_blockmove.txt"); };
     cb.log = [](const std::string& msg) { Log("%s", msg.c_str()); };
     cb.on_origin_rebase = [](float rx, float ry, float rz) {

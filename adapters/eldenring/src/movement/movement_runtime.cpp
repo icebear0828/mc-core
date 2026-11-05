@@ -106,7 +106,12 @@ void ElytraStep(float dt) {
 
 void EnderPearlStep(float dt) {
     const uint64_t now_ms = GetTickCount64();
-    eldenring::movement::PlayerLocomotion::Instance().stepEnderPearl(dt, now_ms, g_ctx);
+    auto& loco = eldenring::movement::PlayerLocomotion::Instance();
+    loco.stepEnderPearl(dt, now_ms, g_ctx);
+    // The block step skips rebase inference while the pearl owns the position (the engine flips
+    // its frame during the hold), so apply the shifts the pearl actually followed here.
+    float shift[3] = {};
+    if (loco.takePendingRebase(shift)) ApplyOriginRebase(shift[0], shift[1], shift[2]);
 }
 
 void RiptideStep(float dt) {

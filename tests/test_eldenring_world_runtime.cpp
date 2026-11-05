@@ -784,6 +784,98 @@ TEST(EldenRingWorldRuntime, DetectsFloatingOriginRebaseAndShiftsWorld) {
     // Relative distance is 100% PRESERVED!
 }
 
+TEST(EldenRingWorldRuntime, DoesNotShiftBlocksForARebaseSizedJumpDuringALoad) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x5000;
+
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+    runtime.setDeltaTimeOverrideForTesting(0.016f);
+    runtime.setInputProvider([](int) { return false; });
+
+    WorldRuntimeCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.read_physics_pos = [&](uintptr_t, float out_f[3]) {
+        return mem.readBytes(kModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+    };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.is_game_in_foreground = []() { return true; };
+    cb.is_loading = []() { return true; };
+    int rebase_calls = 0;
+    cb.on_origin_rebase = [&](float, float, float) { ++rebase_calls; };
+    runtime.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+    ctx.mode().block_collision.store(true);
+
+    ctx.world().block_grid.place({-7, 1, -21}, mc::BlockId::Dirt);
+
+    // A grace/load teleport whose X delta happens to be exactly 8 m: the Y/Z deltas
+    // (88 m and 120 m) are outside the rebase window, so only X looks like a rebase.
+    float p1[3] = {-12.121f, 95.491f, -121.787f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, p1, sizeof(p1));
+    runtime.stepPlayerBlockCollision(ctx);
+    EXPECT_EQ(rebase_calls, 0);
+
+    float p2[3] = {-4.122f, 7.234f, -1.789f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, p2, sizeof(p2));
+    runtime.stepPlayerBlockCollision(ctx);
+
+    // While loading, a rebase-sized jump must not shift the block grid.
+    EXPECT_EQ(rebase_calls, 0);
+    EXPECT_EQ(ctx.world().block_grid.get({-7, 1, -21}), mc::BlockId::Dirt);
+}
+
+TEST(EldenRingWorldRuntime, DoesNotInferARebaseWhileThePearlOwnsThePosition) {
+    MockMemory mem;
+    const uintptr_t kChr = 0x1000;
+    const uintptr_t kModule = 0x5000;
+
+    auto& runtime = VoxelWorldRuntime::Instance();
+    runtime.resetForTesting();
+    runtime.setDeltaTimeOverrideForTesting(0.016f);
+    runtime.setInputProvider([](int) { return false; });
+
+    WorldRuntimeCallbacks cb{};
+    cb.get_player_chr = [&]() { return kChr; };
+    cb.get_physics_module = [&](uintptr_t) { return kModule; };
+    cb.read_physics_pos = [&](uintptr_t, float out_f[3]) {
+        return mem.readBytes(kModule + layout::kPhysicsPosition, out_f, sizeof(float) * 3);
+    };
+    cb.safe_read = [&](uintptr_t a, void* d, size_t s) { return mem.readBytes(a, d, s); };
+    cb.safe_write = [&](uintptr_t a, const void* s, size_t sz) { mem.writeBytes(a, s, sz); return true; };
+    cb.is_game_in_foreground = []() { return true; };
+    cb.is_teleporting = []() { return true; };
+    int rebase_calls = 0;
+    cb.on_origin_rebase = [&](float, float, float) { ++rebase_calls; };
+    runtime.setCallbacks(cb);
+
+    auto& ctx = RuntimeContext::Instance();
+    ctx.resetForTesting();
+    ctx.mode().mc_mode.store(true);
+    ctx.mode().block_collision.store(true);
+
+    ctx.world().block_grid.place({1, 1, 1}, mc::BlockId::Dirt);
+
+    float p1[3] = {0.0f, 1.17f, 0.0f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, p1, sizeof(p1));
+    runtime.stepPlayerBlockCollision(ctx);
+
+    // The engine flips its frame by +8 m during the pearl hold: the pearl publishes the shift,
+    // so the block step must not infer one from this delta.
+    float p2[3] = {8.0f, 1.17f, 0.0f};
+    mem.writeBytes(kModule + layout::kPhysicsPosition, p2, sizeof(p2));
+    runtime.stepPlayerBlockCollision(ctx);
+
+    EXPECT_EQ(rebase_calls, 0);
+    EXPECT_EQ(ctx.world().block_grid.get({1, 1, 1}), mc::BlockId::Dirt);
+}
+
 TEST(EldenRingWorldRuntime, DoesNotTreatOurAirMovementAsARebase) {
     MockMemory mem;
     const uintptr_t kChr = 0x1000;

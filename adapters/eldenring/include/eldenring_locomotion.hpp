@@ -113,6 +113,13 @@ public:
     void stepEnderPearl(float dt, uint64_t now_ms, RuntimeContext& ctx);
     bool isEnderPearlActive() const { return pearl_.active(); }
     bool isEnderPearlTeleportHolding() const { return pearl_hold_; }
+    // True for the whole pearl teleport (hold and the short watch after it). During this window the
+    // engine's coordinate frame flips back and forth, so the block step must not infer rebases from
+    // the position delta; the pearl publishes the shifts it actually followed instead.
+    bool isEnderPearlTeleportActive() const { return pearl_hold_ || pearl_watch_; }
+    // Consume a rebase the pearl hold/watch followed while the block step was skipping its own
+    // detection. Returns false when there was none.
+    bool takePendingRebase(float out[3]);
     // The in-flight pearl's world position for the renderer; false when no pearl is active.
     bool pearlRenderPos(float out[3]) const;
     // Trident Riptide: 10 ticks of charge then a 20-tick spin dash along the look direction.
@@ -219,6 +226,9 @@ private:
     int pearl_retries_{0};
     bool pearl_have_player_pos_{false};
     float pearl_player_pos_[3]{};
+    // A rebase the hold/watch followed; the loader applies it to the block grid (see takePendingRebase).
+    float pending_rebase_[3]{};
+    bool has_pending_rebase_{false};
     uint64_t last_pearl_log_ms_{0};
 
     // Trident Riptide state (y-up, blocks/tick).

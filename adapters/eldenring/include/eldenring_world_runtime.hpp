@@ -51,6 +51,12 @@ struct WorldRuntimeCallbacks {
 
     // Environment & game state
     std::function<bool()> is_game_in_foreground;
+    // True while the game is loading or fading between areas. A load/teleport also moves the
+    // player by whole 8 m steps; that must not shift the placed blocks.
+    std::function<bool()> is_loading;
+    // True while a mod-owned teleport (the ender pearl hold/watch) owns the position. The engine's
+    // frame flips during the hold; the pearl publishes the shifts it followed instead.
+    std::function<bool()> is_teleporting;
     std::function<bool(CameraPose& out_cam)> read_camera;
     std::function<RayResult(const float from[3], const float disp[3])> cast_ray;
     std::function<bool(std::vector<EnemyInfo>& out_enemies)> enumerate_enemies;

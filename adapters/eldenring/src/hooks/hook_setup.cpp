@@ -102,9 +102,13 @@ void SetupGameHooksCallbacks() {
             g_bullet_fire_pending.exchange(false)) {
             RunBulletFire();
         }
+        // The block step must see an engine floating-origin rebase before FlightStep()
+        // follows it in its own position: stepFlight() rewrites fly_own_ to the new frame,
+        // after which the block step's feet-vs-own delta is zero and every placed block
+        // stays in the old frame (the "blocks teleported" symptom).
+        BlocksCollisionStep();
         FlightStep();
         SneakEyeHeightStep(dt);
-        BlocksCollisionStep();
         McJumpStep();
         ElytraStep(dt);
         EnderPearlStep(dt);
