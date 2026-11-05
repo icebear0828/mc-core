@@ -1,6 +1,7 @@
 #include "core/loader_internal.hpp"
 #include "cs_scope.hpp"
 #include "input_hook.hpp"
+#include "mc/rig/first_person_rig.hpp"
 
 namespace eldenring::loader_detail {
 
@@ -113,7 +114,8 @@ void AfterCameraStep(bool have_before, uintptr_t addr, const float before[3]) {
         const uintptr_t player = PlayerChrPtr();
         float feet[3];
         if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, feet)) {
-            firstPersonEye(feet, g_eye_height.load(), eye);
+            // The eye position is the shared rig policy; the guarded write and the deferred restore stay here.
+            mc::rig::FirstPersonRig::eyeFromFeet(feet, g_eye_height.load(), eye);
             if (!CameraPositionTargetSafe(addr)) {
                 static std::atomic<unsigned> refused{0};
                 const unsigned n = ++refused;

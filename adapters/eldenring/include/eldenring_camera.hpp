@@ -5,6 +5,7 @@
 // at +0x50 (A). Left-handed: R x U = +F, Forward points where the camera looks.
 
 #include "eldenring_rtti.hpp"
+#include "mc/rig/first_person_rig.hpp"
 
 #include <cmath>
 #include <optional>
@@ -73,10 +74,9 @@ inline std::optional<ScreenPoint> projectToScreen(const CameraPose& cam, const f
 }
 
 // First-person experiment: the camera position (x, y, z) that puts the view at the player's eyes (Y up, metres).
+// The policy is shared with every adapter; only the ChrCam write below is Elden Ring specific.
 inline void firstPersonEye(const float feet[3], float eye_height, float out[3]) {
-    out[0] = feet[0];
-    out[1] = feet[1] + eye_height;
-    out[2] = feet[2];
+    mc::rig::FirstPersonRig::eyeFromFeet(feet, eye_height, out);
 }
 
 } // namespace eldenring::live
