@@ -181,7 +181,14 @@ void VoxelWorldRuntime::stepPlayerBlockCollision(RuntimeContext& ctx) {
             }
         }
 
-        if (is_rebase) {
+        if (is_rebase && ((callbacks_.is_loading && callbacks_.is_loading()) ||
+                          (callbacks_.is_teleporting && callbacks_.is_teleporting()))) {
+            // A load or a mod-owned teleport (ender pearl) also moves the player by whole 8 m
+            // steps. Shifting the grid here would teleport every placed block; the pearl
+            // publishes the rebases it actually followed, and the grid is cleared on loads.
+            log("world: ignored rebase-like jump during a load/teleport: shift=(%.2f, %.2f, %.2f)",
+                rebase_shift[0], rebase_shift[1], rebase_shift[2]);
+        } else if (is_rebase) {
             log("world: floating origin rebase detected: shift=(%.2f, %.2f, %.2f)",
                 rebase_shift[0], rebase_shift[1], rebase_shift[2]);
             prev_player_feet_[0] += rebase_shift[0];

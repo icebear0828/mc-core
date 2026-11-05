@@ -71,6 +71,16 @@ bool PlayerLocomotion::isKeyDown(int vk) const {
 #endif
 }
 
+bool PlayerLocomotion::takePendingRebase(float out[3]) {
+    if (!has_pending_rebase_) return false;
+    has_pending_rebase_ = false;
+    out[0] = pending_rebase_[0];
+    out[1] = pending_rebase_[1];
+    out[2] = pending_rebase_[2];
+    pending_rebase_[0] = pending_rebase_[1] = pending_rebase_[2] = 0.f;
+    return true;
+}
+
 bool PlayerLocomotion::ownPosition(float out[3]) const {
     if (flying_.load(std::memory_order_relaxed) && fly_have_written_) {
         std::memcpy(out, fly_own_, sizeof(fly_own_));
@@ -947,6 +957,10 @@ void PlayerLocomotion::stepEnderPearl(float dt, uint64_t now_ms, RuntimeContext&
                 pearl_hold_target_[0] += shift[0];
                 pearl_hold_target_[1] += shift[1];
                 pearl_hold_target_[2] += shift[2];
+                pending_rebase_[0] += shift[0];
+                pending_rebase_[1] += shift[1];
+                pending_rebase_[2] += shift[2];
+                has_pending_rebase_ = true;
                 log("pearl: hold target followed a re-base (%.1f %.1f %.1f)", static_cast<double>(shift[0]),
                     static_cast<double>(shift[1]), static_cast<double>(shift[2]));
             }

@@ -16,6 +16,16 @@ bool BlocksPresent() {
     return g_blocks.count() != 0;
 }
 
+void ApplyOriginRebase(float rx, float ry, float rz) {
+    {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        g_blocks.shift(static_cast<int>(rx), static_cast<int>(ry), static_cast<int>(rz));
+        g_tnt_mgr.shift(rx, ry, rz);
+    }
+    g_virtual_summons.shift(rx, ry, rz);
+    SendBlockMesh();
+}
+
 void SendBlockMesh(const std::optional<blocks::MiningOverlay>& mining,
                    const std::optional<blocks::TerrainMiningOverlay>& terrain_mining) {
     perfstats::ScopedTimedLock g(g_blocks_mutex, perfstats::LockKind::Blocks);

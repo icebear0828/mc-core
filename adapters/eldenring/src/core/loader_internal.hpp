@@ -427,6 +427,9 @@ bool StepMining(float dt, bool left_held);
 bool BlocksPresent();
 void SendBlockMesh(const std::optional<blocks::MiningOverlay>& mining = std::nullopt,
                    const std::optional<blocks::TerrainMiningOverlay>& terrain_mining = std::nullopt);
+// Shift the block grid, TNT and summons by (rx,ry,rz) and rebuild the block mesh. Used when the
+// block step skipped its own rebase detection (the ender pearl hold/watch publishes the shift).
+void ApplyOriginRebase(float rx, float ry, float rz);
 bool AimRay(float eye[3], float dir[3]);
 BlockTarget FindBlockTarget();
 // True when the aim ray hits a placed crafting table (used to open its 3x3 screen).
