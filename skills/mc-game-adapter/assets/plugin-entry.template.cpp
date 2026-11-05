@@ -1,3 +1,11 @@
+// Plugin entry template.
+//
+// The host runtime owns the DLL entry point (include/mc/contracts/host_runtime.hpp):
+// the process-attach hook, the worker thread and the MinHook lifetime stay out of
+// this file. A dinput8 proxy game uses mc::host::Dinput8Runtime; a REFramework game
+// (Resident Evil 4) uses mc::host::ReframeworkRuntime and is built with
+// -DMC_ENABLE_RE4=ON. This file only wires the adapter and Session into the host's
+// callbacks.
 #include "{{GAME_NAME_LOWER}}_adapter.hpp"
 #include "mc/hud.hpp"
 #include "mc/session.hpp"

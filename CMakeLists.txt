@@ -38,6 +38,11 @@ else()
     add_compile_definitions(ENABLE_OW_VIEWMODEL=0)
 endif()
 
+# Resident Evil 4 runs inside REFramework, which owns the DLL entry point and the
+# swapchain. Default OFF: the adapter and its tests build against the injected
+# IReframeworkHostApi vtable alone, with no REFramework SDK headers.
+option(MC_ENABLE_RE4 "Enable the Resident Evil 4 (REFramework) host runtime" OFF)
+
 # Compiler Warnings
 if(MSVC)
     add_compile_options(/W4 /WX /permissive- /utf-8)
@@ -112,6 +117,11 @@ target_include_directories(mc_core
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
+
+# Host runtime seam shared by the adapters (issue #177): the DllMain/worker-thread
+# boilerplate, MinHook lifetime and the REFramework skeleton. Always built: the
+# tests exercise the contract; MC_ENABLE_RE4 gates the Resident Evil 4 integration.
+add_subdirectory(adapters/common/runtime)
 
 # Adapters
 option(BUILD_ADAPTERS "Build game adapters." ON)

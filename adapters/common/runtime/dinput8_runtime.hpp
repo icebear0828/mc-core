@@ -1,0 +1,71 @@
+#pragma once
+
+// dinput8.dll proxy host runtime (issue #177, P5).
+//
+// The runtime owns the parts every dinput8 loader repeats: the DllMain body
+// (DisableThreadLibraryCalls + CreateThread), the MinHook lifetime, the config
+// and log bootstrap, and the present/input hook registration. The game-specific
+// pieces are injected as Bindings, so this file knows nothing about Elden Ring:
+// the adapter keeps LoaderThread and its detours, the runtime keeps the entry
+// point.
+
+#include <functional>
+#include <string>
+#include <string_view>
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+#include "mc/contracts/host_runtime.hpp"
+
+namespace mc::host {
+
+class Dinput8Runtime final : public IHostRuntime {
+public:
+    // The adapter's entry points. Every field is optional; a missing installer
+    // makes the matching install*Hooks() call report failure instead of lying.
+    struct Bindings {
+        DWORD(WINAPI* loader_thread)(LPVOID) = nullptr;
+        bool (*ensure_minhook)() = nullptr;
+        bool (*release_minhook)() = nullptr;
+        void (*init_log)() = nullptr;
+        void (*log_line)(const char*) = nullptr;
+        bool (*install_present)(const PresentCallbacks&) = nullptr;
+        bool (*install_input)(const InputCallbacks&) = nullptr;
+    };
+
+    explicit Dinput8Runtime(Bindings bindings = {});
+
+    Dinput8Runtime(const Dinput8Runtime&) = delete;
+    Dinput8Runtime& operator=(const Dinput8Runtime&) = delete;
+
+    // The whole DllMain body: DisableThreadLibraryCalls + CreateThread. Static
+    // so DllMain never depends on an object with dynamic initialisation.
+    static bool onProcessAttach(HMODULE module, const Bindings& bindings);
+
+    bool initialize(const HostConfig& config) override;
+    void shutdown() override;
+    void setFrameCallback(std::function<void(float)> callback) override;
+    bool installPresentHooks(const PresentCallbacks& callbacks) override;
+    bool installInputHooks(const InputCallbacks& callbacks) override;
+    void log(std::string_view message) override;
+    [[nodiscard]] const HostConfig& config() const override { return config_; }
+    [[nodiscard]] const HostRuntimeInfo& info() const override { return info_; }
+
+private:
+    Bindings bindings_;
+    HostConfig config_;
+    HostRuntimeInfo info_{"dinput8", "1", false, true};
+    std::function<void(float)> frame_;
+    PresentCallbacks present_;
+    InputCallbacks input_;
+    bool initialized_{false};
+    bool minhook_owned_{false};
+};
+
+} // namespace mc::host

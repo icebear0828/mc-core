@@ -82,6 +82,20 @@ def test_plugin_entry_template_is_built_on_session_not_singletons():
     assert "on_ground_is_estimate" in template
 
 
+def test_plugin_entry_template_leaves_entry_boilerplate_to_the_host_runtime():
+    """Issue #177: DllMain and MinHook belong to the host runtime, not the adapter.
+
+    include/mc/contracts/host_runtime.hpp owns the entry point (dinput8 proxy or
+    REFramework); a plugin template must not re-implement it. RE4/REFramework
+    builds are gated by MC_ENABLE_RE4.
+    """
+    template = (SKILL_ASSETS / "plugin-entry.template.cpp").read_text(encoding="utf-8")
+    assert "DllMain" not in template, "the host runtime owns DllMain"
+    assert "MH_CreateHook" not in template, "the host runtime owns MinHook"
+    assert "MC_ENABLE_RE4" in template, "the template must point RE4 at the REFramework runtime"
+    assert (REPO_ROOT / "include" / "mc" / "contracts" / "host_runtime.hpp").exists()
+
+
 def test_adapter_templates_implement_the_current_contract():
     header = (SKILL_ASSETS / "adapter-header.template.hpp").read_text(encoding="utf-8")
     source = (SKILL_ASSETS / "adapter-source.template.cpp").read_text(encoding="utf-8")

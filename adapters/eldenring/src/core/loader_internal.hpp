@@ -346,6 +346,9 @@ void LoadInventorySave();
 DWORD FindGameWindowThread();
 bool GameInForeground();
 bool EnsureMinHook();
+// Defined in loader.cpp: the shared host runtime owns the MinHook lifetime and
+// asks the adapter to release the engine on shutdown.
+bool ReleaseMinHook();
 bool FileExists(const std::string& path);
 bool ReadFileAll(const std::string& path, std::vector<uint8_t>& out);
 void LogStatus();

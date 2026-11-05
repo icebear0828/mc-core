@@ -114,6 +114,7 @@ add_executable(mc_tests
     test_eldenring_mod_integration.cpp
     test_eldenring_steve_mesh.cpp
     test_eldenring_pipeline_desc.cpp
+    test_host_runtime.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/ui/inventory_controller.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/ui/hud_bridge.cpp
     ${CMAKE_SOURCE_DIR}/adapters/eldenring/src/movement/player_locomotion.cpp
@@ -160,6 +161,7 @@ target_include_directories(mc_tests PRIVATE
 target_link_libraries(mc_tests
     PRIVATE
         mc_core
+        mc_host_runtime
         wukong_adapter
         sekiro_adapter
         eldenring_live
