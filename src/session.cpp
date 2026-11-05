@@ -52,13 +52,14 @@ BlockId blockForItem(ItemId item) {
 } // namespace
 
 Session::Session(const Ports& ports)
-    : ports_(ports),
+    : physics_(ports.physics),
+      ports_(ports),
       animator_(std::make_unique<SteveAnimator>()),
-      voxel_(std::make_unique<VoxelWorld>(ports.physics, ports.render)),
+      voxel_(std::make_unique<VoxelWorld>(physics_, ports.render)),
       combat_(std::make_unique<CombatEngine>(ports.combat)),
-      ballistics_(std::make_unique<BallisticsEngine>(ports.physics)),
+      ballistics_(std::make_unique<BallisticsEngine>(physics_)),
       consumables_(std::make_unique<ConsumableSystem>()),
-      elytra_(std::make_unique<ElytraFlight>(ports.physics)),
+      elytra_(std::make_unique<ElytraFlight>(physics_)),
       hud_(std::make_unique<HudEngine>()) {}
 
 Session::~Session() {
@@ -67,6 +68,10 @@ Session::~Session() {
 
 uint32_t Session::missingHostFeatures() const {
     return kAllHostFeatures & ~(ports_.gameplay ? ports_.gameplay->supportedFeatures() : 0u);
+}
+
+uint32_t Session::missingPhysicsFeatures() const {
+    return physics_.missing();
 }
 
 void Session::setActive(bool active) {
@@ -178,7 +183,7 @@ void Session::tick(float dt, const InputSnapshot& in) {
     // --- Target probe (only when an action needs it) ----------------------
     RaycastResult target{};
     if (in.attack_pressed || in.attack_held || in.use_pressed) {
-        target = ports_.physics.raycastWorld(cam_pos, cam_pos + fwd * kReachCm, EntityId::LocalPlayer);
+        target = physics_.raycastWorld(cam_pos, cam_pos + fwd * kReachCm, EntityId::LocalPlayer);
     }
     const VoxelBlock* target_voxel = nullptr;
     GridPos target_grid{};
@@ -255,9 +260,11 @@ void Session::tick(float dt, const InputSnapshot& in) {
             crash.hit_location = flight.new_position;
             combat_->executeHit(crash);
         }
-        // Still airborne: the elytra, not the host's walking physics, owns the player's motion.
-        if (elytra_->getState().is_gliding) {
-            ports_.physics.setLinearVelocity(EntityId::LocalPlayer, elytra_->getState().velocity);
+        // Still airborne: the elytra, not the host's walking physics, owns the player's motion. A host
+        // that cannot write velocity keeps its own motion; the missing bit is reported by
+        // missingPhysicsFeatures() so the overlay can say so.
+        if (elytra_->getState().is_gliding && physics_.supports(PhysicsFeature::LinearVelocityWrite)) {
+            physics_.setLinearVelocity(EntityId::LocalPlayer, elytra_->getState().velocity);
         }
     }
 

@@ -25,6 +25,7 @@ add_executable(mc_tests
     test_hud.cpp
     test_hud_layout.cpp
     test_session.cpp
+    test_session_capability_degrade.cpp
     test_rig.cpp
     test_item_model.cpp
     test_hand_items.cpp
