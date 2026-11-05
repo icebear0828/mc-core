@@ -6,12 +6,13 @@
 #include <iterator>
 #include <vector>
 
+#include "d3d12_rig/d3d12_pipeline_builder.hpp"
+#include "d3d12_rig/d3d12_util.hpp"
+#include "d3d12_rig/steve_texture_cache.hpp"
 #include "eldenring_shadow.hpp"
-#include "render/d3d12_pipeline_builder.hpp"
-#include "render/d3d12_util.hpp"
 #include "render/steve_mesh_factory.hpp"
-#include "render/steve_texture_cache.hpp"
 #include "steve_renderer_d3d12.hpp"
+#include "steve_shader_source.hpp" // generated at configure time from shaders/steve.hlsl
 
 namespace erov {
 using d3d12::Rel;
@@ -96,8 +97,8 @@ bool SteveRenderer::init(ID3D12Device* device, DXGI_FORMAT rtv_format, LogFn log
         device->CreateCommittedResource(&hr_, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&stats_readback_));
     }
 
-    // Root signature + figure/depth-view/shadow pipelines.
-    if (!pipeline_.Create(device, rtv_format, log)) {
+    // Root signature + figure/depth-view/shadow pipelines; the adapter owns the HLSL source they compile.
+    if (!pipeline_.Create(device, rtv_format, kSteveHlsl, sizeof(kSteveHlsl) - 1, log)) {
         release();
         return false;
     }

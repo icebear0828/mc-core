@@ -4,9 +4,9 @@
 
 #include <cstring>
 
-#include "render/d3d12_util.hpp"
+#include "d3d12_rig/d3d12_util.hpp"
 
-namespace erov::d3d12 {
+namespace mc::rig::d3d12 {
 
 ID3D12Resource* UploadBuffer(ID3D12Device* device, const void* data, size_t size) {
     D3D12_HEAP_PROPERTIES hp{};
@@ -52,4 +52,4 @@ bool UploadMesh(ID3D12Device* device, const std::vector<mc::rig::RigVertex>& ver
     return true;
 }
 
-} // namespace erov::d3d12
+} // namespace mc::rig::d3d12

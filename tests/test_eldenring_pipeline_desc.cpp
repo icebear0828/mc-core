@@ -2,7 +2,7 @@
 
 #ifdef _WIN32
 
-#include "render/d3d12_pipeline_builder.hpp"
+#include "d3d12_rig/d3d12_pipeline_builder.hpp"
 
 #include "mc/rig.hpp"
 

@@ -151,7 +151,9 @@ endif()
 
 
 target_compile_definitions(mc_tests PRIVATE MC_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/source" MC_CORE_TESTS)
-target_include_directories(mc_tests PRIVATE ${CMAKE_SOURCE_DIR}/adapters/eldenring/src)
+target_include_directories(mc_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/adapters/eldenring/src
+    ${CMAKE_SOURCE_DIR}/adapters/common/d3d12_rig/include)
 
 target_link_libraries(mc_tests
     PRIVATE

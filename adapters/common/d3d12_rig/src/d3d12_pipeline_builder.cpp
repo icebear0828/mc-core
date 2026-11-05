@@ -2,11 +2,11 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-#include "render/d3d12_pipeline_builder.hpp"
+#include "d3d12_rig/d3d12_pipeline_builder.hpp"
 
-#include "render/d3d12_util.hpp"
+#include "d3d12_rig/d3d12_util.hpp"
 
-namespace erov::d3d12 {
+namespace mc::rig::d3d12 {
 
 void BeginPass(const PassDesc& pass) {
     D3D12_VIEWPORT vp{0.f, 0.f, static_cast<float>(pass.width), static_cast<float>(pass.height), 0.f, 1.f};
@@ -57,4 +57,4 @@ ID3D12PipelineState* CreatePipeline(ID3D12Device* device, const PsoOptions& opti
     return pso;
 }
 
-} // namespace erov::d3d12
+} // namespace mc::rig::d3d12

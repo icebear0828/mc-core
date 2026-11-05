@@ -8,11 +8,11 @@
 #include <map>
 #include <vector>
 
+#include "d3d12_rig/steve_types.hpp"
 #include "eldenring_steve.hpp"
 #include "mc/entity_model.hpp"
 #include "mc/item_model.hpp"
 #include "mc/rig.hpp"
-#include "render/steve_types.hpp"
 
 namespace erov::steve {
 
