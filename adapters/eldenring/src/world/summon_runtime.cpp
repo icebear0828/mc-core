@@ -204,12 +204,10 @@ void VirtualSummonsStep(float dt) {
     auto intents = g_virtual_summons.drainDamageIntents();
     for (const auto& in : intents) {
         g_queue.enqueue(in.target_chr_ins, static_cast<int>(in.damage_amount), NowTick());
-        eraudio::Play("entity.arrow.hit", 1.0f);
     }
 
     auto proj_intents = g_virtual_summons.drainProjectileIntents();
     for (const auto& pi : proj_intents) {
-        eraudio::Play("entity.arrow.shoot", 1.0f);
         erov::SpawnFx(erov::FxKind::Crit, pi.origin, 2);
         Log("virtual ranged summon: fired projectile at target %llX (damage=%.1f)",
             static_cast<unsigned long long>(pi.target_chr_ins), pi.damage);
@@ -217,9 +215,14 @@ void VirtualSummonsStep(float dt) {
 
     auto exp_events = g_virtual_summons.drainExplosionEvents();
     for (const auto& ev : exp_events) {
-        eraudio::Play("entity.generic.explode", 1.0f);
         Log("virtual creeper: DETONATION at (%.2f %.2f %.2f)!", ev.pos[0], ev.pos[1], ev.pos[2]);
         eldenring::world::VoxelWorldRuntime::Instance().enqueueTntIntent(ev.pos, ev.radius, ev.damage);
+    }
+
+    // The manager decides which Minecraft event each mob plays (its own attack/hurt/death sounds, the arrow
+    // impact, the creeper fuse and blast); the loader only forwards them to the audio thread.
+    for (const auto& snd : g_virtual_summons.drainSoundIntents()) {
+        eraudio::Play(snd.event.c_str(), snd.volume);
     }
 
     const auto active_arrows = g_virtual_summons.getActiveArrows();
