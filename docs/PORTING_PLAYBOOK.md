@@ -4,6 +4,7 @@
 > 它回答三个问题：**每一层该做什么、先做什么后做什么、哪里最容易踩坑**。
 > 配套文档：架构见 [ARCHITECTURE.md](ARCHITECTURE.md)，工程红线见 [ADAPTER_SPECIFICATION.md](ADAPTER_SPECIFICATION.md)，
 > 引擎侦察表见 `skills/mc-game-adapter/references/engine-matrix.md`，逆向工具见 `tools/reverse/`。
+> 具体宿主的范围与前置重构决策（RE4R / RE Engine / REFramework）见 [RE4_ADAPTER_SCOPE.md](RE4_ADAPTER_SCOPE.md)。
 
 ---
 
