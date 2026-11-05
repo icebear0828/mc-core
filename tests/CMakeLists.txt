@@ -170,3 +170,6 @@ endif()
 
 include(GoogleTest)
 gtest_discover_tests(mc_tests)
+
+# The backend-neutral rig seam (mc/rig/rig_renderer.hpp) and the Elden Ring conformance check.
+target_sources(mc_tests PRIVATE test_rig_renderer_interface.cpp)

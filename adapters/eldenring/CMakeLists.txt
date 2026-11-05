@@ -138,4 +138,8 @@ if(WIN32)
     if(MSVC)
         target_compile_options(eldenring_adapter PRIVATE /W4 /WX /permissive- /utf-8)
     endif()
+
+    # The backend-neutral rig seam (include/mc/rig/rig_renderer.hpp) for Elden Ring. Appended here
+    # rather than in ELDENRING_ADAPTER_SRCS so parallel work on the source list does not conflict.
+    target_sources(eldenring_adapter PRIVATE src/render/er_rig_renderer.cpp)
 endif()
