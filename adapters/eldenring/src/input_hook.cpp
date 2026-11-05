@@ -13,6 +13,7 @@
 #include <mutex>
 #include <set>
 #include <unordered_map>
+#include <vector>
 
 #include "input_hook.hpp"
 
@@ -31,6 +32,17 @@ LogFn g_log = nullptr;
 std::mutex g_mutex;
 std::unordered_map<void*, Kind> g_kinds;
 std::set<void*> g_hooked_functions;
+// Devices seen so far, AddRef'd and kept across Uninstall() so a later install
+// can restore interception without waiting for CreateDevice again.
+std::set<void*> g_known_devices;
+std::atomic<bool> g_hooks_enabled{true};
+
+using ComAddRefFn = ULONG(STDMETHODCALLTYPE*)(void*);
+
+void AddRefDevice(void* device) {
+    void** vtable = *reinterpret_cast<void***>(device);
+    reinterpret_cast<ComAddRefFn>(vtable[1])(device);
+}
 std::atomic<bool> g_suppress{false};
 std::atomic<bool> g_left_edge{false};
 std::atomic<bool> g_left_prev{false};
@@ -211,12 +223,14 @@ void HookDeviceFunctions(void* device) {
         void** original;
     } targets[] = {{kVtblGetDeviceState, reinterpret_cast<void*>(&GetStateDetour), reinterpret_cast<void**>(&g_state_orig)},
                    {kVtblGetDeviceData, reinterpret_cast<void*>(&GetDataDetour), reinterpret_cast<void**>(&g_data_orig)}};
+    // The lock is held across the hook creation so Uninstall()'s snapshot cannot
+    // miss a device that is being hooked at the same time.
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_hooks_enabled.load(std::memory_order_relaxed)) return;
+    if (g_known_devices.insert(device).second) AddRefDevice(device);
     for (const Target& t : targets) {
         void* fn = vtable[t.index];
-        {
-            std::lock_guard<std::mutex> g(g_mutex);
-            if (!g_hooked_functions.insert(fn).second) continue;
-        }
+        if (!g_hooked_functions.insert(fn).second) continue;
         if (*t.original != nullptr) {
             // A second, different implementation of the same method (for example the ANSI device): this build only
             // follows the first one, and says so.
@@ -253,15 +267,17 @@ HRESULT STDMETHODCALLTYPE CreateDeviceDetour(void* self, REFGUID guid, void** ou
 
 void SetLog(LogFn log) { g_log = log; }
 
-void OnDirectInputCreated(REFIID riid, void* iface) {
-    (void)riid; // the W and A interfaces share the slot layout
+void SetEnabled(bool on) { g_hooks_enabled.store(on, std::memory_order_relaxed); }
+
+void OnDirectInputCreated(void* iface) {
     if (iface == nullptr) return;
     void** vtable = *reinterpret_cast<void***>(iface);
     void* fn = vtable[kVtblCreateDevice];
-    {
-        std::lock_guard<std::mutex> g(g_mutex);
-        if (!g_hooked_functions.insert(fn).second) return;
-    }
+    // Same serialization as HookDeviceFunctions: hold the lock across the hook
+    // creation so Uninstall() cannot miss it.
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_hooks_enabled.load(std::memory_order_relaxed)) return;
+    if (!g_hooked_functions.insert(fn).second) return;
     if (g_create_orig != nullptr) {
         if (g_log) g_log("input: a second CreateDevice implementation at %p is not hooked", fn);
         return;
@@ -277,9 +293,45 @@ void OnDirectInputCreated(REFIID riid, void* iface) {
 bool TakeLeftClick() { return g_left_edge.exchange(false); }
 bool LeftHeld() { return g_left_prev.load(); }
 
-
 bool TakeRightClick() { return g_right_edge.exchange(false); }
 bool RightHeld() { return g_right_prev.load(); }
+
+void Uninstall() {
+    // Stop accepting new devices first: a CreateDevice racing the teardown must
+    // not install a hook after the snapshot below.
+    g_hooks_enabled.store(false, std::memory_order_relaxed);
+    std::vector<void*> hooks;
+    {
+        std::lock_guard<std::mutex> g(g_mutex);
+        hooks.assign(g_hooked_functions.begin(), g_hooked_functions.end());
+        g_hooked_functions.clear();
+        g_kinds.clear();
+        // g_known_devices is deliberately kept: a later install re-hooks it.
+    }
+    // Disable first and give an in-flight detour a moment to return before the
+    // trampolines are freed. MinHook may suspend threads, so never call it
+    // while holding g_mutex.
+    if (!hooks.empty()) {
+        for (void* fn : hooks) MH_DisableHook(fn);
+        Sleep(50);
+        for (void* fn : hooks) MH_RemoveHook(fn);
+    }
+    {
+        std::lock_guard<std::mutex> g(g_mutex);
+        g_create_orig = nullptr;
+        g_state_orig = nullptr;
+        g_data_orig = nullptr;
+    }
+}
+
+void RehookKnownDevices() {
+    std::vector<void*> devices;
+    {
+        std::lock_guard<std::mutex> g(g_mutex);
+        devices.assign(g_known_devices.begin(), g_known_devices.end());
+    }
+    for (void* device : devices) HookDeviceFunctions(device);
+}
 
 int TakeWheelNotches() { return g_wheel.exchange(0) / 120; }
 

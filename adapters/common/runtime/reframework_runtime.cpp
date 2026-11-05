@@ -39,9 +39,11 @@ bool ReframeworkRuntime::initialize(const HostConfig& config) {
 void ReframeworkRuntime::shutdown() {
     if (!initialized_) return;
     frame_ = nullptr;
+    // Log while the host API is still alive: api_->shutdown() may release the
+    // object and the line must not touch it afterwards.
+    log("reframework: shut down");
     if (api_ != nullptr) api_->shutdown();
     initialized_ = false;
-    log("reframework: shut down");
 }
 
 void ReframeworkRuntime::setFrameCallback(std::function<void(float)> callback) {

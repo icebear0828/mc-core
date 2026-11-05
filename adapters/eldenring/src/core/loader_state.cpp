@@ -205,6 +205,5 @@ std::atomic<unsigned> g_bullet_seen{0};
 std::atomic<uint64_t> g_last_bullet_fire_ms{0};
 
 DirectInput8Create_t g_system_create = nullptr;
-std::atomic<bool> g_wants_input_hooks{false};
 
 } // namespace eldenring::loader_detail

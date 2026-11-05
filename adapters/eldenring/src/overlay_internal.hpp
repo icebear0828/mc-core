@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 
 #include <mutex>
 #include <vector>
@@ -83,6 +84,15 @@ inline constexpr UINT kVtblDeviceCreateDsv = 21;
 
 inline HudProvider g_provider = nullptr;
 inline LogFn g_log = nullptr;
+// The host runtime's Present notification; PresentDetour calls it before its own work.
+// The mutex keeps install/uninstall on the loader thread from racing the present thread.
+inline std::mutex g_on_present_mutex;
+inline std::function<void()> g_on_present;
+// Targets of the four detours, so Uninstall() removes exactly what Install() created.
+inline void* g_hook_targets[4] = {nullptr, nullptr, nullptr, nullptr};
+// Detours currently executing. Uninstall() disables the hooks, waits for this to
+// drain, and only then frees the trampolines.
+inline std::atomic<int> g_detours_in_flight{0};
 
 using PresentFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
 using ResizeFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);

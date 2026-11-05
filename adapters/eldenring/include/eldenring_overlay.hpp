@@ -12,6 +12,7 @@
 #include "mc/rig.hpp"
 #include "ow_viewmodel.hpp"
 
+#include <functional>
 #include <vector>
 
 namespace erov {
@@ -196,5 +197,17 @@ using LogFn = void (*)(const char* fmt, ...);
 // Creates the hooks. Returns false (and logs why) when anything fails; nothing is left half-installed.
 // MinHook must already be initialised by the caller.
 bool Install(HudProvider provider, LogFn log);
+
+// Removes the hooks installed by Install() and clears the Present notification.
+// Safe to call when nothing is installed.
+void Uninstall();
+
+// Per-frame notification supplied by the host runtime. Called at the start of
+// the Present detour; an empty function clears it.
+void SetPresentCallbacks(std::function<void()> on_present);
+
+// The adapter's per-frame work, exposed so the host runtime can hand it back
+// as the Present notification.
+void HostPresentTick();
 
 } // namespace erov

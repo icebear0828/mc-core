@@ -10,9 +10,10 @@
 // keeps the entry point.
 //
 // The hook engine is started lazily, on the first non-empty install*Hooks()
-// call, and released by shutdown(). An adapter that installs its own detours
-// (the Elden Ring loader does, after its environment gate) never triggers it,
-// so the runtime cannot bring MinHook up ahead of the adapter's checks.
+// call, and released by shutdown(). The adapter calls install*Hooks() only
+// after its environment gate, so the runtime cannot bring MinHook up ahead of
+// the adapter's checks. An installation always needs a matching uninstaller:
+// the runtime refuses one it could not remove.
 
 #include <functional>
 #include <string>
@@ -36,6 +37,8 @@ public:
     // makes the matching install*Hooks() call report failure instead of lying.
     // ensure_minhook/release_minhook are the adapter's hook engine: the runtime
     // starts it when it installs hooks itself and releases it on shutdown.
+    // uninstall_* remove what install_* installed; the contract's "empty
+    // callback set removes the hooks" cannot be honoured without them.
     struct Bindings {
         DWORD(WINAPI* loader_thread)(LPVOID) = nullptr;
         bool (*ensure_minhook)() = nullptr;
@@ -43,7 +46,9 @@ public:
         void (*init_log)() = nullptr;
         void (*log_line)(const char*) = nullptr;
         bool (*install_present)(const PresentCallbacks&) = nullptr;
+        void (*uninstall_present)() = nullptr;
         bool (*install_input)(const InputCallbacks&) = nullptr;
+        void (*uninstall_input)() = nullptr;
     };
 
     explicit Dinput8Runtime(Bindings bindings = {});
@@ -71,12 +76,16 @@ private:
 
     Bindings bindings_;
     HostConfig config_;
-    HostRuntimeInfo info_{"dinput8", "1", false, true};
+    // Derived from the bindings in the constructor: a capability bit is true
+    // only when this runtime can actually perform the operation.
+    HostRuntimeInfo info_;
     std::function<void(float)> frame_;
     PresentCallbacks present_;
     InputCallbacks input_;
     bool initialized_{false};
     bool minhook_owned_{false};
+    bool present_installed_{false};
+    bool input_installed_{false};
 };
 
 } // namespace mc::host

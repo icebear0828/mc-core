@@ -26,7 +26,10 @@ std::string DescribeConfig(const HostConfig& config) {
 
 } // namespace
 
-Dinput8Runtime::Dinput8Runtime(Bindings bindings) : bindings_(bindings) {}
+Dinput8Runtime::Dinput8Runtime(Bindings bindings)
+    : bindings_(bindings),
+      info_{"dinput8", "1", bindings.install_present != nullptr && bindings.uninstall_present != nullptr,
+            bindings.install_input != nullptr && bindings.uninstall_input != nullptr} {}
 
 bool Dinput8Runtime::onProcessAttach(HMODULE module, const Bindings& bindings) {
     if (module != nullptr) DisableThreadLibraryCalls(module);
@@ -49,11 +52,36 @@ bool Dinput8Runtime::initialize(const HostConfig& config) {
 void Dinput8Runtime::shutdown() {
     if (!initialized_) return;
     frame_ = nullptr;
+    // Remove what is still installed before the hook engine goes away: a
+    // detour that outlives MinHook would jump through a freed trampoline.
+    bool removed = true;
+    if (present_installed_) {
+        if (bindings_.uninstall_present != nullptr) {
+            bindings_.uninstall_present();
+        } else {
+            removed = false;
+            log("dinput8: present hooks are still installed but no uninstaller is bound");
+        }
+    }
+    if (input_installed_) {
+        if (bindings_.uninstall_input != nullptr) {
+            bindings_.uninstall_input();
+        } else {
+            removed = false;
+            log("dinput8: input hooks are still installed but no uninstaller is bound");
+        }
+    }
+    present_installed_ = false;
+    input_installed_ = false;
     present_ = {};
     input_ = {};
     if (minhook_owned_ && bindings_.release_minhook != nullptr) {
-        minhook_owned_ = false;
-        bindings_.release_minhook();
+        if (removed) {
+            minhook_owned_ = false;
+            bindings_.release_minhook();
+        } else {
+            log("dinput8: keeping the hook engine alive because installed hooks could not be removed");
+        }
     }
     initialized_ = false;
     log("dinput8: shut down");
@@ -74,6 +102,16 @@ bool Dinput8Runtime::ensureHookEngine() {
 
 bool Dinput8Runtime::installPresentHooks(const PresentCallbacks& callbacks) {
     if (callbacks.empty()) {
+        if (!present_installed_) {
+            present_ = {};
+            return true;
+        }
+        if (bindings_.uninstall_present == nullptr) {
+            log("dinput8: present hooks are installed but no uninstaller is bound");
+            return false;
+        }
+        bindings_.uninstall_present();
+        present_installed_ = false;
         present_ = {};
         return true;
     }
@@ -81,18 +119,39 @@ bool Dinput8Runtime::installPresentHooks(const PresentCallbacks& callbacks) {
         log("dinput8: present hooks are disabled by the config");
         return false;
     }
-    if (bindings_.install_present == nullptr) {
-        log("dinput8: no present-hook installer is bound");
+    // An installation the runtime cannot remove violates the contract, so it is
+    // refused up front rather than discovered at shutdown.
+    if (bindings_.install_present == nullptr || bindings_.uninstall_present == nullptr) {
+        log("dinput8: present hooks need both an installer and an uninstaller");
         return false;
     }
     if (!ensureHookEngine()) return false;
+    // Replacing the callbacks must not leave the first install's detours behind
+    // (MinHook would reject the second CreateHook and the old hooks would stay
+    // live while the runtime believes it installed the new set).
+    if (present_installed_) {
+        bindings_.uninstall_present();
+        present_installed_ = false;
+        present_ = {};
+    }
     if (!bindings_.install_present(callbacks)) return false;
     present_ = callbacks;
+    present_installed_ = true;
     return true;
 }
 
 bool Dinput8Runtime::installInputHooks(const InputCallbacks& callbacks) {
     if (callbacks.empty()) {
+        if (!input_installed_) {
+            input_ = {};
+            return true;
+        }
+        if (bindings_.uninstall_input == nullptr) {
+            log("dinput8: input hooks are installed but no uninstaller is bound");
+            return false;
+        }
+        bindings_.uninstall_input();
+        input_installed_ = false;
         input_ = {};
         return true;
     }
@@ -100,13 +159,22 @@ bool Dinput8Runtime::installInputHooks(const InputCallbacks& callbacks) {
         log("dinput8: input hooks are disabled by the config");
         return false;
     }
-    if (bindings_.install_input == nullptr) {
-        log("dinput8: no input-hook installer is bound");
+    if (bindings_.install_input == nullptr || bindings_.uninstall_input == nullptr) {
+        log("dinput8: input hooks need both an installer and an uninstaller");
         return false;
     }
     if (!ensureHookEngine()) return false;
+    // Input hooks are callback registrations on an already-hooked device: a
+    // replacement only updates the callback, so the existing devices stay
+    // hooked. Tearing them down would leave nothing to re-hook from.
+    if (input_installed_) {
+        if (!bindings_.install_input(callbacks)) return false;
+        input_ = callbacks;
+        return true;
+    }
     if (!bindings_.install_input(callbacks)) return false;
     input_ = callbacks;
+    input_installed_ = true;
     return true;
 }
 

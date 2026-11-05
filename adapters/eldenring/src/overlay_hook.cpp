@@ -2,6 +2,8 @@
 #include "eldenring_perfstats.hpp"
 #include "render/steve_mesh_factory.hpp"
 
+#include <utility>
+
 namespace erov {
 namespace detail {
 
@@ -681,8 +683,18 @@ bool Init(IDXGISwapChain* sc, ID3D12CommandQueue* queue) {
     if (g_steve_cfg.depth_probe) probe::Install(g_s.list, g_log);
     return true;
 }
+namespace {
+// Counts the detours in flight so RemoveOverlayHooks() can wait for them before
+// freeing the trampolines.
+struct DetourGuard {
+    DetourGuard() { g_detours_in_flight.fetch_add(1, std::memory_order_relaxed); }
+    ~DetourGuard() { g_detours_in_flight.fetch_sub(1, std::memory_order_relaxed); }
+};
+} // namespace
+
 void STDMETHODCALLTYPE CreateDsvDetour(ID3D12Device* d, ID3D12Resource* res, const D3D12_DEPTH_STENCIL_VIEW_DESC* desc,
                                        D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+    DetourGuard guard;
     g_create_dsv_orig(d, res, desc, handle);
     if (res == nullptr) return;
     if (g_steve_cfg.depth_probe) probe::NoteDsv(handle.ptr, res); // every depth texture, whatever its size
@@ -725,6 +737,7 @@ void STDMETHODCALLTYPE CreateDsvDetour(ID3D12Device* d, ID3D12Resource* res, con
 }
 
 void STDMETHODCALLTYPE ExecuteDetour(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* lists) {
+    DetourGuard guard;
     if (g_queue.load(std::memory_order_relaxed) == nullptr) {
         const D3D12_COMMAND_QUEUE_DESC d = q->GetDesc();
         if (d.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) g_queue.store(q);
@@ -733,20 +746,21 @@ void STDMETHODCALLTYPE ExecuteDetour(ID3D12CommandQueue* q, UINT n, ID3D12Comman
     g_execute_orig(q, n, lists);
 }
 
+// PresentDetour uses SEH, so the RAII lock lives in this helper: a local object
+// with a destructor is not allowed in a function that contains __try.
+void NotifyPresent() {
+    std::lock_guard<std::mutex> lock(g_on_present_mutex);
+    if (g_on_present) g_on_present();
+}
+
 HRESULT STDMETHODCALLTYPE PresentDetour(IDXGISwapChain* sc, UINT sync, UINT flags) {
-    // Frame-time distribution: Present-to-Present, i.e. what the player actually feels.
-    static std::chrono::steady_clock::time_point s_last_frame{};
-    static bool s_have_last_frame = false;
-    if (eldenring::perfstats::on()) {
-        const auto now = std::chrono::steady_clock::now();
-        if (s_have_last_frame) {
-            eldenring::perfstats::noteFrame(static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(now - s_last_frame).count()));
-        }
-        s_last_frame = now;
-        s_have_last_frame = true;
-    }
-    eldenring::perfstats::reportIfDue(GetTickCount64(), [](const char* line) { Logf("%s", line); });
+    // SEH forbids a local object with a destructor here, so the in-flight count
+    // is manual (one return path at the end).
+    g_detours_in_flight.fetch_add(1, std::memory_order_relaxed);
+    // The host runtime's per-frame notification (frame-time accounting and the
+    // periodic status report) arrives through the seam; the overlay keeps its
+    // own drawing below.
+    NotifyPresent();
     if (g_steve_cfg.depth_probe) probe::OnPresent();
     if (!g_hook_state.failed()) {
         ID3D12CommandQueue* q = g_queue.load();
@@ -771,10 +785,13 @@ HRESULT STDMETHODCALLTYPE PresentDetour(IDXGISwapChain* sc, UINT sync, UINT flag
             }
         }
     }
-    return g_present_orig(sc, sync, flags);
+    const HRESULT present_hr = g_present_orig(sc, sync, flags);
+    g_detours_in_flight.fetch_sub(1, std::memory_order_relaxed);
+    return present_hr;
 }
 
 HRESULT STDMETHODCALLTYPE ResizeDetour(IDXGISwapChain* sc, UINT count, UINT w, UINT h, DXGI_FORMAT fmt, UINT flags) {
+    DetourGuard guard;
     if (g_s.ready) {
         Teardown(); // rebuilt on the next Present
         g_hook_state.on_resize();
@@ -828,26 +845,105 @@ bool ResolveTargets(void*& present, void*& resize, void*& execute, void*& create
     UnregisterClassW(wc.lpszClassName, wc.hInstance);
     return ok;
 }
+// Waits until no detour is in flight. A thread can be suspended by MH_DisableHook
+// between entering a detour and its first instruction, so a grace period plus two
+// consecutive zero samples is required before the trampolines may be freed.
+bool WaitForDetoursToDrain() {
+    Sleep(100);
+    int zero_samples = 0;
+    for (int i = 0; i < 500 && zero_samples < 2; ++i) {
+        if (g_detours_in_flight.load(std::memory_order_relaxed) == 0) {
+            ++zero_samples;
+        } else {
+            zero_samples = 0;
+        }
+        if (zero_samples < 2) Sleep(10);
+    }
+    return zero_samples >= 2;
+}
+
+void RemoveOverlayHooks() {
+    void* targets[4];
+    for (size_t i = 0; i < 4; ++i) {
+        targets[i] = g_hook_targets[i];
+        g_hook_targets[i] = nullptr;
+    }
+    for (void* target : targets) {
+        if (target != nullptr) MH_DisableHook(target);
+    }
+    if (!WaitForDetoursToDrain()) {
+        // Never free a trampoline a detour may still be executing. The hooks are
+        // disabled (the game calls the originals again); the trampolines stay
+        // allocated until process exit.
+        Logf("overlay: a detour is still in flight; hooks left disabled, trampolines not freed");
+        return;
+    }
+    for (void* target : targets) {
+        if (target != nullptr) MH_RemoveHook(target);
+    }
+    g_execute_orig = nullptr;
+    g_present_orig = nullptr;
+    g_resize_orig = nullptr;
+    g_create_dsv_orig = nullptr;
+}
+
 bool InstallOverlayHooks(HudProvider provider, LogFn log) {
+    // Set the sink before ResolveTargets: its failure is logged through it.
+    const HudProvider old_provider = g_provider;
+    const LogFn old_log = g_log;
     g_provider = provider;
     g_log = log;
     void *present = nullptr, *resize = nullptr, *execute = nullptr, *create_dsv = nullptr;
     if (!ResolveTargets(present, resize, execute, create_dsv)) {
         Logf("overlay: could not resolve the D3D12/DXGI vtable functions");
+        g_provider = old_provider;
+        g_log = old_log;
         return false;
     }
-    if (MH_CreateHook(execute, reinterpret_cast<void*>(&ExecuteDetour), reinterpret_cast<void**>(&g_execute_orig)) != MH_OK ||
-        MH_CreateHook(present, reinterpret_cast<void*>(&PresentDetour), reinterpret_cast<void**>(&g_present_orig)) != MH_OK ||
-        MH_CreateHook(resize, reinterpret_cast<void*>(&ResizeDetour), reinterpret_cast<void**>(&g_resize_orig)) != MH_OK ||
-        MH_CreateHook(create_dsv, reinterpret_cast<void*>(&CreateDsvDetour), reinterpret_cast<void**>(&g_create_dsv_orig)) != MH_OK) {
-        Logf("overlay: MH_CreateHook failed");
-        return false;
+    struct HookSpec {
+        void* target;
+        void* detour;
+        void** original;
+    } specs[4] = {
+        {execute, reinterpret_cast<void*>(&ExecuteDetour), reinterpret_cast<void**>(&g_execute_orig)},
+        {present, reinterpret_cast<void*>(&PresentDetour), reinterpret_cast<void**>(&g_present_orig)},
+        {resize, reinterpret_cast<void*>(&ResizeDetour), reinterpret_cast<void**>(&g_resize_orig)},
+        {create_dsv, reinterpret_cast<void*>(&CreateDsvDetour), reinterpret_cast<void**>(&g_create_dsv_orig)},
+    };
+    // Only remove what this call created: a failed second install must not tear
+    // down the hooks of a successful first one, nor clear their trampolines.
+    auto rollback = [&](size_t count) {
+        for (size_t j = 0; j < count; ++j) {
+            MH_DisableHook(specs[j].target);
+        }
+        if (WaitForDetoursToDrain()) {
+            for (size_t j = 0; j < count; ++j) {
+                MH_RemoveHook(specs[j].target);
+                *specs[j].original = nullptr;
+            }
+        } else {
+            Logf("overlay: a detour is still in flight; rollback left its hooks disabled");
+        }
+        g_provider = old_provider;
+        g_log = old_log;
+    };
+    size_t created_count = 0;
+    for (size_t i = 0; i < 4; ++i) {
+        if (MH_CreateHook(specs[i].target, specs[i].detour, specs[i].original) != MH_OK) {
+            Logf("overlay: MH_CreateHook failed");
+            rollback(created_count);
+            return false;
+        }
+        ++created_count;
     }
-    if (MH_EnableHook(execute) != MH_OK || MH_EnableHook(present) != MH_OK || MH_EnableHook(resize) != MH_OK ||
-        MH_EnableHook(create_dsv) != MH_OK) {
-        Logf("overlay: MH_EnableHook failed");
-        return false;
+    for (size_t i = 0; i < 4; ++i) {
+        if (MH_EnableHook(specs[i].target) != MH_OK) {
+            Logf("overlay: MH_EnableHook failed");
+            rollback(created_count);
+            return false;
+        }
     }
+    for (size_t i = 0; i < 4; ++i) g_hook_targets[i] = specs[i].target;
     char msg[200];
     snprintf(msg, sizeof(msg), "overlay: hooks installed (Present=%p ResizeBuffers=%p ExecuteCommandLists=%p CreateDepthStencilView=%p)", present,
              resize, execute, create_dsv);
@@ -856,4 +952,39 @@ bool InstallOverlayHooks(HudProvider provider, LogFn log) {
 }
 
 } // namespace detail
+
+void SetPresentCallbacks(std::function<void()> on_present) {
+    std::lock_guard<std::mutex> lock(detail::g_on_present_mutex);
+    detail::g_on_present = std::move(on_present);
+}
+
+void HostPresentTick() {
+    // Frame-time distribution: Present-to-Present, i.e. what the player actually feels.
+    static std::chrono::steady_clock::time_point s_last_frame{};
+    static bool s_have_last_frame = false;
+    if (eldenring::perfstats::on()) {
+        const auto now = std::chrono::steady_clock::now();
+        if (s_have_last_frame) {
+            eldenring::perfstats::noteFrame(static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(now - s_last_frame).count()));
+        }
+        s_last_frame = now;
+        s_have_last_frame = true;
+    }
+    eldenring::perfstats::reportIfDue(GetTickCount64(), [](const char* line) { detail::Logf("%s", line); });
+}
+
+void Uninstall() {
+    detail::RemoveOverlayHooks();
+    detail::g_provider = nullptr;
+    detail::g_log = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(detail::g_on_present_mutex);
+        detail::g_on_present = {};
+    }
+    // The D3D12/ImGui resources are owned by Teardown() on the render thread.
+    // This path runs only at shutdown, so they are left to process exit rather
+    // than raced from the loader thread.
+}
+
 } // namespace erov

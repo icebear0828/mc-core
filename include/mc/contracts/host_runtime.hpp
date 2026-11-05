@@ -62,7 +62,12 @@ struct PresentCallbacks {
 
 // Notifications from the host's input path.
 struct InputCallbacks {
-    std::function<void()> on_direct_input_created;
+    // Called when the host creates its input object. `iface` is the host's
+    // object (for a dinput8 proxy, the IDirectInput8 the game just created);
+    // the adapter owns its layout and lifetime. Passing the object instead of a
+    // bare notification is what lets a proxy hook the per-device vtable at the
+    // moment it appears.
+    std::function<void(void* iface)> on_direct_input_created;
 
     [[nodiscard]] bool empty() const noexcept { return !on_direct_input_created; }
 };
@@ -71,7 +76,8 @@ class IHostRuntime {
 public:
     virtual ~IHostRuntime() = default;
 
-    // Brings up config, logging and the hook engine. False means the adapter
+    // Brings up configuration and logging. The hook engine starts with the
+    // first non-empty install*Hooks() call, not here. False means the adapter
     // must not install anything.
     virtual bool initialize(const HostConfig& config) = 0;
 

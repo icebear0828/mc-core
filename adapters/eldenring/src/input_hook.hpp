@@ -20,8 +20,18 @@ struct Counters {
 };
 
 void SetLog(LogFn log);
-// Call right after the real DirectInput8Create succeeded; `iface` is the object it returned for `riid`.
-void OnDirectInputCreated(REFIID riid, void* iface);
+// While off, new devices and interfaces are not hooked; Uninstall() turns it off so a
+// CreateDevice racing the teardown cannot install a hook after the runtime removed them.
+void SetEnabled(bool on);
+// Call right after the real DirectInput8Create succeeded; `iface` is the object it returned for `riid`
+// (the W and A interfaces share the slot layout, so the IID is not needed).
+void OnDirectInputCreated(void* iface);
+// Removes every device vtable hook installed by OnDirectInputCreated. The host runtime owns the
+// input-hook lifecycle and calls this when the adapter asks for the hooks to be removed.
+void Uninstall();
+// Re-hooks the devices seen earlier. Uninstall() keeps references to them, so a later install can
+// restore interception without waiting for the game to create the devices again.
+void RehookKnownDevices();
 void SetSuppressMouseButtons(bool on);
 void SetSuppressMouseWheel(bool on);
 Counters TakeCounters(); // returns the counts since the last call and resets them

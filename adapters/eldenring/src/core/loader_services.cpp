@@ -463,7 +463,25 @@ void LogStatus() {
     Log("%s", line);
 }
 
-DWORD WINAPI LoaderThread(LPVOID) {
+// The adapter's configuration in the host runtime's portable shape. Called by
+// LoaderThread after the environment gate, so a refused host never reads
+// mc_er.ini and never starts the hook engine.
+mc::host::HostConfig LoadHostConfig() {
+    // InitLogOnce resolves g_game_dir from the module path. It is idempotent,
+    // so the runtime and LoaderThread may call it again.
+    InitLogOnce();
+    mc::host::HostConfig config;
+    config.game_dir = g_game_dir;
+    eldenring::AdapterConfig& adapter = eldenring::AdapterConfig::Instance();
+    adapter.EnsureLoaded(config.game_dir);
+    config.enable_overlay = adapter.FeatureEnabled(eldenring::ConfigFeature::Overlay);
+    config.enable_input = adapter.FeatureEnabled(eldenring::ConfigFeature::Input);
+    // Damage and bullet-fire are Elden Ring gameplay switches; the adapter reads
+    // them from AdapterConfig where it needs them, not through the host seam.
+    return config;
+}
+
+DWORD WINAPI LoaderThread(LPVOID param) {
     InitLogOnce();
 
     // Environment self-check: never touch a game that runs EasyAntiCheat.
@@ -487,6 +505,29 @@ DWORD WINAPI LoaderThread(LPVOID) {
         return 0;
     }
     Log("environment check ok (%zu modules)", names.size());
+
+    // The environment gate has passed: configuration, logging and the hook
+    // engine may now come up, in that order.
+    auto* runtime = static_cast<mc::host::IHostRuntime*>(param);
+    if (runtime == nullptr) {
+        Log("loader: no host runtime was supplied");
+        return 0;
+    }
+    if (!runtime->initialize(LoadHostConfig())) {
+        Log("loader: the host runtime refused to initialize");
+        return 0;
+    }
+    {
+        // Register the input notification before the signature scan: the game
+        // may create its DirectInput device while we are still binding.
+        mc::host::InputCallbacks input;
+        input.on_direct_input_created = &erin::OnDirectInputCreated;
+        if (!runtime->installInputHooks(input)) {
+            // Input is disabled or the hook engine refused: release any
+            // interface the proxy kept for a late registration.
+            UninstallInputHooks();
+        }
+    }
 
     // Bind the singletons: wait for the code to be readable and the signatures to be unique.
     for (int attempt = 0;; ++attempt) {
@@ -519,6 +560,13 @@ DWORD WINAPI LoaderThread(LPVOID) {
     SetupCreativeProbes();
     SetupBulletLog();
     SetupOverlay();
+    {
+        // SetupOverlay has loaded the assets and the Steve config; the runtime
+        // now owns the detour lifecycle and the per-frame notification.
+        mc::host::PresentCallbacks present;
+        present.on_present = &erov::HostPresentTick;
+        (void)runtime->installPresentHooks(present);
+    }
     SetupZoneProbe();
     SetupInput();
     g_elytra_ignore_focus = FileExists(g_game_dir + "mc_er_elytra_test.txt");
@@ -639,6 +687,88 @@ DWORD WINAPI CrackTunerThread(LPVOID) {
     return 0;
 }
 
+namespace {
+
+// The runtime's input notification. DirectInput8Create runs on the game thread
+// while the loader thread registers the callback, so the callback and the
+// interfaces that appeared before it are behind a mutex.
+std::mutex g_input_mutex;
+std::function<void(void*)> g_input_callback;
+std::vector<void*> g_pending_input_ifaces;
+// The last IDirectInput8, kept AddRef'd so a later install can re-hook
+// CreateDevice without waiting for the game to create the interface again.
+void* g_known_input_iface = nullptr;
+// False after UninstallInputHooks(): stop queuing interfaces that nothing will hook.
+bool g_input_accepting = true;
+
+using ComAddRefFn = ULONG(STDMETHODCALLTYPE*)(void*);
+using ComReleaseFn = ULONG(STDMETHODCALLTYPE*)(void*);
+
+ULONG ComAddRef(void* iface) {
+    void** vtable = *reinterpret_cast<void***>(iface);
+    return reinterpret_cast<ComAddRefFn>(vtable[1])(iface);
+}
+
+void ComRelease(void* iface) {
+    void** vtable = *reinterpret_cast<void***>(iface);
+    reinterpret_cast<ComReleaseFn>(vtable[2])(iface);
+}
+
+void InputLog(const char* fmt, ...) {
+    char msg[512];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
+    Log("%s", msg);
+}
+
+} // namespace
+
+bool InstallInputHooks(const mc::host::InputCallbacks& callbacks) {
+    erin::SetLog(&InputLog);
+    erin::SetEnabled(true);
+    std::vector<void*> release_later;
+    {
+        std::lock_guard<std::mutex> lock(g_input_mutex);
+        g_input_callback = callbacks.on_direct_input_created;
+        if (!g_input_callback) return true;
+        g_input_accepting = true;
+        std::vector<void*> pending;
+        pending.swap(g_pending_input_ifaces);
+        if (!pending.empty()) {
+            Log("input: %zu DirectInput interface(s) appeared before the environment gate; hooking them late "
+                "(devices created before this point are not covered)",
+                pending.size());
+            if (g_known_input_iface != nullptr) ComRelease(g_known_input_iface);
+            // Keep the first one so a later install can re-hook CreateDevice.
+            g_known_input_iface = pending.front();
+            for (void* iface : pending) g_input_callback(iface);
+            release_later.assign(pending.begin() + 1, pending.end());
+        } else if (g_known_input_iface != nullptr) {
+            // Install after Uninstall(): re-hook CreateDevice on the interface we
+            // kept; RehookKnownDevices() below restores the device vtables.
+            g_input_callback(g_known_input_iface);
+        }
+    }
+    for (void* iface : release_later) ComRelease(iface);
+    erin::RehookKnownDevices();
+    return true;
+}
+
+void UninstallInputHooks() {
+    std::vector<void*> pending;
+    {
+        std::lock_guard<std::mutex> lock(g_input_mutex);
+        g_input_callback = nullptr;
+        g_input_accepting = false;
+        pending.swap(g_pending_input_ifaces);
+        // g_known_input_iface is deliberately kept for a later install.
+    }
+    for (void* iface : pending) ComRelease(iface);
+    erin::Uninstall();
+}
+
 // Forwarded by the exported DirectInput8Create in loader.cpp. Kept here so the
 // entry point stays a few lines and the proxy state lives with the services.
 HRESULT WINAPI DirectInput8CreateImpl(HINSTANCE hinst, DWORD version, REFIID riid, LPVOID* out, LPUNKNOWN outer) {
@@ -652,25 +782,24 @@ HRESULT WINAPI DirectInput8CreateImpl(HINSTANCE hinst, DWORD version, REFIID rii
         }
     }
     if (g_system_create == nullptr) return E_FAIL;
-    static std::once_flag decided;
-    std::call_once(decided, [] {
-        InitLogOnce();
-        AdapterConfig& config = AdapterConfig::Instance();
-        config.EnsureLoaded(g_game_dir);
-        if (config.FeatureEnabled(ConfigFeature::Input) && EnsureMinHook()) {
-            erin::SetLog([](const char* fmt, ...) {
-                char msg[512];
-                va_list args;
-                va_start(args, fmt);
-                vsnprintf(msg, sizeof(msg), fmt, args);
-                va_end(args);
-                Log("%s", msg);
-            });
-            g_wants_input_hooks.store(true);
-        }
-    });
     const HRESULT hr = g_system_create(hinst, version, riid, out, outer);
-    if (SUCCEEDED(hr) && out != nullptr && *out != nullptr && g_wants_input_hooks.load()) erin::OnDirectInputCreated(riid, *out);
+    if (SUCCEEDED(hr) && out != nullptr && *out != nullptr) {
+        std::lock_guard<std::mutex> lock(g_input_mutex);
+        if (g_input_callback) {
+            // Keep the first interface so a later install can re-hook CreateDevice.
+            if (g_known_input_iface == nullptr) {
+                ComAddRef(*out);
+                g_known_input_iface = *out;
+            }
+            g_input_callback(*out);
+        } else if (g_input_accepting) {
+            // The loader thread registers the callback right after the
+            // environment gate. Keep a reference until then so a release by
+            // the game cannot leave us hooking freed memory.
+            ComAddRef(*out);
+            g_pending_input_ifaces.push_back(*out);
+        }
+    }
     return hr;
 }
 
