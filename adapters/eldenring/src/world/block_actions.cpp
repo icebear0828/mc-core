@@ -137,23 +137,55 @@ const char* BlockSound(mc::BlockId id) {
     }
 }
 
-bool TryUseSpawnEgg() {
-    mc::ItemId held = mc::ItemId::None;
-    {
-        std::lock_guard<std::mutex> g(g_melee_mutex);
-        held = g_melee.heldItem();
-        if (!mc::isSpawnEgg(held) || g_melee.countAt(g_melee.selectedSlot()) == 0) return false;
+namespace {
+struct HandStack {
+    mc::ItemId item{mc::ItemId::None};
+    unsigned count{0};
+    int slot{-1}; // the selected hotbar slot for the main hand, -1 for the offhand
+};
+
+HandStack StackInHand(mc::Hand hand) {
+    std::lock_guard<std::mutex> g(g_melee_mutex);
+    if (hand == mc::Hand::Main) {
+        return {g_melee.heldItem(), g_melee.countAt(g_melee.selectedSlot()), g_melee.selectedSlot()};
     }
-    const std::string_view mob_type = mc::spawnEggToMobType(held);
+    return {g_melee.offhandItem(), g_melee.offhandCount(), -1};
+}
+
+// Caller holds g_melee_mutex.
+bool ConsumeFromHand(mc::Hand hand, mc::ItemId item, int slot) {
+    if (!creative::consumesItems(CurrentGameMode())) return true; // creative: the stack is not used up
+    return hand == mc::Hand::Main ? g_melee.consumeAt(slot) : g_melee.consumeOffhand(item);
+}
+} // namespace
+
+bool TryUseSpawnEgg(mc::Hand hand) {
+    const HandStack stack = StackInHand(hand);
+    if (stack.count == 0 || !mc::isSpawnEgg(stack.item)) return false;
+    const std::string_view mob_type = mc::spawnEggToMobType(stack.item);
     const std::string mob_str = mob_type.empty() ? "zombie" : std::string(mob_type);
     if (!QueueSummon("spawn egg", mob_str.c_str())) return true; // refused (too soon): the click is still the egg's
     std::lock_guard<std::mutex> g(g_melee_mutex);
-    if (creative::consumesItems(CurrentGameMode())) g_melee.consumeAt(g_melee.selectedSlot());
+    ConsumeFromHand(hand, stack.item, stack.slot);
     g_melee.startSwing();
     return true;
 }
 
-bool TryIgniteTnt() {
+static bool CanIgniteTnt(mc::Hand hand) {
+    if (!g_blocks_enabled.load()) return false;
+    const BlockTarget t = FindBlockTarget();
+    if (!t.have || !t.on_block) return false;
+    mc::BlockId target_block = mc::BlockId::Air;
+    {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        target_block = g_blocks.get(t.cell);
+    }
+    if (target_block != mc::BlockId::Tnt) return false;
+    const HandStack stack = StackInHand(hand);
+    return eldenring::tnt::shouldIgniteTntOnRightClick(stack.item, target_block);
+}
+
+bool TryIgniteTnt(mc::Hand hand) {
     if (!g_blocks_enabled.load()) return false;
     const BlockTarget t = FindBlockTarget();
     if (!t.have || !t.on_block) return false;
@@ -165,13 +197,9 @@ bool TryIgniteTnt() {
     }
     if (target_block != mc::BlockId::Tnt) return false;
 
-    mc::ItemId held = mc::ItemId::None;
-    {
-        std::lock_guard<std::mutex> g(g_melee_mutex);
-        held = g_melee.heldItem();
-    }
+    const HandStack stack = StackInHand(hand);
     // Only FlintAndSteel ignites TNT on right click (Minecraft rule)
-    if (!eldenring::tnt::shouldIgniteTntOnRightClick(held, target_block)) {
+    if (!eldenring::tnt::shouldIgniteTntOnRightClick(stack.item, target_block)) {
         return false;
     }
 
@@ -189,13 +217,31 @@ bool TryIgniteTnt() {
     return true;
 }
 
-bool TryIgniteCreeper() {
-    mc::ItemId held = mc::ItemId::None;
+static bool CanIgniteCreeper(mc::Hand hand) {
+    const HandStack stack = StackInHand(hand);
+    if (stack.item != mc::ItemId::FlintAndSteel) return false;
+    std::vector<eldenring::mobs::MobSnapshot> summons;
     {
-        std::lock_guard<std::mutex> g(g_melee_mutex);
-        held = g_melee.heldItem();
+        std::lock_guard<std::mutex> g(g_summon_mutex);
+        summons = g_summon_list;
     }
-    if (held != mc::ItemId::FlintAndSteel) return false;
+    float player_feet[3]{};
+    if (!detail::readPhysicsPosition(g_reader, g_img.base, PlayerChrPtr(), player_feet)) return false;
+    for (const auto& s : summons) {
+        if (s.model_type != "creeper") continue;
+        const float dx = s.feet[0] - player_feet[0];
+        const float dy = s.feet[1] - player_feet[1];
+        const float dz = s.feet[2] - player_feet[2];
+        if (dx * dx + dy * dy + dz * dz <= 4.5f * 4.5f) return true;
+    }
+    return false;
+}
+
+bool CanIgnite(mc::Hand hand) { return CanIgniteTnt(hand) || CanIgniteCreeper(hand); }
+
+bool TryIgniteCreeper(mc::Hand hand) {
+    const HandStack stack = StackInHand(hand);
+    if (stack.item != mc::ItemId::FlintAndSteel) return false;
 
     std::vector<eldenring::mobs::MobSnapshot> summons;
     {
@@ -224,30 +270,43 @@ bool TryIgniteCreeper() {
     return false;
 }
 
-bool TryPlaceBlock() {
+bool CanPlaceBlock(mc::Hand hand) {
     if (!g_blocks_enabled.load()) return false;
-    mc::ItemId held;
-    int slot;
-    {
-        std::lock_guard<std::mutex> g(g_melee_mutex);
-        held = g_melee.heldItem();
-        slot = g_melee.selectedSlot();
-        if (g_melee.countAt(slot) == 0) return false;
-    }
-    const mc::BlockId id = blocks::blockForItem(held);
+    const HandStack stack = StackInHand(hand);
+    if (stack.count == 0) return false;
+    const mc::BlockId id = blocks::blockForItem(stack.item);
     if (id == mc::BlockId::Air) return false;
     const BlockTarget t = FindBlockTarget();
-    if (!t.have) return true;
-    const uintptr_t player = PlayerChrPtr();
-    float feet[3];
-    if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, feet) && blocks::cellTouchesPlayer(t.place, id, feet)) return true; // not inside yourself
+    if (!t.have) return false;
     {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
-        if (!g_blocks.place(t.place, id)) return true;
+        if (g_blocks.get(t.place) != mc::BlockId::Air) return false;
+    }
+    const uintptr_t player = PlayerChrPtr();
+    float feet[3];
+    if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, feet) && blocks::cellTouchesPlayer(t.place, id, feet)) return false;
+    return true;
+}
+
+bool TryPlaceBlock(mc::Hand hand) {
+    if (!g_blocks_enabled.load()) return false;
+    const HandStack stack = StackInHand(hand);
+    if (stack.count == 0) return false;
+    const mc::BlockId id = blocks::blockForItem(stack.item);
+    if (id == mc::BlockId::Air) return false;
+    const BlockTarget t = FindBlockTarget();
+    // No target (or the cell is blocked): the click is not consumed, so the offhand gets its turn.
+    if (!t.have) return false;
+    const uintptr_t player = PlayerChrPtr();
+    float feet[3];
+    if (player != 0 && detail::readPhysicsPosition(g_reader, g_img.base, player, feet) && blocks::cellTouchesPlayer(t.place, id, feet)) return false; // not inside yourself
+    {
+        std::lock_guard<std::mutex> g(g_blocks_mutex);
+        if (!g_blocks.place(t.place, id)) return false;
     }
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
-        if (creative::consumesItems(CurrentGameMode())) g_melee.consumeAt(slot); // creative: blocks are not used up
+        ConsumeFromHand(hand, stack.item, stack.slot);
         g_melee.startSwing();
     }
     SendBlockMesh();

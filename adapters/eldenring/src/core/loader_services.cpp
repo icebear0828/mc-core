@@ -299,56 +299,52 @@ void PhysWriteTestStep() {
                   .c_str());
 }
 
-bool TryUseElytraFirework() {
+bool TryUseElytraFirework(mc::Hand hand) {
     auto& ctx = RuntimeContext::Instance();
     if (!ctx.mode().mc_mode.load(std::memory_order_relaxed) ||
         !ctx.mode().elytra_gliding.load(std::memory_order_relaxed)) {
         return false;
     }
     std::lock_guard<std::mutex> g(g_melee_mutex);
-    const mc::ItemId main_item = g_melee.heldItem();
-    const unsigned main_count = g_melee.countAt(g_melee.selectedSlot());
-    const mc::ItemId off_item = g_melee.offhandItem();
-    const unsigned off_count = g_melee.offhandCount();
-    // Same rule as the bow/trident: main hand first, offhand only when the main hand has no
-    // right-click action of its own. This is what lets a firework in the offhand boost a glide
-    // while the main hand keeps a sword.
-    const auto hand = mc::handForUse(mc::ItemId::FireworkRocket,
-                                     main_count > 0 ? main_item : mc::ItemId::None,
-                                     off_count > 0 ? off_item : mc::ItemId::None);
-    if (!hand.has_value()) return false;
+    const mc::ItemId item = hand == mc::Hand::Main ? g_melee.heldItem() : g_melee.offhandItem();
+    const unsigned count = hand == mc::Hand::Main ? g_melee.countAt(g_melee.selectedSlot()) : g_melee.offhandCount();
+    if (count == 0 || item != mc::ItemId::FireworkRocket) return false;
     // Vanilla: 10*(1+flight_duration)+rand(6)+rand(7). We do not track the
     // component's flight_duration yet; 30 ticks matches the common duration 1.
     const int ticks = 30;
     if (!eldenring::movement::PlayerLocomotion::Instance().useElytraFirework(ticks)) return false;
     if (eldenring::creative::consumesItems(ctx.currentGameMode())) {
-        if (*hand == mc::Hand::Main) {
+        if (hand == mc::Hand::Main) {
             g_melee.consumeAt(g_melee.selectedSlot());
         } else {
             g_melee.consumeOffhand(mc::ItemId::FireworkRocket);
         }
     }
-    Log("elytra: firework boost %d ticks hand=%s", ticks, *hand == mc::Hand::Main ? "main" : "off");
+    Log("elytra: firework boost %d ticks hand=%s", ticks, hand == mc::Hand::Main ? "main" : "off");
     return true;
 }
 
-bool TryThrowEnderPearl() {
+bool TryThrowEnderPearl(mc::Hand hand) {
     auto& ctx = RuntimeContext::Instance();
     if (!ctx.mode().mc_mode.load(std::memory_order_relaxed)) return false;
     std::lock_guard<std::mutex> g(g_melee_mutex);
-    if (g_melee.heldItem() != mc::ItemId::EnderPearl || g_melee.countAt(g_melee.selectedSlot()) <= 0) {
-        return false;
-    }
+    const mc::ItemId item = hand == mc::Hand::Main ? g_melee.heldItem() : g_melee.offhandItem();
+    const unsigned count = hand == mc::Hand::Main ? g_melee.countAt(g_melee.selectedSlot()) : g_melee.offhandCount();
+    if (count == 0 || item != mc::ItemId::EnderPearl) return false;
     // The launch happens on the next camera step, where the owner's velocity and the view are readable.
     eldenring::movement::PlayerLocomotion::Instance().requestEnderPearlThrow();
     if (eldenring::creative::consumesItems(ctx.currentGameMode())) {
-        g_melee.consumeFirst(mc::ItemId::EnderPearl);
+        if (hand == mc::Hand::Main) {
+            g_melee.consumeAt(g_melee.selectedSlot());
+        } else {
+            g_melee.consumeOffhand(mc::ItemId::EnderPearl);
+        }
     }
-    Log("pearl: throw requested");
+    Log("pearl: throw requested hand=%s", hand == mc::Hand::Main ? "main" : "off");
     return true;
 }
 
-bool TryStartRiptide() {
+bool TryStartRiptide(mc::Hand hand) {
     auto& ctx = RuntimeContext::Instance();
     if (!ctx.mode().mc_mode.load(std::memory_order_relaxed)) return false;
     if (ctx.mode().riptide_require_water.load(std::memory_order_relaxed)) {
@@ -356,16 +352,13 @@ bool TryStartRiptide() {
         Log("riptide: require_water=1 but water/rain detection is unavailable; release the gate to use it");
         return false;
     }
-    std::lock_guard<std::mutex> g(g_melee_mutex);
-    const mc::ItemId main_item = g_melee.heldItem();
-    const unsigned main_count = g_melee.countAt(g_melee.selectedSlot());
-    const mc::ItemId off_item = g_melee.offhandItem();
-    const unsigned off_count = g_melee.offhandCount();
-    // The same main-hand-first rule as the interaction handler.
-    const auto hand = mc::handForUse(mc::ItemId::Trident, main_count > 0 ? main_item : mc::ItemId::None,
-                                     off_count > 0 ? off_item : mc::ItemId::None);
-    if (!hand.has_value()) return false;
-    const bool off_trident = *hand == mc::Hand::Off;
+    {
+        std::lock_guard<std::mutex> g(g_melee_mutex);
+        const mc::ItemId item = hand == mc::Hand::Main ? g_melee.heldItem() : g_melee.offhandItem();
+        const unsigned count = hand == mc::Hand::Main ? g_melee.countAt(g_melee.selectedSlot()) : g_melee.offhandCount();
+        if (count == 0 || item != mc::ItemId::Trident) return false;
+    }
+    const bool off_trident = hand == mc::Hand::Off;
     ctx.mode().trident_offhand.store(off_trident, std::memory_order_relaxed);
     auto& loco = eldenring::movement::PlayerLocomotion::Instance();
     // Gliding no longer turns the release into a throw: the dash pauses the glide and resumes it at the new

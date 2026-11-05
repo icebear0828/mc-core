@@ -229,6 +229,7 @@ struct ModeConfig {
     std::atomic<int> mc_jump_vk{0x20}; // VK_SPACE
     std::atomic<bool> flying{false};
     std::atomic<bool> bow_offhand{false};
+    std::atomic<bool> eating_offhand{false}; // the meal being eaten is in the offhand
     std::atomic<float> bow_power{0.f};
     std::atomic<float> bow_ticks{0.f};
 
@@ -453,6 +454,7 @@ public:
         mode_.mc_jump_vk.store(0x20);
         mode_.flying.store(false);
         mode_.bow_offhand.store(false);
+        mode_.eating_offhand.store(false);
         mode_.bow_power.store(0.f);
         mode_.bow_ticks.store(0.f);
         mode_.control_authority_bits.store(0);

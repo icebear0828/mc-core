@@ -3,6 +3,7 @@
 #include "mc/blocks.hpp"
 #include "mc/bow.hpp"
 #include "mc/hunger.hpp"
+#include "mc/item_use.hpp"
 
 #include <algorithm>
 
@@ -46,24 +47,7 @@ void finish(HandItems& out, const HandItemInput& in) {
 
 } // namespace
 
-bool claimsRightClick(ItemId item) {
-    switch (item) {
-        case ItemId::Bow:
-        case ItemId::Trident:
-        case ItemId::Shield:
-        case ItemId::GoldenApple:
-        case ItemId::EnchantedGoldenApple:
-        case ItemId::Bread:
-        case ItemId::CookedBeef:
-        case ItemId::ZombieSpawnEgg:
-        case ItemId::CreeperSpawnEgg:
-        case ItemId::SkeletonSpawnEgg:
-        case ItemId::FlintAndSteel:
-        case ItemId::EnderPearl:
-        case ItemId::FireworkRocket: return true;
-        default: return blockForItem(item) != BlockId::Air; // every placeable block
-    }
-}
+bool claimsRightClick(ItemId item) { return useSpec(item).kind != UseKind::None; }
 
 std::optional<Hand> handForUse(ItemId wanted, ItemId main_item, ItemId off_item) {
     if (wanted == ItemId::None) return std::nullopt;
@@ -78,27 +62,44 @@ HandItems planHandItems(const HandItemInput& in) {
     out.main.present = in.main_item != ItemId::None;
     out.off.present = in.off_item != ItemId::None;
 
+    // The hand the interaction handler actually used wins; the old main-hand-first classification
+    // is only the fallback for callers that do not track the use (the inventory preview, tests).
+    auto pick = [&](ItemId wanted, const std::optional<Hand>& forced) -> std::optional<Hand> {
+        if (forced) {
+            const HandItem& item = out[*forced];
+            if (item.present && item.item == wanted) return forced;
+        }
+        return pickItem(wanted, in.main_item, in.off_item);
+    };
+    auto pickMeal = [&](const std::optional<Hand>& forced) -> std::optional<Hand> {
+        if (forced) {
+            const HandItem& item = out[*forced];
+            if (item.present && isFood(item.item)) return forced;
+        }
+        return pickFood(in.main_item, in.off_item);
+    };
+
     // One right-click action per frame; the same precedence the animator uses.
     if (in.trident_active) {
-        if (const auto hand = pickItem(ItemId::Trident, in.main_item, in.off_item)) {
+        if (const auto hand = pick(ItemId::Trident, in.trident_hand)) {
             HandItem& item = out[*hand];
             item.use = in.riptide ? HandUse::Riptide : HandUse::TridentCharge;
             item.progress = in.riptide ? 0.f : std::clamp(in.trident_charge, 0.f, 1.f);
         }
     } else if (in.bow_active) {
-        if (const auto hand = pickItem(ItemId::Bow, in.main_item, in.off_item)) {
+        if (const auto hand = pick(ItemId::Bow, in.bow_hand)) {
             HandItem& item = out[*hand];
             item.use = HandUse::BowDraw;
             item.progress = std::clamp(in.bow_charge, 0.f, 1.f);
         }
     } else if (in.blocking) {
-        if (const auto hand = pickItem(ItemId::Shield, in.main_item, in.off_item)) {
+        if (const auto hand = pick(ItemId::Shield, in.shield_hand)) {
             HandItem& item = out[*hand];
             item.use = HandUse::Block;
             item.raised = true;
         }
     } else if (in.eating) {
-        if (const auto hand = pickFood(in.main_item, in.off_item)) {
+        if (const auto hand = pickMeal(in.eat_hand)) {
             HandItem& item = out[*hand];
             item.use = HandUse::Eat;
             item.progress = std::clamp(in.eat_progress, 0.f, 1.f);

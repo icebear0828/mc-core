@@ -198,6 +198,10 @@ void RenderFrame(IDXGISwapChain* sc) {
         hand_in.trident_charge = steve.trident_charge;
         hand_in.riptide = steve.riptide;
         hand_in.blocking = steve.blocking;
+        hand_in.bow_hand = steve.bow_offhand ? mc::Hand::Off : mc::Hand::Main;
+        hand_in.shield_hand = steve.block_offhand ? mc::Hand::Off : mc::Hand::Main;
+        hand_in.trident_hand = steve.trident_offhand ? mc::Hand::Off : mc::Hand::Main;
+        hand_in.eat_hand = steve.eating_offhand ? mc::Hand::Off : mc::Hand::Main;
         const mc::HandItems hands = mc::planHandItems(hand_in);
         if (!steve.dead) {
             g_sleep_tracker.update(dt, steve.sleeping);
@@ -721,6 +725,10 @@ void RenderFrame(IDXGISwapChain* sc) {
         fp_in.trident_charge = steve.trident_charge;
         fp_in.riptide = steve.riptide;
         fp_in.blocking = steve.blocking;
+        fp_in.bow_hand = steve.bow_offhand ? mc::Hand::Off : mc::Hand::Main;
+        fp_in.shield_hand = steve.block_offhand ? mc::Hand::Off : mc::Hand::Main;
+        fp_in.trident_hand = steve.trident_offhand ? mc::Hand::Off : mc::Hand::Main;
+        fp_in.eat_hand = steve.eating_offhand ? mc::Hand::Off : mc::Hand::Main;
         const mc::HandItems fp_hands = mc::planHandItems(fp_in);
         const mc::rig::Mat4 proj = mc::rig::perspectiveLH(70.f * fp::kDeg, static_cast<float>(g_s.width) / static_cast<float>(g_s.height), 0.05f, 20.f);
         D3D12_GPU_DESCRIPTOR_HANDLE skin_table = g_depth_gpu; // slots 1 and 2: depth, skin

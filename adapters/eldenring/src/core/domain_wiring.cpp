@@ -253,6 +253,8 @@ void SetupInput() {
         cb.set_masked_keys = erin::SetMaskedKeys;
         cb.take_keyboard_failures = erin::TakeKeyboardFailures;
         cb.step_mining = [](float dt, bool left_held) { return StepMining(dt, left_held); };
+        cb.can_place_block = CanPlaceBlock;
+        cb.can_ignite = CanIgnite;
         cb.try_ignite_tnt = TryIgniteTnt;
         cb.try_ignite_creeper = TryIgniteCreeper;
         cb.try_place_block = TryPlaceBlock;

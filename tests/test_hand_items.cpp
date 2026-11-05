@@ -169,3 +169,56 @@ TEST(HandItemsTest, FindItemReturnsNullWhenNeitherHandHoldsIt) {
     ASSERT_NE(with_trident.findItem(ItemId::Trident), nullptr);
     EXPECT_EQ(with_trident.findItem(ItemId::Trident)->hand, Hand::Off);
 }
+
+TEST(HandItemsTest, AnExplicitBowHandOverridesTheCategoryRule) {
+    // The main hand holds a block but the placement could not start, so the offhand bow owns the
+    // click. Presentation must follow the use, not "the block claims the button".
+    HandItemInput in = withItems(ItemId::BlockDirt, ItemId::Bow);
+    in.bow_active = true;
+    in.bow_charge = 0.7f;
+    in.bow_hand = Hand::Off;
+    const HandItems hands = mc::planHandItems(in);
+    EXPECT_EQ(hands.main.use, HandUse::None);
+    EXPECT_EQ(hands.off.use, HandUse::BowDraw);
+    EXPECT_FLOAT_EQ(hands.off.progress, 0.7f);
+    EXPECT_EQ(hands.off.shown, ItemId::BowPulling1);
+}
+
+TEST(HandItemsTest, AnExplicitEatHandOverridesTheCategoryRule) {
+    HandItemInput in = withItems(ItemId::BlockDirt, ItemId::Bread);
+    in.eating = true;
+    in.eat_progress = 0.4f;
+    in.eat_hand = Hand::Off;
+    const HandItems hands = mc::planHandItems(in);
+    EXPECT_EQ(hands.off.use, HandUse::Eat);
+    EXPECT_FLOAT_EQ(hands.off.progress, 0.4f);
+}
+
+TEST(HandItemsTest, AnExplicitShieldHandOverridesTheCategoryRule) {
+    HandItemInput in = withItems(ItemId::BlockDirt, ItemId::Shield);
+    in.blocking = true;
+    in.shield_hand = Hand::Off;
+    const HandItems hands = mc::planHandItems(in);
+    EXPECT_EQ(hands.off.use, HandUse::Block);
+    EXPECT_TRUE(hands.off.raised);
+}
+
+TEST(HandItemsTest, AnExplicitTridentHandOverridesTheCategoryRule) {
+    HandItemInput in = withItems(ItemId::BlockDirt, ItemId::Trident);
+    in.trident_active = true;
+    in.trident_charge = 0.5f;
+    in.trident_hand = Hand::Off;
+    const HandItems hands = mc::planHandItems(in);
+    EXPECT_EQ(hands.off.use, HandUse::TridentCharge);
+    EXPECT_FLOAT_EQ(hands.off.progress, 0.5f);
+}
+
+TEST(HandItemsTest, AForcedHandThatDoesNotHoldTheItemFallsBack) {
+    // A stale forced hand must not animate an item that is not there.
+    HandItemInput in = withItems(ItemId::BlockDirt, ItemId::Bow);
+    in.bow_active = true;
+    in.bow_hand = Hand::Main; // the main hand holds a block, not the bow
+    const HandItems hands = mc::planHandItems(in);
+    EXPECT_EQ(hands.main.use, HandUse::None);
+    EXPECT_EQ(hands.off.use, HandUse::None);
+}

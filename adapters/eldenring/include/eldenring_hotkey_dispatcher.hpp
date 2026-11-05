@@ -44,13 +44,18 @@ struct HotkeyCallbacks {
 
     // Gameplay Actions
     std::function<bool(float dt, bool left_held)> step_mining; // returns true if consumed
-    std::function<bool()> try_ignite_tnt;
-    std::function<bool()> try_ignite_creeper;
-    std::function<bool()> try_place_block;
-    std::function<bool()> try_use_spawn_egg;
-    std::function<bool()> use_elytra_firework;
-    std::function<bool()> throw_ender_pearl;
-    std::function<bool()> start_riptide;
+    // The right-click family (mc::item_use): every action names the hand that owns the click, so
+    // the offhand can place, ignite, throw and use a spawn egg like the main hand. `can_*` is the
+    // availability probe the resolver reads before committing the click.
+    std::function<bool(mc::Hand)> can_place_block;
+    std::function<bool(mc::Hand)> can_ignite;
+    std::function<bool(mc::Hand)> try_ignite_tnt;
+    std::function<bool(mc::Hand)> try_ignite_creeper;
+    std::function<bool(mc::Hand)> try_place_block;
+    std::function<bool(mc::Hand)> try_use_spawn_egg;
+    std::function<bool(mc::Hand)> use_elytra_firework;
+    std::function<bool(mc::Hand)> throw_ender_pearl;
+    std::function<bool(mc::Hand)> start_riptide;
     std::function<bool(float charged)> click_attack;
     std::function<void()> enqueue_nearest_hostile;
     std::function<bool(float damage)> queue_bullet_fire;
