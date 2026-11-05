@@ -60,6 +60,22 @@ struct MobArchetype {
     float fuse_duration{1.5f};
     float explosion_radius{7.0f};
     float explosion_damage{1500.0f};
+    // Half the body width in metres: the footprint kept clear of the player, enemies and other summons.
+    float collision_radius{0.3f};
+    // Minecraft sound events this archetype plays. A melee mob's `attack_sound` is its vocalisation on a hit; a
+    // ranged mob's is the shot itself (the manager adds the arrow's own hit sound separately).
+    std::string attack_sound{"entity.player.attack.strong"};
+    std::string hurt_sound;
+    std::string death_sound;
+    // Played once when the mob appears (a low growl for the zombie/wolf, a bone rattle for the skeleton). This
+    // is a deliberate flourish: vanilla spawn eggs are silent.
+    std::string summon_sound;
+};
+
+struct SoundIntent {
+    std::string event;
+    float pos[3]{0.0f, 0.0f, 0.0f};
+    float volume{1.0f};
 };
 
 struct ProjectileIntent {
@@ -132,6 +148,11 @@ struct VirtualMob {
     float bow_charge{0.0f};     // [0, 1] for ranged archer aim
     float pitch{0.0f};          // aim elevation pitch in radians
     float swing_progress{0.0f}; // [0, 1] for melee attack swing
+    float collision_radius{0.3f};
+    std::string attack_sound;
+    std::string hurt_sound;
+    std::string death_sound;
+    std::string summon_sound;
 };
 
 class VirtualSummonManager {
@@ -149,6 +170,9 @@ public:
     static constexpr float kAttackCooldownSeconds = 1.0f;
     static constexpr float kDeathMaxSeconds = 1.0f;
     static constexpr float kHurtMaxSeconds = 0.5f;
+    static constexpr float kPlayerCollisionRadius = 0.3f; // Minecraft player: 0.6 m wide
+    static constexpr float kEnemyCollisionRadius = 0.35f; // typical Elden Ring enemy torso
+    static constexpr float kBodyCollisionHeight = 1.8f;   // bodies further apart than this vertically do not touch
 
     VirtualSummonManager() {
         initDefaultArchetypes();
@@ -183,6 +207,13 @@ public:
         zombie.attack_cooldown = 1.0f;
         zombie.damage = 6.0f;
         zombie.scale = 1.0f;
+        zombie.collision_radius = 0.3f;
+        // Vanilla accuracy: Mob.playAttackSound() is an empty method and Zombie does not override it, so a zombie
+        // melee hit plays no zombie sound at all (the victim's hurt sound is the feedback). Only hurt/death are its.
+        zombie.attack_sound.clear();
+        zombie.hurt_sound = "entity.zombie.hurt";
+        zombie.death_sound = "entity.zombie.death";
+        zombie.summon_sound = "entity.zombie.ambient"; // the low groan when it appears
         archetypes_.push_back(zombie);
 
         // 2. Creeper: autonomous suicide detonation
@@ -199,6 +230,10 @@ public:
         creeper.explosion_radius = 7.0f;
         creeper.explosion_damage = 1500.0f;
         creeper.scale = 1.0f;
+        creeper.collision_radius = 0.3f;
+        creeper.attack_sound.clear(); // no melee: the fuse and the blast are its sounds
+        creeper.hurt_sound = "entity.creeper.hurt";
+        creeper.death_sound = "entity.creeper.death";
         archetypes_.push_back(creeper);
 
         // 3. Skeleton: ranged archer with kiting
@@ -212,6 +247,11 @@ public:
         skeleton.attack_cooldown = 1.5f;
         skeleton.damage = 7.0f;
         skeleton.scale = 1.0f;
+        skeleton.collision_radius = 0.3f;
+        skeleton.attack_sound = "entity.skeleton.shoot";
+        skeleton.hurt_sound = "entity.skeleton.hurt";
+        skeleton.death_sound = "entity.skeleton.death";
+        skeleton.summon_sound = "entity.skeleton.ambient";
         archetypes_.push_back(skeleton);
 
         // 4. Iron Golem: tank melee powerhouse
@@ -225,6 +265,10 @@ public:
         iron_golem.attack_cooldown = 1.2f;
         iron_golem.damage = 21.0f;
         iron_golem.scale = 1.2f;
+        iron_golem.collision_radius = 0.7f; // Minecraft iron golem: 1.4 m wide
+        iron_golem.attack_sound = "entity.iron_golem.attack";
+        iron_golem.hurt_sound = "entity.iron_golem.hurt";
+        iron_golem.death_sound = "entity.iron_golem.death";
         archetypes_.push_back(iron_golem);
 
         // 5. Wolf: fast melee companion
@@ -238,6 +282,12 @@ public:
         wolf.attack_cooldown = 0.8f;
         wolf.damage = 5.0f;
         wolf.scale = 0.8f;
+        wolf.collision_radius = 0.3f;
+        // Same as the zombie: Wolf does not override Mob.playAttackSound(); its growl is a variant ambient sound.
+        wolf.attack_sound.clear();
+        wolf.hurt_sound = "entity.wolf.hurt";
+        wolf.death_sound = "entity.wolf.death";
+        wolf.summon_sound = "entity.wolf.growl";
         archetypes_.push_back(wolf);
     }
 
@@ -315,6 +365,11 @@ public:
         mob.attack_min_range = arch ? arch->attack_min_range : 0.0f;
         mob.cooldown_duration = arch ? arch->attack_cooldown : 1.0f;
         mob.damage = arch ? arch->damage : 6.0f;
+        mob.collision_radius = arch ? arch->collision_radius : 0.3f;
+        mob.attack_sound = arch ? arch->attack_sound : std::string("entity.player.attack.strong");
+        mob.hurt_sound = arch ? arch->hurt_sound : std::string{};
+        mob.death_sound = arch ? arch->death_sound : std::string{};
+        mob.summon_sound = arch ? arch->summon_sound : std::string{};
 
         // Spawn position ahead of player matching heading (+sin(yaw), +cos(yaw))
         mob.pos[0] = player.pos[0] + std::sin(player.yaw) * forward_distance;
@@ -323,6 +378,7 @@ public:
         mob.yaw = player.yaw;
 
         mobs_.push_back(mob);
+        playSound(mob.summon_sound, mob.pos);
         return mob.id;
     }
 
@@ -330,6 +386,7 @@ public:
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         VirtualMob* mob = findMobMut(id);
         if (!mob || mob->is_dying || mob->attack_style != MobAttackStyle::SuicideExplode) return false;
+        if (!mob->is_primed) playSound("entity.creeper.primed", mob->pos);
         mob->is_primed = true;
         mob->manual_primed = true;
         mob->fuse_timer = mob->fuse_duration;
@@ -343,10 +400,12 @@ public:
 
         mob->hp = std::max(0, mob->hp - damage);
         mob->hurt_timer = kHurtMaxSeconds;
+        playSound(mob->hurt_sound, mob->pos);
 
         if (mob->hp <= 0) {
             mob->is_dying = true;
             mob->death_timer = 0.0f;
+            playSound(mob->death_sound, mob->pos);
             return false;
         }
         return true;
@@ -409,6 +468,7 @@ public:
                     intent.damage_amount = it->damage;
                     intent.source_mob_id = it->source_mob_id;
                     damage_intents_.push_back(intent);
+                    playSound("entity.arrow.hit", it->pos);
                     hit = true;
                     break;
                 }
@@ -509,6 +569,7 @@ public:
                     if (!mob.manual_primed) {
                         if (!mob.is_primed) {
                             if (dist <= kCreeperIgniteDistance) {
+                                playSound("entity.creeper.primed", mob.pos);
                                 mob.is_primed = true;
                                 mob.fuse_timer = std::max(0.0f, mob.fuse_duration - dt);
                             }
@@ -583,6 +644,7 @@ public:
                                 proj.damage = mob.damage;
                                 proj.speed = 22.0f;
                                 projectile_intents_.push_back(proj);
+                                playSound(mob.attack_sound, proj.origin);
 
                                 VirtualArrow va;
                                 va.id = next_arrow_id_++;
@@ -616,6 +678,7 @@ public:
                             intent.damage_amount = mob.damage;
                             intent.source_mob_id = mob.id;
                             damage_intents_.push_back(intent);
+                            playSound(mob.attack_sound, mob.pos);
                             mob.attack_cooldown = mob.cooldown_duration;
                             mob.swing_progress = 0.01f;
                         }
@@ -699,59 +762,77 @@ public:
             ++it;
         }
 
-        // Anti-clipping Pushout Pass: separate overlapping summons from each other
-        constexpr float kMinMobSeparation = 0.6f; // diameter of typical mob (2 * 0.3m)
+        // Body collision: every summon keeps its own footprint clear of every living enemy, the other summons and
+        // the player. Only the summons move: the player belongs to the host, and pushing an enemy would fight the
+        // game's own physics. The player is resolved last, so a mob can never end the frame inside it.
+        for (auto& mob : mobs_) {
+            if (mob.is_dying) continue;
+            for (const auto& enemy : enemies) {
+                if (enemy.hp <= 0 || enemy.chr_ins == 0) continue;
+                pushOutXZ(mob.pos, enemy.pos, mob.collision_radius + kEnemyCollisionRadius);
+            }
+        }
         for (size_t i = 0; i < mobs_.size(); ++i) {
             if (mobs_[i].is_dying) continue;
             for (size_t j = i + 1; j < mobs_.size(); ++j) {
                 if (mobs_[j].is_dying) continue;
-                float pdx = mobs_[j].pos[0] - mobs_[i].pos[0];
-                float pdz = mobs_[j].pos[2] - mobs_[i].pos[2];
-                float pdist_sq = pdx * pdx + pdz * pdz;
-                if (pdist_sq < kMinMobSeparation * kMinMobSeparation) {
-                    float pdist = std::sqrt(pdist_sq);
-                    float push = (kMinMobSeparation - pdist) * 0.5f;
-                    float nx = 1.0f, nz = 0.0f;
-                    if (pdist > 1e-4f) {
-                        nx = pdx / pdist;
-                        nz = pdz / pdist;
-                    }
-                    mobs_[i].pos[0] -= nx * push;
-                    mobs_[i].pos[2] -= nz * push;
-                    mobs_[j].pos[0] += nx * push;
-                    mobs_[j].pos[2] += nz * push;
-                }
+                pushPairXZ(mobs_[i].pos, mobs_[j].pos, mobs_[i].collision_radius + mobs_[j].collision_radius);
             }
         }
-
-        // Anti-clipping Target Boundary Pass: ensure mobs do not penetrate inside target enemies
-        constexpr float kMinTargetSeparation = 0.7f; // mob radius ~0.3m + target radius ~0.35m = ~0.65m
         for (auto& mob : mobs_) {
-            if (mob.is_dying || mob.target_chr_ins == 0) continue;
-            for (const auto& enemy : enemies) {
-                if (enemy.chr_ins != mob.target_chr_ins) continue;
-                float tdx = mob.pos[0] - enemy.pos[0];
-                float tdz = mob.pos[2] - enemy.pos[2];
-                float tdist_sq = tdx * tdx + tdz * tdz;
-                if (tdist_sq < kMinTargetSeparation * kMinTargetSeparation) {
-                    float tdist = std::sqrt(tdist_sq);
-                    float push = kMinTargetSeparation - tdist;
-                    float nx = 0.0f, nz = -1.0f;
-                    if (tdist > 1e-4f) {
-                        nx = tdx / tdist;
-                        nz = tdz / tdist;
-                    }
-                    mob.pos[0] += nx * push;
-                    mob.pos[2] += nz * push;
-                }
-                break;
-            }
+            if (mob.is_dying) continue;
+            pushOutXZ(mob.pos, player.pos, mob.collision_radius + kPlayerCollisionRadius);
         }
     }
 
 private:
+    // Moves `pos` out of a circle of radius `min_dist` around `other` on the XZ plane. Bodies further apart than
+    // kBodyCollisionHeight vertically do not touch (a summon on a ledge does not shove one on the ground).
+    static void pushOutXZ(float pos[3], const float other[3], float min_dist) {
+        if (std::fabs(pos[1] - other[1]) >= kBodyCollisionHeight) return;
+        float dx = pos[0] - other[0];
+        float dz = pos[2] - other[2];
+        const float d2 = dx * dx + dz * dz;
+        if (d2 >= min_dist * min_dist) return;
+        float d = std::sqrt(d2);
+        if (d < 1e-4f) { dx = 0.0f; dz = 1.0f; d = 1.0f; } // exactly on top: pick a deterministic direction
+        const float push = min_dist - d;
+        pos[0] += dx / d * push;
+        pos[2] += dz / d * push;
+    }
+
+    static void pushPairXZ(float a[3], float b[3], float min_dist) {
+        if (std::fabs(a[1] - b[1]) >= kBodyCollisionHeight) return;
+        float dx = b[0] - a[0];
+        float dz = b[2] - a[2];
+        const float d2 = dx * dx + dz * dz;
+        if (d2 >= min_dist * min_dist) return;
+        float d = std::sqrt(d2);
+        if (d < 1e-4f) { dx = 0.0f; dz = 1.0f; d = 1.0f; }
+        const float push = (min_dist - d) * 0.5f;
+        const float nx = dx / d;
+        const float nz = dz / d;
+        a[0] -= nx * push;
+        a[2] -= nz * push;
+        b[0] += nx * push;
+        b[2] += nz * push;
+    }
+
+    // Queues a Minecraft sound event for the game thread; the loader drains these and calls eraudio::Play.
+    void playSound(const std::string& event, const float pos[3], float volume = 1.0f) {
+        if (event.empty()) return;
+        SoundIntent s;
+        s.event = event;
+        s.pos[0] = pos[0];
+        s.pos[1] = pos[1];
+        s.pos[2] = pos[2];
+        s.volume = volume;
+        sound_intents_.push_back(s);
+    }
+
     void triggerDetonation(VirtualMob& mob, std::vector<VirtualMob>::iterator& it) {
         mob.exploded = true;
+        playSound("entity.generic.explode", mob.pos);
         CreeperExplosionEvent cev;
         cev.source_mob_id = mob.id;
         cev.pos[0] = mob.pos[0];
@@ -782,9 +863,11 @@ private:
                 if (dmg > 0) {
                     other.hp = std::max(0, other.hp - dmg);
                     other.hurt_timer = kHurtMaxSeconds;
+                    playSound(other.hurt_sound, other.pos);
                     if (other.hp <= 0) {
                         other.is_dying = true;
                         other.death_timer = 0.0f;
+                        playSound(other.death_sound, other.pos);
                     }
                 }
             }
@@ -810,6 +893,13 @@ public:
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         std::vector<CreeperExplosionEvent> out = std::move(explosion_events_);
         explosion_events_.clear();
+        return out;
+    }
+
+    [[nodiscard]] std::vector<SoundIntent> drainSoundIntents() {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        std::vector<SoundIntent> out = std::move(sound_intents_);
+        sound_intents_.clear();
         return out;
     }
 
@@ -867,6 +957,7 @@ public:
         damage_intents_.clear();
         projectile_intents_.clear();
         explosion_events_.clear();
+        sound_intents_.clear();
         active_arrows_.clear();
     }
 
@@ -899,6 +990,7 @@ private:
     std::vector<DamageIntent> damage_intents_;
     std::vector<ProjectileIntent> projectile_intents_;
     std::vector<CreeperExplosionEvent> explosion_events_;
+    std::vector<SoundIntent> sound_intents_;
     std::vector<VirtualArrow> active_arrows_;
     GroundSampler ground_sampler_;
     LineOfSightSampler los_sampler_;

@@ -3,10 +3,12 @@
 #include "eldenring_virtual_summon.hpp"
 #include "eldenring_mobs.hpp"
 
-#include <cmath>
-#include <vector>
-#include <thread>
+#include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <string>
+#include <thread>
+#include <vector>
 
 using namespace eldenring::summon;
 
@@ -989,3 +991,178 @@ TEST(VirtualSummonTest, SkeletonCalculatesAimPitchAndOutputsPitchInSnapshots) {
 }
 
 
+namespace {
+
+bool hasSound(const std::vector<SoundIntent>& sounds, const char* event) {
+    return std::any_of(sounds.begin(), sounds.end(), [event](const SoundIntent& s) { return s.event == event; });
+}
+
+} // namespace
+
+TEST(VirtualSummonTest, SummonsKeepTheirCollisionVolumeClearOfThePlayer) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t id = mgr.spawnMob("zombie", p, 0.1f); // spawns almost inside the player
+    ASSERT_NE(id, 0u);
+
+    std::vector<EnemyTarget> no_enemies;
+    mgr.update(0.1f, p, no_enemies);
+
+    const auto* mob = mgr.findMob(id);
+    ASSERT_NE(mob, nullptr);
+    const float dx = mob->pos[0] - p.pos[0];
+    const float dz = mob->pos[2] - p.pos[2];
+    EXPECT_GE(std::sqrt(dx * dx + dz * dz), 0.6f - 1e-4f)
+        << "a zombie (0.3 m radius) must not overlap the player (0.3 m radius)";
+}
+
+TEST(VirtualSummonTest, CollisionRadiusFollowsTheArchetype) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t a = mgr.spawnMob("iron_golem", p, 2.0f);
+    uint64_t b = mgr.spawnMob("iron_golem", p, 2.5f);
+    ASSERT_NE(a, 0u);
+    ASSERT_NE(b, 0u);
+
+    std::vector<EnemyTarget> no_enemies;
+    mgr.update(0.1f, p, no_enemies);
+
+    const auto* ma = mgr.findMob(a);
+    const auto* mb = mgr.findMob(b);
+    ASSERT_NE(ma, nullptr);
+    ASSERT_NE(mb, nullptr);
+    const float dx = ma->pos[0] - mb->pos[0];
+    const float dz = ma->pos[2] - mb->pos[2];
+    EXPECT_GE(std::sqrt(dx * dx + dz * dz), 1.4f - 1e-4f)
+        << "two iron golems (0.7 m radius each) must stay 1.4 m apart";
+}
+
+TEST(VirtualSummonTest, ZombieMeleeAttackPlaysNoBowSound) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t id = mgr.spawnMob("zombie", p, 2.0f);
+    ASSERT_NE(id, 0u);
+    std::vector<EnemyTarget> enemies = {makeEnemy(0xDEAD, 0.0f, 0.0f, 5.0f, 100, 100)};
+    const auto summon_sounds = mgr.drainSoundIntents(); // the melee hit is what this test is about
+    EXPECT_TRUE(hasSound(summon_sounds, "entity.zombie.ambient")) << "the summon growl is separate from the attack";
+
+    for (int i = 0; i < 20; ++i) mgr.update(0.2f, p, enemies);
+
+    const auto sounds = mgr.drainSoundIntents();
+    EXPECT_TRUE(sounds.empty()) << "vanilla zombies are silent when they hit: Mob.playAttackSound() is empty and "
+                                   "Zombie does not override it (the victim's hurt sound is the feedback)";
+    EXPECT_FALSE(hasSound(sounds, "entity.arrow.hit")) << "zombie melee must not play the skeleton's arrow hit";
+    EXPECT_FALSE(hasSound(sounds, "entity.arrow.shoot")) << "zombie melee must not play a bow shot";
+}
+
+TEST(VirtualSummonTest, IronGolemMeleeAttackPlaysItsVanillaAttackSound) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t id = mgr.spawnMob("iron_golem", p, 2.0f);
+    ASSERT_NE(id, 0u);
+    std::vector<EnemyTarget> enemies = {makeEnemy(0x6011, 0.0f, 0.0f, 5.0f, 500, 500)};
+
+    for (int i = 0; i < 20; ++i) mgr.update(0.2f, p, enemies);
+
+    const auto sounds = mgr.drainSoundIntents();
+    EXPECT_TRUE(hasSound(sounds, "entity.iron_golem.attack"))
+        << "IronGolem.doHurtTarget plays entity.iron_golem.attack in vanilla";
+    EXPECT_FALSE(hasSound(sounds, "entity.arrow.hit"));
+}
+
+TEST(VirtualSummonTest, SkeletonShotAndArrowImpactUseTheSkeletonSounds) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t id = mgr.spawnMob("skeleton", p, 0.0f);
+    ASSERT_NE(id, 0u);
+    std::vector<EnemyTarget> enemies = {makeEnemy(0xBEEF, 0.0f, 0.0f, 10.0f, 100, 100)};
+
+    mgr.update(0.8f, p, enemies); // draw the bow and fire
+    const auto shot_sounds = mgr.drainSoundIntents();
+    EXPECT_TRUE(hasSound(shot_sounds, "entity.skeleton.shoot"));
+    EXPECT_FALSE(hasSound(shot_sounds, "entity.arrow.shoot")) << "the skeleton must use its own shoot event";
+
+    mgr.update(0.6f, p, enemies); // the arrow reaches the enemy
+    const auto hit_sounds = mgr.drainSoundIntents();
+    EXPECT_TRUE(hasSound(hit_sounds, "entity.arrow.hit"));
+    EXPECT_FALSE(hasSound(hit_sounds, "entity.skeleton.shoot")) << "the shot must not be repeated on impact";
+}
+
+TEST(VirtualSummonTest, CreeperPlaysPrimedAndExplosionSounds) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+    uint64_t id = mgr.spawnMob("creeper", p, 2.0f);
+    ASSERT_NE(id, 0u);
+    std::vector<EnemyTarget> enemies = {makeEnemy(0xC0DE, 0.0f, 0.0f, 0.0f, 500, 500)};
+
+    mgr.update(0.1f, p, enemies);
+    const auto primed = mgr.drainSoundIntents();
+    EXPECT_TRUE(hasSound(primed, "entity.creeper.primed"));
+
+    mgr.update(1.5f, p, enemies);
+    const auto boom = mgr.drainSoundIntents();
+    EXPECT_TRUE(hasSound(boom, "entity.generic.explode"));
+}
+
+TEST(VirtualSummonTest, SummonHurtAndDeathPlayTheArchetypeSounds) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer();
+    uint64_t id = mgr.spawnMob("skeleton", p, 2.0f);
+    ASSERT_NE(id, 0u);
+
+    EXPECT_TRUE(mgr.applyDamage(id, 5));
+    const auto hurt = mgr.drainSoundIntents();
+    EXPECT_TRUE(hasSound(hurt, "entity.skeleton.hurt"));
+    EXPECT_FALSE(hasSound(hurt, "entity.skeleton.death"));
+
+    EXPECT_FALSE(mgr.applyDamage(id, 100));
+    const auto dead = mgr.drainSoundIntents();
+    EXPECT_TRUE(hasSound(dead, "entity.skeleton.hurt"));
+    EXPECT_TRUE(hasSound(dead, "entity.skeleton.death"));
+}
+
+TEST(VirtualSummonTest, SummoningPlaysTheArchetypeVocalisation) {
+    VirtualSummonManager mgr;
+    const auto p = makePlayer(0.0f, 0.0f, 0.0f, 0.0f);
+
+    mgr.spawnMob("zombie", p, 2.0f);
+    EXPECT_TRUE(hasSound(mgr.drainSoundIntents(), "entity.zombie.ambient")) << "the zombie should growl as it appears";
+
+    mgr.spawnMob("wolf", p, 2.0f);
+    EXPECT_TRUE(hasSound(mgr.drainSoundIntents(), "entity.wolf.growl"));
+
+    mgr.spawnMob("skeleton", p, 2.0f);
+    EXPECT_TRUE(hasSound(mgr.drainSoundIntents(), "entity.skeleton.ambient"));
+
+    mgr.spawnMob("creeper", p, 2.0f);
+    EXPECT_TRUE(mgr.drainSoundIntents().empty()) << "a creeper has no ambient event; its fuse is not a summon sound";
+}
+
+TEST(VirtualSummonTest, EveryArchetypeHasItsVanillaAttackSoundAndCollisionRadius) {
+    VirtualSummonManager mgr;
+    const auto* zombie = mgr.findArchetype("zombie");
+    const auto* skeleton = mgr.findArchetype("skeleton");
+    const auto* golem = mgr.findArchetype("iron_golem");
+    const auto* wolf = mgr.findArchetype("wolf");
+    const auto* creeper = mgr.findArchetype("creeper");
+    ASSERT_NE(zombie, nullptr);
+    ASSERT_NE(skeleton, nullptr);
+    ASSERT_NE(golem, nullptr);
+    ASSERT_NE(wolf, nullptr);
+    ASSERT_NE(creeper, nullptr);
+
+    EXPECT_TRUE(zombie->attack_sound.empty()) << "vanilla Zombie does not override the empty Mob.playAttackSound()";
+    EXPECT_EQ(skeleton->attack_sound, "entity.skeleton.shoot");
+    EXPECT_EQ(golem->attack_sound, "entity.iron_golem.attack");
+    EXPECT_TRUE(wolf->attack_sound.empty()) << "vanilla Wolf does not override the empty Mob.playAttackSound()";
+    EXPECT_TRUE(creeper->attack_sound.empty()) << "a creeper has no melee attack; the fuse and blast are its sounds";
+
+    EXPECT_EQ(zombie->summon_sound, "entity.zombie.ambient");
+    EXPECT_EQ(skeleton->summon_sound, "entity.skeleton.ambient");
+    EXPECT_EQ(wolf->summon_sound, "entity.wolf.growl");
+    EXPECT_TRUE(creeper->summon_sound.empty());
+    EXPECT_TRUE(golem->summon_sound.empty()) << "the iron golem has no ambient event in sounds.json";
+
+    EXPECT_FLOAT_EQ(zombie->collision_radius, 0.3f);
+    EXPECT_FLOAT_EQ(golem->collision_radius, 0.7f); // Minecraft iron golem: 1.4 m wide
+}

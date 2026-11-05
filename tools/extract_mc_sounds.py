@@ -40,6 +40,14 @@ EVENTS = [
     # experience
     "entity.experience_orb.pickup", "entity.player.levelup",
     "entity.arrow.shoot", "entity.arrow.hit", "entity.arrow.hit_player", "item.crossbow.shoot",
+    # the summons: a vocalisation when they appear, attack events only where vanilla has one (skeleton shoot,
+    # iron golem attack), plus hurt/death. Vanilla zombies and wolves do not override Mob.playAttackSound(), so
+    # their melee is silent.
+    "entity.zombie.ambient", "entity.zombie.hurt", "entity.zombie.death",
+    "entity.skeleton.ambient", "entity.skeleton.shoot", "entity.skeleton.hurt", "entity.skeleton.death",
+    "entity.creeper.hurt", "entity.creeper.death",
+    "entity.iron_golem.attack", "entity.iron_golem.hurt", "entity.iron_golem.death",
+    "entity.wolf.growl", "entity.wolf.hurt", "entity.wolf.death",
     # ender pearl
     "entity.ender_pearl.throw", "entity.player.teleport", "entity.ender_eye.launch",
     # trident riptide (one event per enchantment level)
