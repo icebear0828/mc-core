@@ -26,6 +26,7 @@ add_executable(mc_tests
     test_hud_layout.cpp
     test_session.cpp
     test_rig.cpp
+    test_first_person_rig.cpp
     test_item_model.cpp
     test_hand_items.cpp
     test_sekiro_live.cpp

@@ -1,7 +1,48 @@
 #include "core/loader_internal.hpp"
 #include "eldenring_config.hpp"
+#include "mc/rig/first_person_rig.hpp"
 
 namespace eldenring::loader_detail {
+
+namespace {
+
+// The ChrCam-backed first-person camera used by the render-camera copy hook. The view position lives at
+// ChrCam + kCamMatrix + 0x30; the game's own value has to be back in place before the frame is presented, which
+// is what the shared rig's save -> write -> restore ordering gives us.
+class ChrCamFirstPersonCamera final : public mc::IFirstPersonCamera {
+public:
+    void bind(uintptr_t cam) noexcept {
+        pos_addr_ = cam != 0 ? cam + layout::kCamMatrix + 0x30 : 0;
+        saved_valid_ = false;
+    }
+
+    bool save() override {
+        if (pos_addr_ == 0) return false;
+        saved_valid_ = SafeCopy(pos_addr_, saved_, sizeof(saved_));
+        return saved_valid_;
+    }
+
+    bool writeEye(const float eye[3]) override {
+        return pos_addr_ != 0 && SafeWrite(pos_addr_, eye, sizeof(float) * 3);
+    }
+
+    // The render-camera copy carries the view matrix only, not the FOV.
+    bool writeFov(float) override { return false; }
+
+    void restore() override {
+        if (pos_addr_ != 0 && saved_valid_) SafeWrite(pos_addr_, saved_, sizeof(saved_));
+    }
+
+    // The native model is hidden by the frame's own hide pass, not by the camera rig.
+    void hideNativeHead(bool) override {}
+
+private:
+    uintptr_t pos_addr_{0};
+    float saved_[3]{};
+    bool saved_valid_{false};
+};
+
+} // namespace
 
 void SetupZoneProbe() {
     const bool probe_log = FileExists(g_game_dir + "mc_er_zoneprobe.txt");
@@ -196,45 +237,46 @@ void SetupGameHooksCallbacks() {
                 UpdateNativeModel(static_cast<uintptr_t>(player), true);
             }
         }
-        uintptr_t pos_addr = 0;
         uintptr_t axes_addr = 0;
-        float saved[3] = {};
         float saved_axes[8] = {};
+        ChrCamFirstPersonCamera fp_camera;
+        mc::rig::FirstPersonRig fp_rig(fp_camera);
         if (g_first_person.load(std::memory_order_relaxed)) {
             const uintptr_t world = readSingleton(g_reader, g_img.base, g_rva_world, sigs::kWorldChrMan);
             uint64_t cam = 0, player = 0;
             float feet[3];
             if (world != 0 && SafeCopy(world + layout::kChrCamInWorldChrMan, &cam, sizeof(cam)) && cam != 0 &&
                 SafeCopy(world + layout::kPlayerInsInWorldChrMan, &player, sizeof(player)) && player != 0 &&
-                detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(player), feet) &&
-                SafeCopy(static_cast<uintptr_t>(cam) + layout::kCamMatrix + 0x30, saved, sizeof(saved))) {
-                float eye[3];
-                firstPersonEye(feet, g_eye_height.load(), eye);
-                pos_addr = static_cast<uintptr_t>(cam) + layout::kCamMatrix + 0x30;
-                SafeWrite(pos_addr, eye, sizeof(eye));
-
-                float hurt = 0.f, side = 1.f;
-                ReadHurt(hurt, side);
-                if (pos_addr != 0 && hurt > 0.f) {
-                    const uintptr_t axes = static_cast<uintptr_t>(cam) + layout::kCamMatrix;
-                    if (SafeCopy(axes, saved_axes, sizeof(saved_axes))) {
-                        const float a = eldenring::fx::hurtTiltRadians(hurt, side), c = std::cos(a), s = std::sin(a);
-                        float rolled[8];
-                        for (int i = 0; i < 3; ++i) {
-                            rolled[i] = saved_axes[i] * c + saved_axes[4 + i] * s;
-                            rolled[4 + i] = saved_axes[4 + i] * c - saved_axes[i] * s;
-                        }
-                        rolled[3] = saved_axes[3];
-                        rolled[7] = saved_axes[7];
-                        if (SafeWrite(axes, rolled, sizeof(rolled))) {
-                            axes_addr = axes;
+                detail::readPhysicsPosition(g_reader, g_img.base, static_cast<uintptr_t>(player), feet)) {
+                fp_camera.bind(static_cast<uintptr_t>(cam));
+                fp_rig.setEyeHeight(g_eye_height.load());
+                // enter() saves the native position and writes the eye once; exit() below puts it back after orig().
+                // The hurt tilt follows the save, exactly like the hand-written block it replaces.
+                fp_rig.enter(feet);
+                if (fp_rig.active()) {
+                    float hurt = 0.f, side = 1.f;
+                    ReadHurt(hurt, side);
+                    if (hurt > 0.f) {
+                        const uintptr_t axes = static_cast<uintptr_t>(cam) + layout::kCamMatrix;
+                        if (SafeCopy(axes, saved_axes, sizeof(saved_axes))) {
+                            const float a = eldenring::fx::hurtTiltRadians(hurt, side), c = std::cos(a), s = std::sin(a);
+                            float rolled[8];
+                            for (int i = 0; i < 3; ++i) {
+                                rolled[i] = saved_axes[i] * c + saved_axes[4 + i] * s;
+                                rolled[4 + i] = saved_axes[4 + i] * c - saved_axes[i] * s;
+                            }
+                            rolled[3] = saved_axes[3];
+                            rolled[7] = saved_axes[7];
+                            if (SafeWrite(axes, rolled, sizeof(rolled))) {
+                                axes_addr = axes;
+                            }
                         }
                     }
                 }
             }
         }
         orig();
-        if (pos_addr != 0) SafeWrite(pos_addr, saved, sizeof(saved));
+        fp_rig.exit();
         if (axes_addr != 0) SafeWrite(axes_addr, saved_axes, sizeof(saved_axes));
     };
 
