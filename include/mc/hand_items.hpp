@@ -93,6 +93,7 @@ struct HandItemInput {
     std::optional<Hand> eat_hand;
     std::optional<Hand> shield_hand;
     std::optional<Hand> trident_hand;
+    std::optional<Hand> swing_hand; // the arm that used the item; unset = the main hand
 };
 
 // Whether the item has a right-click use of its own (the table is mc::useSpec, item_use.hpp).

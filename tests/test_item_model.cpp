@@ -232,6 +232,22 @@ TEST(ItemModelTest, HeldBlockIsATexturedCubeWithTheFaceCellsOfTheBlock) {
     EXPECT_EQ(n_bottom, 4);
 }
 
+TEST(ItemModelTest, TheLeftHandBlockMirrorsTheRightHandBlock) {
+    const UvRect r{0.f, 0.f, 1.f, 1.f};
+    const RigMesh right = buildHeldBlockMesh(r, r, r, kSekiro, {}, Hand::Right);
+    const RigMesh left = buildHeldBlockMesh(r, r, r, kSekiro, {}, Hand::Left);
+    ASSERT_EQ(right.vertices.size(), left.vertices.size());
+    for (size_t i = 0; i < right.vertices.size(); ++i) {
+        // kSekiro maps canonical x to host -y and model x to canonical y, so the sagittal mirror
+        // shows up as a negated host x; the other axes and the UVs are unchanged.
+        EXPECT_NEAR(left.vertices[i].x, -right.vertices[i].x, 1e-5f);
+        EXPECT_NEAR(left.vertices[i].y, right.vertices[i].y, 1e-5f);
+        EXPECT_NEAR(left.vertices[i].z, right.vertices[i].z, 1e-5f);
+        EXPECT_NEAR(left.vertices[i].u, right.vertices[i].u, 1e-6f);
+        EXPECT_NEAR(left.vertices[i].v, right.vertices[i].v, 1e-6f);
+    }
+}
+
 TEST(ItemModelTest, HeldBlockIsSmallAndNearTheRightHand) {
     const UvRect r{0.f, 0.f, 1.f, 1.f};
     const RigMesh mesh = buildHeldBlockMesh(r, r, r, kSekiro);

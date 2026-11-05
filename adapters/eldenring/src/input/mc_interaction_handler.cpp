@@ -106,8 +106,15 @@ void McInteractionHandler::tickUse(const InputTickContext& ctx) {
             }
             return available;
         };
-        const auto resolution = mc::resolveUse(main, off, availabilityFor(mc::Hand::Main, main),
-                                               availabilityFor(mc::Hand::Off, off));
+        mc::UseAvailability main_available = availabilityFor(mc::Hand::Main, main);
+        const mc::UseAvailability off_available = availabilityFor(mc::Hand::Off, off);
+        // The F swap leaves the default shield in the main hand, and a main-hand shield would
+        // otherwise swallow the click: an offhand block could never be placed. When the offhand
+        // block has a valid target the placement wins; aiming at the sky still raises the shield.
+        if (main == mc::ItemId::Shield && mc::useSpec(off).kind == mc::UseKind::Place && off_available.place) {
+            main_available.shield = false;
+        }
+        const auto resolution = mc::resolveUse(main, off, main_available, off_available);
         if (resolution.has_value()) {
             startUse(*resolution, ctx);
             started_this_tick = true;
@@ -137,9 +144,13 @@ void McInteractionHandler::tickUse(const InputTickContext& ctx) {
             if (!right_down) use_.reset();
             break;
         case mc::UseKind::Eat:
-            // Eating runs to completion like the old single-click meal; releasing does not cancel
-            // it, but the session blocks another use until the meal is done.
+            // Vanilla eats while the button is held: releasing cancels the meal without consuming
+            // it. The dispatcher applies the effects when the progress completes.
             if (!player.eating.isEating()) {
+                mode.eating_offhand.store(false, std::memory_order_relaxed);
+                use_.reset();
+            } else if (!right_down) {
+                player.eating.cancel();
                 mode.eating_offhand.store(false, std::memory_order_relaxed);
                 use_.reset();
             }

@@ -222,3 +222,13 @@ TEST(HandItemsTest, AForcedHandThatDoesNotHoldTheItemFallsBack) {
     EXPECT_EQ(hands.main.use, HandUse::None);
     EXPECT_EQ(hands.off.use, HandUse::None);
 }
+
+TEST(HandItemsTest, AnExplicitSwingHandSwingsThatArm) {
+    HandItemInput in = withItems(ItemId::DiamondSword, ItemId::BlockDirt);
+    in.swing = 0.5f;
+    in.swing_hand = Hand::Off;
+    const HandItems hands = mc::planHandItems(in);
+    EXPECT_EQ(hands.main.use, HandUse::None);
+    EXPECT_EQ(hands.off.use, HandUse::Swing);
+    EXPECT_FLOAT_EQ(hands.off.progress, 0.5f);
+}

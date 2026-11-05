@@ -106,9 +106,12 @@ HandItems planHandItems(const HandItemInput& in) {
         }
     }
 
-    if (in.swing > 0.f && out.main.use == HandUse::None) {
-        out.main.use = HandUse::Swing;
-        out.main.progress = std::clamp(in.swing, 0.f, 1.f);
+    if (in.swing > 0.f) {
+        const Hand swing_hand = in.swing_hand.value_or(Hand::Main);
+        if (out[swing_hand].use == HandUse::None) {
+            out[swing_hand].use = HandUse::Swing;
+            out[swing_hand].progress = std::clamp(in.swing, 0.f, 1.f);
+        }
     }
 
     finish(out, in);

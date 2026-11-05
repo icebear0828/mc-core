@@ -170,7 +170,7 @@ HeldItemsMesh BuildHeldItems(const uint8_t* atlas_rgba, unsigned atlas_w, unsign
         const mc::BlockId block = eldenring::blocks::blockForItem(item);
         mc::rig::RigMesh mesh;
         if (block != mc::BlockId::Air) {
-            mesh = eldenring::blocks::buildHeldCubeMesh(block, eldenring::render::kBasis);
+            mesh = eldenring::blocks::buildHeldCubeMesh(block, eldenring::render::kBasis, mc::rig::Hand::Right);
         } else {
             if (!mc::rig::isHeldAsFlatSprite(item)) continue;
             const mc::rig::ItemSprite sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};
@@ -201,7 +201,7 @@ HeldItemsMesh BuildHeldItems(const uint8_t* atlas_rgba, unsigned atlas_w, unsign
         const mc::BlockId block = eldenring::blocks::blockForItem(item);
         mc::rig::RigMesh mesh;
         if (block != mc::BlockId::Air) {
-            mesh = eldenring::blocks::buildHeldCubeMesh(block, eldenring::render::kBasis);
+            mesh = eldenring::blocks::buildHeldCubeMesh(block, eldenring::render::kBasis, mc::rig::Hand::Left);
         } else {
             if (!mc::rig::isHeldAsFlatSprite(item)) continue;
             const mc::rig::ItemSprite sprite{atlas_rgba, static_cast<int>(atlas_w), static_cast<int>(atlas_h), cell.x, cell.y, cell.w, cell.h};

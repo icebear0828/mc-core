@@ -47,7 +47,7 @@ struct UvRect {
     float u0{0.f}, v0{0.f}, u1{1.f}, v1{1.f};
 };
 RigMesh buildHeldBlockMesh(const UvRect& top, const UvRect& side, const UvRect& bottom, const HostBasis& basis,
-                           const BlockBox& box = {0.f, 0.f, 0.f, 1.f, 1.f, 1.f});
+                           const BlockBox& box = {0.f, 0.f, 0.f, 1.f, 1.f, 1.f}, Hand hand = Hand::Right);
 
 // The sprite as a flat, one pixel thick extrusion centred on the origin, for the first-person view: x right, y up, z towards the
 // viewer, 1 unit = 1 block (16 sprite pixels), so the mesh spans -0.5..0.5 and is 1/16 thick. UVs address the atlas at the centre

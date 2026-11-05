@@ -190,6 +190,7 @@ void RenderFrame(IDXGISwapChain* sc) {
         hand_in.main_item = static_cast<mc::ItemId>(steve.held_item);
         hand_in.off_item = static_cast<mc::ItemId>(steve.offhand_item);
         hand_in.swing = steve.swing;
+        hand_in.swing_hand = steve.swing_offhand ? mc::Hand::Off : mc::Hand::Main;
         hand_in.bow_active = steve.bow_ticks > 0.f;
         hand_in.bow_charge = steve.bow_charge;
         hand_in.eating = steve.eating > 0.f;
@@ -210,6 +211,7 @@ void RenderFrame(IDXGISwapChain* sc) {
             mc::SteveAnimInput anim_in = g_motion.update(dt, steve.feet, steve.yaw);
             anim_in.hands = hands;
             anim_in.swing_progress = steve.swing;
+            anim_in.swing_hand = steve.swing_offhand ? mc::Hand::Off : mc::Hand::Main;
             anim_in.is_crouching = steve.sneaking;
             anim_in.is_sprinting = steve.sprinting;
             anim_in.on_ground = steve.on_ground;
@@ -717,6 +719,7 @@ void RenderFrame(IDXGISwapChain* sc) {
         fp_in.main_item = g_hand.shownItem();
         fp_in.off_item = static_cast<mc::ItemId>(steve.offhand_item);
         fp_in.swing = steve.swing;
+        fp_in.swing_hand = steve.swing_offhand ? mc::Hand::Off : mc::Hand::Main;
         fp_in.bow_active = steve.bow_ticks > 0.f;
         fp_in.bow_charge = steve.bow_charge;
         fp_in.eating = steve.eating > 0.f;
@@ -768,7 +771,9 @@ void RenderFrame(IDXGISwapChain* sc) {
                 return;
             }
             if (main_hand) {
-                const fp::M4 arm_world = fp::mul(base, fp::bareArmPose(steve.swing, equipped));
+                // Only the main hand's own swing moves the bare arm; an offhand swing leaves it at rest.
+                const float main_swing = fp_hands.main.use == mc::HandUse::Swing ? steve.swing : 0.f;
+                const fp::M4 arm_world = fp::mul(base, fp::bareArmPose(main_swing, equipped));
                 if (item.present) {
                     const fp::M4 item_world = fp::mul(fp::mul(base, view.pose), view.display);
                     g_steve.drawFirstPerson(g_s.list, g_s.srv_heap, skin_table, g_item_table_gpu, g_s.width, g_s.height, proj,

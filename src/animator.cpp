@@ -103,7 +103,7 @@ bool poseHandAction(const SteveAnimInput& in, Hand hand, float head_yaw, float h
             pitch = pitch * 0.5f - kPi * 0.1f;
             yaw = 0.0f;
         }
-        if (right) {
+        if (hand == in.swing_hand) {
             float f = 1.0f - in.swing_progress;
             f *= f;
             f *= f;
@@ -111,9 +111,9 @@ bool poseHandAction(const SteveAnimInput& in, Hand hand, float head_yaw, float h
             const float f2 = std::sin(in.swing_progress * kPi) * -(head_pitch - 0.7f) * 0.75f;
             pitch -= f1 * 1.2f + f2;
             yaw += body_yaw * 2.0f;
-            roll -= std::sin(in.swing_progress * kPi) * 0.4f;
+            roll -= (hand == Hand::Main ? 1.0f : -1.0f) * std::sin(in.swing_progress * kPi) * 0.4f;
         } else {
-            // The offhand follows the torso twist without its own arc.
+            // The other arm follows the torso twist without its own arc.
             yaw += body_yaw;
             pitch += body_yaw;
         }
@@ -189,9 +189,10 @@ void SteveAnimator::update(float dt, const SteveAnimInput& input) {
     const HandItem* eat_use = input.hands.findUse(HandUse::Eat);
     const float eating_progress = eat_use != nullptr ? eat_use->progress : 0.f;
 
-    // Body rotation when swinging
+    // Body rotation when swinging: the torso twists towards the arm that swings.
+    const float swing_side = input.swing_hand == Hand::Main ? 1.0f : -1.0f;
     const float body_yaw = (input.swing_progress > 0.0f)
-        ? std::sin(std::sqrt(input.swing_progress) * kPi * 2.0f) * 0.2f
+        ? swing_side * std::sin(std::sqrt(input.swing_progress) * kPi * 2.0f) * 0.2f
         : 0.0f;
 
     // Issue #64/#65 state precedence: sleeping > riptide > gliding > normal.

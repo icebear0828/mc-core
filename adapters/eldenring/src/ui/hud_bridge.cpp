@@ -115,6 +115,7 @@ void PopulateSteveStateFromContext(erov::SteveState& steve, const RuntimeContext
     steve.cooldown = ctx.combat().melee.cooldown();
     steve.eating = dead ? 0.f : ctx.player().eating.getProgress();
     steve.swing = dead ? 0.f : ctx.combat().melee.swingProgress();
+    steve.swing_offhand = ctx.combat().melee.swingHand() == mc::Hand::Off;
     steve.hurt = ctx.combat().feedback.hurt();
 
     steve.bow_charge = dead ? 0.f : ctx.mode().bow_power.load(std::memory_order_relaxed);

@@ -167,7 +167,7 @@ bool TryUseSpawnEgg(mc::Hand hand) {
     if (!QueueSummon("spawn egg", mob_str.c_str())) return true; // refused (too soon): the click is still the egg's
     std::lock_guard<std::mutex> g(g_melee_mutex);
     ConsumeFromHand(hand, stack.item, stack.slot);
-    g_melee.startSwing();
+    g_melee.startSwing(hand);
     return true;
 }
 
@@ -212,7 +212,7 @@ bool TryIgniteTnt(mc::Hand hand) {
     Log("tnt: ignited TNT at (%d %d %d)", t.cell.x, t.cell.y, t.cell.z);
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
-        g_melee.startSwing();
+        g_melee.startSwing(hand);
     }
     return true;
 }
@@ -262,7 +262,7 @@ bool TryIgniteCreeper(mc::Hand hand) {
                 eraudio::Play("entity.tnt.primed", 1.0f);
                 Log("creeper: manually ignited creeper %p with flint and steel!", reinterpret_cast<void*>(s.id));
                 std::lock_guard<std::mutex> g(g_melee_mutex);
-                g_melee.startSwing();
+                g_melee.startSwing(hand);
                 return true;
             }
         }
@@ -307,7 +307,7 @@ bool TryPlaceBlock(mc::Hand hand) {
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);
         ConsumeFromHand(hand, stack.item, stack.slot);
-        g_melee.startSwing();
+        g_melee.startSwing(hand);
     }
     SendBlockMesh();
     eraudio::Play(BlockSound(id), 0.8f);

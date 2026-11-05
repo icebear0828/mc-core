@@ -77,6 +77,7 @@ struct SteveState {
     float feet[3]{};
     float yaw{0.f};
     float swing{0.f}; // arm swing progress 0..1 (0 = idle)
+    bool swing_offhand{false}; // the arm that swings is the left one (an offhand item use)
     bool dead{false}; // the player's HP is 0: the figure falls over (Minecraft death flip)
     float hurt{0.f};  // 1 just hurt .. 0: the figure flashes red
     bool first_person{false};   // draw the view model (bare arm or held item) instead of the figure
