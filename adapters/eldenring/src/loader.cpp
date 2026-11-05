@@ -35,14 +35,19 @@ namespace {
 
 // The adapter's configuration, resolved into the runtime's portable shape.
 mc::host::HostConfig LoadHostConfig() {
+    // InitLogOnce resolves g_game_dir from the module path. Without it the
+    // install root is still empty here, the runtime would own an empty game_dir
+    // and EnsureLoaded() would read mc_er.ini relative to the process CWD.
+    // It is idempotent, so the runtime and LoaderThread may call it again.
+    eldenring::loader_detail::InitLogOnce();
     mc::host::HostConfig config;
     config.game_dir = eldenring::loader_detail::g_game_dir;
     eldenring::AdapterConfig& adapter = eldenring::AdapterConfig::Instance();
     adapter.EnsureLoaded(config.game_dir);
     config.enable_overlay = adapter.FeatureEnabled(eldenring::ConfigFeature::Overlay);
     config.enable_input = adapter.FeatureEnabled(eldenring::ConfigFeature::Input);
-    config.enable_damage = adapter.FeatureEnabled(eldenring::ConfigFeature::Damage);
-    config.enable_bullet_fire = adapter.FeatureEnabled(eldenring::ConfigFeature::BulletFire);
+    // Damage and bullet-fire are Elden Ring gameplay switches; the adapter reads
+    // them from AdapterConfig where it needs them, not through the host seam.
     return config;
 }
 
@@ -64,6 +69,11 @@ constinit const mc::host::Dinput8Runtime::Bindings kBindings{
 };
 
 // The adapter's worker body, wrapped so the shared runtime owns its lifetime.
+//
+// The runtime starts MinHook only when it installs hooks itself (install_present
+// /install_input are unbound here), so the Elden Ring detours keep initialising
+// it from SetupOverlay()/SetupInput() after LoaderThread's EAC/steam_appid
+// environment gate - the same ordering as before the runtime was extracted.
 DWORD WINAPI LoaderEntry(LPVOID param) {
     mc::host::Dinput8Runtime runtime(kBindings);
     runtime.initialize(LoadHostConfig());

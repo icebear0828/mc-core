@@ -9,7 +9,9 @@
 // REFramework headers or SDK:
 //
 //   * no REFramework SDK header is included anywhere in this file
-//   * the RE4 integration is compiled in only when MC_ENABLE_RE4=1 (default OFF)
+//   * the RE4 integration is compiled in only when MC_ENABLE_RE4=1 (default OFF);
+//     without the option the runtime compiles to a stub whose initialize()
+//     refuses, so nothing silently pretends to be a working host
 //   * initialize() refuses to run without an injected IReframeworkHostApi
 //
 // The concrete vtable is supplied by the RE4 adapter's REFramework glue once the

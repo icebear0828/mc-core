@@ -20,8 +20,6 @@ std::string DescribeConfig(const HostConfig& config) {
     line += config.enable_overlay ? "on" : "off";
     line += ", input=";
     line += config.enable_input ? "on" : "off";
-    line += ", damage=";
-    line += config.enable_damage ? "on" : "off";
     line += ")";
     return line;
 }
@@ -43,10 +41,6 @@ bool Dinput8Runtime::initialize(const HostConfig& config) {
     if (initialized_) return true;
     config_ = config;
     if (bindings_.init_log != nullptr) bindings_.init_log();
-    if (config_.enable_input && bindings_.ensure_minhook != nullptr) {
-        minhook_owned_ = bindings_.ensure_minhook();
-        if (!minhook_owned_) log("dinput8: MinHook initialization failed");
-    }
     initialized_ = true;
     log(DescribeConfig(config_));
     return true;
@@ -69,15 +63,29 @@ void Dinput8Runtime::setFrameCallback(std::function<void(float)> callback) {
     frame_ = std::move(callback);
 }
 
+bool Dinput8Runtime::ensureHookEngine() {
+    if (minhook_owned_) return true;
+    // No binding means the adapter owns the engine itself.
+    if (bindings_.ensure_minhook == nullptr) return true;
+    minhook_owned_ = bindings_.ensure_minhook();
+    if (!minhook_owned_) log("dinput8: MinHook initialization failed");
+    return minhook_owned_;
+}
+
 bool Dinput8Runtime::installPresentHooks(const PresentCallbacks& callbacks) {
     if (callbacks.empty()) {
         present_ = {};
         return true;
     }
+    if (!config_.enable_overlay) {
+        log("dinput8: present hooks are disabled by the config");
+        return false;
+    }
     if (bindings_.install_present == nullptr) {
         log("dinput8: no present-hook installer is bound");
         return false;
     }
+    if (!ensureHookEngine()) return false;
     if (!bindings_.install_present(callbacks)) return false;
     present_ = callbacks;
     return true;
@@ -88,10 +96,15 @@ bool Dinput8Runtime::installInputHooks(const InputCallbacks& callbacks) {
         input_ = {};
         return true;
     }
+    if (!config_.enable_input) {
+        log("dinput8: input hooks are disabled by the config");
+        return false;
+    }
     if (bindings_.install_input == nullptr) {
         log("dinput8: no input-hook installer is bound");
         return false;
     }
+    if (!ensureHookEngine()) return false;
     if (!bindings_.install_input(callbacks)) return false;
     input_ = callbacks;
     return true;

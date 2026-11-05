@@ -96,6 +96,21 @@ def test_plugin_entry_template_leaves_entry_boilerplate_to_the_host_runtime():
     assert (REPO_ROOT / "include" / "mc" / "contracts" / "host_runtime.hpp").exists()
 
 
+def test_eldenring_loader_resolves_the_install_root_before_loading_the_host_config():
+    """Issue #177: HostConfig::game_dir is filled from g_game_dir.
+
+    diagnostics::InitLogOnce() is the only writer of g_game_dir. LoadHostConfig()
+    must therefore bootstrap the log before it reads the install root, otherwise
+    the runtime owns an empty game_dir for its whole lifetime and AdapterConfig
+    is first loaded from CWD-relative paths.
+    """
+    loader = (REPO_ROOT / "adapters" / "eldenring" / "src" / "loader.cpp").read_text(encoding="utf-8")
+    start = loader.index("mc::host::HostConfig LoadHostConfig()")
+    body = loader[start : loader.index("\n}\n", start)]
+    assert "InitLogOnce()" in body, "LoadHostConfig() must bootstrap the log before reading g_game_dir"
+    assert body.index("InitLogOnce()") < body.index("config.game_dir"), "the install root is empty until InitLogOnce() runs"
+
+
 def test_adapter_templates_implement_the_current_contract():
     header = (SKILL_ASSETS / "adapter-header.template.hpp").read_text(encoding="utf-8")
     source = (SKILL_ASSETS / "adapter-source.template.cpp").read_text(encoding="utf-8")

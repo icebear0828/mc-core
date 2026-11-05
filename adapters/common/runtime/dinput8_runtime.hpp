@@ -3,11 +3,16 @@
 // dinput8.dll proxy host runtime (issue #177, P5).
 //
 // The runtime owns the parts every dinput8 loader repeats: the DllMain body
-// (DisableThreadLibraryCalls + CreateThread), the MinHook lifetime, the config
-// and log bootstrap, and the present/input hook registration. The game-specific
-// pieces are injected as Bindings, so this file knows nothing about Elden Ring:
-// the adapter keeps LoaderThread and its detours, the runtime keeps the entry
-// point.
+// (DisableThreadLibraryCalls + CreateThread), the config and log bootstrap, the
+// present/input hook registration and the hook engine they need. The
+// game-specific pieces are injected as Bindings, so this file knows nothing
+// about Elden Ring: the adapter keeps LoaderThread and its detours, the runtime
+// keeps the entry point.
+//
+// The hook engine is started lazily, on the first non-empty install*Hooks()
+// call, and released by shutdown(). An adapter that installs its own detours
+// (the Elden Ring loader does, after its environment gate) never triggers it,
+// so the runtime cannot bring MinHook up ahead of the adapter's checks.
 
 #include <functional>
 #include <string>
@@ -29,6 +34,8 @@ class Dinput8Runtime final : public IHostRuntime {
 public:
     // The adapter's entry points. Every field is optional; a missing installer
     // makes the matching install*Hooks() call report failure instead of lying.
+    // ensure_minhook/release_minhook are the adapter's hook engine: the runtime
+    // starts it when it installs hooks itself and releases it on shutdown.
     struct Bindings {
         DWORD(WINAPI* loader_thread)(LPVOID) = nullptr;
         bool (*ensure_minhook)() = nullptr;
@@ -58,6 +65,10 @@ public:
     [[nodiscard]] const HostRuntimeInfo& info() const override { return info_; }
 
 private:
+    // Starts the adapter's hook engine once, on demand. Returns true when the
+    // engine is ready (or when the adapter binds none and owns it itself).
+    bool ensureHookEngine();
+
     Bindings bindings_;
     HostConfig config_;
     HostRuntimeInfo info_{"dinput8", "1", false, true};

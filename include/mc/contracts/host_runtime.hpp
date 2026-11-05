@@ -15,8 +15,13 @@
 //
 // Lifecycle contract:
 //   initialize()  -> setFrameCallback() -> install*Hooks() -> shutdown()
+// initialize() brings up configuration and logging only. A host starts its hook
+// engine when the first non-empty install*Hooks() call arrives, so an adapter
+// that installs its own detours keeps full control of the ordering (for example
+// running its environment checks before MinHook is initialized).
 // installPresentHooks()/installInputHooks() with an empty callback set removes
-// the hooks installed earlier, and shutdown() removes anything still installed.
+// the hooks installed earlier and succeeds even on a host that cannot install
+// detours, and shutdown() removes anything still installed.
 
 #include <functional>
 #include <string>
@@ -26,12 +31,18 @@ namespace mc::host {
 
 // Everything a host needs before the first frame. The adapter fills this from
 // its own configuration (mc_er.ini for Elden Ring, REFramework settings for RE4).
+// Game-specific switches (damage, bullets, ...) stay in the adapter's own config;
+// this struct carries only what every host understands.
 struct HostConfig {
-    std::string game_dir; // install root, with a trailing separator
+    // Install root, with a trailing separator. The adapter must resolve it before
+    // calling initialize(): a loader that derives it from its own log bootstrap
+    // has to run that bootstrap first, or the host owns an empty root and reads
+    // its configuration from the process CWD instead.
+    std::string game_dir;
+    // The adapter wants the host to install present/resize hooks.
     bool enable_overlay{false};
+    // The adapter wants the host to install input hooks.
     bool enable_input{false};
-    bool enable_damage{false};
-    bool enable_bullet_fire{false};
 };
 
 struct HostRuntimeInfo {
