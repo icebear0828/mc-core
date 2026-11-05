@@ -87,12 +87,14 @@ void HotkeyDispatcher::tick(float dt) {
             player.hunger_heal_carry -= static_cast<float>(whole);
             heal += whole;
             const mc::ItemId meal = player.eating.getCurrentItem();
+            const bool prefer_offhand = mode.eating_offhand.load(std::memory_order_relaxed);
             const bool main_has_meal = player.eating.isEating() && combat.melee.heldItem() == meal &&
                                        combat.melee.countAt(combat.melee.selectedSlot()) > 0;
             const bool off_has_meal = player.eating.isEating() && combat.melee.offhandItem() == meal &&
                                       combat.melee.offhandCount() > 0;
             if (player.eating.isEating() && !main_has_meal && !off_has_meal) {
                 player.eating.cancel();
+                mode.eating_offhand.store(false, std::memory_order_relaxed);
             }
             const mc::EatingEvent e = player.eating.update(dt);
             if (e.chew_sound && cb_.play_sound) cb_.play_sound("entity.generic.eat", 0.8f);
@@ -101,9 +103,12 @@ void HotkeyDispatcher::tick(float dt) {
                 player.survival.apply(e.effects);
                 player.hunger.eat(meal);
                 if (creative::consumesItems(runtime.currentGameMode())) {
-                    if (main_has_meal) combat.melee.consumeAt(combat.melee.selectedSlot());
+                    // Consume the hand the interaction handler actually started the meal with.
+                    if (prefer_offhand && off_has_meal) combat.melee.inventory().consumeOffhand();
+                    else if (main_has_meal) combat.melee.consumeAt(combat.melee.selectedSlot());
                     else if (off_has_meal) combat.melee.inventory().consumeOffhand();
                 }
+                mode.eating_offhand.store(false, std::memory_order_relaxed);
             }
         }
         if (heal > 0) mode.heal_pending.fetch_add(heal);
@@ -219,11 +224,10 @@ void HotkeyDispatcher::tick(float dt) {
 #if ENABLE_CS2_VIEWMODEL
     if (!right_consumed) right_consumed = cs_.tickRightClick(ctx);
 #endif
-    if (!right_consumed) mc_.tickRightClick(ctx);
-
-    mc_.tickBow(ctx);
-    mc_.tickTrident(ctx);
-    mc_.tickShield(ctx);
+    // The MC handler runs every frame so its bow/shield/trident controllers can cancel and lower
+    // even when another mode owns the click; only the click edge is withheld then.
+    if (right_consumed) ctx.right_edge = false;
+    mc_.tickUse(ctx);
     mc_.tickWheel(ctx);
 
     cs_.tickActionTimer(ctx);

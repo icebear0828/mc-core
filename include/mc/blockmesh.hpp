@@ -304,10 +304,11 @@ inline mc::rig::RigMesh buildCubeMesh(mc::BlockId id) {
 }
 
 // The same block held in the right hand in third person (see mc::rig::buildHeldBlockMesh).
-inline mc::rig::RigMesh buildHeldCubeMesh(mc::BlockId id, const mc::rig::HostBasis& basis) {
+inline mc::rig::RigMesh buildHeldCubeMesh(mc::BlockId id, const mc::rig::HostBasis& basis,
+                                          mc::rig::Hand hand = mc::rig::Hand::Right) {
     const float inset = 0.25f / static_cast<float>(mc::hud::kHudAtlasWidth);
     auto rect = [&](const mc::hud::HudUV& uv) { return mc::rig::UvRect{uv.u0 + inset, uv.v0 + inset, uv.u1 - inset, uv.v1 - inset}; };
-    return mc::rig::buildHeldBlockMesh(rect(faceUV(id, 0)), rect(faceUV(id, 1)), rect(faceUV(id, 2)), basis, mc::blockBox(id));
+    return mc::rig::buildHeldBlockMesh(rect(faceUV(id, 0)), rect(faceUV(id, 1)), rect(faceUV(id, 2)), basis, mc::blockBox(id), hand);
 }
 
 } // namespace mc

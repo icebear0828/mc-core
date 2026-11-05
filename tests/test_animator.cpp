@@ -328,6 +328,28 @@ TEST(SteveAnimatorTest, SwordSwingPosesFollowsAuthenticArcAndHeadPitch) {
     EXPECT_GT(std::fabs(pitch_down - pitch_up), 0.15f) << "Significant vertical swing angle difference";
 }
 
+TEST(SteveAnimatorTest, TheOffhandSwingMovesTheLeftArmAndMirrorsTheBodyTwist) {
+    const size_t ra = static_cast<size_t>(mc::StevePart::RightArm);
+    const size_t la = static_cast<size_t>(mc::StevePart::LeftArm);
+    const size_t body = static_cast<size_t>(mc::StevePart::Body);
+
+    mc::SteveAnimator main_anim, off_anim;
+    mc::SteveAnimInput main_in{}, off_in{};
+    main_in.swing_progress = 0.5f;
+    off_in.swing_progress = 0.5f;
+    off_in.swing_hand = mc::Hand::Off;
+    main_anim.update(0.05f, main_in);
+    off_anim.update(0.05f, off_in);
+
+    const auto& mt = main_anim.getTransforms();
+    const auto& ot = off_anim.getTransforms();
+    // The swinging arm carries the arc; the other one only follows the torso.
+    EXPECT_LT(mt[ra].rot.y, mt[la].rot.y) << "a main-hand swing lowers the right arm";
+    EXPECT_LT(ot[la].rot.y, ot[ra].rot.y) << "an offhand swing lowers the left arm";
+    // The torso twists towards the arm that swings.
+    EXPECT_LT(mt[body].rot.z * ot[body].rot.z, 0.f) << "the offhand swing mirrors the torso twist";
+}
+
 TEST(SteveAnimatorTest, SneakCrouchingPosesTorsoAndArmsAuthentically) {
     const size_t body = static_cast<size_t>(mc::StevePart::Body);
     const size_t jacket = static_cast<size_t>(mc::StevePart::Jacket);

@@ -96,6 +96,21 @@ inline M4 itemPose(float swing, float equipped) {
     return p;
 }
 
+// The same swing for the left arm (ItemInHandRenderer, l = -1): the x translation and the y/z
+// rotations are mirrored, the x rotation is not.
+inline M4 itemPoseLeft(float swing, float equipped) {
+    const float sq = std::sqrt(swing);
+    M4 p = translate(0.4f * std::sin(sq * kPi), 0.2f * std::sin(sq * 2.f * kPi), -0.2f * std::sin(swing * kPi));
+    p = mul(p, translate(-0.56f, -0.52f + equipped * -0.6f, -0.72f));
+    const float f = std::sin(swing * swing * kPi);
+    const float f1 = std::sin(sq * kPi);
+    p = mul(p, rotY(-45.f + f * 20.f));
+    p = mul(p, rotZ(f1 * 20.f));
+    p = mul(p, rotX(f1 * -80.f));
+    p = mul(p, rotY(45.f));
+    return p;
+}
+
 // Eating: the item rises towards the mouth as the meal is finished (applyEatTransform + applyItemArmTransform).
 // `eaten` 0..1 is the progress of the meal, `use_ticks` its length in ticks (32).
 inline M4 eatPose(float eaten, float equipped, float use_ticks = 32.f) {
@@ -351,7 +366,10 @@ inline HandView handView(const mc::HandItem& item, bool main_hand, float swing, 
             view.pose = main_hand ? eatPose(item.progress, equipped) : eatPoseLeft(item.progress, equipped);
             break;
         default:
-            view.pose = main_hand ? itemPose(swing, equipped) : offhandItemPose(equipped);
+            // Only the hand that owns the swing follows it; the other one stays at rest.
+            if (main_hand) view.pose = itemPose(item.use == mc::HandUse::Swing ? swing : 0.f, equipped);
+            else if (item.use == mc::HandUse::Swing) view.pose = itemPoseLeft(swing, equipped);
+            else view.pose = offhandItemPose(equipped);
             break;
     }
     switch (item.model) {

@@ -229,7 +229,7 @@ RigMesh buildHeldItemMesh(const ItemSprite& s, HeldItemStyle style, const HostBa
     return mesh;
 }
 
-RigMesh buildHeldBlockMesh(const UvRect& top, const UvRect& side, const UvRect& bottom, const HostBasis& basis, const BlockBox& box) {
+RigMesh buildHeldBlockMesh(const UvRect& top, const UvRect& side, const UvRect& bottom, const HostBasis& basis, const BlockBox& box, Hand hand) {
     RigMesh mesh;
     const Display display{{75, 45, 0}, {0, 2.5f, 0}, 0.375f};
     // The item display transform expects the cell centre (8,8,8 in model pixels) at the origin; a partial shape keeps its
@@ -255,7 +255,7 @@ RigMesh buildHeldBlockMesh(const UvRect& top, const UvRect& side, const UvRect& 
         for (int k = 0; k < 4; ++k) {
             // sprite space is 16 pixels per block, centred on the shape's own box
             const Vec3 model = spriteToModel(Vec3{(f.c[k][0] - cx) * 16.f, (f.c[k][1] - cy) * 16.f, (f.c[k][2] - cz) * 16.f}, display,
-                                             HeldItemStyle::Handheld, Hand::Right);
+                                             HeldItemStyle::Handheld, hand);
             const Vec3 host = basis.fromCanonical(Vec3{-model.z * kCmPerModelPixel, model.x * kCmPerModelPixel, (24.0f - model.y) * kCmPerModelPixel});
             mesh.vertices.push_back({host.x, host.y, host.z, us[k], vs[k]});
         }

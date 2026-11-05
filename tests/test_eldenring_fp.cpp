@@ -47,6 +47,21 @@ TEST(EldenRingFp, SwingSweepsTheItemAcrossTheView) {
     EXPECT_NEAR(end.z, -0.72f, 1e-3f);
 }
 
+TEST(EldenRingFp, TheLeftSwingMirrorsTheRightSwing) {
+    const mc::Vec3 right = apply(itemPose(0.5f, 0.f), origin());
+    const mc::Vec3 left = apply(itemPoseLeft(0.5f, 0.f), origin());
+    EXPECT_NEAR(left.x, -right.x, 1e-4f);
+    EXPECT_NEAR(left.y, right.y, 1e-4f);
+    EXPECT_NEAR(left.z, right.z, 1e-4f);
+}
+
+TEST(EldenRingFp, TheLeftSwingSweepsTheItemAcrossTheView) {
+    const mc::Vec3 mid = apply(itemPoseLeft(0.5f, 0.f), origin());
+    EXPECT_GT(mid.x, -0.56f + 0.2f); // moves towards the middle of the screen from the left
+    EXPECT_LT(mid.y, -0.52f);        // and dips, like the right-hand swing
+    EXPECT_LT(mid.z, -0.72f);        // and away
+}
+
 TEST(EldenRingFp, TheBareArmEndsUpLowerRightInFront) {
     // The arm model's pivot (-5, 2, 0) / 16 and the middle of the cube below it (-1, 4, 0) / 16 more, in the model's y-down space.
     const mc::Vec3 shoulder = apply(bareArmPose(0.f, 0.f), mc::Vec3{-5.f / 16.f, 2.f / 16.f, 0.f});

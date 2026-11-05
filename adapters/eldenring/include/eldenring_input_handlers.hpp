@@ -12,6 +12,13 @@
 #include "eldenring_audio_data.hpp"
 #include "eldenring_bow.hpp"
 #include "eldenring_shield.hpp"
+#include "mc/item_use.hpp"
+
+namespace eldenring {
+struct ModeConfig;
+struct PlayerSystems;
+struct CombatSystems;
+} // namespace eldenring
 
 namespace eldenring::input {
 
@@ -107,19 +114,33 @@ class McInteractionHandler final : public IInputHandler {
 public:
     void reset() override;
 
-    void tickRightClick(const InputTickContext& ctx);
-    void tickBow(const InputTickContext& ctx);
-    void tickTrident(const InputTickContext& ctx);
-    void tickShield(const InputTickContext& ctx);
+    // The one right-click entry point: resolve the hand from the item-use table, start the use,
+    // tick its hold state and let the offhand act when the main hand's use cannot consume the
+    // click. Replaces the old per-item if-chain and the separate bow/trident/shield ticks.
+    void tickUse(const InputTickContext& ctx);
     void tickWheel(const InputTickContext& ctx);
     void tickGameplayKeys(const InputTickContext& ctx);
     void tickMelee(const InputTickContext& ctx);
 
 private:
+    // The use that owns the current right-button press.
+    struct ActiveUse {
+        mc::Hand hand{mc::Hand::Main};
+        mc::ItemId item{mc::ItemId::None}; // the exact stack the use started with; a switch ends it
+        mc::UseKind kind{mc::UseKind::None};
+        float repeat_sec{0.f}; // hold-to-place cadence
+    };
+
+    void startUse(const mc::UseResolution& resolution, const InputTickContext& ctx);
+    bool useInstant(const ActiveUse& use, const InputTickContext& ctx);
+    bool useStillValid(const ActiveUse& use, mc::ItemId main, mc::ItemId off, bool has_arrow) const;
+    void tickBowControl(const InputTickContext& ctx, bool active, bool right_down, ModeConfig& mode, CombatSystems& combat);
+    void tickShieldControl(const InputTickContext& ctx, bool active, bool right_down, ModeConfig& mode, PlayerSystems& player, CombatSystems& combat);
+    void tickTridentControl(const InputTickContext& ctx, bool active, bool right_down, ModeConfig& mode);
+
     bool prev_gameplay_f_{false};
     bool prev_digit_[9]{};
-    float place_repeat_sec_{0.f}; // hold-to-place cadence, reset on the click edge
-    bool place_repeat_armed_{false}; // only a fresh right-click edge starts the cadence
+    std::optional<ActiveUse> use_;
     bow::BowController bow_;
     shield::ShieldController shield_;
     float trident_charge_ticks_{0.f};

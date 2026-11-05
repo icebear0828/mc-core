@@ -115,12 +115,14 @@ void PopulateSteveStateFromContext(erov::SteveState& steve, const RuntimeContext
     steve.cooldown = ctx.combat().melee.cooldown();
     steve.eating = dead ? 0.f : ctx.player().eating.getProgress();
     steve.swing = dead ? 0.f : ctx.combat().melee.swingProgress();
+    steve.swing_offhand = ctx.combat().melee.swingHand() == mc::Hand::Off;
     steve.hurt = ctx.combat().feedback.hurt();
 
     steve.bow_charge = dead ? 0.f : ctx.mode().bow_power.load(std::memory_order_relaxed);
     steve.bow_ticks = dead ? 0.f : ctx.mode().bow_ticks.load(std::memory_order_relaxed);
     steve.bow_offhand = ctx.mode().bow_offhand.load(std::memory_order_relaxed);
     steve.block_offhand = ctx.mode().shield_offhand.load(std::memory_order_relaxed);
+    steve.eating_offhand = ctx.mode().eating_offhand.load(std::memory_order_relaxed);
 
     const auto& loco = eldenring::movement::PlayerLocomotion::Instance();
     steve.pearl_active = loco.pearlRenderPos(steve.pearl_pos);

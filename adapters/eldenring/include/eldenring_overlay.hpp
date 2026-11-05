@@ -77,6 +77,7 @@ struct SteveState {
     float feet[3]{};
     float yaw{0.f};
     float swing{0.f}; // arm swing progress 0..1 (0 = idle)
+    bool swing_offhand{false}; // the arm that swings is the left one (an offhand item use)
     bool dead{false}; // the player's HP is 0: the figure falls over (Minecraft death flip)
     float hurt{0.f};  // 1 just hurt .. 0: the figure flashes red
     bool first_person{false};   // draw the view model (bare arm or held item) instead of the figure
@@ -89,6 +90,7 @@ struct SteveState {
     float bow_charge{0.f};      // 0..1 how far the bow is drawn (0 = not drawing): the third-person arms aim
     bool block_offhand{false};  // the raised shield is held in the left hand: only the left arm is up
     bool bow_offhand{false};    // the bow that is drawn is in the offhand: the left arm aims and the offhand item is the drawn bow
+    bool eating_offhand{false}; // the meal being eaten is in the offhand: the left hand holds it to the mouth
     float bow_ticks{0.f};       // ticks the bow has been drawn (0 = not drawing): the first-person bow pose animates with it
     bool sneaking{false};       // sneaking/crouching: torso forward lean and lower stance
     bool sprinting{false};      // sprinting: forward lean and enlarged stride dynamics

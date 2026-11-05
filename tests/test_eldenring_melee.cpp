@@ -48,6 +48,15 @@ TEST(EldenRingMelee, SwingStartsAnimationAndResetsCooldown) {
     EXPECT_FLOAT_EQ(m.swingProgress(), 0.f);
 }
 
+TEST(EldenRingMelee, StartSwingRecordsTheArmThatUsedTheItem) {
+    MeleeController m;
+    EXPECT_EQ(m.swingHand(), mc::Hand::Main);
+    m.startSwing(mc::Hand::Off);
+    EXPECT_EQ(m.swingHand(), mc::Hand::Off);
+    m.startSwing();
+    EXPECT_EQ(m.swingHand(), mc::Hand::Main);
+}
+
 TEST(EldenRingMelee, CooldownRechargesToOne) {
     MeleeController m;
     m.startSwing();

@@ -7,6 +7,7 @@
 #include "eldenring_shield.hpp"
 #include "input_keys.hpp"
 
+#include <algorithm>
 #include <mutex>
 #include <string>
 
@@ -15,146 +16,235 @@ namespace eldenring::input {
 namespace {
 // Minecraft repeats a held right-click placement every 4 ticks (0.2 s).
 constexpr float kPlaceRepeatSec = 0.2f;
+
+bool rightButtonDown(const InputTickContext& ctx) {
+    return (ctx.cb->right_held && ctx.cb->right_held()) || queryKeyDown(*ctx.cb, VK_RBUTTON);
+}
 } // namespace
 
 void McInteractionHandler::reset() {
     prev_gameplay_f_ = false;
     for (bool& key : prev_digit_) key = false;
-    place_repeat_sec_ = 0.f;
-    place_repeat_armed_ = false;
+    use_.reset();
+    trident_charge_ticks_ = 0.f;
+    trident_charging_ = false;
+    bow_.update(0.f, false, false);    // cancel a draw
+    shield_.update(0.f, false, false); // lower the shield
+    auto& mode = RuntimeContext::Instance().mode();
+    mode.bow_power.store(0.f, std::memory_order_relaxed);
+    mode.bow_ticks.store(0.f, std::memory_order_relaxed);
+    mode.trident_charge.store(0.f, std::memory_order_relaxed);
+    mode.shield_blocking.store(false, std::memory_order_relaxed);
+    mode.eating_offhand.store(false, std::memory_order_relaxed);
 }
 
-void McInteractionHandler::tickRightClick(const InputTickContext& ctx) {
-    const bool active = ctx.fg && ctx.want_suppress && !ctx.is_dead && !ctx.inv_open && ctx.input_enabled;
-    if (!active) {
-        place_repeat_sec_ = 0.f;
-        place_repeat_armed_ = false;
-        return;
-    }
-
-    if (!ctx.right_edge) {
-        // Hold-to-place: after the edge click, keep placing one block at a time while the
-        // button stays down. Non-block items make the callback fail, which stops the cadence.
-        const bool right_held = ctx.cb->right_held && ctx.cb->right_held();
-        if (right_held && place_repeat_armed_ && ctx.cb->try_place_block) {
-            place_repeat_sec_ += ctx.dt;
-            if (place_repeat_sec_ >= kPlaceRepeatSec) {
-                place_repeat_sec_ -= kPlaceRepeatSec;
-                if (!ctx.cb->try_place_block()) place_repeat_sec_ = 0.f;
-            }
-        } else {
-            place_repeat_sec_ = 0.f;
-            if (!right_held) place_repeat_armed_ = false;
-        }
-        return;
-    }
-
-    place_repeat_sec_ = 0.f;
-    place_repeat_armed_ = true;
+// One entry point for every right-click item. The item-use table says what each item does; the
+// resolver says which hand can consume this click (main first, offhand only when the main hand's
+// use cannot start); the controllers below implement the four hold kinds. Adding a new
+// right-click item is one row in mc::useSpec, not another branch here.
+void McInteractionHandler::tickUse(const InputTickContext& ctx) {
     auto& runtime = RuntimeContext::Instance();
+    auto& mode = runtime.mode();
     auto& player = runtime.player();
     auto& combat = runtime.combat();
 
-    bool handled = false;
-    if (ctx.cb->try_ignite_tnt && ctx.cb->try_ignite_tnt()) handled = true;
-    else if (ctx.cb->try_ignite_creeper && ctx.cb->try_ignite_creeper()) handled = true;
-    else if (ctx.cb->try_place_block && ctx.cb->try_place_block()) handled = true;
-    else if (ctx.mc_on && ctx.cb->try_use_spawn_egg && ctx.cb->try_use_spawn_egg()) handled = true;
-    else if (ctx.mc_on && ctx.cb->use_elytra_firework && ctx.cb->use_elytra_firework()) handled = true;
-    else if (ctx.mc_on && ctx.cb->throw_ender_pearl && ctx.cb->throw_ender_pearl()) handled = true;
-    else {
+    const bool active = ctx.fg && ctx.want_suppress && !ctx.is_dead && !ctx.inv_open && ctx.input_enabled && ctx.mc_on;
+    const bool right_down = active && rightButtonDown(ctx);
+
+    // One inventory snapshot for both hands and the arrow check.
+    mc::ItemId main_item = mc::ItemId::None;
+    mc::ItemId off_item = mc::ItemId::None;
+    unsigned main_count = 0;
+    unsigned off_count = 0;
+    bool has_arrow = false;
+    {
         std::lock_guard<std::mutex> g(combat.melee_mutex);
-        const mc::ItemId main_item = combat.melee.heldItem();
-        const unsigned main_count = combat.melee.countAt(combat.melee.selectedSlot());
-        const mc::ItemId off_item = combat.melee.offhandItem();
-        const unsigned off_count = combat.melee.offhandCount();
-        if (main_item == mc::ItemId::Trident) return; // charged in tickTrident; never eaten
-        if (player.eating.isEating()) return;
-        // The one priority rule: the main hand first, the offhand only when the main hand has no
-        // right-click action of its own. It also covers offhand food.
-        mc::HandItemInput hi;
-        hi.main_item = main_count > 0 ? main_item : mc::ItemId::None;
-        hi.off_item = off_count > 0 ? off_item : mc::ItemId::None;
-        hi.eating = true;
-        const mc::HandItem* meal = mc::planHandItems(hi).findUse(mc::HandUse::Eat);
-        if (meal != nullptr) {
-            const unsigned count = meal->hand == mc::Hand::Main ? main_count : off_count;
-            if (count > 0 && player.hunger.canEat(meal->item) && player.eating.startEating(meal->item)) {
-                if (ctx.cb->log) ctx.cb->log("SURVIVAL: started eating item " + std::to_string(static_cast<int>(meal->item)));
+        main_item = combat.melee.heldItem();
+        main_count = combat.melee.countAt(combat.melee.selectedSlot());
+        off_item = combat.melee.offhandItem();
+        off_count = combat.melee.offhandCount();
+        has_arrow = combat.melee.has(mc::ItemId::Arrow);
+    }
+    const mc::ItemId main = main_count > 0 ? main_item : mc::ItemId::None;
+    const mc::ItemId off = off_count > 0 ? off_item : mc::ItemId::None;
+
+    // A use that lost its item or its condition ends now. The check is cheap on purpose: the
+    // availability probe (a raycast for placement, a creeper scan for ignition) only runs on the
+    // click edge.
+    if (use_ && !useStillValid(*use_, main, off, has_arrow)) {
+        if (use_->kind == mc::UseKind::Eat) mode.eating_offhand.store(false, std::memory_order_relaxed);
+        use_.reset();
+    }
+
+    // A fresh click starts the first hand that can consume it.
+    bool started_this_tick = false;
+    if (active && !use_ && ctx.right_edge) {
+        auto availabilityFor = [&](mc::Hand hand, mc::ItemId item) {
+            mc::UseAvailability available;
+            if (item == mc::ItemId::None) return available;
+            switch (mc::useSpec(item).kind) {
+                case mc::UseKind::Place:
+                    available.place = ctx.cb->can_place_block && ctx.cb->can_place_block(hand);
+                    break;
+                case mc::UseKind::Ignite:
+                    available.ignite = ctx.cb->can_ignite && ctx.cb->can_ignite(hand);
+                    break;
+                case mc::UseKind::SpawnEgg: available.spawn_egg = true; break;
+                case mc::UseKind::Eat: available.eat = player.hunger.canEat(item); break;
+                case mc::UseKind::Bow:
+                    available.bow = !creative::consumesItems(runtime.currentGameMode()) || has_arrow;
+                    break;
+                case mc::UseKind::Shield: available.shield = true; break;
+                case mc::UseKind::Trident:
+                    available.trident = mode.riptide_level.load(std::memory_order_relaxed) > 0;
+                    break;
+                case mc::UseKind::ThrowPearl: available.throw_pearl = true; break;
+                case mc::UseKind::Firework:
+                    available.firework = mode.elytra_gliding.load(std::memory_order_relaxed);
+                    break;
+                default: break;
             }
+            return available;
+        };
+        mc::UseAvailability main_available = availabilityFor(mc::Hand::Main, main);
+        const mc::UseAvailability off_available = availabilityFor(mc::Hand::Off, off);
+        // The F swap leaves the default shield in the main hand, and a main-hand shield would
+        // otherwise swallow the click: an offhand block could never be placed. When the offhand
+        // block has a valid target the placement wins; aiming at the sky still raises the shield.
+        if (main == mc::ItemId::Shield && mc::useSpec(off).kind == mc::UseKind::Place && off_available.place) {
+            main_available.shield = false;
+        }
+        const auto resolution = mc::resolveUse(main, off, main_available, off_available);
+        if (resolution.has_value()) {
+            startUse(*resolution, ctx);
+            started_this_tick = true;
         }
     }
-    (void)handled;
+
+    // Presentation follows the hand that actually owns the use, not a category rule.
+    mode.bow_offhand.store(use_ && use_->kind == mc::UseKind::Bow && use_->hand == mc::Hand::Off,
+                           std::memory_order_relaxed);
+    mode.shield_offhand.store(use_ && use_->kind == mc::UseKind::Shield && use_->hand == mc::Hand::Off,
+                              std::memory_order_relaxed);
+    mode.trident_offhand.store(use_ && use_->kind == mc::UseKind::Trident && use_->hand == mc::Hand::Off,
+                               std::memory_order_relaxed);
+
+    // The hold controllers see every frame, including the release frame, so a released bow fires,
+    // a released trident riptides and a released shield lowers. When no use owns the click they
+    // receive active=false and cancel cleanly.
+    tickBowControl(ctx, use_ && use_->kind == mc::UseKind::Bow, right_down, mode, combat);
+    tickShieldControl(ctx, use_ && use_->kind == mc::UseKind::Shield, right_down, mode, player, combat);
+    tickTridentControl(ctx, use_ && use_->kind == mc::UseKind::Trident, right_down, mode);
+
+    if (!use_) return;
+    switch (use_->kind) {
+        case mc::UseKind::Bow:
+        case mc::UseKind::Shield:
+        case mc::UseKind::Trident:
+            if (!right_down) use_.reset();
+            break;
+        case mc::UseKind::Eat:
+            // Vanilla eats while the button is held: releasing cancels the meal without consuming
+            // it. The dispatcher applies the effects when the progress completes.
+            if (!player.eating.isEating()) {
+                mode.eating_offhand.store(false, std::memory_order_relaxed);
+                use_.reset();
+            } else if (!right_down) {
+                player.eating.cancel();
+                mode.eating_offhand.store(false, std::memory_order_relaxed);
+                use_.reset();
+            }
+            break;
+        case mc::UseKind::Place:
+            if (!right_down) {
+                use_.reset();
+            } else if (!started_this_tick) {
+                // The edge tick already placed once; the cadence starts on the next frame.
+                use_->repeat_sec += ctx.dt;
+                if (use_->repeat_sec >= kPlaceRepeatSec) {
+                    use_->repeat_sec = 0.f;
+                    useInstant(*use_, ctx);
+                }
+            }
+            break;
+        default:
+            use_.reset();
+            break;
+    }
 }
 
-void McInteractionHandler::tickTrident(const InputTickContext& ctx) {
+void McInteractionHandler::startUse(const mc::UseResolution& resolution, const InputTickContext& ctx) {
     auto& runtime = RuntimeContext::Instance();
     auto& mode = runtime.mode();
+    auto& player = runtime.player();
     auto& combat = runtime.combat();
 
-    bool holding = false;
-    bool offhand = false;
+    mc::ItemId item = mc::ItemId::None;
     {
         std::lock_guard<std::mutex> g(combat.melee_mutex);
-        const mc::ItemId main_item = combat.melee.heldItem();
-        const unsigned main_count = combat.melee.countAt(combat.melee.selectedSlot());
-        const mc::ItemId off_item = combat.melee.offhandItem();
-        const unsigned off_count = combat.melee.offhandCount();
-        // Like the bow: the offhand trident is used only when the main hand has no right-click action of its own.
-        const auto hand = mc::handForUse(mc::ItemId::Trident, main_count > 0 ? main_item : mc::ItemId::None,
-                                         off_count > 0 ? off_item : mc::ItemId::None);
-        holding = hand.has_value();
-        offhand = hand == mc::Hand::Off;
+        item = resolution.hand == mc::Hand::Main ? combat.melee.heldItem() : combat.melee.offhandItem();
     }
-    mode.trident_offhand.store(offhand, std::memory_order_relaxed);
-    const bool usable = holding && mode.riptide_level.load(std::memory_order_relaxed) > 0 && ctx.mc_on && ctx.fg &&
-                        ctx.want_suppress && !ctx.inv_open && ctx.input_enabled && !ctx.is_dead;
-    const bool right_held = ctx.input_enabled &&
-                            ((ctx.cb->right_held && ctx.cb->right_held()) || queryKeyDown(*ctx.cb, VK_RBUTTON));
-    if (usable && right_held) {
-        trident_charge_ticks_ += ctx.dt * 20.f;
-        if (trident_charge_ticks_ > 20.f) trident_charge_ticks_ = 20.f;
-        mode.trident_charge.store(std::min(1.f, trident_charge_ticks_ / 10.f), std::memory_order_relaxed);
-        trident_charging_ = true;
-    } else {
-        if (trident_charging_ && trident_charge_ticks_ >= 10.f && usable && ctx.cb->start_riptide) {
-            ctx.cb->start_riptide();
-        }
-        trident_charging_ = false;
-        trident_charge_ticks_ = 0.f;
-        mode.trident_charge.store(0.f, std::memory_order_relaxed);
+
+    switch (resolution.kind) {
+        case mc::UseKind::Eat:
+            if (player.hunger.canEat(item) && player.eating.startEating(item)) {
+                mode.eating_offhand.store(resolution.hand == mc::Hand::Off, std::memory_order_relaxed);
+                use_ = ActiveUse{resolution.hand, item, resolution.kind, 0.f};
+                if (ctx.cb->log) ctx.cb->log("SURVIVAL: started eating item " + std::to_string(static_cast<int>(item)));
+            }
+            return;
+        case mc::UseKind::Place:
+            use_ = ActiveUse{resolution.hand, item, resolution.kind, 0.f};
+            useInstant(*use_, ctx);
+            return;
+        case mc::UseKind::Bow:
+        case mc::UseKind::Shield:
+        case mc::UseKind::Trident:
+            use_ = ActiveUse{resolution.hand, item, resolution.kind, 0.f};
+            return;
+        default:
+            // Ignite / ThrowPearl / SpawnEgg / Firework: one click, no session.
+            useInstant(ActiveUse{resolution.hand, item, resolution.kind, 0.f}, ctx);
+            return;
     }
 }
 
-void McInteractionHandler::tickBow(const InputTickContext& ctx) {
-    auto& runtime = RuntimeContext::Instance();
-    auto& mode = runtime.mode();
-    auto& combat = runtime.combat();
-
-    bool usable = false;
-    {
-        std::lock_guard<std::mutex> g(combat.melee_mutex);
-        combat.melee.select(combat.melee.selectedSlot());
-        const mc::ItemId main_item = combat.melee.heldItem();
-        const unsigned main_count = combat.melee.countAt(combat.melee.selectedSlot());
-        const mc::ItemId off_item = combat.melee.offhandItem();
-        const unsigned off_count = combat.melee.offhandCount();
-        const auto hand = mc::handForUse(mc::ItemId::Bow, main_count > 0 ? main_item : mc::ItemId::None,
-                                         off_count > 0 ? off_item : mc::ItemId::None);
-        mode.bow_offhand.store(hand == mc::Hand::Off, std::memory_order_relaxed);
-        usable = hand.has_value() && (!creative::consumesItems(runtime.currentGameMode()) || combat.melee.has(mc::ItemId::Arrow));
+bool McInteractionHandler::useInstant(const ActiveUse& use, const InputTickContext& ctx) {
+    switch (use.kind) {
+        case mc::UseKind::Place: return ctx.cb->try_place_block && ctx.cb->try_place_block(use.hand);
+        case mc::UseKind::Ignite:
+            return (ctx.cb->try_ignite_tnt && ctx.cb->try_ignite_tnt(use.hand)) ||
+                   (ctx.cb->try_ignite_creeper && ctx.cb->try_ignite_creeper(use.hand));
+        case mc::UseKind::SpawnEgg: return ctx.cb->try_use_spawn_egg && ctx.cb->try_use_spawn_egg(use.hand);
+        case mc::UseKind::ThrowPearl: return ctx.cb->throw_ender_pearl && ctx.cb->throw_ender_pearl(use.hand);
+        case mc::UseKind::Firework: return ctx.cb->use_elytra_firework && ctx.cb->use_elytra_firework(use.hand);
+        default: return false;
     }
-    usable = usable && mode.bullet_fire_enabled.load() && ctx.mc_on && ctx.fg && ctx.want_suppress &&
-             !ctx.inv_open && ctx.input_enabled && !ctx.is_dead;
-    const bool right_held = ctx.input_enabled &&
-                            ((ctx.cb->right_held && ctx.cb->right_held()) || queryKeyDown(*ctx.cb, VK_RBUTTON));
-    const bow::Update u = bow_.update(ctx.dt, right_held, usable);
+}
+
+bool McInteractionHandler::useStillValid(const ActiveUse& use, mc::ItemId main, mc::ItemId off, bool has_arrow) const {
+    const mc::ItemId item = use.hand == mc::Hand::Main ? main : off;
+    if (item == mc::ItemId::None || item != use.item) return false;
+    if (mc::useSpec(item).kind != use.kind) return false;
+    switch (use.kind) {
+        case mc::UseKind::Eat: return RuntimeContext::Instance().player().eating.isEating();
+        case mc::UseKind::Bow:
+            return !creative::consumesItems(RuntimeContext::Instance().currentGameMode()) || has_arrow;
+        case mc::UseKind::Trident:
+            return RuntimeContext::Instance().mode().riptide_level.load(std::memory_order_relaxed) > 0;
+        default: return true;
+    }
+}
+
+void McInteractionHandler::tickBowControl(const InputTickContext& ctx, bool active, bool right_down,
+                                          ModeConfig& mode, CombatSystems& combat) {
+    const bow::Update u = bow_.update(ctx.dt, right_down, active);
     mode.bow_power.store(bow_.power(), std::memory_order_relaxed);
     mode.bow_ticks.store(bow_.ticks(), std::memory_order_relaxed);
     if (u.released) {
         const float damage = bow::damageForPower(u.power);
         if (ctx.cb->queue_bullet_fire && ctx.cb->queue_bullet_fire(damage)) {
-            if (creative::consumesItems(runtime.currentGameMode())) {
+            if (creative::consumesItems(RuntimeContext::Instance().currentGameMode())) {
                 std::lock_guard<std::mutex> g(combat.melee_mutex);
                 combat.melee.consumeFirst(mc::ItemId::Arrow);
             }
@@ -163,28 +253,10 @@ void McInteractionHandler::tickBow(const InputTickContext& ctx) {
     }
 }
 
-void McInteractionHandler::tickShield(const InputTickContext& ctx) {
-    auto& runtime = RuntimeContext::Instance();
-    auto& mode = runtime.mode();
-    auto& player = runtime.player();
-    auto& combat = runtime.combat();
-
-    bool has_shield = false;
-    bool shield_in_offhand = false;
-    {
-        std::lock_guard<std::mutex> g(combat.melee_mutex);
-        has_shield = combat.melee.holds(mc::ItemId::Shield);
-        shield_in_offhand = !(combat.melee.heldItem() == mc::ItemId::Shield && combat.melee.countAt(combat.melee.selectedSlot()) > 0);
-    }
-    mode.shield_offhand.store(shield_in_offhand, std::memory_order_relaxed);
-    const bool right_held = ctx.input_enabled &&
-                            ((ctx.cb->right_held && ctx.cb->right_held()) || queryKeyDown(*ctx.cb, VK_RBUTTON)) &&
-                            ctx.fg && ctx.want_suppress && !ctx.inv_open && !ctx.is_dead && ctx.mc_on;
-    const bool is_drawing_bow = mode.bow_ticks.load(std::memory_order_relaxed) > 0;
-    const bool is_eating = player.eating.isEating();
-    const bool shield_usable = has_shield && !is_drawing_bow && !is_eating;
-    shield_.update(ctx.dt, right_held, shield_usable);
-    combat.shield.update(ctx.dt, right_held, shield_usable);
+void McInteractionHandler::tickShieldControl(const InputTickContext& ctx, bool active, bool right_down,
+                                             ModeConfig& mode, PlayerSystems& player, CombatSystems& combat) {
+    shield_.update(ctx.dt, right_down, active);
+    combat.shield.update(ctx.dt, right_down, active);
     const bool prev_blocking = mode.shield_blocking.load(std::memory_order_relaxed);
     const bool now_blocking = shield_.isBlocking();
     if (!prev_blocking && now_blocking) {
@@ -192,6 +264,22 @@ void McInteractionHandler::tickShield(const InputTickContext& ctx) {
         player.sprint_active.store(false, std::memory_order_relaxed);
     }
     mode.shield_blocking.store(now_blocking, std::memory_order_relaxed);
+}
+
+void McInteractionHandler::tickTridentControl(const InputTickContext& ctx, bool active, bool right_down, ModeConfig& mode) {
+    if (active && right_down) {
+        trident_charge_ticks_ += ctx.dt * 20.f;
+        if (trident_charge_ticks_ > 20.f) trident_charge_ticks_ = 20.f;
+        mode.trident_charge.store(std::min(1.f, trident_charge_ticks_ / 10.f), std::memory_order_relaxed);
+        trident_charging_ = true;
+    } else {
+        if (trident_charging_ && trident_charge_ticks_ >= 10.f && active && ctx.cb->start_riptide) {
+            ctx.cb->start_riptide(use_ ? use_->hand : mc::Hand::Main);
+        }
+        trident_charging_ = false;
+        trident_charge_ticks_ = 0.f;
+        mode.trident_charge.store(0.f, std::memory_order_relaxed);
+    }
 }
 
 void McInteractionHandler::tickWheel(const InputTickContext& ctx) {

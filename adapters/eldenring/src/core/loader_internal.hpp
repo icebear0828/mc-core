@@ -435,13 +435,16 @@ BlockTarget FindBlockTarget();
 // True when the aim ray hits a placed crafting table (used to open its 3x3 screen).
 bool AimingAtCraftingTable();
 const char* BlockSound(mc::BlockId id);
-bool TryUseSpawnEgg();
-bool TryUseElytraFirework();
-bool TryThrowEnderPearl();
-bool TryStartRiptide();
-bool TryIgniteTnt();
-bool TryIgniteCreeper();
-bool TryPlaceBlock();
+bool TryUseSpawnEgg(mc::Hand hand);
+bool TryUseElytraFirework(mc::Hand hand);
+bool TryThrowEnderPearl(mc::Hand hand);
+bool TryStartRiptide(mc::Hand hand);
+bool TryIgniteTnt(mc::Hand hand);
+bool TryIgniteCreeper(mc::Hand hand);
+bool TryPlaceBlock(mc::Hand hand);
+// Availability probes for the right-click resolver (no side effects, no state change).
+bool CanPlaceBlock(mc::Hand hand);
+bool CanIgnite(mc::Hand hand);
 
 // ---- world: TNT / collision / flags --------------------------------------------------------
 void ProcessTntExplosionsOnGameThread(const std::vector<EnemyInfo>& enemies);

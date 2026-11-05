@@ -136,22 +136,49 @@ protected:
         };
 
         cb_.step_mining = [this](float, bool) { return mining_consumed_; };
-        cb_.try_ignite_tnt = [this]() {
-            if (ignite_tnt_success_) { tnt_ignited_ = true; return true; }
+        cb_.can_place_block = [this](mc::Hand hand) {
+            last_can_place_hand_ = hand;
+            return can_place_block_;
+        };
+        cb_.can_ignite = [this](mc::Hand hand) {
+            last_can_ignite_hand_ = hand;
+            return can_ignite_;
+        };
+        cb_.try_ignite_tnt = [this](mc::Hand hand) {
+            last_ignite_hand_ = hand;
+            if (ignite_tnt_success_) { tnt_ignited_ = true; RuntimeContext::Instance().combat().melee.startSwing(hand); return true; }
             return false;
         };
-        cb_.try_ignite_creeper = [this]() {
-            if (ignite_creeper_success_) { creeper_ignited_ = true; return true; }
+        cb_.try_ignite_creeper = [this](mc::Hand hand) {
+            last_creeper_hand_ = hand;
+            if (ignite_creeper_success_) { creeper_ignited_ = true; RuntimeContext::Instance().combat().melee.startSwing(hand); return true; }
             return false;
         };
-        cb_.try_place_block = [this]() {
+        cb_.try_place_block = [this](mc::Hand hand) {
             ++place_block_calls_;
-            if (place_block_success_) { block_placed_ = true; return true; }
+            last_place_hand_ = hand;
+            if (place_block_success_) { block_placed_ = true; RuntimeContext::Instance().combat().melee.startSwing(hand); return true; }
             return false;
         };
-        cb_.try_use_spawn_egg = [this]() {
-            if (use_spawn_egg_success_) { spawn_egg_used_ = true; return true; }
+        cb_.try_use_spawn_egg = [this](mc::Hand hand) {
+            last_egg_hand_ = hand;
+            if (use_spawn_egg_success_) { spawn_egg_used_ = true; RuntimeContext::Instance().combat().melee.startSwing(hand); return true; }
             return false;
+        };
+        cb_.use_elytra_firework = [this](mc::Hand hand) {
+            last_firework_hand_ = hand;
+            if (use_firework_success_) { firework_used_ = true; return true; }
+            return false;
+        };
+        cb_.throw_ender_pearl = [this](mc::Hand hand) {
+            last_pearl_hand_ = hand;
+            if (throw_pearl_success_) { pearl_thrown_ = true; return true; }
+            return false;
+        };
+        cb_.start_riptide = [this](mc::Hand hand) {
+            last_riptide_hand_ = hand;
+            riptide_started_ = true;
+            return true;
         };
         cb_.click_attack = [this](float charged) { attack_charged_ = charged; attack_called_ = true; return attack_hit_; };
         cb_.enqueue_nearest_hostile = [this]() { hostile_enqueued_ = true; };
@@ -194,6 +221,14 @@ protected:
 
     void setKey(int vk, bool down) { key_states_[vk] = down; }
 
+    // The right-click resolver reads the real inventory, so tests set the hands instead of
+    // relying on the callback chain.
+    void setHands(mc::ItemId main, mc::ItemId off, unsigned main_count = 1, unsigned off_count = 1) {
+        auto& melee = RuntimeContext::Instance().combat().melee;
+        melee.inventory().setSlot(melee.selectedSlot(), {main, main_count});
+        melee.inventory().setOffhand({off, off_count});
+    }
+
     HotkeyDispatcher* dispatcher_{nullptr};
     HotkeyCallbacks cb_;
     std::map<int, bool> key_states_;
@@ -230,6 +265,22 @@ protected:
     int place_block_calls_{0};
     bool use_spawn_egg_success_{false};
     bool spawn_egg_used_{false};
+    bool can_place_block_{false};
+    bool can_ignite_{false};
+    mc::Hand last_can_place_hand_{mc::Hand::Main};
+    mc::Hand last_can_ignite_hand_{mc::Hand::Main};
+    mc::Hand last_ignite_hand_{mc::Hand::Main};
+    mc::Hand last_creeper_hand_{mc::Hand::Main};
+    mc::Hand last_place_hand_{mc::Hand::Main};
+    mc::Hand last_egg_hand_{mc::Hand::Main};
+    mc::Hand last_firework_hand_{mc::Hand::Main};
+    mc::Hand last_pearl_hand_{mc::Hand::Main};
+    mc::Hand last_riptide_hand_{mc::Hand::Main};
+    bool use_firework_success_{false};
+    bool firework_used_{false};
+    bool throw_pearl_success_{false};
+    bool pearl_thrown_{false};
+    bool riptide_started_{false};
     bool attack_called_{false};
     bool attack_hit_{true};
     float attack_charged_{0.f};
@@ -353,25 +404,33 @@ TEST_F(HotkeyDispatcherTest, MiningConsumesLeftClickSoNoSwingAttack) {
 }
 
 TEST_F(HotkeyDispatcherTest, RightClickPriorityTntThenCreeperThenBlock) {
-    // 1. TNT priority
-    right_click_edge_ = true;
+    // 1. Flint and steel on TNT wins over the offhand.
+    setHands(mc::ItemId::FlintAndSteel, mc::ItemId::BlockDirt);
+    can_ignite_ = true;
+    can_place_block_ = true;
     ignite_tnt_success_ = true;
     place_block_success_ = true;
+    right_click_edge_ = true;
 
     dispatcher_->tick(0.016f);
     EXPECT_TRUE(tnt_ignited_);
     EXPECT_FALSE(block_placed_);
+    EXPECT_EQ(last_ignite_hand_, mc::Hand::Main);
 
-    // 2. Block placement when not TNT
+    // 2. A block in the main hand places; the offhand never gets the click.
+    setHands(mc::ItemId::BlockDirt, mc::ItemId::None);
     ignite_tnt_success_ = false;
     right_click_edge_ = true;
     place_block_success_ = true;
 
     dispatcher_->tick(0.016f);
     EXPECT_TRUE(block_placed_);
+    EXPECT_EQ(last_place_hand_, mc::Hand::Main);
 }
 
 TEST_F(HotkeyDispatcherTest, HoldingRightClickRepeatsBlockPlacement) {
+    setHands(mc::ItemId::BlockDirt, mc::ItemId::None);
+    can_place_block_ = true;
     place_block_success_ = true;
     right_click_edge_ = true;
     right_held_ = true;
@@ -392,6 +451,8 @@ TEST_F(HotkeyDispatcherTest, HoldingRightClickRepeatsBlockPlacement) {
 }
 
 TEST_F(HotkeyDispatcherTest, ReleasingAndPressingAgainRestartsThePlaceCadence) {
+    setHands(mc::ItemId::BlockDirt, mc::ItemId::None);
+    can_place_block_ = true;
     place_block_success_ = true;
     right_click_edge_ = true;
     right_held_ = true;
@@ -412,10 +473,239 @@ TEST_F(HotkeyDispatcherTest, ReleasingAndPressingAgainRestartsThePlaceCadence) {
 }
 
 TEST_F(HotkeyDispatcherTest, HoldingRightWithoutAnEdgeDoesNotPlace) {
+    setHands(mc::ItemId::BlockDirt, mc::ItemId::None);
+    can_place_block_ = true;
     place_block_success_ = true;
     right_held_ = true; // e.g. the button was already down when the inventory closed
     for (int i = 0; i < 30; ++i) dispatcher_->tick(0.016f);
     EXPECT_EQ(place_block_calls_, 0);
+}
+
+TEST_F(HotkeyDispatcherTest, TheOffhandPlacesWhenTheMainHandHasNoUse) {
+    setHands(mc::ItemId::DiamondSword, mc::ItemId::BlockDirt);
+    can_place_block_ = true;
+    place_block_success_ = true;
+    right_click_edge_ = true;
+
+    dispatcher_->tick(0.016f);
+    EXPECT_TRUE(block_placed_);
+    EXPECT_EQ(last_place_hand_, mc::Hand::Off);
+}
+
+TEST_F(HotkeyDispatcherTest, AMainHandBlockThatCannotPlaceLetsTheOffhandEat) {
+    setHands(mc::ItemId::BlockDirt, mc::ItemId::GoldenApple);
+    can_place_block_ = false; // aiming at the sky
+    right_click_edge_ = true;
+    right_held_ = true; // vanilla eats while the button is held
+
+    dispatcher_->tick(0.016f);
+    auto& ctx = RuntimeContext::Instance();
+    EXPECT_FALSE(block_placed_);
+    EXPECT_TRUE(ctx.player().eating.isEating());
+    EXPECT_TRUE(ctx.mode().eating_offhand.load());
+}
+
+TEST_F(HotkeyDispatcherTest, TheOffhandSpawnEggUsesTheOffhand) {
+    setHands(mc::ItemId::DiamondSword, mc::ItemId::ZombieSpawnEgg);
+    use_spawn_egg_success_ = true;
+    right_click_edge_ = true;
+
+    dispatcher_->tick(0.016f);
+    EXPECT_TRUE(spawn_egg_used_);
+    EXPECT_EQ(last_egg_hand_, mc::Hand::Off);
+}
+
+TEST_F(HotkeyDispatcherTest, TheOffhandFlintAndSteelIgnitesTheOffhand) {
+    setHands(mc::ItemId::DiamondSword, mc::ItemId::FlintAndSteel);
+    can_ignite_ = true;
+    ignite_tnt_success_ = true;
+    right_click_edge_ = true;
+
+    dispatcher_->tick(0.016f);
+    EXPECT_TRUE(tnt_ignited_);
+    EXPECT_EQ(last_ignite_hand_, mc::Hand::Off);
+    EXPECT_EQ(last_can_ignite_hand_, mc::Hand::Off);
+}
+
+TEST_F(HotkeyDispatcherTest, TheOffhandEnderPearlThrowsFromTheOffhand) {
+    setHands(mc::ItemId::DiamondSword, mc::ItemId::EnderPearl);
+    throw_pearl_success_ = true;
+    right_click_edge_ = true;
+
+    dispatcher_->tick(0.016f);
+    EXPECT_TRUE(pearl_thrown_);
+    EXPECT_EQ(last_pearl_hand_, mc::Hand::Off);
+}
+
+TEST_F(HotkeyDispatcherTest, TheMainHandBowStillWinsOverAnOffhandBlock) {
+    setHands(mc::ItemId::Bow, mc::ItemId::BlockDirt);
+    can_place_block_ = true;
+    place_block_success_ = true;
+    right_click_edge_ = true;
+    right_held_ = true;
+
+    dispatcher_->tick(0.016f);
+    dispatcher_->tick(0.016f);
+    auto& ctx = RuntimeContext::Instance();
+    EXPECT_FALSE(block_placed_);
+    EXPECT_GT(ctx.mode().bow_ticks.load(), 0.f);
+    EXPECT_FALSE(ctx.mode().bow_offhand.load());
+}
+
+TEST_F(HotkeyDispatcherTest, AnOffhandBowDrawsWhenTheMainHandBlockCannotPlace) {
+    setHands(mc::ItemId::BlockDirt, mc::ItemId::Bow);
+    can_place_block_ = false; // aiming at the sky
+    right_click_edge_ = true;
+    right_held_ = true;
+
+    dispatcher_->tick(0.016f);
+    dispatcher_->tick(0.016f);
+    auto& ctx = RuntimeContext::Instance();
+    EXPECT_FALSE(block_placed_);
+    EXPECT_GT(ctx.mode().bow_ticks.load(), 0.f);
+    EXPECT_TRUE(ctx.mode().bow_offhand.load());
+}
+
+TEST_F(HotkeyDispatcherTest, APlacingMainHandKeepsTheOffhandShieldDown) {
+    setHands(mc::ItemId::BlockDirt, mc::ItemId::Shield);
+    can_place_block_ = true;
+    place_block_success_ = true;
+    right_click_edge_ = true;
+    right_held_ = true;
+
+    for (int i = 0; i < 30; ++i) dispatcher_->tick(0.016f);
+    auto& ctx = RuntimeContext::Instance();
+    EXPECT_TRUE(block_placed_);
+    EXPECT_FALSE(ctx.mode().shield_blocking.load()) << "the placement owns the click, so the shield never rises";
+}
+
+TEST_F(HotkeyDispatcherTest, AnOffhandShieldRaisesWhenTheMainHandBlockCannotPlace) {
+    setHands(mc::ItemId::BlockDirt, mc::ItemId::Shield);
+    can_place_block_ = false; // aiming at the sky
+    right_click_edge_ = true;
+    right_held_ = true;
+
+    for (int i = 0; i < 30; ++i) dispatcher_->tick(0.016f);
+    auto& ctx = RuntimeContext::Instance();
+    EXPECT_FALSE(block_placed_);
+    EXPECT_TRUE(ctx.mode().shield_blocking.load());
+    EXPECT_TRUE(ctx.mode().shield_offhand.load());
+}
+
+TEST_F(HotkeyDispatcherTest, AnOffhandBlockPlacesEvenWithAShieldInTheMainHand) {
+    // The F swap puts the default shield in the main hand; the offhand block must still place.
+    setHands(mc::ItemId::Shield, mc::ItemId::BlockDirt);
+    can_place_block_ = true;
+    place_block_success_ = true;
+    right_click_edge_ = true;
+
+    dispatcher_->tick(0.016f);
+    EXPECT_TRUE(block_placed_);
+    EXPECT_EQ(last_place_hand_, mc::Hand::Off);
+    EXPECT_FALSE(RuntimeContext::Instance().mode().shield_blocking.load());
+}
+
+TEST_F(HotkeyDispatcherTest, AMainHandShieldStillRaisesWhenTheOffhandBlockHasNoTarget) {
+    setHands(mc::ItemId::Shield, mc::ItemId::BlockDirt);
+    can_place_block_ = false; // aiming at the sky
+    right_click_edge_ = true;
+    right_held_ = true;
+
+    for (int i = 0; i < 30; ++i) dispatcher_->tick(0.016f);
+    auto& ctx = RuntimeContext::Instance();
+    EXPECT_FALSE(block_placed_);
+    EXPECT_TRUE(ctx.mode().shield_blocking.load());
+}
+
+TEST_F(HotkeyDispatcherTest, APlacingMainHandDoesNotLetTheOffhandEat) {
+    setHands(mc::ItemId::BlockDirt, mc::ItemId::GoldenApple);
+    can_place_block_ = true;
+    place_block_success_ = true;
+    right_click_edge_ = true;
+
+    dispatcher_->tick(0.016f);
+    auto& ctx = RuntimeContext::Instance();
+    EXPECT_TRUE(block_placed_);
+    EXPECT_FALSE(ctx.player().eating.isEating());
+}
+
+TEST_F(HotkeyDispatcherTest, TheOffhandTridentChargesWhenTheMainHandHasNoUse) {
+    setHands(mc::ItemId::DiamondSword, mc::ItemId::Trident);
+    auto& ctx = RuntimeContext::Instance();
+    ctx.mode().riptide_level.store(1);
+    right_click_edge_ = true;
+    right_held_ = true;
+
+    dispatcher_->tick(0.016f);
+    dispatcher_->tick(0.016f);
+    EXPECT_GT(ctx.mode().trident_charge.load(), 0.f);
+    EXPECT_TRUE(ctx.mode().trident_offhand.load());
+}
+
+TEST_F(HotkeyDispatcherTest, TheOffhandFireworkBoostsWhileGliding) {
+    setHands(mc::ItemId::DiamondSword, mc::ItemId::FireworkRocket);
+    auto& ctx = RuntimeContext::Instance();
+    ctx.mode().elytra_gliding.store(true);
+    use_firework_success_ = true;
+    right_click_edge_ = true;
+
+    dispatcher_->tick(0.016f);
+    EXPECT_TRUE(firework_used_);
+    EXPECT_EQ(last_firework_hand_, mc::Hand::Off);
+}
+
+TEST_F(HotkeyDispatcherTest, AnOffhandPlacementSwingsTheOffhand) {
+    setHands(mc::ItemId::DiamondSword, mc::ItemId::BlockDirt);
+    can_place_block_ = true;
+    place_block_success_ = true;
+    right_click_edge_ = true;
+
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(RuntimeContext::Instance().combat().melee.swingHand(), mc::Hand::Off);
+}
+
+TEST_F(HotkeyDispatcherTest, AMainHandPlacementSwingsTheMainHand) {
+    setHands(mc::ItemId::BlockDirt, mc::ItemId::None);
+    can_place_block_ = true;
+    place_block_success_ = true;
+    right_click_edge_ = true;
+
+    dispatcher_->tick(0.016f);
+    EXPECT_EQ(RuntimeContext::Instance().combat().melee.swingHand(), mc::Hand::Main);
+}
+
+TEST_F(HotkeyDispatcherTest, ReleasingTheButtonCancelsTheMealWithoutConsumingIt) {
+    setHands(mc::ItemId::BlockDirt, mc::ItemId::GoldenApple);
+    can_place_block_ = false; // aiming at the sky
+    right_click_edge_ = true;
+    right_held_ = true;
+
+    dispatcher_->tick(0.016f);
+    auto& ctx = RuntimeContext::Instance();
+    ASSERT_TRUE(ctx.player().eating.isEating());
+
+    right_held_ = false;
+    dispatcher_->tick(0.016f);
+    EXPECT_FALSE(ctx.player().eating.isEating());
+    EXPECT_EQ(ctx.combat().melee.offhandCount(), 1u);
+    EXPECT_FALSE(ctx.mode().eating_offhand.load());
+}
+
+TEST_F(HotkeyDispatcherTest, HoldingTheButtonCompletesTheMealAndConsumesOne) {
+    setHands(mc::ItemId::BlockDirt, mc::ItemId::GoldenApple);
+    can_place_block_ = false; // aiming at the sky
+    right_click_edge_ = true;
+    right_held_ = true;
+
+    dispatcher_->tick(0.016f);
+    auto& ctx = RuntimeContext::Instance();
+    ASSERT_TRUE(ctx.player().eating.isEating());
+
+    // The meal is 1.6 s = 100 ticks at 16 ms; 110 ticks leaves margin.
+    for (int i = 0; i < 110; ++i) dispatcher_->tick(0.016f);
+    EXPECT_FALSE(ctx.player().eating.isEating());
+    EXPECT_EQ(ctx.combat().melee.offhandCount(), 0u);
+    EXPECT_FALSE(ctx.mode().eating_offhand.load());
 }
 
 TEST_F(HotkeyDispatcherTest, MouseWheelScrollsHotbarSlots) {

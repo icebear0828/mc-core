@@ -27,7 +27,8 @@ struct SteveAnimInput {
     float strafe_speed{0.f};  // m/s
     float look_yaw{0.f};      // radians, head yaw RELATIVE to the body (0 = facing the body's heading)
     float look_pitch{0.f};    // radians, Minecraft convention: positive = looking DOWN
-    float swing_progress{0.f};// [0, 1] 0 = idle, 1 = completed (main-hand attack)
+    float swing_progress{0.f};// [0, 1] 0 = idle, 1 = completed
+    Hand swing_hand{Hand::Main}; // the arm that swings (an offhand placement swings the left arm)
     bool is_crouching{false};
     bool is_sprinting{false};
     bool on_ground{true};

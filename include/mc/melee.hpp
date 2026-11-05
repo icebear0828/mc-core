@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mc/combat.hpp"
+#include "mc/hand_items.hpp"
 #include "mc/inventory.hpp"
 #include "mc/session.hpp"
 #include "mc/types.hpp"
@@ -57,14 +58,17 @@ public:
         }
     }
 
-    // A click: the arm swings and the cooldown restarts. Returns the cooldown the swing was made with (the hit's
-    // strength), whether or not it connects.
-    float startSwing() {
+    // A click: the arm swings and the cooldown restarts. `hand` is the arm that actually used the
+    // item, so an offhand placement swings the left arm. Returns the cooldown the swing was made
+    // with (the hit's strength), whether or not it connects.
+    float startSwing(Hand hand = Hand::Main) {
         const float charged = cooldown_;
         swing_ = 0.f;
+        swing_hand_ = hand;
         cooldown_ = 0.f;
         return charged;
     }
+    [[nodiscard]] Hand swingHand() const { return swing_hand_; }
 
     [[nodiscard]] mc::HitIntent makeIntent(mc::CombatEngine& engine, mc::EntityId attacker, mc::EntityId victim, float charged,
                                            bool falling, bool on_ground, const mc::Vec3& where, const mc::Vec3& direction) const {
@@ -76,6 +80,7 @@ private:
     int slot_{0};
     float cooldown_{1.f};
     float swing_{-1.f}; // seconds into the swing, < 0 = idle
+    Hand swing_hand_{Hand::Main};
 };
 
 // "Falling" for an MC critical hit. A jump runs from the jump key press (on the ground) to the landing; stepping off a ledge also counts.
