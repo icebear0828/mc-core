@@ -80,6 +80,7 @@ add_executable(mc_tests
     test_eldenring_overlay_state.cpp
     test_eldenring_config.cpp
     test_tnt.cpp
+    test_terrain_destruction.cpp
     test_eldenring_tnt.cpp
     test_eldenring_mining.cpp
     test_loot_table.cpp

@@ -107,6 +107,8 @@ add_library(mc_core STATIC
     src/hand_items.cpp
     src/entity_model.cpp
     src/tnt.cpp
+    include/mc/terrain_destruction.hpp
+    src/terrain_destruction.cpp
     src/recipe.cpp
     src/crafting_session.cpp
     src/inventory_persistence.cpp
