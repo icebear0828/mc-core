@@ -31,6 +31,7 @@
 #include <MinHook.h>
 
 #include "mc/contracts/combat_adapter.hpp"
+#include "mc/contracts/host_runtime.hpp"
 #include "mc/er_region_table.hpp"
 #include "mc/zone_detector.hpp"
 
@@ -325,13 +326,16 @@ extern std::atomic<uint64_t> g_last_bullet_fire_ms;
 extern ApplyHpFn g_apply_hp;
 extern thread_local int32_t t_hp_after;
 extern DirectInput8Create_t g_system_create;
-extern std::atomic<bool> g_wants_input_hooks;
 extern mc::CombatEngine g_combat_engine;
 
 // ---- entry points --------------------------------------------------------------------------
 creative::GameMode CurrentGameMode();
 std::span<const mc::ZoneRule> DefaultZoneAreaRules();
 DWORD WINAPI LoaderThread(LPVOID);
+
+// The adapter's configuration in the host runtime's portable shape. Called
+// after the environment gate, so a refused host never reads mc_er.ini.
+mc::host::HostConfig LoadHostConfig();
 HRESULT WINAPI DirectInput8CreateImpl(HINSTANCE hinst, DWORD version, REFIID riid, LPVOID* out, LPUNKNOWN outer);
 DWORD WINAPI KeyThread(LPVOID);
 DWORD WINAPI AnimDebugThread(LPVOID);
@@ -492,5 +496,14 @@ void RestoreNativeModel();
 void UpdateNativeModel(uintptr_t player, bool hide);
 bool HudProvider(erov::HudState& out, erov::SteveState& steve);
 void SetupOverlay();
+
+// ---- host runtime hook surface (issue #177) ------------------------------------------------
+// Bound into mc::host::Dinput8Runtime. The runtime owns the lifecycle; these
+// install/remove the adapter's detours and hand the runtime's notifications to
+// the code that already runs on those paths.
+bool InstallPresentHooks(const mc::host::PresentCallbacks& callbacks);
+void UninstallPresentHooks();
+bool InstallInputHooks(const mc::host::InputCallbacks& callbacks);
+void UninstallInputHooks();
 
 } // namespace eldenring::loader_detail

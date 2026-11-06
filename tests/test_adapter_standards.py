@@ -82,6 +82,45 @@ def test_plugin_entry_template_is_built_on_session_not_singletons():
     assert "on_ground_is_estimate" in template
 
 
+def test_plugin_entry_template_leaves_entry_boilerplate_to_the_host_runtime():
+    """Issue #177: DllMain and MinHook belong to the host runtime, not the adapter.
+
+    include/mc/contracts/host_runtime.hpp owns the entry point (dinput8 proxy or
+    REFramework); a plugin template must not re-implement it. RE4/REFramework
+    builds are gated by MC_ENABLE_RE4.
+    """
+    template = (SKILL_ASSETS / "plugin-entry.template.cpp").read_text(encoding="utf-8")
+    assert "DllMain" not in template, "the host runtime owns DllMain"
+    assert "MH_CreateHook" not in template, "the host runtime owns MinHook"
+    assert '#include "mc/contracts/host_runtime.hpp"' in template, "the template must depend on the host runtime contract"
+    assert "mc::host::Dinput8Runtime" in template, "the template must point dinput8 games at the dinput8 runtime"
+    assert "mc::host::ReframeworkRuntime" in template, "the template must point RE4 at the REFramework runtime"
+    assert "MC_ENABLE_RE4" in template, "the template must document the RE4 build gate"
+    assert (REPO_ROOT / "include" / "mc" / "contracts" / "host_runtime.hpp").exists()
+
+
+def test_eldenring_loader_resolves_the_install_root_before_loading_the_host_config():
+    """Issue #177: HostConfig::game_dir is filled from g_game_dir, after the gate.
+
+    diagnostics::InitLogOnce() is the only writer of g_game_dir, so LoadHostConfig()
+    must bootstrap the log before it reads the install root. It must also run after
+    LoaderThread's EAC/steam_appid gate, so a refused host never reads mc_er.ini.
+    """
+    loader = (REPO_ROOT / "adapters" / "eldenring" / "src" / "loader.cpp").read_text(encoding="utf-8")
+    assert "LoadHostConfig()" not in loader, "the entry point must not read the config before the gate"
+
+    services = (REPO_ROOT / "adapters" / "eldenring" / "src" / "core" / "loader_services.cpp").read_text(encoding="utf-8")
+    start = services.index("mc::host::HostConfig LoadHostConfig()")
+    body = services[start : services.index("\n}\n", start)]
+    assert "InitLogOnce()" in body, "LoadHostConfig() must bootstrap the log before reading g_game_dir"
+    assert body.index("InitLogOnce()") < body.index("config.game_dir"), "the install root is empty until InitLogOnce() runs"
+
+    gate = services.index("checkEnvironment(")
+    verdict = services.index("if (verdict != EnvVerdict::Ok)")
+    initialize = services.index("runtime->initialize(LoadHostConfig())")
+    assert gate < verdict < initialize, "the gate verdict must be checked before configuration is read"
+
+
 def test_adapter_templates_implement_the_current_contract():
     header = (SKILL_ASSETS / "adapter-header.template.hpp").read_text(encoding="utf-8")
     source = (SKILL_ASSETS / "adapter-source.template.cpp").read_text(encoding="utf-8")

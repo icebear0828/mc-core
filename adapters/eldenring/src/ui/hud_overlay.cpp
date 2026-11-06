@@ -444,14 +444,25 @@ void SetupOverlay() {
                 m.cs_mode.load() ? 1 : 0, m.ow_mode.load() ? 1 : 0);
         }
     }
-    erov::Install(&HudProvider, [](const char* fmt, ...) {
-        char msg[512];
-        va_list args;
-        va_start(args, fmt);
-        vsnprintf(msg, sizeof(msg), fmt, args);
-        va_end(args);
-        Log("%s", msg);
-    });
+    // The present detour itself is installed through the host runtime (see
+    // InstallPresentHooks below), so a refused host never installs it.
+}
+
+bool InstallPresentHooks(const mc::host::PresentCallbacks& callbacks) {
+    // The adapter keeps its own D3D12 overlay, so its installer is the one that
+    // creates the detours; the runtime owns when that happens and when they go.
+    erov::SetPresentCallbacks(callbacks.on_present, callbacks.on_resize);
+    if (!EnsureMinHook()) {
+        Log("overlay: MH_Initialize failed");
+        return false;
+    }
+    // diagnostics::Log already matches erov::LogFn; no per-subsystem wrapper needed.
+    return erov::Install(&HudProvider, &eldenring::diagnostics::Log);
+}
+
+void UninstallPresentHooks() {
+    erov::SetPresentCallbacks({}, {});
+    erov::Uninstall();
 }
 
 } // namespace eldenring::loader_detail

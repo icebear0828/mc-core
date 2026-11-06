@@ -21,10 +21,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: mc,  mc: "ON",  cs: "OFF", ow: "OFF", tests: "OFF" }
-          - { name: cs,  mc: "OFF", cs: "ON",  ow: "OFF", tests: "OFF" }
-          - { name: ow,  mc: "OFF", cs: "OFF", ow: "ON",  tests: "OFF" }
-          - { name: all, mc: "ON",  cs: "ON",  ow: "ON",  tests: "ON"  }
+          - { name: mc,  mc: "ON",  cs: "OFF", ow: "OFF", tests: "OFF", re4: "OFF" }
+          - { name: cs,  mc: "OFF", cs: "ON",  ow: "OFF", tests: "OFF", re4: "OFF" }
+          - { name: ow,  mc: "OFF", cs: "OFF", ow: "ON",  tests: "OFF", re4: "OFF" }
+          - { name: all, mc: "ON",  cs: "ON",  ow: "ON",  tests: "ON",  re4: "OFF" }
+          - { name: re4, mc: "ON",  cs: "OFF", ow: "OFF", tests: "ON",  re4: "ON"  }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -51,6 +52,7 @@ jobs:
           -DENABLE_MC_MODE=${{ matrix.mc }}
           -DENABLE_CS2_VIEWMODEL=${{ matrix.cs }}
           -DENABLE_OW_VIEWMODEL=${{ matrix.ow }}
+          -DMC_ENABLE_RE4=${{ matrix.re4 }}
           -DBUILD_TESTING=${{ matrix.tests }}
 
       - name: Build adapter
