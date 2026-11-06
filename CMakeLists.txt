@@ -90,6 +90,8 @@ add_library(mc_core STATIC
     include/mc/contracts/mod_interface.hpp
     include/mc/contracts/mod_manager.hpp
     src/animator.cpp
+    include/mc/fluid.hpp
+    src/fluid.cpp
     src/voxel_world.cpp
     src/ballistics.cpp
     src/combat.cpp
