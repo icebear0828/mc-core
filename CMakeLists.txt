@@ -102,6 +102,8 @@ add_library(mc_core STATIC
     src/hud.cpp
     src/hud_layout.cpp
     src/session.cpp
+    include/mc/damage_scaling.hpp
+    src/damage_scaling.cpp
     src/rig.cpp
     src/item_model.cpp
     src/hand_items.cpp

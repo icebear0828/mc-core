@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "eldenring_damage_scaling.hpp"
 #include "eldenring_steve.hpp"
 #include "mc/consumables.hpp"
 #if ENABLE_CS2_VIEWMODEL
@@ -529,7 +530,14 @@ bool CombatService::clickAttack(float charged, MeleeController& melee, CombatEng
 
     const float dmg_scale = ctx.mode().damage_scale.load(std::memory_order_relaxed);
     const float hp_pct = ctx.mode().damage_hp_percent.load(std::memory_order_relaxed);
-    const int dmg = live::erDamage(intent, e.max_hp, dmg_scale, hp_pct);
+    live::ErDamageConfig damage_cfg = live::defaultErDamageConfig();
+    damage_cfg.enabled = ctx.mode().damage_scaling_enabled.load(std::memory_order_relaxed);
+    damage_cfg.hp_percent = hp_pct;
+    damage_cfg.scaling.mc_to_host_base = ctx.mode().damage_mc_to_host_base.load(std::memory_order_relaxed);
+    damage_cfg.scaling.mc_to_host_per_level = ctx.mode().damage_mc_to_host_per_level.load(std::memory_order_relaxed);
+    damage_cfg.scaling.host_to_mc_divisor = ctx.mode().damage_host_to_mc_divisor.load(std::memory_order_relaxed);
+    const int dmg = damage_cfg.enabled ? live::erDamageScaled(intent, e.max_hp, 0, damage_cfg)
+                                       : live::erDamage(intent, e.max_hp, dmg_scale, hp_pct);
     // The CS knife shares the MC melee path. Tag its hits as CS so
     // drainDamageQueue shows the CS hitmarker instead of the Minecraft attack
     // sounds (the knife already plays its own cs.knife.* sound).
@@ -564,7 +572,8 @@ bool CombatService::clickAttack(float charged, MeleeController& melee, CombatEng
                 mc::HitIntent sweep_intent = intent;
                 sweep_intent.damage = std::max(1.0f, intent.damage * 0.4f);
                 sweep_intent.is_sweeping = true;
-                const int sec_dmg = live::erDamage(sweep_intent, sec.max_hp, dmg_scale, hp_pct);
+                const int sec_dmg = damage_cfg.enabled ? live::erDamageScaled(sweep_intent, sec.max_hp, 0, damage_cfg)
+                                                       : live::erDamage(sweep_intent, sec.max_hp, dmg_scale, hp_pct);
                 if (sec_dmg > 0) {
                     const uint32_t sec_tag = source_tag | 2u | (static_cast<uint32_t>(std::min(255.f, std::floor(sweep_intent.damage))) << 8);
                     if (queue.enqueue(sec.chr, sec_dmg, now_tick, sec_tag)) {
