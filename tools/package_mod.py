@@ -9,7 +9,45 @@ import shutil
 import sys
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+
+# The Elden Ring build axes. One package is one exact combination; `all` is the
+# combined mc+cs+ow build. The same order is used in the package name and in the
+# mc_er_mode.txt the runtime reads on launch.
+CANONICAL_MODES: Tuple[str, ...] = ("mc", "cs", "ow")
+MODE_ALIASES = {
+    "mc": "mc",
+    "minecraft": "mc",
+    "cs": "cs",
+    "cs2": "cs",
+    "counter-strike": "cs",
+    "ow": "ow",
+    "overwatch": "ow",
+    "doomfist": "ow",
+}
+
+
+def parse_modes(value: Optional[str]) -> Tuple[str, ...]:
+    """Parse ``mc``, ``cs``, ``ow``, ``mc,cs,ow`` or ``all`` into canonical order."""
+    if not value:
+        return ()
+    raw = [part.strip().lower() for part in value.replace("+", ",").split(",") if part.strip()]
+    selected = set()
+    for part in raw:
+        if part == "all":
+            selected.update(CANONICAL_MODES)
+            continue
+        canonical = MODE_ALIASES.get(part)
+        if canonical is None:
+            raise ValueError(f"unknown mode {part!r}; use mc, cs, ow or all")
+        selected.add(canonical)
+    return tuple(mode for mode in CANONICAL_MODES if mode in selected)
+
+
+def mode_key(modes: Sequence[str]) -> str:
+    """``('mc', 'cs', 'ow')`` -> ``mc_cs_ow`` (empty -> ``''``)."""
+    return "_".join(mode for mode in CANONICAL_MODES if mode in set(modes))
 
 
 def load_spec(spec_path: Path) -> Dict[str, Any]:
@@ -39,6 +77,9 @@ class ModPackager:
         version: str = "0.1.0",
         channel: str = "nexus",
         client_jar: Optional[Path] = None,
+        modes: Optional[Sequence[str]] = None,
+        start_mode: Optional[str] = None,
+        assets_dir: Optional[Path] = None,
     ):
         self.repo_root = repo_root.resolve()
         self.spec = spec
@@ -46,6 +87,17 @@ class ModPackager:
         self.version = version
         self.channel = channel
         self.client_jar = client_jar.resolve() if client_jar else None
+        self.assets_dir = assets_dir.resolve() if assets_dir else None
+        self.modes = tuple(mode for mode in CANONICAL_MODES if mode in set(modes or ()))
+        if self.modes:
+            self.start_mode = start_mode or self.modes[0]
+            if self.start_mode not in self.modes:
+                raise ValueError(f"start mode {self.start_mode!r} is not one of {', '.join(self.modes)}")
+        else:
+            self.start_mode = None
+        # With no explicit modes this is the legacy package: it carries the MC
+        # files, exactly as before the mode split.
+        self.mc_selected = not self.modes or "mc" in self.modes
 
     def _generate_readme(self, dest_dir: Path) -> Path:
         readme_file = dest_dir / "README_INSTALL.txt"
@@ -88,9 +140,22 @@ class ModPackager:
                 " - Full high-res assets and audio are pre-packaged in mods/mc_adapter/.",
             ])
 
+        if self.modes:
+            lines.extend([
+                "",
+                "5. MODE:",
+                "------------------------------------------------------------",
+                f" - This build contains: {', '.join(self.modes)}",
+                f" - Starts in: {self.start_mode} (mc_er_mode.txt; hotkeys still switch every included mode)",
+            ])
+            mode_notes = self.spec.get("mode_notes", {})
+            for mode in self.modes:
+                for note in mode_notes.get(mode, []):
+                    lines.append(f" - [{mode}] {note}")
+
         readme_notes = self.spec.get("readme_notes", [])
         if readme_notes:
-            lines.extend(["", "5. EXTRA NOTES & CONTROLS:", "------------------------------------------------------------"])
+            lines.extend(["", "6. EXTRA NOTES & CONTROLS:", "------------------------------------------------------------"])
             for note in readme_notes:
                 lines.append(f" - {note}")
 
@@ -103,7 +168,8 @@ class ModPackager:
         out_dir = out_dir.resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        pkg_name = f"mc_{self.spec['game_id']}_v{self.version}_{self.channel}"
+        suffix = f"_{mode_key(self.modes)}" if self.modes else ""
+        pkg_name = f"mc_{self.spec['game_id']}{suffix}_v{self.version}_{self.channel}"
 
         pkg_dir = out_dir / pkg_name
         if pkg_dir.exists():
@@ -130,29 +196,60 @@ class ModPackager:
 
         shutil.copy2(dll_src, pkg_dir / dll_name)
 
-        # 2. Copy required templates / binaries
-        for req in self.spec.get("required_files", []):
-            src_path = self.repo_root / req["src"]
-            if not src_path.exists():
-                raise FileNotFoundError(f"Required file not found: {src_path}")
-            dest_path = pkg_dir / req["dest"]
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_path, dest_path)
+        # 2. Copy required templates / binaries (MC gameplay only)
+        if self.mc_selected:
+            for req in self.spec.get("required_files", []):
+                src_path = self.repo_root / req["src"]
+                if not src_path.exists():
+                    raise FileNotFoundError(f"Required file not found: {src_path}")
+                dest_path = pkg_dir / req["dest"]
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_path, dest_path)
 
-        # 3. Create default configuration files
-        for cfg_name, cfg_content in self.spec.get("default_configs", {}).items():
-            cfg_file = pkg_dir / cfg_name
-            cfg_file.write_text(cfg_content, encoding="utf-8")
+        # 3. Create default configuration files (MC gameplay only)
+        if self.mc_selected:
+            for cfg_name, cfg_content in self.spec.get("default_configs", {}).items():
+                cfg_file = pkg_dir / cfg_name
+                cfg_file.write_text(cfg_content, encoding="utf-8")
 
         # 4. Prepare asset directory
         asset_rel_dir = Path(self.spec.get("asset_dir", "mods/mc_adapter"))
         target_asset_dir = pkg_dir / asset_rel_dir
         target_asset_dir.mkdir(parents=True, exist_ok=True)
 
-        # Copy placeholder HUD atlas if exists
+        # Copy placeholder HUD atlas if exists (MC gameplay only)
         placeholder_atlas = self.repo_root / "assets" / "source" / "textures" / "mc_hud_atlas.png"
-        if placeholder_atlas.exists():
+        if self.mc_selected and placeholder_atlas.exists():
             shutil.copy2(placeholder_atlas, target_asset_dir / "mc_hud_atlas.png")
+
+        # Per-mode configuration files (e.g. the OW viewmodel tuning file).
+        mode_configs = self.spec.get("mode_configs", {})
+        for mode in self.modes:
+            for cfg_name, cfg_content in mode_configs.get(mode, {}).items():
+                (pkg_dir / cfg_name).write_text(cfg_content, encoding="utf-8")
+
+        # Optional private asset bundle (textures, sounds, viewmodels). The bundle
+        # mirrors the game root, e.g. mods/mc_adapter/ow_gauntlet.bin, and is copied
+        # last so it replaces the EULA-safe placeholders. It is never committed.
+        if self.assets_dir is not None:
+            if not self.assets_dir.is_dir():
+                raise FileNotFoundError(f"Assets directory not found: {self.assets_dir}")
+            for src in sorted(self.assets_dir.rglob("*")):
+                if not src.is_file():
+                    continue
+                dest = pkg_dir / src.relative_to(self.assets_dir)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest)
+
+        # The runtime reads start_mode from mc_er_mode.txt on launch.
+        if self.modes:
+            mode_file = pkg_dir / "mc_er_mode.txt"
+            mode_file.write_text(
+                "# Written by tools/package_mod.py: the mode the game starts in.\n"
+                f"start_mode={self.start_mode}\n"
+                f"available_modes={','.join(self.modes)}\n",
+                encoding="utf-8",
+            )
 
         # Channel specific assets
         if self.channel == "full" and self.client_jar and self.client_jar.exists():
@@ -238,12 +335,27 @@ def main() -> None:
     parser.add_argument("--out-dir", type=Path, default=Path("dist"), help="Output directory for generated packages")
     parser.add_argument("--version", default="0.1.0", help="Version tag (e.g. 0.1.0)")
     parser.add_argument("--channel", choices=["nexus", "full"], default="nexus", help="Distribution channel")
+    parser.add_argument("--modes", help="Elden Ring build modes: mc, cs, ow, mc,cs,ow or all")
+    parser.add_argument("--start-mode", help="Mode the package starts in (default: the first of --modes)")
+    parser.add_argument("--assets-dir", type=Path, help="Private asset bundle mirroring the game root (textures/sounds/viewmodels)")
     parser.add_argument("--client-jar", type=Path, help="Minecraft client.jar path for extracting assets")
     parser.add_argument("--no-zip", action="store_true", help="Do not create zip archive")
     parser.add_argument("--package-assets", action="store_true", help="Package a standalone community assets pack")
     parser.add_argument("--assets-dir", type=Path, help="Path to existing mods/mc_adapter assets folder to package")
 
     args = parser.parse_args()
+
+    try:
+        modes = parse_modes(args.modes)
+    except ValueError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        sys.exit(1)
+    if args.start_mode and not modes:
+        print("[ERROR] --start-mode requires --modes", file=sys.stderr)
+        sys.exit(1)
+    if args.start_mode and args.start_mode not in modes:
+        print(f"[ERROR] start mode {args.start_mode!r} is not one of {', '.join(modes)}", file=sys.stderr)
+        sys.exit(1)
 
     if args.package_assets:
         assets_dir = args.assets_dir or Path("mods/mc_adapter")
@@ -274,6 +386,9 @@ def main() -> None:
         version=args.version,
         channel=args.channel,
         client_jar=args.client_jar,
+        modes=modes,
+        start_mode=args.start_mode,
+        assets_dir=args.assets_dir,
     )
 
     try:
