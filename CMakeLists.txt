@@ -91,6 +91,8 @@ add_library(mc_core STATIC
     include/mc/contracts/mod_manager.hpp
     src/animator.cpp
     src/voxel_world.cpp
+    include/mc/collision_field.hpp
+    src/collision_field.cpp
     src/ballistics.cpp
     src/combat.cpp
     src/consumables.cpp

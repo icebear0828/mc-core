@@ -12,6 +12,7 @@ add_executable(mc_tests
     test_ini.cpp
     test_death.cpp
     test_voxel_world.cpp
+    test_collision_field.cpp
     test_combat.cpp
     test_ballistics.cpp
     test_wukong_adapter.cpp
