@@ -110,6 +110,8 @@ add_library(mc_core STATIC
     src/recipe.cpp
     src/crafting_session.cpp
     src/inventory_persistence.cpp
+    include/mc/save_snapshot.hpp
+    src/save_snapshot.cpp
 )
 
 target_include_directories(mc_core
