@@ -50,6 +50,7 @@ add_executable(mc_tests
     test_eldenring_flight.cpp
     test_eldenring_state.cpp
     test_eldenring_damage.cpp
+    test_eldenring_damage_scaling.cpp
     test_eldenring_steve.cpp
     test_eldenring_melee.cpp
     test_eldenring_los.cpp

@@ -3,6 +3,7 @@
 #include "cs_economy.hpp"
 #include "cs_scope.hpp"
 #include "cs_weapon_registry.hpp"
+#include "eldenring_damage_scaling.hpp"
 #include "mc/crafting_table_layout.hpp"
 
 namespace erov {
@@ -930,8 +931,7 @@ void DrawHud(const HudState& hud, float w, float h) {
     auto sprite = [&](const mc::HudRect& r, const mc::hud::HudUV& uv) {
         dl->AddImage(atlas, {r.x, r.y}, {r.x + r.w, r.y + r.h}, {uv.u0, uv.v0}, {uv.u1, uv.v1});
     };
-    const float ratio_hp = hud.max_hp > 0 ? std::clamp(static_cast<float>(hud.hp) / static_cast<float>(hud.max_hp), 0.f, 1.f) : 0.f;
-    const int hp_halves = static_cast<int>(std::ceil(ratio_hp * 20.f));
+    const int hp_halves = eldenring::live::heartHalvesFromVitals(hud.hp, hud.max_hp);
     if (g_atlas_ready) {
         // Real Minecraft sprites at vanilla positions (mc::HudLayout), the Minecraft GUI scale of this resolution.
         sprite(layout.hotbar(), mc::hud::kUV_HOTBAR);

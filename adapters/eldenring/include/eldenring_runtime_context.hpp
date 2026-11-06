@@ -212,6 +212,11 @@ struct ModeConfig {
     std::atomic<int> roll_vk{roll::kVkShift};
     std::atomic<float> damage_scale{20.0f};
     std::atomic<float> damage_hp_percent{0.02f};
+    // mc::DamageScalingConfig, wired to the ER melee path (eldenring_damage_scaling.hpp).
+    std::atomic<bool> damage_scaling_enabled{true};
+    std::atomic<float> damage_mc_to_host_base{20.0f};
+    std::atomic<float> damage_mc_to_host_per_level{0.0f};
+    std::atomic<float> damage_host_to_mc_divisor{5.0f};
     std::atomic<float> sweep_radius{3.0f};
     std::atomic<bool> require_victim_updating{false};
     std::atomic<float> sound_volume{0.8f};
@@ -437,6 +442,10 @@ public:
         mode_.roll_vk.store(roll::kVkShift);
         mode_.damage_scale.store(20.0f);
         mode_.damage_hp_percent.store(0.02f);
+        mode_.damage_scaling_enabled.store(true);
+        mode_.damage_mc_to_host_base.store(20.0f);
+        mode_.damage_mc_to_host_per_level.store(0.0f);
+        mode_.damage_host_to_mc_divisor.store(5.0f);
         mode_.sweep_radius.store(3.0f);
         mode_.require_victim_updating.store(false);
         mode_.sound_volume.store(0.8f);

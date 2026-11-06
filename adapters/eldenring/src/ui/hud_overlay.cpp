@@ -275,6 +275,10 @@ void SetupOverlay() {
                 else if (key == "kb_force") g_kb_force.store(value);
                 else if (key == "damage_scale") g_damage_scale.store(std::clamp(value, 0.0f, 200.0f));
                 else if (key == "damage_hp_percent") g_damage_hp_percent.store(std::clamp(value, 0.0f, 1.0f));
+                else if (key == "damage_scaling") g_damage_scaling_enabled.store(value != 0.f);
+                else if (key == "mc_to_host_base") g_damage_mc_to_host_base.store(std::clamp(value, 0.0f, 500.0f));
+                else if (key == "mc_to_host_per_level") g_damage_mc_to_host_per_level.store(std::clamp(value, 0.0f, 50.0f));
+                else if (key == "host_to_mc_divisor") g_damage_host_to_mc_divisor.store(std::clamp(value, 0.1f, 100.0f));
                 else if (key == "sweep_radius") g_sweep_radius.store(std::clamp(value, 0.5f, 10.0f));
                 else if (key == "hide_slots") g_hide_slots.store(static_cast<uint32_t>(strtoul(entry.value.c_str(), nullptr, 0)));
                 else if (key == "hide_mask1") g_hide_mask1.store(static_cast<uint32_t>(strtoul(entry.value.c_str(), nullptr, 0)));

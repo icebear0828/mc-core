@@ -56,6 +56,10 @@ std::atomic<int>& g_roll_vk = g_mode.roll_vk;
 std::atomic<bool>& g_require_victim_updating = g_mode.require_victim_updating;
 std::atomic<float>& g_damage_scale = g_mode.damage_scale;
 std::atomic<float>& g_damage_hp_percent = g_mode.damage_hp_percent;
+std::atomic<bool>& g_damage_scaling_enabled = g_mode.damage_scaling_enabled;
+std::atomic<float>& g_damage_mc_to_host_base = g_mode.damage_mc_to_host_base;
+std::atomic<float>& g_damage_mc_to_host_per_level = g_mode.damage_mc_to_host_per_level;
+std::atomic<float>& g_damage_host_to_mc_divisor = g_mode.damage_host_to_mc_divisor;
 std::atomic<float>& g_sweep_radius = g_mode.sweep_radius;
 DamageQueue& g_queue = g_combat.damage_queue;
 
