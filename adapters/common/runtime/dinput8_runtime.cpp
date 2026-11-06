@@ -51,7 +51,10 @@ bool Dinput8Runtime::initialize(const HostConfig& config) {
 
 void Dinput8Runtime::shutdown() {
     if (!initialized_) return;
-    frame_ = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(frame_mutex_);
+        frame_ = nullptr;
+    }
     // Remove what is still installed before the hook engine goes away: a
     // detour that outlives MinHook would jump through a freed trampoline.
     bool removed = true;
@@ -88,7 +91,25 @@ void Dinput8Runtime::shutdown() {
 }
 
 void Dinput8Runtime::setFrameCallback(std::function<void(float)> callback) {
+    std::lock_guard<std::mutex> lock(frame_mutex_);
     frame_ = std::move(callback);
+}
+
+void Dinput8Runtime::deliverFrame() {
+    std::function<void(float)> callback;
+    {
+        std::lock_guard<std::mutex> lock(frame_mutex_);
+        callback = frame_;
+    }
+    if (!callback) return;
+    const auto now = std::chrono::steady_clock::now();
+    float delta_seconds = 0.f;
+    if (have_last_frame_) {
+        delta_seconds = std::chrono::duration<float>(now - last_frame_).count();
+    }
+    last_frame_ = now;
+    have_last_frame_ = true;
+    callback(delta_seconds);
 }
 
 bool Dinput8Runtime::ensureHookEngine() {
@@ -134,7 +155,18 @@ bool Dinput8Runtime::installPresentHooks(const PresentCallbacks& callbacks) {
         present_installed_ = false;
         present_ = {};
     }
-    if (!bindings_.install_present(callbacks)) return false;
+    // The per-frame callback is delivered from the present notification, which is
+    // the only per-frame signal a dinput8 proxy owns. The wrapper reads frame_ at
+    // call time, so setFrameCallback() after the install still takes effect.
+    PresentCallbacks effective = callbacks;
+    if (callbacks.on_present) {
+        const std::function<void()> user_present = callbacks.on_present;
+        effective.on_present = [this, user_present]() {
+            user_present();
+            deliverFrame();
+        };
+    }
+    if (!bindings_.install_present(effective)) return false;
     present_ = callbacks;
     present_installed_ = true;
     return true;

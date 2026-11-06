@@ -753,13 +753,24 @@ void NotifyPresent() {
     if (g_on_present) g_on_present();
 }
 
-HRESULT STDMETHODCALLTYPE PresentDetour(IDXGISwapChain* sc, UINT sync, UINT flags) {
-    // SEH forbids a local object with a destructor here, so the in-flight count
-    // is manual (one return path at the end).
-    g_detours_in_flight.fetch_add(1, std::memory_order_relaxed);
-    // The host runtime's per-frame notification (frame-time accounting and the
-    // periodic status report) arrives through the seam; the overlay keeps its
-    // own drawing below.
+void NotifyResize() {
+    std::lock_guard<std::mutex> lock(g_on_present_mutex);
+    if (g_on_resize) g_on_resize();
+}
+
+void RenderFrameGuarded(IDXGISwapChain* sc) {
+    __try {
+        RenderFrame(sc);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_hook_state.on_exception();
+        Logf("overlay: exception while drawing, overlay disabled");
+    }
+}
+
+// The body lives outside PresentDetour so the detour can wrap the whole call in
+// __try/__finally: an exception anywhere (not just in RenderFrame) must still
+// decrement the in-flight counter, or teardown would wait forever.
+HRESULT PresentBody(IDXGISwapChain* sc, UINT sync, UINT flags) {
     NotifyPresent();
     if (g_steve_cfg.depth_probe) probe::OnPresent();
     if (!g_hook_state.failed()) {
@@ -776,17 +787,19 @@ HRESULT STDMETHODCALLTYPE PresentDetour(IDXGISwapChain* sc, UINT sync, UINT flag
                 g_hook_state.on_init_ok();
             }
         }
-        if (g_s.ready) {
-            __try {
-                RenderFrame(sc);
-            } __except (EXCEPTION_EXECUTE_HANDLER) {
-                g_hook_state.on_exception();
-                Logf("overlay: exception while drawing, overlay disabled");
-            }
-        }
+        if (g_s.ready) RenderFrameGuarded(sc);
     }
-    const HRESULT present_hr = g_present_orig(sc, sync, flags);
-    g_detours_in_flight.fetch_sub(1, std::memory_order_relaxed);
+    return g_present_orig(sc, sync, flags);
+}
+
+HRESULT STDMETHODCALLTYPE PresentDetour(IDXGISwapChain* sc, UINT sync, UINT flags) {
+    g_detours_in_flight.fetch_add(1, std::memory_order_relaxed);
+    HRESULT present_hr = E_FAIL;
+    __try {
+        present_hr = PresentBody(sc, sync, flags);
+    } __finally {
+        g_detours_in_flight.fetch_sub(1, std::memory_order_relaxed);
+    }
     return present_hr;
 }
 
@@ -797,6 +810,7 @@ HRESULT STDMETHODCALLTYPE ResizeDetour(IDXGISwapChain* sc, UINT count, UINT w, U
         g_hook_state.on_resize();
         Logf("overlay: resize, resources released");
     }
+    NotifyResize();
     return g_resize_orig(sc, count, w, h, fmt, flags);
 }
 
@@ -913,16 +927,18 @@ bool InstallOverlayHooks(HudProvider provider, LogFn log) {
     // Only remove what this call created: a failed second install must not tear
     // down the hooks of a successful first one, nor clear their trampolines.
     auto rollback = [&](size_t count) {
-        for (size_t j = 0; j < count; ++j) {
-            MH_DisableHook(specs[j].target);
-        }
-        if (WaitForDetoursToDrain()) {
+        if (count > 0) {
             for (size_t j = 0; j < count; ++j) {
-                MH_RemoveHook(specs[j].target);
-                *specs[j].original = nullptr;
+                MH_DisableHook(specs[j].target);
             }
-        } else {
-            Logf("overlay: a detour is still in flight; rollback left its hooks disabled");
+            if (WaitForDetoursToDrain()) {
+                for (size_t j = 0; j < count; ++j) {
+                    MH_RemoveHook(specs[j].target);
+                    *specs[j].original = nullptr;
+                }
+            } else {
+                Logf("overlay: a detour is still in flight; rollback left its hooks disabled");
+            }
         }
         g_provider = old_provider;
         g_log = old_log;
@@ -953,9 +969,10 @@ bool InstallOverlayHooks(HudProvider provider, LogFn log) {
 
 } // namespace detail
 
-void SetPresentCallbacks(std::function<void()> on_present) {
+void SetPresentCallbacks(std::function<void()> on_present, std::function<void()> on_resize) {
     std::lock_guard<std::mutex> lock(detail::g_on_present_mutex);
     detail::g_on_present = std::move(on_present);
+    detail::g_on_resize = std::move(on_resize);
 }
 
 void HostPresentTick() {
@@ -981,6 +998,7 @@ void Uninstall() {
     {
         std::lock_guard<std::mutex> lock(detail::g_on_present_mutex);
         detail::g_on_present = {};
+        detail::g_on_resize = {};
     }
     // The D3D12/ImGui resources are owned by Teardown() on the render thread.
     // This path runs only at shutdown, so they are left to process exit rather

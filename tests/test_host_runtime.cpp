@@ -237,6 +237,20 @@ TEST(ReframeworkRuntime, ShutdownLogsBeforeTheApiGoesAway) {
     EXPECT_EQ(api.sequence.back(), "api_shutdown");
 }
 
+TEST(ReframeworkRuntime, ShutdownDropsTheApiPointer) {
+    FakeReframeworkApi api;
+    mc::host::ReframeworkRuntime runtime(&api);
+    ASSERT_TRUE(runtime.initialize(HostConfig{}));
+
+    runtime.shutdown();
+    EXPECT_EQ(runtime.hostApi(), nullptr) << "shutdown may release the API; the runtime must not keep the pointer";
+
+    // A diagnostic after shutdown must not reach (possibly freed) API memory.
+    const size_t logs_before = api.logs.size();
+    runtime.log("after shutdown");
+    EXPECT_EQ(api.logs.size(), logs_before);
+}
+
 TEST(ReframeworkRuntime, ApiInitializationFailureAborts) {
     FakeReframeworkApi api;
     api.initialize_result = false;
@@ -319,6 +333,7 @@ struct Dinput8Probe {
     int input_uninstalls{0};
     bool last_present_has_callback{false};
     bool last_input_has_callback{false};
+    PresentCallbacks last_present;
     std::vector<std::string> log_lines;
 };
 
@@ -337,6 +352,7 @@ void ProbeLogLine(const char* line) { g_probe->log_lines.emplace_back(line); }
 bool ProbeInstallPresent(const PresentCallbacks& callbacks) {
     ++g_probe->present_installs;
     g_probe->last_present_has_callback = static_cast<bool>(callbacks.on_present);
+    g_probe->last_present = callbacks;
     return g_probe->install_present_result;
 }
 void ProbeUninstallPresent() { ++g_probe->present_uninstalls; }
@@ -447,6 +463,36 @@ TEST_F(Dinput8RuntimeTest, InstallHooksDelegateAndStartTheHookEngineOnce) {
     EXPECT_EQ(probe.release_minhook_calls, 1);
     EXPECT_EQ(probe.present_uninstalls, 1) << "shutdown must remove what is still installed";
     EXPECT_EQ(probe.input_uninstalls, 1);
+}
+
+TEST_F(Dinput8RuntimeTest, FrameCallbackRunsFromThePresentNotification) {
+    mc::host::Dinput8Runtime runtime(ProbeBindings());
+    HostConfig config;
+    config.enable_overlay = true;
+    ASSERT_TRUE(runtime.initialize(config));
+
+    int frames = 0;
+    int presents = 0;
+    float last_delta = -1.f;
+    runtime.setFrameCallback([&](float delta_seconds) {
+        ++frames;
+        last_delta = delta_seconds;
+    });
+
+    PresentCallbacks present;
+    present.on_present = [&] { ++presents; };
+    ASSERT_TRUE(runtime.installPresentHooks(present));
+    ASSERT_TRUE(probe.last_present.on_present);
+
+    probe.last_present.on_present();
+    EXPECT_EQ(presents, 1) << "the adapter's own present work must still run";
+    EXPECT_EQ(frames, 1);
+    EXPECT_GE(last_delta, 0.f);
+
+    probe.last_present.on_present();
+    EXPECT_EQ(presents, 2);
+    EXPECT_EQ(frames, 2);
+    EXPECT_GE(last_delta, 0.f);
 }
 
 TEST_F(Dinput8RuntimeTest, EmptyCallbackSetsUninstallWithoutTheInstaller) {

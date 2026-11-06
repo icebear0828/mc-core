@@ -15,7 +15,9 @@
 // the adapter's checks. An installation always needs a matching uninstaller:
 // the runtime refuses one it could not remove.
 
+#include <chrono>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -74,12 +76,20 @@ private:
     // engine is ready (or when the adapter binds none and owns it itself).
     bool ensureHookEngine();
 
+    // Delivers one frame to the callback from setFrameCallback(), called from
+    // the present notification on the render thread.
+    void deliverFrame();
+
     Bindings bindings_;
     HostConfig config_;
     // Derived from the bindings in the constructor: a capability bit is true
     // only when this runtime can actually perform the operation.
     HostRuntimeInfo info_;
+    std::mutex frame_mutex_;
     std::function<void(float)> frame_;
+    // Render-thread only: the timing state for the frame callback.
+    std::chrono::steady_clock::time_point last_frame_{};
+    bool have_last_frame_{false};
     PresentCallbacks present_;
     InputCallbacks input_;
     bool initialized_{false};

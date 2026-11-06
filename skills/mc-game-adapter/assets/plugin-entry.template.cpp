@@ -7,6 +7,7 @@
 // -DMC_ENABLE_RE4=ON. This file only wires the adapter and Session into the host's
 // callbacks.
 #include "{{GAME_NAME_LOWER}}_adapter.hpp"
+#include "mc/contracts/host_runtime.hpp"
 #include "mc/hud.hpp"
 #include "mc/session.hpp"
 

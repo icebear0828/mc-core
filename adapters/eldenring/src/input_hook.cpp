@@ -36,6 +36,14 @@ std::set<void*> g_hooked_functions;
 // can restore interception without waiting for CreateDevice again.
 std::set<void*> g_known_devices;
 std::atomic<bool> g_hooks_enabled{true};
+// Detours currently executing. Uninstall() disables the hooks, waits for this to
+// drain, and only then frees the trampolines.
+std::atomic<int> g_detours_in_flight{0};
+
+struct DetourGuard {
+    DetourGuard() { g_detours_in_flight.fetch_add(1, std::memory_order_relaxed); }
+    ~DetourGuard() { g_detours_in_flight.fetch_sub(1, std::memory_order_relaxed); }
+};
 
 using ComAddRefFn = ULONG(STDMETHODCALLTYPE*)(void*);
 
@@ -109,6 +117,7 @@ void Count(Kind k, std::atomic<unsigned>& mouse, std::atomic<unsigned>& keyboard
 }
 
 HRESULT STDMETHODCALLTYPE GetStateDetour(void* self, DWORD cb, LPVOID data) {
+    DetourGuard guard;
     const HRESULT hr = g_state_orig(self, cb, data);
     if (FAILED(hr) && KindOf(self) == Kind::Keyboard) {
         ++g_kb_failed;
@@ -170,6 +179,7 @@ HRESULT STDMETHODCALLTYPE GetStateDetour(void* self, DWORD cb, LPVOID data) {
 }
 
 HRESULT STDMETHODCALLTYPE GetDataDetour(void* self, DWORD cb, LPDIDEVICEOBJECTDATA data, LPDWORD count, DWORD flags) {
+    DetourGuard guard;
     const HRESULT hr = g_data_orig(self, cb, data, count, flags);
     if (SUCCEEDED(hr)) {
         const Kind k = KindOf(self);
@@ -246,6 +256,7 @@ void HookDeviceFunctions(void* device) {
 }
 
 HRESULT STDMETHODCALLTYPE CreateDeviceDetour(void* self, REFGUID guid, void** out, LPUNKNOWN outer) {
+    DetourGuard guard;
     const HRESULT hr = g_create_orig(self, guid, out, outer);
     if (SUCCEEDED(hr) && out != nullptr && *out != nullptr) {
         const Kind k = IsEqualGUID(guid, GUID_SysMouse)      ? Kind::Mouse
@@ -296,6 +307,23 @@ bool LeftHeld() { return g_left_prev.load(); }
 bool TakeRightClick() { return g_right_edge.exchange(false); }
 bool RightHeld() { return g_right_prev.load(); }
 
+// Waits until no input detour is in flight. MH_DisableHook may suspend a thread
+// between entering a detour and its first instruction, so a grace period plus
+// two consecutive zero samples is required before the trampolines may be freed.
+static bool WaitForDetoursToDrain() {
+    Sleep(100);
+    int zero_samples = 0;
+    for (int i = 0; i < 500 && zero_samples < 2; ++i) {
+        if (g_detours_in_flight.load(std::memory_order_relaxed) == 0) {
+            ++zero_samples;
+        } else {
+            zero_samples = 0;
+        }
+        if (zero_samples < 2) Sleep(10);
+    }
+    return zero_samples >= 2;
+}
+
 void Uninstall() {
     // Stop accepting new devices first: a CreateDevice racing the teardown must
     // not install a hook after the snapshot below.
@@ -308,12 +336,16 @@ void Uninstall() {
         g_kinds.clear();
         // g_known_devices is deliberately kept: a later install re-hooks it.
     }
-    // Disable first and give an in-flight detour a moment to return before the
-    // trampolines are freed. MinHook may suspend threads, so never call it
-    // while holding g_mutex.
+    // Disable first and wait for the detours to drain before the trampolines are
+    // freed. MinHook may suspend threads, so never call it while holding g_mutex.
     if (!hooks.empty()) {
         for (void* fn : hooks) MH_DisableHook(fn);
-        Sleep(50);
+        if (!WaitForDetoursToDrain()) {
+            // Never free a trampoline a detour may still be executing. The hooks
+            // are disabled; the trampolines stay allocated until process exit.
+            if (g_log) g_log("input: a detour is still in flight; hooks left disabled, trampolines not freed");
+            return;
+        }
         for (void* fn : hooks) MH_RemoveHook(fn);
     }
     {

@@ -448,32 +448,20 @@ void SetupOverlay() {
     // InstallPresentHooks below), so a refused host never installs it.
 }
 
-namespace {
-
-void OverlayLog(const char* fmt, ...) {
-    char msg[512];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(msg, sizeof(msg), fmt, args);
-    va_end(args);
-    Log("%s", msg);
-}
-
-} // namespace
-
 bool InstallPresentHooks(const mc::host::PresentCallbacks& callbacks) {
     // The adapter keeps its own D3D12 overlay, so its installer is the one that
     // creates the detours; the runtime owns when that happens and when they go.
-    erov::SetPresentCallbacks(callbacks.on_present);
+    erov::SetPresentCallbacks(callbacks.on_present, callbacks.on_resize);
     if (!EnsureMinHook()) {
         Log("overlay: MH_Initialize failed");
         return false;
     }
-    return erov::Install(&HudProvider, &OverlayLog);
+    // diagnostics::Log already matches erov::LogFn; no per-subsystem wrapper needed.
+    return erov::Install(&HudProvider, &eldenring::diagnostics::Log);
 }
 
 void UninstallPresentHooks() {
-    erov::SetPresentCallbacks({});
+    erov::SetPresentCallbacks({}, {});
     erov::Uninstall();
 }
 

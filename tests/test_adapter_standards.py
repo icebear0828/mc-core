@@ -92,7 +92,10 @@ def test_plugin_entry_template_leaves_entry_boilerplate_to_the_host_runtime():
     template = (SKILL_ASSETS / "plugin-entry.template.cpp").read_text(encoding="utf-8")
     assert "DllMain" not in template, "the host runtime owns DllMain"
     assert "MH_CreateHook" not in template, "the host runtime owns MinHook"
-    assert "MC_ENABLE_RE4" in template, "the template must point RE4 at the REFramework runtime"
+    assert '#include "mc/contracts/host_runtime.hpp"' in template, "the template must depend on the host runtime contract"
+    assert "mc::host::Dinput8Runtime" in template, "the template must point dinput8 games at the dinput8 runtime"
+    assert "mc::host::ReframeworkRuntime" in template, "the template must point RE4 at the REFramework runtime"
+    assert "MC_ENABLE_RE4" in template, "the template must document the RE4 build gate"
     assert (REPO_ROOT / "include" / "mc" / "contracts" / "host_runtime.hpp").exists()
 
 

@@ -84,7 +84,9 @@ public:
     // Removes every installed hook and releases the hook engine. Idempotent.
     virtual void shutdown() = 0;
 
-    // Called once per rendered frame; delta in seconds. An empty callback clears it.
+    // Called once per rendered frame; delta in seconds. An empty callback clears
+    // it. A host delivers it from its present path, so the adapter must also
+    // install present hooks for frames to arrive.
     virtual void setFrameCallback(std::function<void(float)> callback) = 0;
 
     // Installs the present/resize notifications. An empty set uninstalls them.

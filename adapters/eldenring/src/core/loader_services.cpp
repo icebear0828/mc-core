@@ -714,19 +714,11 @@ void ComRelease(void* iface) {
     reinterpret_cast<ComReleaseFn>(vtable[2])(iface);
 }
 
-void InputLog(const char* fmt, ...) {
-    char msg[512];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(msg, sizeof(msg), fmt, args);
-    va_end(args);
-    Log("%s", msg);
-}
-
 } // namespace
 
 bool InstallInputHooks(const mc::host::InputCallbacks& callbacks) {
-    erin::SetLog(&InputLog);
+    // diagnostics::Log already matches erin::LogFn; no per-subsystem wrapper needed.
+    erin::SetLog(&eldenring::diagnostics::Log);
     erin::SetEnabled(true);
     std::vector<void*> release_later;
     {
@@ -737,7 +729,7 @@ bool InstallInputHooks(const mc::host::InputCallbacks& callbacks) {
         std::vector<void*> pending;
         pending.swap(g_pending_input_ifaces);
         if (!pending.empty()) {
-            Log("input: %zu DirectInput interface(s) appeared before the environment gate; hooking them late "
+            Log("input: %zu DirectInput interface(s) appeared before the input hooks were installed; hooking them late "
                 "(devices created before this point are not covered)",
                 pending.size());
             if (g_known_input_iface != nullptr) ComRelease(g_known_input_iface);
@@ -793,9 +785,11 @@ HRESULT WINAPI DirectInput8CreateImpl(HINSTANCE hinst, DWORD version, REFIID rii
             }
             g_input_callback(*out);
         } else if (g_input_accepting) {
-            // The loader thread registers the callback right after the
-            // environment gate. Keep a reference until then so a release by
-            // the game cannot leave us hooking freed memory.
+            // The loader thread registers the callback right after the environment
+            // gate. Interfaces that appear before it are queued and their
+            // CreateDevice is hooked late; devices created before that late hook
+            // are not covered. Hooking before the gate was rejected because it
+            // would touch an EAC-protected host.
             ComAddRef(*out);
             g_pending_input_ifaces.push_back(*out);
         }

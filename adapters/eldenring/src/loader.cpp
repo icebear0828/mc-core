@@ -59,6 +59,10 @@ constinit const mc::host::Dinput8Runtime::Bindings kBindings{
 DWORD WINAPI LoaderEntry(LPVOID) {
     mc::host::Dinput8Runtime runtime(kBindings);
     const DWORD result = eldenring::loader_detail::LoaderThread(&runtime);
+    // LoaderThread only returns on a refused or failed bootstrap. Release any
+    // DirectInput interface the proxy queued before the input hooks came up, so
+    // a refused host does not leak COM references for the process lifetime.
+    eldenring::loader_detail::UninstallInputHooks();
     runtime.shutdown();
     return result;
 }

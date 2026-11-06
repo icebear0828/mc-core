@@ -88,6 +88,7 @@ inline LogFn g_log = nullptr;
 // The mutex keeps install/uninstall on the loader thread from racing the present thread.
 inline std::mutex g_on_present_mutex;
 inline std::function<void()> g_on_present;
+inline std::function<void()> g_on_resize;
 // Targets of the four detours, so Uninstall() removes exactly what Install() created.
 inline void* g_hook_targets[4] = {nullptr, nullptr, nullptr, nullptr};
 // Detours currently executing. Uninstall() disables the hooks, waits for this to

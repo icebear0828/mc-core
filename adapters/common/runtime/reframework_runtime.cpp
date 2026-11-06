@@ -42,7 +42,12 @@ void ReframeworkRuntime::shutdown() {
     // Log while the host API is still alive: api_->shutdown() may release the
     // object and the line must not touch it afterwards.
     log("reframework: shut down");
-    if (api_ != nullptr) api_->shutdown();
+    if (api_ != nullptr) {
+        api_->shutdown();
+        // The host glue may have released the vtable in shutdown(); drop the
+        // pointer so a later log() falls back to the sink instead of a UAF.
+        api_ = nullptr;
+    }
     initialized_ = false;
 }
 

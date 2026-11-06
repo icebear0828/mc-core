@@ -202,9 +202,10 @@ bool Install(HudProvider provider, LogFn log);
 // Safe to call when nothing is installed.
 void Uninstall();
 
-// Per-frame notification supplied by the host runtime. Called at the start of
-// the Present detour; an empty function clears it.
-void SetPresentCallbacks(std::function<void()> on_present);
+// Per-frame and resize notifications supplied by the host runtime. Called at the
+// start of the Present detour and from the ResizeBuffers detour; an empty
+// function clears the matching notification.
+void SetPresentCallbacks(std::function<void()> on_present, std::function<void()> on_resize = {});
 
 // The adapter's per-frame work, exposed so the host runtime can hand it back
 // as the Present notification.
