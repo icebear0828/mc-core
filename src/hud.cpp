@@ -137,6 +137,7 @@ const char* HudEngine::getItemDisplayName(ItemId item) {
         case ItemId::IronSword: return "Iron Sword";
         case ItemId::NetheriteSword: return "Netherite Sword";
         case ItemId::CraftingTable: return "Crafting Table";
+        case ItemId::BlockChest: return "Chest";
         case ItemId::Anvil: return "Anvil";
         case ItemId::WoodPlanks: return "Wood Planks";
         case ItemId::Stick: return "Stick";

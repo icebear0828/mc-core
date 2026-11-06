@@ -24,7 +24,8 @@ bool isDragSlot(const mc::SlotRef& ref) {
         case mc::SlotRef::Kind::Inventory:
         case mc::SlotRef::Kind::Offhand:
         case mc::SlotRef::Kind::Armor:
-        case mc::SlotRef::Kind::Crafting: return true;
+        case mc::SlotRef::Kind::Crafting:
+        case mc::SlotRef::Kind::Chest: return true;
         default: return false;
     }
 }
@@ -40,6 +41,8 @@ uint64_t dragSlotKey(const mc::SlotRef& ref) {
             return uint64_t{1} << (mc::Inventory::kSlots + 1 + std::clamp(ref.index, 0, mc::Inventory::kArmorSlots - 1));
         case mc::SlotRef::Kind::Crafting:
             return uint64_t{1} << (mc::Inventory::kSlots + 1 + mc::Inventory::kArmorSlots + std::clamp(ref.index, 0, 8));
+        case mc::SlotRef::Kind::Chest:
+            return uint64_t{1} << (mc::Inventory::kSlots + 1 + mc::Inventory::kArmorSlots + 9 + std::clamp(ref.index, 0, 26));
         default: return 0;
     }
 }
@@ -72,15 +75,19 @@ void InventoryController::tickWithInput(const InventoryInputState& input, mc::In
     const bool want = input.fg && input.want_suppress && ctx.mode().mc_mode.load(std::memory_order_relaxed) && !input.player_dead;
     bool is_open = ctx.ui().inv_open.load(std::memory_order_relaxed);
     bool craft_open = ctx.ui().craft_open.load(std::memory_order_relaxed);
+    bool chest_open = ctx.ui().chest_open.load(std::memory_order_relaxed);
 
     auto close_any = [&](const char* why) {
         if (craft_open) {
             closeCraft(why, inv, ctx);
+        } else if (chest_open) {
+            closeChest(why, inv, ctx);
         } else {
             close(why, inv, ctx);
         }
         is_open = false;
         craft_open = false;
+        chest_open = false;
     };
 
     if (input.key_down && !prev_key_) {
@@ -91,9 +98,16 @@ void InventoryController::tickWithInput(const InventoryInputState& input, mc::In
             const mc::ItemId held =
                 (selected >= 0 && selected < mc::Inventory::kHotbar) ? inv.slot(selected).item : mc::ItemId::None;
             const bool table_targeted = ctx.ui().craft_table_targeted.load(std::memory_order_relaxed);
+            const bool chest_targeted = ctx.ui().chest_targeted.load(std::memory_order_relaxed);
             if (held == mc::ItemId::CraftingTable || table_targeted) {
                 openCraft(input.screen_width, input.screen_height, ctx);
                 craft_open = true;
+            } else if (chest_targeted) {
+                const mc::Cell cell{ctx.ui().chest_x.load(std::memory_order_relaxed),
+                                    ctx.ui().chest_y.load(std::memory_order_relaxed),
+                                    ctx.ui().chest_z.load(std::memory_order_relaxed)};
+                openChest(input.screen_width, input.screen_height, ctx, cell);
+                chest_open = true;
             } else {
                 open(input.screen_width, input.screen_height, ctx);
             }
@@ -161,6 +175,48 @@ void InventoryController::tickWithInput(const InventoryInputState& input, mc::In
             }
             prev_digit_[i] = input.digit_down[i];
         }
+        prev_f_ = input.f_down;
+        return;
+    }
+
+    if (chest_open) {
+        const mc::InventoryLayout lay(input.screen_width, input.screen_height, false, true);
+        const mc::SlotRef ref = lay.hitTest(mx, my);
+        const mc::Cell cell{ctx.ui().chest_x.load(std::memory_order_relaxed),
+                            ctx.ui().chest_y.load(std::memory_order_relaxed),
+                            ctx.ui().chest_z.load(std::memory_order_relaxed)};
+        auto with_chest = [&](const std::function<void(mc::Container&)>& fn) {
+            std::lock_guard<std::mutex> g(ctx.world().blocks_mutex);
+            if (mc::Container* chest = ctx.world().block_entities.getAs<mc::Container>(cell)) {
+                fn(*chest);
+                ctx.world().block_entities.touch(cell);
+            }
+        };
+        auto click = [&](mc::Button button, bool shift) {
+            switch (ref.kind) {
+                case mc::SlotRef::Kind::Chest:
+                    with_chest([&](mc::Container& chest) { mc::containerClick(chest, ref.index, button, shift, inv); });
+                    break;
+                case mc::SlotRef::Kind::Inventory:
+                    if (shift) {
+                        with_chest([&](mc::Container& chest) { mc::playerShiftClickIntoContainer(chest, inv, ref.index); });
+                    } else {
+                        inv.click(ref.index, button, shift);
+                    }
+                    break;
+                case mc::SlotRef::Kind::None: inv.clickOutside(); break;
+                default: break;
+            }
+        };
+        if (input.left_click) click(mc::Button::Left, input.shift_down);
+        if (input.right_click) {
+            click(mc::Button::Right, input.shift_down);
+            beginDrag(ref, input.right_held, input.shift_down, inv.cursor().empty());
+        } else if (drag_active_) {
+            dragTo(ref, input.right_held, input.shift_down, inv.cursor().empty(),
+                   [&]() { click(mc::Button::Right, false); });
+        }
+        for (int i = 0; i < mc::Inventory::kHotbar; ++i) prev_digit_[i] = input.digit_down[i];
         prev_f_ = input.f_down;
         return;
     }
@@ -311,6 +367,44 @@ void InventoryController::closeCraft(const char* why, mc::Inventory& inv, Runtim
     if (callbacks_.log) {
         char buf[128];
         snprintf(buf, sizeof(buf), "crafting table: closed (%s)", why);
+        callbacks_.log(buf);
+    }
+}
+
+void InventoryController::openChest(float screen_w, float screen_h, RuntimeContext& ctx, const mc::Cell& cell) {
+    ctx.ui().inv_mx.store(screen_w * 0.5f, std::memory_order_relaxed);
+    ctx.ui().inv_my.store(screen_h * 0.5f, std::memory_order_relaxed);
+    drag_active_ = false;
+    drag_visited_ = 0;
+#if defined(WIN32) && !defined(MC_CORE_TESTS)
+    int dx = 0, dy = 0;
+    erin::TakeMouseDelta(dx, dy);
+    erin::TakeLeftClick();
+    erin::TakeRightClick();
+    erin::TakeWheelNotches();
+#endif
+    ctx.ui().chest_x.store(cell.x, std::memory_order_relaxed);
+    ctx.ui().chest_y.store(cell.y, std::memory_order_relaxed);
+    ctx.ui().chest_z.store(cell.z, std::memory_order_relaxed);
+    ctx.ui().craft_open.store(false, std::memory_order_release);
+    ctx.ui().chest_open.store(true, std::memory_order_release);
+    ctx.ui().inv_open.store(true, std::memory_order_release);
+    if (callbacks_.log) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "chest: opened at (%d %d %d)", cell.x, cell.y, cell.z);
+        callbacks_.log(buf);
+    }
+}
+
+void InventoryController::closeChest(const char* why, mc::Inventory& inv, RuntimeContext& ctx) {
+    drag_active_ = false;
+    drag_visited_ = 0;
+    inv.returnCursor();
+    ctx.ui().chest_open.store(false, std::memory_order_release);
+    ctx.ui().inv_open.store(false, std::memory_order_release);
+    if (callbacks_.log) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "chest: closed (%s)", why);
         callbacks_.log(buf);
     }
 }

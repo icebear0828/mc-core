@@ -29,12 +29,13 @@ inline Cell cellOf(float x, float y, float z) {
 
 // How much of its cell a block fills. Slabs are the bottom half; a torch is a thin post. The mesh
 // builder and the collision code both read this, so a new shape is added in one place.
-enum class BlockShape : uint8_t { FullCube, BottomSlab, Torch };
+enum class BlockShape : uint8_t { FullCube, BottomSlab, Torch, ChestBox };
 
 inline constexpr BlockShape blockShape(BlockId id) {
     switch (id) {
         case BlockId::StoneSlab: return BlockShape::BottomSlab;
         case BlockId::Torch: return BlockShape::Torch;
+        case BlockId::Chest: return BlockShape::ChestBox;
         default: return BlockShape::FullCube;
     }
 }
@@ -55,6 +56,7 @@ inline constexpr BlockBox blockBox(BlockId id) {
     switch (blockShape(id)) {
         case BlockShape::BottomSlab: return {0.f, 0.f, 0.f, 1.f, 0.5f, 1.f};
         case BlockShape::Torch: return {7.f / 16.f, 0.f, 7.f / 16.f, 9.f / 16.f, 10.f / 16.f, 9.f / 16.f};
+        case BlockShape::ChestBox: return {1.f / 16.f, 0.f, 1.f / 16.f, 15.f / 16.f, 14.f / 16.f, 15.f / 16.f};
         default: return {0.f, 0.f, 0.f, 1.f, 1.f, 1.f};
     }
 }
@@ -79,6 +81,7 @@ inline mc::BlockId blockForItem(mc::ItemId item) {
         case mc::ItemId::BlockLeaves: return mc::BlockId::Leaves;
         case mc::ItemId::BlockStoneSlab: return mc::BlockId::StoneSlab;
         case mc::ItemId::Torch: return mc::BlockId::Torch;
+        case mc::ItemId::BlockChest: return mc::BlockId::Chest;
         default: return mc::BlockId::Air;
     }
 }
@@ -103,6 +106,7 @@ inline mc::ItemId itemForBlock(mc::BlockId block) {
         case mc::BlockId::Leaves: return mc::ItemId::BlockLeaves;
         case mc::BlockId::StoneSlab: return mc::ItemId::BlockStoneSlab;
         case mc::BlockId::Torch: return mc::ItemId::Torch;
+        case mc::BlockId::Chest: return mc::ItemId::BlockChest;
         default: return mc::ItemId::None;
     }
 }

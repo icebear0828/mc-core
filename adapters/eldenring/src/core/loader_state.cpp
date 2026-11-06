@@ -168,6 +168,7 @@ std::atomic<uint64_t> g_guard_sound_ms{0};
 std::atomic<bool> g_knockdown_fix{true};
 
 blocks::BlockGrid& g_blocks = g_world.block_grid;
+mc::BlockEntityRegistry& g_block_entities = g_world.block_entities;
 eldenring::tnt::ErTntManager& g_tnt_mgr = g_world.tnt_mgr;
 std::mutex& g_blocks_mutex = g_world.blocks_mutex;
 std::atomic<bool>& g_blocks_enabled = g_mode.blocks_enabled;

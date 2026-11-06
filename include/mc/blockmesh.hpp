@@ -45,6 +45,8 @@ inline FaceCells faceCellsFor(mc::BlockId id) {
         case mc::BlockId::StoneSlab:
             return {&mc::hud::kUV_BLOCK_STONE_SLAB, &mc::hud::kUV_BLOCK_STONE_SLAB, &mc::hud::kUV_BLOCK_STONE_SLAB};
         case mc::BlockId::Torch: return {&mc::hud::kUV_BLOCK_TORCH, &mc::hud::kUV_BLOCK_TORCH, &mc::hud::kUV_BLOCK_TORCH};
+        case mc::BlockId::Chest:
+            return {&mc::hud::kUV_BLOCK_PLANKS, &mc::hud::kUV_BLOCK_PLANKS, &mc::hud::kUV_BLOCK_PLANKS};
         default: return {&mc::hud::kUV_BLOCK_DIRT, &mc::hud::kUV_BLOCK_DIRT, &mc::hud::kUV_BLOCK_DIRT};
     }
 }

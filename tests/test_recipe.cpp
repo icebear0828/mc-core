@@ -461,12 +461,28 @@ TEST(RecipeBook, NewSwordsStackToOnlyOne) {
     EXPECT_EQ(maxStackSize(ItemId::WoodPlanks), 64u);
 }
 
+TEST(RecipeBook, ChestIsCraftedFromEightPlanks) {
+    RecipeBook book;
+    const Recipe* r = findResult(book, ItemId::BlockChest);
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(r->result.item, ItemId::BlockChest);
+    CraftingGrid grid = placePattern(*r);
+    EXPECT_TRUE(book.matches(*r, grid));
+
+    Inventory inv;
+    const CraftResult out = book.craft(*r, grid, inv);
+    ASSERT_TRUE(out.ok);
+    EXPECT_EQ(out.output.item, ItemId::BlockChest);
+    EXPECT_TRUE(grid.empty());
+}
+
 TEST(RecipeBook, NewItemsHaveDisplayNames) {
     EXPECT_STREQ(HudEngine::getItemDisplayName(ItemId::WoodenSword), "Wooden Sword");
     EXPECT_STREQ(HudEngine::getItemDisplayName(ItemId::StoneSword), "Stone Sword");
     EXPECT_STREQ(HudEngine::getItemDisplayName(ItemId::IronSword), "Iron Sword");
     EXPECT_STREQ(HudEngine::getItemDisplayName(ItemId::NetheriteSword), "Netherite Sword");
     EXPECT_STREQ(HudEngine::getItemDisplayName(ItemId::CraftingTable), "Crafting Table");
+    EXPECT_STREQ(HudEngine::getItemDisplayName(ItemId::BlockChest), "Chest");
     EXPECT_STREQ(HudEngine::getItemDisplayName(ItemId::Anvil), "Anvil");
     EXPECT_STREQ(HudEngine::getItemDisplayName(ItemId::WoodPlanks), "Wood Planks");
     EXPECT_STREQ(HudEngine::getItemDisplayName(ItemId::Stick), "Stick");

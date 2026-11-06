@@ -66,7 +66,7 @@ inline int palettePageFor(ItemId item) {
 }
 
 struct SlotRef {
-    enum class Kind { None, Panel, Palette, PalettePrev, PaletteNext, Inventory, Offhand, Armor, Crafting, CraftResult };
+    enum class Kind { None, Panel, Palette, PalettePrev, PaletteNext, Inventory, Offhand, Armor, Crafting, CraftResult, Chest };
     Kind kind{Kind::None};
     int index{-1}; // palette slot 0..26, inventory slot 0..35, offhand 0, armor 0..3, crafting 0..3, craft result 0
 };
@@ -79,7 +79,10 @@ public:
     static constexpr int kTopHeight = 71;
 
     // palette = false (survival): the item palette is not offered, its slots only belong to the panel.
-    InventoryLayout(float screen_w, float screen_h, bool palette = true) : palette_(palette) {
+    // chest = true: the panel shows a 27-slot container above the player's 27+9 slots (no armor,
+    // offhand, crafting or palette), using the vanilla chest-screen coordinates.
+    InventoryLayout(float screen_w, float screen_h, bool palette = true, bool chest = false)
+        : palette_(palette), chest_(chest) {
         scale_ = std::max(1, std::min(HudLayout::guiScaleFor(screen_h), static_cast<int>(screen_h * 0.95f) / kPanelH));
         const float s = static_cast<float>(scale_);
         panel_ = {static_cast<float>(static_cast<int>((screen_w - kPanelW * s) / 2.f)),
@@ -93,6 +96,8 @@ public:
     // Page arrows in the free strip above the palette slots (y = 0..17), next to the "Items" title.
     [[nodiscard]] HudRect palettePrevButton() const { return slotAt(122, 3, 12.f, 12.f); }
     [[nodiscard]] HudRect paletteNextButton() const { return slotAt(158, 3, 12.f, 12.f); }
+    // A slot of the open container (chest), 3x9 at the vanilla chest-screen position.
+    [[nodiscard]] HudRect chestSlot(int i) const { return slotAt(8 + 18 * (std::clamp(i, 0, 26) % 9), 18 + 18 * (std::clamp(i, 0, 26) / 9)); }
     [[nodiscard]] HudRect invSlot(int i) const {
         if (i < 9) return slotAt(8 + 18 * i, 142);
         const int m = i - 9;
@@ -120,6 +125,15 @@ public:
     [[nodiscard]] HudRect titleInventory() const { return slotAt(8, 72, 0.f); }
 
     [[nodiscard]] SlotRef hitTest(float x, float y) const {
+        if (chest_) {
+            for (int i = 0; i < 27; ++i) {
+                if (inside(chestSlot(i), x, y)) return {SlotRef::Kind::Chest, i};
+            }
+            for (int i = 0; i < 36; ++i) {
+                if (inside(invSlot(i), x, y)) return {SlotRef::Kind::Inventory, i};
+            }
+            return {SlotRef::Kind::Panel, -1};
+        }
         if (!palette_) {
             for (int i = 0; i < 4; ++i) {
                 if (inside(armorSlot(i), x, y)) return {SlotRef::Kind::Armor, i};
@@ -158,6 +172,7 @@ private:
     int scale_{1};
     HudRect panel_{};
     bool palette_{true};
+    bool chest_{false};
 };
 
 } // namespace mc

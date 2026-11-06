@@ -93,6 +93,8 @@ add_library(mc_core STATIC
     src/voxel_world.cpp
     src/ballistics.cpp
     src/combat.cpp
+    include/mc/block_entity.hpp
+    src/block_entity.cpp
     src/consumables.cpp
     src/elytra.cpp
     src/elytra_flight.cpp

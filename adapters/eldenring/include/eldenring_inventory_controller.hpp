@@ -8,6 +8,7 @@
 #include <string>
 
 #include "eldenring_runtime_context.hpp"
+#include "mc/blocks.hpp"
 #include "mc/inventory.hpp"
 #include "mc/inventory_layout.hpp"
 
@@ -59,6 +60,8 @@ public:
     void close(const char* why, mc::Inventory& inv, RuntimeContext& ctx);
     void openCraft(float screen_w, float screen_h, RuntimeContext& ctx);
     void closeCraft(const char* why, mc::Inventory& inv, RuntimeContext& ctx);
+    void openChest(float screen_w, float screen_h, RuntimeContext& ctx, const mc::Cell& cell);
+    void closeChest(const char* why, mc::Inventory& inv, RuntimeContext& ctx);
 
     bool isOpen(const RuntimeContext& ctx) const {
         return ctx.ui().inv_open.load(std::memory_order_relaxed);

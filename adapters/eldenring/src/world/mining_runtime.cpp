@@ -210,9 +210,24 @@ bool StepMining(float dt, bool left_held) {
 
     if (s.broken) {
         bool harvested = false;
+        mc::ItemStack spill[mc::Container::kSlots];
+        bool has_spill = false;
         {
             std::lock_guard<std::mutex> g(g_blocks_mutex);
             g_blocks.remove(s.target_cell);
+            if (id == mc::BlockId::Chest) {
+                if (const mc::Container* chest = g_block_entities.getAs<mc::Container>(s.target_cell)) {
+                    for (int i = 0; i < mc::Container::kSlots; ++i) spill[i] = chest->get(i);
+                    has_spill = true;
+                }
+                g_block_entities.remove(s.target_cell);
+            }
+        }
+        if (has_spill) {
+            std::lock_guard<std::mutex> g(g_melee_mutex);
+            for (mc::ItemStack& stack : spill) {
+                if (!stack.empty()) g_melee.inventory().add(stack);
+            }
         }
         const mc::ItemId drop = eldenring::mining::MiningController::blockDrop(id, held, is_creative);
         if (drop != mc::ItemId::None) {

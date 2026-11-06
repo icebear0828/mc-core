@@ -82,7 +82,8 @@ enum class BlockId : uint8_t {
     Glass,
     Leaves,
     StoneSlab,
-    Torch
+    Torch,
+    Chest // appended: block entities (mc/block_entity.hpp) pair it with a Container
 };
 
 enum class ItemId : uint16_t {
@@ -160,7 +161,8 @@ enum class ItemId : uint16_t {
     BlockGlass,
     BlockLeaves,
     BlockStoneSlab,
-    Torch
+    Torch,
+    BlockChest // appended
 };
 
 inline constexpr bool isSpawnEgg(ItemId item) noexcept {

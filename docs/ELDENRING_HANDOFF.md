@@ -196,6 +196,59 @@
 
 ---
 
+## 0.0.7 2026-11-07 凌晨：伤害换算与箱子（**均已实机验证**）
+
+这一夜把 6 个 SkyCraft 参考模块做成了 mc-core 纯逻辑库（PR #198–#203），并先把其中两个接进法环实机。
+
+### 已接法环并实机确认
+
+1. **伤害换算（PR #199）** —— `include/mc/damage_scaling.hpp` + `src/damage_scaling.cpp`
+   - `mc::DamageScalingConfig` 接管 ER 近战伤害的平直项；百分比项（Boss 平衡）不变。
+   - 红心行改用 `mc::HealthMirror`（`Authority::Host`）。
+   - `mc_er.ini [mc]` 新键：`damage_scaling`（默认 1）、`mc_to_host_base`（默认 20，等于旧硬编码）、
+     `mc_to_host_per_level`（默认 0）、`host_to_mc_divisor`（默认 5）。
+   - 实机 A-B-A（同敌人、满蓄力钻石剑）：
+     - A：`scaling=1, base=20` → `mc_dmg=10.50 -> 217`（210 + 6.57）
+     - B：`scaling=1, base=40` → `mc_dmg=7.00 -> 284`（280 + 4.38）
+     - C：`scaling=0, base=40`（忽略）→ `mc_dmg=10.50 -> 217`（旧公式）
+   - 接线点：`src/combat/combat_service.cpp`（近战 + 横扫）、`src/overlay_hud.cpp`（红心）、
+     `src/ui/hud_overlay.cpp`（ini）、`src/core/loader_*`（原子量）。
+   - 未接：子弹/弩箭仍走各自路径；`host_to_mc_divisor` 在法环未使用（ER HP 是权威，只镜像比例）。
+
+2. **箱子（PR #198）** —— `include/mc/block_entity.hpp` + `src/block_entity.cpp`
+   - 追加 `BlockId::Chest` / `ItemId::BlockChest`，14/16 `ChestBox` 形状；8 木板环形配方。
+   - 放置时在 `BlockEntityRegistry` 建 27 格 `Container`；对准按 I/E 打开箱子界面
+     （上面 3 行箱子、下面 36 格背包，左右键/Shift/右键拖拽都按原版规则）。
+   - 挖掉箱子把内容物退回背包并掉落箱子本体。
+   - 实机确认：合成 → 放置 → 开箱 → 存取 → 关闭重开内容还在 → 挖掉回收。
+   - 接线点：`src/world/block_actions.cpp`（放置/瞄准）、`src/world/mining_runtime.cpp`（破坏）、
+     `src/world/tnt_runtime.cpp`（每 tick 记录瞄准的箱子）、`src/ui/inventory_controller.cpp`（开/关/点击）、
+     `src/overlay_hud.cpp`（箱子界面）、`src/ui/hud_bridge.cpp`（HUD 数据）。
+   - 已知限制：**没有真实箱子贴图**，暂用木板 sprite 渲染成小方盒。本机没有 client jar
+     （`%APPDATA%/.minecraft/versions/1.21.8/` 只有 json），拿到 jar 后用
+     `tools/extract_mc_assets.py` 追加 region 并重生成图集/头文件即可。
+   - 箱子内容目前只在同一次游戏会话内保留，未接 `inventory.txt` 持久化。
+
+### 已合入 core、尚未接法环（PR #200–#203）
+
+| PR | 模块 | 建议接线点 |
+|---|---|---|
+| #200 | `mc/save_snapshot.hpp` | 在宿主存档事件里存/读 saveId；`src/ui/inventory_store.cpp` 旁增加快照文件 |
+| #201 | `mc/fluid.hpp` | 创造面板加水/岩浆桶；`src/overlay_scene.cpp` 增加流体层渲染；`src/world/voxel_world_runtime.cpp` 每 tick 推进 |
+| #202 | `mc/terrain_destruction.hpp` | `src/world/mining_runtime.cpp` 的 ground mining 改为 `planDig`；TNT 改 `planBlast` 并应用到宿主网格 |
+| #203 | `mc/collision_field.hpp` | `src/world/voxel_world_runtime.cpp` 的碰撞查询合并宿主几何；先用 raycast 网格起步 |
+
+### 构建 / 部署记录
+
+- MC-only 构建：`-DENABLE_CS2_VIEWMODEL=OFF -DENABLE_OW_VIEWMODEL=OFF`，产物
+  `build-win-mc/bin/eldenring/dinput8.dll`。
+- 已部署（2026-11-07）：伤害换算版备份 `dinput8.dll.bak_before_damage_scaling`，
+  箱子版备份 `dinput8.dll.bak_before_chest`；`mc_er.ini` 备份 `mc_er.ini.bak_before_damage_scaling`。
+- 当前游戏目录跑的是**箱子版**（含伤害换算），`mc_er.ini` 已恢复 `damage_scaling=1`、`mc_to_host_base=20`。
+- 测试：block-entities 分支全量 **1767 过 / 1 skip / 0 失败**；damage-scale 分支 **1778 过 / 1 skip / 0 失败**。
+
+---
+
 ## 0. 当前最新状态（2026-10-12，新开会话必读）
 
 ### 0.1 核心成果与分支拓扑

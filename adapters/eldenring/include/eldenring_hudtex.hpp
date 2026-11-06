@@ -196,6 +196,7 @@ inline const mc::hud::HudUV* uvForItem(mc::ItemId item) {
         case ItemId::BlockLeaves: return &mc::hud::kUV_ITEM_LEAVES;
         case ItemId::BlockStoneSlab: return &mc::hud::kUV_ITEM_STONE_SLAB;
         case ItemId::Torch: return &mc::hud::kUV_ITEM_TORCH;
+        case ItemId::BlockChest: return &mc::hud::kUV_ITEM_WOOD_PLANKS;
         default: return nullptr;
     }
 }
