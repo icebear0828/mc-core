@@ -135,7 +135,7 @@ constexpr ItemId kNone = ItemId::None;
 
 // The built-in recipe set. Patterns are trimmed to their bounding box; ItemId::None is an empty
 // cell. There is no furnace in this project yet, so the recipes use raw materials directly.
-const std::array<Recipe, 28> kRecipes{{
+const std::array<Recipe, 29> kRecipes{{
     // Materials.
     shapeless(RecipeCategory::Material, {{ItemId::BlockWood, 1}}, {ItemId::WoodPlanks, 4}),
     shaped(RecipeCategory::Material, 1, 2, {ItemId::WoodPlanks, ItemId::WoodPlanks}, {ItemId::Stick, 4}),
@@ -148,6 +148,11 @@ const std::array<Recipe, 28> kRecipes{{
            {ItemId::BlockStoneSlab, 6}),
     shapeless(RecipeCategory::Material, {{ItemId::String, 4}}, {ItemId::BlockWhiteWool, 1}),
     shapeless(RecipeCategory::Material, {{ItemId::Coal, 1}, {ItemId::Stick, 1}}, {ItemId::Torch, 4}),
+    shaped(RecipeCategory::Material, 3, 3,
+           {ItemId::WoodPlanks, ItemId::WoodPlanks, ItemId::WoodPlanks,
+            ItemId::WoodPlanks, ItemId::None, ItemId::WoodPlanks,
+            ItemId::WoodPlanks, ItemId::WoodPlanks, ItemId::WoodPlanks},
+           {ItemId::BlockChest, 1}),
 
     // Sword ladder (craft from scratch).
     shaped(RecipeCategory::WeaponUpgrade, 1, 3, {ItemId::WoodPlanks, ItemId::WoodPlanks, ItemId::Stick},

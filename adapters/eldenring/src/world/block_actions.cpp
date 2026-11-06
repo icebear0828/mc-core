@@ -109,6 +109,18 @@ BlockTarget FindBlockTarget() {
     return t;
 }
 
+bool AimingAtChest(int out_cell[3]) {
+    float eye[3], dir[3];
+    if (!AimRay(eye, dir)) return false;
+    std::lock_guard<std::mutex> g(g_blocks_mutex);
+    const std::optional<blocks::GridHit> hit = blocks::raycastGrid(g_blocks, eye, dir, g_reach.load());
+    if (!hit.has_value() || g_blocks.get(hit->cell) != mc::BlockId::Chest) return false;
+    out_cell[0] = hit->cell.x;
+    out_cell[1] = hit->cell.y;
+    out_cell[2] = hit->cell.z;
+    return true;
+}
+
 bool AimingAtCraftingTable() {
     float eye[3], dir[3];
     if (!AimRay(eye, dir)) return false;
@@ -132,6 +144,7 @@ const char* BlockSound(mc::BlockId id) {
         case mc::BlockId::Wood:
         case mc::BlockId::WoodPlanks:
         case mc::BlockId::Torch:
+        case mc::BlockId::Chest:
         case mc::BlockId::CraftingTable: return "block.wood.step";
         default: return "block.grass.step";
     }
@@ -303,6 +316,7 @@ bool TryPlaceBlock(mc::Hand hand) {
     {
         std::lock_guard<std::mutex> g(g_blocks_mutex);
         if (!g_blocks.place(t.place, id)) return false;
+        if (id == mc::BlockId::Chest) g_block_entities.create(t.place, mc::BlockEntityKind::Chest);
     }
     {
         std::lock_guard<std::mutex> g(g_melee_mutex);

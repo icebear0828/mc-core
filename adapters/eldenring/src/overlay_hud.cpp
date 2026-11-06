@@ -566,6 +566,102 @@ void DrawInventory(const HudState& hud, float w, float h) {
     dl->AddTriangle(m, {m.x, m.y + 11.f * u}, {m.x + 7.f * u, m.y + 8.f * u}, IM_COL32(0, 0, 0, 255), 1.f);
 }
 
+// The chest screen: the container's 27 slots above the player's 27 + 9 slots.
+void DrawChest(const HudState& hud, float w, float h) {
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    const ImTextureID atlas = reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(g_atlas_gpu.ptr));
+    dl->AddRectFilled({0.f, 0.f}, {w, h}, IM_COL32(16, 16, 16, 150));
+    const mc::InventoryLayout lay(w, h, false, true);
+    const mc::HudRect p = lay.panel();
+    const float gs = static_cast<float>(lay.scale());
+    const float fs = 8.f * gs;
+    const ImU32 label = IM_COL32(64, 64, 64, 255);
+
+    dl->AddRectFilled({p.x, p.y}, {p.x + p.w, p.y + p.h}, IM_COL32(198, 198, 198, 255));
+    dl->AddLine({p.x, p.y}, {p.x + p.w, p.y}, IM_COL32(255, 255, 255, 255), 2.f * gs);
+    dl->AddLine({p.x, p.y}, {p.x, p.y + p.h}, IM_COL32(255, 255, 255, 255), 2.f * gs);
+    dl->AddLine({p.x, p.y + p.h}, {p.x + p.w, p.y + p.h}, IM_COL32(85, 85, 85, 255), 2.f * gs);
+    dl->AddLine({p.x + p.w, p.y}, {p.x + p.w, p.y + p.h}, IM_COL32(85, 85, 85, 255), 2.f * gs);
+    dl->AddText(ImGui::GetFont(), fs, {p.x + 8.f * gs, p.y + 6.f * gs}, label, "Chest");
+
+    auto drawSlotBox = [&](const mc::HudRect& r) {
+        dl->AddLine({r.x, r.y}, {r.x + r.w, r.y}, IM_COL32(55, 55, 55, 255), gs);
+        dl->AddLine({r.x, r.y}, {r.x, r.y + r.h}, IM_COL32(55, 55, 55, 255), gs);
+        dl->AddLine({r.x, r.y + r.h}, {r.x + r.w, r.y + r.h}, IM_COL32(255, 255, 255, 200), gs);
+        dl->AddLine({r.x + r.w, r.y}, {r.x + r.w, r.y + r.h}, IM_COL32(255, 255, 255, 200), gs);
+        dl->AddRectFilled({r.x + gs, r.y + gs}, {r.x + r.w - gs, r.y + r.h - gs}, IM_COL32(139, 139, 139, 255));
+    };
+    auto stackCount = [&](const mc::HudRect& r, unsigned n) {
+        if (n <= 1) return;
+        char cnt[8];
+        snprintf(cnt, sizeof(cnt), "%u", n);
+        const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, 1e9f, 0.f, cnt);
+        const ImVec2 pos{r.x + 17.f * gs - sz.x, r.y + 9.f * gs};
+        dl->AddText(ImGui::GetFont(), fs, {pos.x + gs, pos.y + gs}, IM_COL32(40, 40, 40, 255), cnt);
+        dl->AddText(ImGui::GetFont(), fs, pos, IM_COL32(255, 255, 255, 255), cnt);
+    };
+    auto icon = [&](const mc::HudRect& r, mc::ItemId item) { DrawItemIcon(dl, atlas, r, item); };
+
+    for (int i = 0; i < 27; ++i) {
+        const mc::HudRect r = lay.chestSlot(i);
+        drawSlotBox(r);
+        const mc::ItemId item = static_cast<mc::ItemId>(hud.chest_item[i]);
+        if (item != mc::ItemId::None) {
+            const mc::HudRect item_r{r.x + 1.f * gs, r.y + 1.f * gs, 16.f * gs, 16.f * gs};
+            icon(item_r, item);
+            stackCount(item_r, hud.chest_count[i]);
+        }
+    }
+
+    dl->AddText(ImGui::GetFont(), fs, {lay.titleInventory().x, lay.titleInventory().y}, label, "Inventory");
+    for (int i = 0; i < 36; ++i) {
+        const mc::HudRect r = lay.invSlot(i);
+        drawSlotBox(r);
+        const mc::ItemId item = static_cast<mc::ItemId>(hud.inv_item[i]);
+        if (item != mc::ItemId::None) {
+            const mc::HudRect item_r{r.x + 1.f * gs, r.y + 1.f * gs, 16.f * gs, 16.f * gs};
+            icon(item_r, item);
+            stackCount(item_r, hud.inv_count[i]);
+        }
+    }
+
+    const mc::SlotRef hover = lay.hitTest(hud.mouse_x, hud.mouse_y);
+    mc::ItemId hovered = mc::ItemId::None;
+    mc::HudRect hover_r{};
+    bool show_hover = false;
+    if (hover.kind == mc::SlotRef::Kind::Chest && hover.index >= 0 && hover.index < 27) {
+        hovered = static_cast<mc::ItemId>(hud.chest_item[hover.index]);
+        hover_r = lay.chestSlot(hover.index);
+        show_hover = true;
+    } else if (hover.kind == mc::SlotRef::Kind::Inventory && hover.index >= 0 && hover.index < 36) {
+        hovered = static_cast<mc::ItemId>(hud.inv_item[hover.index]);
+        hover_r = lay.invSlot(hover.index);
+        show_hover = true;
+    }
+    if (show_hover) {
+        dl->AddRectFilled({hover_r.x, hover_r.y}, {hover_r.x + hover_r.w, hover_r.y + hover_r.h}, IM_COL32(255, 255, 255, 128));
+    }
+
+    const mc::ItemId held = static_cast<mc::ItemId>(hud.cursor_item);
+    if (held != mc::ItemId::None) {
+        const mc::HudRect r{hud.mouse_x - 8.f * gs, hud.mouse_y - 8.f * gs, 16.f * gs, 16.f * gs};
+        icon(r, held);
+        stackCount(r, hud.cursor_count);
+    } else if (hovered != mc::ItemId::None) {
+        const char* name = mc::HudEngine::getItemDisplayName(hovered);
+        const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, 1e9f, 0.f, name);
+        const float pad = 3.f * gs;
+        const float tx = std::min(hud.mouse_x + 12.f * gs, w - sz.x - 2.f * pad), ty = hud.mouse_y - 12.f * gs;
+        dl->AddRectFilled({tx - pad, ty - pad}, {tx + sz.x + pad, ty + sz.y + pad}, IM_COL32(16, 0, 16, 230));
+        dl->AddRect({tx - pad, ty - pad}, {tx + sz.x + pad, ty + sz.y + pad}, IM_COL32(80, 0, 160, 255), 0.f, 0, gs);
+        dl->AddText(ImGui::GetFont(), fs, {tx, ty}, IM_COL32(255, 255, 255, 255), name);
+    }
+    const float u = std::max(1.f, gs);
+    const ImVec2 m{hud.mouse_x, hud.mouse_y};
+    dl->AddTriangleFilled(m, {m.x, m.y + 11.f * u}, {m.x + 7.f * u, m.y + 8.f * u}, IM_COL32(255, 255, 255, 255));
+    dl->AddTriangle(m, {m.x, m.y + 11.f * u}, {m.x + 7.f * u, m.y + 8.f * u}, IM_COL32(0, 0, 0, 255), 1.f);
+}
+
 // The crafting table screen: the 3x3 grid, the result slot and the player's 27 + 9 slots.
 void DrawCraftingTable(const HudState& hud, float w, float h) {
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
@@ -911,6 +1007,10 @@ void DrawHud(const HudState& hud, float w, float h) {
 #endif
     if (hud.craft_open) {
         DrawCraftingTable(hud, w, h);
+        return;
+    }
+    if (hud.chest_open) {
+        DrawChest(hud, w, h);
         return;
     }
     if (hud.inv_open) {

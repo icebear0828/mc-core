@@ -2,6 +2,7 @@
 
 #include "mc/block_entity.hpp"
 #include "mc/blocks.hpp"
+#include "mc/inventory_layout.hpp"
 
 #include <variant>
 
@@ -364,4 +365,94 @@ TEST(BlockEntityRegistry, ClearRemovesEverythingAndBumpsOnce) {
     EXPECT_EQ(registry.version(), 3u);
     registry.clear(); // already empty: no bump
     EXPECT_EQ(registry.version(), 3u);
+}
+
+// --- Container clicks (the chest screen) ------------------------------------------------------
+
+TEST(ContainerClickTest, LeftClickPicksUpPlacesMergesAndSwaps) {
+    Container chest;
+    Inventory player;
+
+    chest.set(0, dirt(10));
+    containerClick(chest, 0, Button::Left, false, player);
+    EXPECT_TRUE(chest.get(0).empty());
+    EXPECT_EQ(player.cursor().count, 10u);
+
+    containerClick(chest, 1, Button::Left, false, player);
+    EXPECT_TRUE(player.cursor().empty());
+    EXPECT_EQ(chest.get(1).count, 10u);
+
+    chest.set(2, dirt(60));
+    player.setCursor(dirt(10));
+    containerClick(chest, 2, Button::Left, false, player);
+    EXPECT_EQ(chest.get(2).count, 64u);
+    EXPECT_EQ(player.cursor().count, 6u);
+
+    chest.set(3, {ItemId::BlockStone, 5});
+    player.setCursor({ItemId::BlockWood, 2});
+    containerClick(chest, 3, Button::Left, false, player);
+    EXPECT_EQ(chest.get(3).item, ItemId::BlockWood);
+    EXPECT_EQ(player.cursor().item, ItemId::BlockStone);
+}
+
+TEST(ContainerClickTest, RightClickSplitsAndPlacesOne) {
+    Container chest;
+    Inventory player;
+
+    chest.set(0, dirt(9));
+    containerClick(chest, 0, Button::Right, false, player);
+    EXPECT_EQ(player.cursor().count, 5u); // vanilla takes the larger half
+    EXPECT_EQ(chest.get(0).count, 4u);
+
+    containerClick(chest, 1, Button::Right, false, player);
+    EXPECT_EQ(chest.get(1).count, 1u);
+    EXPECT_EQ(player.cursor().count, 4u);
+}
+
+TEST(ContainerClickTest, ShiftMovesChestIntoInventory) {
+    Container chest;
+    Inventory player;
+    chest.set(0, dirt(20));
+    containerClick(chest, 0, Button::Left, true, player);
+    EXPECT_TRUE(chest.get(0).empty());
+    EXPECT_EQ(player.slot(0).count, 20u);
+}
+
+TEST(ContainerClickTest, ShiftKeepsTheLeftoverInTheChest) {
+    Container chest;
+    Inventory player;
+    for (int i = 0; i < Inventory::kSlots; ++i) player.setSlot(i, {ItemId::BlockStone, 64});
+    chest.set(0, dirt(10));
+    containerClick(chest, 0, Button::Left, true, player);
+    EXPECT_EQ(chest.get(0).count, 10u); // nothing fit
+}
+
+TEST(ContainerClickTest, ShiftFromPlayerMovesIntoTheChest) {
+    Container chest;
+    Inventory player;
+    player.setSlot(3, dirt(12));
+    playerShiftClickIntoContainer(chest, player, 3);
+    EXPECT_TRUE(player.slot(3).empty());
+    EXPECT_EQ(chest.get(0).count, 12u);
+}
+
+TEST(ChestLayoutTest, ChestSlotsAndInventoryOnly) {
+    const InventoryLayout lay(1920.f, 1080.f, false, true);
+    const HudRect chest0 = lay.chestSlot(0);
+    const SlotRef ref0 = lay.hitTest(chest0.x + 1.f, chest0.y + 1.f);
+    EXPECT_EQ(ref0.kind, SlotRef::Kind::Chest);
+    EXPECT_EQ(ref0.index, 0);
+
+    const HudRect chest26 = lay.chestSlot(26);
+    const SlotRef ref26 = lay.hitTest(chest26.x + 1.f, chest26.y + 1.f);
+    EXPECT_EQ(ref26.kind, SlotRef::Kind::Chest);
+    EXPECT_EQ(ref26.index, 26);
+
+    const HudRect inv = lay.invSlot(0);
+    EXPECT_EQ(lay.hitTest(inv.x + 1.f, inv.y + 1.f).kind, SlotRef::Kind::Inventory);
+
+    // Armor, offhand and crafting are not part of the chest screen.
+    const HudRect armor = lay.armorSlot(0);
+    EXPECT_NE(lay.hitTest(armor.x + 1.f, armor.y + 1.f).kind, SlotRef::Kind::Armor);
+    EXPECT_NE(lay.hitTest(armor.x + 1.f, armor.y + 1.f).kind, SlotRef::Kind::Offhand);
 }

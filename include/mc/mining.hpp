@@ -67,6 +67,9 @@ public:
                 default: return 25.0f;
             }
         }
+        if (block_id == BlockId::Chest) {
+            return held_tool == ItemId::None ? 2.5f : 1.25f;
+        }
         if (block_id == BlockId::Dirt || block_id == BlockId::Sand || block_id == BlockId::Gravel) {
             return 0.75f;
         }
@@ -86,7 +89,8 @@ public:
         }
         if (block_id == BlockId::Dirt || block_id == BlockId::Tnt || block_id == BlockId::Wood ||
             block_id == BlockId::CraftingTable || block_id == BlockId::Sand || block_id == BlockId::Gravel ||
-            block_id == BlockId::WoodPlanks || block_id == BlockId::WhiteWool || block_id == BlockId::Torch) {
+            block_id == BlockId::WoodPlanks || block_id == BlockId::WhiteWool || block_id == BlockId::Torch ||
+            block_id == BlockId::Chest) {
             return true;
         }
         if (block_id == BlockId::Obsidian) {
@@ -115,6 +119,7 @@ public:
             case BlockId::Anvil: return isPickaxe(held_tool) ? ItemId::Anvil : ItemId::None;
             case BlockId::StoneSlab: return isPickaxe(held_tool) ? ItemId::BlockStoneSlab : ItemId::None;
             case BlockId::Torch: return ItemId::Torch;
+            case BlockId::Chest: return ItemId::BlockChest;
             // Glass and leaves need silk touch / shears in vanilla, which the mod does not have yet.
             case BlockId::Glass:
             case BlockId::Leaves: return ItemId::None;

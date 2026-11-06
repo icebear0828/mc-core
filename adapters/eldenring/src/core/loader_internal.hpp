@@ -242,6 +242,7 @@ extern blocks::BlockGrid& g_blocks;
 extern eldenring::tnt::ErTntManager& g_tnt_mgr;
 extern std::mutex& g_blocks_mutex;
 extern std::atomic<bool>& g_blocks_enabled;
+extern mc::BlockEntityRegistry& g_block_entities;
 extern std::atomic<float>& g_block_walk_speed;
 extern std::atomic<float>& g_sneak_speed;
 extern std::atomic<float>& g_sprint_speed;
@@ -438,6 +439,8 @@ bool AimRay(float eye[3], float dir[3]);
 BlockTarget FindBlockTarget();
 // True when the aim ray hits a placed crafting table (used to open its 3x3 screen).
 bool AimingAtCraftingTable();
+// Fills out_cell with the aimed chest's cell; false when the aim is not on a chest.
+bool AimingAtChest(int out_cell[3]);
 const char* BlockSound(mc::BlockId id);
 bool TryUseSpawnEgg(mc::Hand hand);
 bool TryUseElytraFirework(mc::Hand hand);

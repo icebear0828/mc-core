@@ -52,6 +52,7 @@ public:
 
     // Clamps into range, like Inventory::slot.
     [[nodiscard]] const ItemStack& get(int slot) const;
+    [[nodiscard]] ItemStack& get(int slot);
     // False when the slot is out of range. An empty stack clears the slot; the count is clamped
     // to maxStackSize().
     bool set(int slot, ItemStack stack);
@@ -70,6 +71,13 @@ public:
 private:
     std::array<ItemStack, kSlots> slots_{};
 };
+
+// Vanilla slot clicks on a container, with the cursor living in the player's inventory (the same
+// rules Inventory::click uses for its own slots). Shift moves the stack between the container and
+// the player's 36 slots.
+void containerClick(Container& container, int slot, Button button, bool shift, Inventory& player);
+// Shift-click on a player inventory slot while a container screen is open: move it into the container.
+void playerShiftClickIntoContainer(Container& container, Inventory& player, int slot);
 
 enum class BedHalf : uint8_t { Head, Foot };
 

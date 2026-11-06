@@ -33,6 +33,7 @@ void PopulateHudStateFromContext(erov::HudState& out, const RuntimeContext& ctx)
     out.slot_probe = ctx.ui().slot_probe.load(std::memory_order_relaxed);
     out.inv_open = ctx.ui().inv_open.load(std::memory_order_relaxed);
     out.craft_open = ctx.ui().craft_open.load(std::memory_order_relaxed);
+    out.chest_open = ctx.ui().chest_open.load(std::memory_order_relaxed);
     out.inv_page = ctx.ui().inv_page.load(std::memory_order_relaxed);
     out.inv_page_count = mc::palettePageCount();
     {
@@ -62,6 +63,18 @@ void PopulateHudStateFromContext(erov::HudState& out, const RuntimeContext& ctx)
     for (int i = 0; i < mc::Inventory::kSlots; ++i) {
         out.inv_item[i] = static_cast<uint16_t>(inv.slot(i).item);
         out.inv_count[i] = static_cast<uint8_t>(std::min(255u, inv.slot(i).count));
+    }
+    if (out.chest_open) {
+        const mc::Cell cell{ctx.ui().chest_x.load(std::memory_order_relaxed),
+                            ctx.ui().chest_y.load(std::memory_order_relaxed),
+                            ctx.ui().chest_z.load(std::memory_order_relaxed)};
+        std::lock_guard<std::mutex> lock(ctx.world().blocks_mutex);
+        if (const mc::Container* chest = ctx.world().block_entities.getAs<mc::Container>(cell)) {
+            for (int i = 0; i < mc::Container::kSlots; ++i) {
+                out.chest_item[i] = static_cast<uint16_t>(chest->get(i).item);
+                out.chest_count[i] = static_cast<uint8_t>(std::min(255u, chest->get(i).count));
+            }
+        }
     }
     out.cursor_item = static_cast<uint16_t>(inv.cursor().item);
     out.cursor_count = static_cast<uint8_t>(std::min(255u, inv.cursor().count));

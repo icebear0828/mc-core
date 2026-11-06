@@ -28,6 +28,10 @@ const ItemStack& Container::get(int slot) const {
     return slots_[static_cast<size_t>(std::clamp(slot, 0, kSlots - 1))];
 }
 
+ItemStack& Container::get(int slot) {
+    return slots_[static_cast<size_t>(std::clamp(slot, 0, kSlots - 1))];
+}
+
 bool Container::set(int slot, ItemStack stack) {
     if (slot < 0 || slot >= kSlots) return false;
     ItemStack& target = slots_[static_cast<size_t>(slot)];
@@ -98,6 +102,60 @@ uint32_t Container::count(ItemId item) const {
 bool Container::empty() const { return emptySlots() == kSlots; }
 
 void Container::clear() { slots_ = {}; }
+
+// --- Container clicks ------------------------------------------------------------------------
+
+void containerClick(Container& container, int slot, Button button, bool shift, Inventory& player) {
+    if (slot < 0 || slot >= Container::kSlots) return;
+    if (shift) {
+        ItemStack stack = container.remove(slot, container.get(slot).count);
+        if (stack.empty()) return;
+        const uint32_t left = player.add(stack);
+        if (left > 0) container.set(slot, {stack.item, left});
+        return;
+    }
+    ItemStack& target = container.get(slot);
+    ItemStack cursor = player.takeCursor();
+    if (button == Button::Left) {
+        if (cursor.empty()) {
+            cursor = target;
+            target = {};
+        } else if (target.empty()) {
+            target = cursor;
+            cursor = {};
+        } else if (target.item == cursor.item) {
+            const uint32_t cap = maxStackSize(target.item);
+            const uint32_t move = std::min(cap > target.count ? cap - target.count : 0, cursor.count);
+            target.count += move;
+            cursor.count -= move;
+            if (cursor.count == 0) cursor = {};
+        } else {
+            std::swap(target, cursor);
+        }
+    } else if (cursor.empty()) {
+        if (!target.empty()) {
+            const uint32_t take = (target.count + 1) / 2;
+            cursor = {target.item, take};
+            target.count -= take;
+            if (target.count == 0) target = {};
+        }
+    } else if (target.empty() || (target.item == cursor.item && target.count < maxStackSize(target.item))) {
+        if (target.empty()) target = {cursor.item, 0};
+        ++target.count;
+        if (--cursor.count == 0) cursor = {};
+    } else {
+        std::swap(target, cursor);
+    }
+    player.setCursor(cursor);
+}
+
+void playerShiftClickIntoContainer(Container& container, Inventory& player, int slot) {
+    if (slot < 0 || slot >= Inventory::kSlots) return;
+    const ItemStack stack = player.slot(slot);
+    if (stack.empty()) return;
+    const ItemStack leftover = container.insert(stack);
+    player.setSlot(slot, leftover);
+}
 
 // --- Bed -------------------------------------------------------------------------------------
 

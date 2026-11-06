@@ -20,6 +20,7 @@
 #include "eldenring_tnt.hpp"
 #include "eldenring_xp.hpp"
 #include "cs_economy.hpp"
+#include "mc/block_entity.hpp"
 #include "mc/consumables.hpp"
 #include "mc/contracts/mod_manager.hpp"
 #include "mc/control_policy.hpp"
@@ -273,8 +274,9 @@ struct PlayerSystems {
 };
 
 struct WorldSystems {
-    std::mutex blocks_mutex;
+    mutable std::mutex blocks_mutex;
     blocks::BlockGrid block_grid;
+    mc::BlockEntityRegistry block_entities; // chests and other per-cell state, guarded by blocks_mutex
     tnt::ErTntManager tnt_mgr;
     mining::MiningController mining;
     unsigned blocks_sent_version{~0u};
@@ -293,6 +295,9 @@ struct UiSystems {
     std::atomic<bool> inv_open{false};
     std::atomic<bool> craft_open{false};
     std::atomic<bool> craft_table_targeted{false}; // the aim ray is on a placed crafting table
+    std::atomic<bool> chest_targeted{false};       // the aim ray is on a placed chest
+    std::atomic<int> chest_x{0}, chest_y{0}, chest_z{0}; // that chest's cell
+    std::atomic<bool> chest_open{false};           // the chest screen is open
     std::atomic<int> inv_page{0};
     std::atomic<float> inv_mx{0.f};
     std::atomic<float> inv_my{0.f};
@@ -479,6 +484,7 @@ public:
         {
             std::lock_guard<std::mutex> g(world_.blocks_mutex);
             world_.block_grid = blocks::BlockGrid{};
+            world_.block_entities = mc::BlockEntityRegistry{};
             world_.tnt_mgr = tnt::ErTntManager{};
             world_.mining.reset();
             world_.blocks_sent_version = ~0u;
@@ -498,6 +504,8 @@ public:
         ui_.inv_open.store(false);
         ui_.craft_open.store(false);
         ui_.craft_table_targeted.store(false);
+        ui_.chest_targeted.store(false);
+        ui_.chest_open.store(false);
         ui_.inv_page.store(0);
         {
             std::lock_guard<std::mutex> lock(ui_.craft_mutex);

@@ -85,6 +85,16 @@ void BlocksTick() {
 
     SendBlockMesh();
     g_ctx.ui().craft_table_targeted.store(WantSuppress() && AimingAtCraftingTable(), std::memory_order_relaxed);
+    {
+        int chest_cell[3] = {0, 0, 0};
+        const bool aimed = WantSuppress() && AimingAtChest(chest_cell);
+        g_ctx.ui().chest_targeted.store(aimed, std::memory_order_relaxed);
+        if (aimed) {
+            g_ctx.ui().chest_x.store(chest_cell[0], std::memory_order_relaxed);
+            g_ctx.ui().chest_y.store(chest_cell[1], std::memory_order_relaxed);
+            g_ctx.ui().chest_z.store(chest_cell[2], std::memory_order_relaxed);
+        }
+    }
     if (!g_camstep_installed.load()) BlocksCollisionStep(); // without the camera hook the collision runs here (less smooth)
 }
 
