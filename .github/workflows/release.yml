@@ -15,7 +15,103 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  package-tests:
+    name: Packaging tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Run packaging tests
+        run: uv run --with pytest pytest -q tests/test_package_mod.py
+
+  eldenring:
+    name: Elden Ring (${{ matrix.mode }})
+    needs: package-tests
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: mc
+            flags: "-DENABLE_MC_MODE=ON -DENABLE_CS2_VIEWMODEL=OFF -DENABLE_OW_VIEWMODEL=OFF"
+          - mode: cs
+            flags: "-DENABLE_MC_MODE=OFF -DENABLE_CS2_VIEWMODEL=ON -DENABLE_OW_VIEWMODEL=OFF"
+          - mode: ow
+            flags: "-DENABLE_MC_MODE=OFF -DENABLE_CS2_VIEWMODEL=OFF -DENABLE_OW_VIEWMODEL=ON"
+          - mode: all
+            flags: "-DENABLE_MC_MODE=ON -DENABLE_CS2_VIEWMODEL=ON -DENABLE_OW_VIEWMODEL=ON"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Configure CMake (${{ matrix.mode }})
+        run: cmake -B build-${{ matrix.mode }} -S . -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF ${{ matrix.flags }}
+
+      - name: Build Elden Ring adapter (${{ matrix.mode }})
+        run: cmake --build build-${{ matrix.mode }} --config Release --target eldenring_adapter
+
+      - name: Fetch private asset bundle (optional)
+        shell: pwsh
+        env:
+          MC_ASSET_PACK_URL: ${{ secrets.MC_ASSET_PACK_URL }}
+          MC_ASSET_PACK_TOKEN: ${{ secrets.MC_ASSET_PACK_TOKEN }}
+        run: |
+          if (-not $env:MC_ASSET_PACK_URL) {
+            Write-Host "No MC_ASSET_PACK_URL secret; packaging with EULA-safe placeholders only."
+            exit 0
+          }
+          $headers = @{}
+          if ($env:MC_ASSET_PACK_TOKEN) { $headers["Authorization"] = "Bearer $env:MC_ASSET_PACK_TOKEN" }
+          Invoke-WebRequest -Uri $env:MC_ASSET_PACK_URL -Headers $headers -OutFile asset_pack.zip
+          Expand-Archive asset_pack.zip -DestinationPath asset_bundle -Force
+          Write-Host "Asset bundle files:"
+          Get-ChildItem asset_bundle -Recurse -File | Select-Object -First 20 -ExpandProperty FullName
+
+      - name: Package Elden Ring (${{ matrix.mode }})
+        shell: pwsh
+        run: |
+          $raw_tag = "${{ inputs.tag_name }}"
+          if (-not $raw_tag) { $raw_tag = $env:GITHUB_REF_NAME }
+          $version = $raw_tag.TrimStart('v')
+          if (-not $version) { $version = "0.1.0" }
+          Write-Host "Packaging Elden Ring ${{ matrix.mode }} version: $version"
+          $extra = @()
+          if (Test-Path asset_bundle) { $extra = @("--assets-dir", "asset_bundle") }
+          uv run python tools/package_mod.py --game eldenring `
+            --build-dir build-${{ matrix.mode }}/bin/eldenring `
+            --version $version --channel nexus --modes ${{ matrix.mode }} --out-dir dist @extra
+
+      - name: Upload Elden Ring package (${{ matrix.mode }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: eldenring-${{ matrix.mode }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  other-adapters:
+    name: Sekiro and Wukong
+    needs: package-tests
     runs-on: windows-latest
     steps:
       - name: Checkout repository
@@ -39,23 +135,41 @@ jobs:
       - name: Configure CMake
         run: cmake -B build-win -S . -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
 
-      - name: Build Adapters (Release)
+      - name: Build other adapters (Release)
         run: |
-          cmake --build build-win --config Release --target eldenring_adapter
           cmake --build build-win --config Release --target sekiro_adapter
           cmake --build build-win --config Release --target wukong_adapter
 
-      - name: Package Mods
+      - name: Package other adapters
         shell: pwsh
         run: |
-          $raw_tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "${{ inputs.tag_name }}" }
+          $raw_tag = "${{ inputs.tag_name }}"
+          if (-not $raw_tag) { $raw_tag = $env:GITHUB_REF_NAME }
           $version = $raw_tag.TrimStart('v')
           if (-not $version) { $version = "0.1.0" }
-          Write-Host "Packaging version: $version"
+          Write-Host "Packaging other adapters version: $version"
 
-          uv run python tools/package_mod.py --game eldenring --build-dir build-win/bin/eldenring --version $version --channel nexus --out-dir dist
           uv run python tools/package_mod.py --game sekiro --build-dir build-win/bin/Release --version $version --channel nexus --out-dir dist
           uv run python tools/package_mod.py --game wukong --build-dir build-win/bin/Release --version $version --channel nexus --out-dir dist
+
+      - name: Upload other adapter packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: other-adapters
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Create release
+    needs: [eldenring, other-adapters]
+    runs-on: windows-latest
+    steps:
+      - name: Download all packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*'
+          path: dist
+          merge-multiple: true
 
       - name: Generate Aggregated Checksums
         shell: pwsh
@@ -68,9 +182,26 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          $tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "${{ inputs.tag_name }}" }
+          $tag = "${{ inputs.tag_name }}"
+          if (-not $tag) { $tag = $env:GITHUB_REF_NAME }
           if (-not $tag) { $tag = "v0.1.0-preview" }
-          
-          gh release create $tag dist/*.zip dist/SHA256SUMS_ALL.txt `
+
+          $notes = @"
+          Automated release build of mc-core adapters.
+
+          Elden Ring variants:
+          - mc: Minecraft gameplay only
+          - cs: Counter-Strike 2 arsenal/viewmodel only
+          - ow: Overwatch Doomfist viewmodel only
+          - mc_cs_ow: all three modes in one DLL
+
+          Sekiro and Black Myth: Wukong adapters are included.
+
+          **Offline / EULA compliant nexus distribution packages.**
+          CS/OW viewmodel assets are game-derived and are not bundled; see the mode note in each package.
+          "@
+
+          $zips = @(Get-ChildItem dist/*.zip | ForEach-Object { $_.FullName })
+          gh release create $tag @zips dist/SHA256SUMS_ALL.txt `
             --title "mc-core $tag - Game Adapters Release" `
-            --notes "Automated release build of mc-core adapters (Elden Ring, Sekiro, Black Myth: Wukong).`n`n**Offline / EULA Compliant nexus distribution packages.**`nRun setup_assets.bat inside the zip to generate full high-res textures and sounds locally."
+            --notes $notes
